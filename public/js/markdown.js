@@ -25,7 +25,7 @@ function renderTable(lines) {
   if (rows.length < 2) return '';
   const cells = rows.map(r => r.split('|').map(c => c.trim()));
   const sepIdx = cells.findIndex(c => c.every(x => /^:?-{2,}:?$/.test(x)));
-  const head = sepIdx === 0 ? cells[0] : null;
+  const head = sepIdx === 1 ? cells[0] : null;
   const body = cells.slice(sepIdx >= 0 ? sepIdx + 1 : (head ? 1 : 0));
   let html = '<table>';
   if (head) html += '<thead><tr>' + head.map(h => `<th>${inline(h)}</th>`).join('') + '</tr></thead>';

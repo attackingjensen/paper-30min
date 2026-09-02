@@ -20,12 +20,11 @@
 
 - 运行栈为原生 JavaScript 前端与 Python 标准库本地服务器，无前端构建步骤。
 - 示例 PDF 解析检查和 Python 语法编译检查通过；PDF.js 会报告标准字体资源警告。
-- 自动化验证覆盖解析器和 SSE 流式传输的关键边界；阅读任务、持久化、模型传输的其余行为和 Markdown 渲染仍缺少系统性回归测试。
+- 自动化验证覆盖解析器、SSE 流式传输和 Markdown 表格渲染的关键边界；阅读任务、持久化、模型传输的其余行为和 Markdown 渲染仍缺少系统性回归测试。
 - 已建立 GitHub Issues、triage 标签、领域词汇表与 ADR 结构。
 
 ## 进行中事项
 
-- [Issue #2](https://github.com/attackingjensen/paper-30min/issues/2)：Markdown 表格渲染时丢失表头，状态为 `ready-for-agent`。
 - “论文记录生命周期”是当前首选 deepening 候选，尚未进入设计或实现阶段。
 - [待决技术与产品事项](../draft/2026-09-02-open-decisions.md) 汇总了已讨论但尚未接受的建议与问题。
 
@@ -39,6 +38,5 @@
 
 ## 下一步
 
-1. 解决 Issue #2，并通过回归测试锁定行为。
-2. 使用 `grill-with-docs` 明确“论文记录生命周期” module 的职责、不变量和 seam。
-3. 将需要作者判断的待确认问题集中反馈，不依据推测扩展产品功能。
+1. 使用 `grill-with-docs` 明确“论文记录生命周期” module 的职责、不变量和 seam。
+2. 将需要作者判断的待确认问题集中反馈，不依据推测扩展产品功能。
