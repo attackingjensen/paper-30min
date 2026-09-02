@@ -83,6 +83,12 @@
 │   ├── js/db.js         #   IndexedDB 本地存储
 │   └── js/app.js        #   主界面逻辑
 ├── skills/              # 技能库基础模板（可改造、可新增）
+├── docs/
+│   ├── background/      #   原始需求、调研和可行性分析
+│   ├── status/          #   项目当前状态（持续覆盖更新）
+│   ├── draft/           #   未定稿设计、临时记录和原型索引
+│   ├── adr/             #   已接受且需要长期保留的决策
+│   └── agents/          #   代理使用的仓库约定
 ├── tools/
 │   ├── make_sample_pdf.py  # 生成示例论文
 │   └── mock_llm.py         # 本地演示用 mock 模型
