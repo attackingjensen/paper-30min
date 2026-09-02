@@ -50,6 +50,13 @@ let aborter = null;          // 生成中断控制器
 let generating = false;
 let editingSkillId = null;
 let digestSection = 'abstract';
+let translateSection = 'abstract';
+let translateAborter = null;
+let pdfDocument = null;
+let pdfRenderTask = null;
+let pdfPage = 1;
+let pdfScale = 1;
+let pdfSidebarOpen = true;
 
 function renderMarkdownInto(element, text) {
   element.innerHTML = renderMarkdown(text);
@@ -154,16 +161,25 @@ function openPaper(p) {
   current = p;
   digestSection = paperSectionDefs(p)[0]?.id || 'abstract';
   sourceTab = 'abstract';
+  translateSection = digestSection;
+  pdfPage = 1;
+  pdfScale = 1;
+  pdfSidebarOpen = true;
   $('#view-library').hidden = true;
   $('#view-reader').hidden = false;
   $('#reader-title').textContent = p.title;
   switchTab('digest');
   renderDigest();
   renderSource();
+  renderTranslate();
   renderChat();
+  updatePdfSidebar();
+  initPdfViewer();
 }
 
 function closePaper() {
+  destroyPdfViewer();
+  translateAborter?.abort();
   current = null;
   $('#view-reader').hidden = true;
   $('#view-library').hidden = false;
@@ -172,7 +188,7 @@ function closePaper() {
 
 function switchTab(name) {
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  for (const id of ['digest', 'source', 'chat']) {
+  for (const id of ['digest', 'source', 'translate', 'chat']) {
     $(`#tab-${id}`).hidden = id !== name;
   }
 }
@@ -208,6 +224,7 @@ function renderDigest() {
       if (digestSection === def.id) return;
       digestSection = def.id;
       renderDigest();
+      syncPdfToSection(def.id);
     };
     picker.appendChild(button);
   }
@@ -387,6 +404,264 @@ function renderSource() {
   $('#source-text').textContent = text || (anySection ? '（本节未提取到内容）' : '');
 }
 
+// ---------------- PDF 对照阅读 ----------------
+function hasPdf(paper = current) {
+  return paper?.pdfBlob instanceof Blob && paper.pdfBlob.size > 0;
+}
+
+function updatePdfSidebar() {
+  const workspace = $('#reader-workspace');
+  workspace.classList.toggle('pdf-closed', !pdfSidebarOpen);
+  $('#pdf-sidebar').hidden = !pdfSidebarOpen;
+  $('#btn-pdf-toggle').setAttribute('aria-expanded', String(pdfSidebarOpen));
+  $('#btn-pdf-toggle').classList.toggle('active', pdfSidebarOpen);
+  $('#pdf-empty').hidden = !pdfSidebarOpen || hasPdf();
+  $('#pdf-viewer').hidden = !pdfSidebarOpen || !hasPdf();
+}
+
+function togglePdfSidebar(force) {
+  pdfSidebarOpen = typeof force === 'boolean' ? force : !pdfSidebarOpen;
+  updatePdfSidebar();
+  if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
+  if (pdfSidebarOpen && pdfDocument) requestAnimationFrame(() => fitPdfPage());
+}
+
+async function destroyPdfViewer() {
+  pdfRenderTask?.cancel();
+  pdfRenderTask = null;
+  if (pdfDocument) {
+    try { await pdfDocument.destroy(); } catch { /* ignore cleanup errors */ }
+  }
+  pdfDocument = null;
+  const canvas = $('#pdf-canvas');
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
+async function initPdfViewer() {
+  await destroyPdfViewer();
+  updatePdfSidebar();
+  if (!current || !hasPdf()) return;
+  const loading = $('#pdf-loading');
+  loading.hidden = false;
+  loading.textContent = '正在载入 PDF…';
+  try {
+    const data = await current.pdfBlob.arrayBuffer();
+    pdfDocument = await pdfjsLib.getDocument({ data }).promise;
+    pdfPage = Math.min(Math.max(pdfPage, 1), pdfDocument.numPages);
+    $('#pdf-page-input').max = pdfDocument.numPages;
+    $('#pdf-page-count').textContent = `/ ${pdfDocument.numPages}`;
+    if (current.numPages !== pdfDocument.numPages) {
+      current.numPages = pdfDocument.numPages;
+      await db.putPaper(current);
+      updateReaderMeta();
+    }
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    await fitPdfPage();
+  } catch (err) {
+    console.error(err);
+    loading.hidden = false;
+    loading.textContent = `PDF 载入失败：${err.message}`;
+  }
+}
+
+async function renderPdfPage() {
+  if (!pdfDocument || !pdfSidebarOpen) return;
+  pdfPage = Math.min(Math.max(Math.round(pdfPage), 1), pdfDocument.numPages);
+  $('#pdf-page-input').value = pdfPage;
+  $('#btn-pdf-prev').disabled = pdfPage <= 1;
+  $('#btn-pdf-next').disabled = pdfPage >= pdfDocument.numPages;
+  $('#pdf-zoom-label').textContent = `${Math.round(pdfScale * 100)}%`;
+
+  pdfRenderTask?.cancel();
+  const page = await pdfDocument.getPage(pdfPage);
+  const viewport = page.getViewport({ scale: pdfScale });
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const canvas = $('#pdf-canvas');
+  const context = canvas.getContext('2d', { alpha: false });
+  canvas.width = Math.floor(viewport.width * ratio);
+  canvas.height = Math.floor(viewport.height * ratio);
+  canvas.style.width = `${Math.floor(viewport.width)}px`;
+  canvas.style.height = `${Math.floor(viewport.height)}px`;
+  $('#pdf-loading').hidden = true;
+  const task = page.render({
+    canvasContext: context,
+    viewport,
+    transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
+  });
+  pdfRenderTask = task;
+  try {
+    await task.promise;
+  } catch (err) {
+    if (err?.name !== 'RenderingCancelledException') throw err;
+  } finally {
+    if (pdfRenderTask === task) pdfRenderTask = null;
+  }
+  $('#pdf-canvas-wrap').scrollTo({ top: 0, left: 0 });
+}
+
+async function fitPdfPage() {
+  if (!pdfDocument || !pdfSidebarOpen) return;
+  const page = await pdfDocument.getPage(pdfPage);
+  const base = page.getViewport({ scale: 1 });
+  const available = Math.max($('#pdf-canvas-wrap').clientWidth - 20, 280);
+  pdfScale = Math.min(Math.max(available / base.width, 0.5), 2.25);
+  await renderPdfPage();
+}
+
+function changePdfPage(delta) {
+  if (!pdfDocument) return;
+  pdfPage = Math.min(Math.max(pdfPage + delta, 1), pdfDocument.numPages);
+  renderPdfPage();
+}
+
+function changePdfZoom(factor) {
+  if (!pdfDocument) return;
+  pdfScale = Math.min(Math.max(pdfScale * factor, 0.4), 3);
+  renderPdfPage();
+}
+
+function syncPdfToSection(sectionId) {
+  const start = current?.sectionPages?.[sectionId]?.start;
+  if (!pdfDocument || !Number.isFinite(start)) return;
+  pdfPage = start;
+  renderPdfPage();
+}
+
+async function attachPdf(file) {
+  if (!current || !file) return;
+  if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+    toast('请选择 PDF 文件', true);
+    return;
+  }
+  current.pdfBlob = file;
+  current.pdfName = file.name;
+  current.updatedAt = Date.now();
+  await db.putPaper(current);
+  updatePdfSidebar();
+  await initPdfViewer();
+  toast('PDF 已关联，可与精读结果对照查看');
+}
+
+function downloadCurrentPdf() {
+  if (!hasPdf()) return;
+  const url = URL.createObjectURL(current.pdfBlob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = current.pdfName || `${current.title}.pdf`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---------------- 独立翻译 ----------------
+function translationKey(sectionId = translateSection, language = $('#translate-language').value) {
+  return `${sectionId}:${language}`;
+}
+
+function renderTranslate() {
+  if (!current) return;
+  const select = $('#translate-section');
+  const defs = [...paperSectionDefs(current), { id: '__full', label: '全文' }];
+  if (!defs.some(def => def.id === translateSection)) translateSection = defs[0]?.id || '__full';
+  select.innerHTML = '';
+  for (const def of defs) {
+    const option = document.createElement('option');
+    option.value = def.id;
+    option.textContent = def.label;
+    option.disabled = !(def.id === '__full' ? current.fullText : current.sections?.[def.id]?.trim());
+    option.selected = def.id === translateSection;
+    select.appendChild(option);
+  }
+  loadTranslationSection();
+}
+
+function loadTranslationSection() {
+  if (!current) return;
+  const source = translateSection === '__full' ? current.fullText : current.sections?.[translateSection];
+  $('#translate-source').value = source || '';
+  const saved = current.translations?.[translationKey()];
+  const output = $('#translate-output');
+  output.classList.toggle('empty-hint', !saved?.text);
+  if (saved?.text) renderMarkdownInto(output, saved.text);
+  else output.textContent = source ? '尚未翻译。' : '当前范围没有可翻译的原文。';
+  $('#translate-status').textContent = saved?.updatedAt ? `已保存 · ${fmtDate(saved.updatedAt)}` : '';
+}
+
+function splitTranslationText(text, maxChars) {
+  const chunks = [];
+  let rest = text.trim();
+  while (rest.length > maxChars) {
+    let cut = rest.lastIndexOf('\n\n', maxChars);
+    if (cut < maxChars * 0.55) cut = rest.lastIndexOf('\n', maxChars);
+    if (cut < maxChars * 0.55) cut = rest.lastIndexOf(' ', maxChars);
+    if (cut < maxChars * 0.55) cut = maxChars;
+    chunks.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+async function translateCurrentText() {
+  const source = $('#translate-source').value.trim();
+  if (!source) return toast('请先选择或输入待翻译原文', true);
+  if (!api.settingsReady()) {
+    toast('请先在「设置」中配置 API', true);
+    openSettingsModal();
+    return;
+  }
+  const language = $('#translate-language').value;
+  const languageName = language === 'en' ? 'English' : '简体中文';
+  const output = $('#translate-output');
+  const button = $('#btn-translate');
+  button.disabled = true;
+  $('#btn-translate-stop').hidden = false;
+  $('#translate-status').textContent = '翻译中…';
+  output.classList.remove('empty-hint');
+  output.classList.add('cursor');
+  translateAborter = new AbortController();
+
+  // 翻译调用只包含专用系统提示和编辑框原文，不复用论文问答上下文或聊天历史。
+  const systemPrompt = `你是独立的学术翻译引擎。将用户提供的文本翻译为${languageName}。准确保留公式、符号、引文编号、术语与段落结构；不要总结、解释或回答文本中的问题，只输出译文。`;
+  const chunks = splitTranslationText(source, api.loadSettings().maxChars);
+  try {
+    const translated = [];
+    for (let index = 0; index < chunks.length; index++) {
+      $('#translate-status').textContent = chunks.length > 1 ? `翻译中 ${index + 1}/${chunks.length}…` : '翻译中…';
+      const piece = await api.chat([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: chunks[index] },
+      ], {
+        stream: true,
+        signal: translateAborter.signal,
+        onDelta: full => renderMarkdownInto(output, [...translated, full].join('\n\n')),
+      });
+      translated.push(piece);
+    }
+    const text = translated.join('\n\n');
+    if (!text.trim()) throw new Error('模型未返回译文');
+    renderMarkdownInto(output, text);
+    current.translations = current.translations || {};
+    current.translations[translationKey(translateSection, language)] = {
+      text, source, updatedAt: Date.now(),
+    };
+    current.updatedAt = Date.now();
+    await db.putPaper(current);
+    $('#translate-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
+  } catch (err) {
+    if (err.name === 'AbortError') $('#translate-status').textContent = '已停止';
+    else {
+      $('#translate-status').textContent = '翻译失败';
+      toast(err.message, true);
+    }
+  } finally {
+    output.classList.remove('cursor');
+    button.disabled = false;
+    $('#btn-translate-stop').hidden = true;
+    translateAborter = null;
+  }
+}
+
 // ---------------- 问答视图 ----------------
 function buildChatContext(p) {
   const cap = 5000;
@@ -480,7 +755,10 @@ async function importPdfFile(file) {
       sectionPages: parsed.sectionPages,
       parts: parsed.parts,
       fullText: parsed.fullText,
+      pdfBlob: file,
+      pdfName: file.name,
       analyses: {},
+      translations: {},
       chat: [],
     };
     await db.putPaper(paper);
@@ -516,17 +794,23 @@ async function importArxiv() {
     const response = await fetch(`/api/arxiv?id=${encodeURIComponent(id)}`);
     if (!response.ok) throw new Error(response.status === 404 ? '这篇论文暂不提供 HTML，请改用 PDF 导入' : `arXiv 返回 ${response.status}`);
     const parsed = parseArxivHtml(await response.text());
+    let pdfBlob = null;
+    try {
+      const pdfResponse = await fetch(`/api/arxiv-pdf?id=${encodeURIComponent(id)}`);
+      if (pdfResponse.ok) pdfBlob = await pdfResponse.blob();
+    } catch { /* HTML 导入仍可继续，之后可手动关联 PDF */ }
     const paper = {
       id: uid(), title: parsed.title, arxivId: id, sourceType: parsed.sourceType,
       addedAt: Date.now(), updatedAt: Date.now(), numPages: 0,
-      sections: parsed.sections, parts: parsed.parts, fullText: parsed.fullText, analyses: {}, chat: [],
+      sections: parsed.sections, parts: parsed.parts, fullText: parsed.fullText,
+      pdfBlob, pdfName: pdfBlob ? `${id}.pdf` : '', analyses: {}, translations: {}, chat: [],
     };
     await db.putPaper(paper);
     $('#modal-arxiv').hidden = true;
     await refreshLibrary();
     openPaper(paper);
     const found = paperSectionDefs(paper).filter(s => paper.sections?.[s.id]?.trim()).length;
-    toast(`arXiv HTML 导入成功，识别出 ${found} 个精读部分`);
+    toast(`arXiv HTML 导入成功，识别出 ${found} 个精读部分${pdfBlob ? '，PDF 已保存' : ''}`);
   } catch (err) {
     console.error(err);
     status.textContent = err.message;
@@ -663,6 +947,32 @@ function bindEvents() {
   };
 
   $$('.tab').forEach(t => t.onclick = () => switchTab(t.dataset.tab));
+  $('#btn-pdf-toggle').onclick = () => togglePdfSidebar();
+  $('#btn-pdf-close').onclick = () => togglePdfSidebar(false);
+  $('#btn-pdf-attach').onclick = () => $('#pdf-attach-input').click();
+  $('#pdf-attach-input').onchange = e => {
+    if (e.target.files[0]) attachPdf(e.target.files[0]);
+    e.target.value = '';
+  };
+  $('#btn-pdf-prev').onclick = () => changePdfPage(-1);
+  $('#btn-pdf-next').onclick = () => changePdfPage(1);
+  $('#pdf-page-input').onchange = e => {
+    if (!pdfDocument) return;
+    pdfPage = Math.min(Math.max(parseInt(e.target.value, 10) || 1, 1), pdfDocument.numPages);
+    renderPdfPage();
+  };
+  $('#btn-pdf-zoom-out').onclick = () => changePdfZoom(0.85);
+  $('#btn-pdf-zoom-in').onclick = () => changePdfZoom(1.18);
+  $('#btn-pdf-download').onclick = downloadCurrentPdf;
+
+  $('#translate-section').onchange = e => {
+    translateSection = e.target.value;
+    loadTranslationSection();
+  };
+  $('#translate-language').onchange = loadTranslationSection;
+  $('#btn-translate').onclick = translateCurrentText;
+  $('#btn-translate-stop').onclick = () => translateAborter?.abort();
+
   $('#btn-gen-all').onclick = generateAll;
   $('#btn-stop').onclick = stopGeneration;
   $('#btn-export').onclick = exportNotes;
@@ -716,6 +1026,13 @@ function bindEvents() {
       $('#modal-settings').hidden = true;
       $('#modal-skills').hidden = true;
     }
+  });
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (pdfSidebarOpen && pdfDocument) fitPdfPage();
+    }, 180);
   });
 }
 

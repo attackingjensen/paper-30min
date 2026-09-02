@@ -51,14 +51,20 @@
     <button class="btn ghost" id="btn-export" title="导出精读笔记 Markdown">⬇ 导出笔记</button>
   </div>
 
-  <nav class="tabs">
-    <button class="tab active" data-tab="digest">✨ AI 精读</button>
-    <button class="tab" data-tab="source">📄 原文</button>
-    <button class="tab" data-tab="chat">💬 提问</button>
-  </nav>
+  <div class="reader-nav-row">
+    <nav class="tabs">
+      <button class="tab active" data-tab="digest">✨ AI 精读</button>
+      <button class="tab" data-tab="source">📄 原文</button>
+      <button class="tab" data-tab="translate">译 翻译</button>
+      <button class="tab" data-tab="chat">💬 提问</button>
+    </nav>
+    <button class="btn small pdf-toggle" id="btn-pdf-toggle" type="button" aria-expanded="true" title="显示或隐藏 PDF 对照栏">PDF 对照</button>
+  </div>
 
-  <!-- AI 精读 -->
-  <section id="tab-digest" class="tab-panel">
+  <div class="reader-workspace" id="reader-workspace">
+  <div class="reader-primary">
+    <!-- AI 精读 -->
+    <section id="tab-digest" class="tab-panel">
     <div class="digest-toolbar">
       <button class="btn primary" id="btn-gen-all">▶ 一键生成全部精读</button>
       <button class="btn danger" id="btn-stop" hidden>■ 停止</button>
@@ -66,10 +72,10 @@
     </div>
     <div class="digest-section-picker" id="digest-section-picker" role="tablist" aria-label="选择精读部分"></div>
     <div id="digest-cards"></div>
-  </section>
+    </section>
 
-  <!-- 原文 -->
-  <section id="tab-source" class="tab-panel" hidden>
+    <!-- 原文 -->
+    <section id="tab-source" class="tab-panel" hidden>
     <div class="source-chips" id="source-chips"></div>
     <pre id="source-text" class="source-text"></pre>
     <div id="source-empty" class="empty" hidden>
@@ -78,16 +84,77 @@
       <textarea id="paste-area" rows="8" placeholder="在此粘贴论文全文……"></textarea>
       <button class="btn primary" id="btn-paste-split">重新切分</button>
     </div>
-  </section>
+    </section>
 
-  <!-- 提问 -->
-  <section id="tab-chat" class="tab-panel" hidden>
+    <!-- 翻译 -->
+    <section id="tab-translate" class="tab-panel" hidden>
+      <div class="translate-toolbar">
+        <label>原文范围
+          <select id="translate-section"></select>
+        </label>
+        <label>目标语言
+          <select id="translate-language">
+            <option value="zh-CN">简体中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <button class="btn primary" id="btn-translate" type="button">开始翻译</button>
+        <button class="btn danger" id="btn-translate-stop" type="button" hidden>停止</button>
+        <span class="muted" id="translate-status"></span>
+      </div>
+      <div class="translate-grid">
+        <label class="translate-pane">
+          <span>待翻译原文</span>
+          <textarea id="translate-source" spellcheck="false" placeholder="选择章节后会自动填入原文，也可以只粘贴需要翻译的段落。"></textarea>
+        </label>
+        <div class="translate-pane">
+          <span>翻译结果</span>
+          <div id="translate-output" class="translate-output md"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 提问 -->
+    <section id="tab-chat" class="tab-panel" hidden>
     <div id="chat-log" class="chat-log"></div>
     <div class="chat-input-row">
       <textarea id="chat-input" rows="2" placeholder="基于这篇论文向 AI 提问，例如：这个方法的消融实验说明了什么？"></textarea>
       <button class="btn primary" id="btn-chat-send">发送</button>
     </div>
-  </section>
+    </section>
+  </div>
+
+  <aside class="pdf-sidebar" id="pdf-sidebar" aria-label="PDF 对照阅读器">
+    <div class="pdf-sidebar-head">
+      <strong>PDF 原文</strong>
+      <button class="pdf-icon-btn" id="btn-pdf-close" type="button" title="关闭 PDF 对照栏" aria-label="关闭 PDF 对照栏">×</button>
+    </div>
+    <div id="pdf-empty" class="pdf-empty" hidden>
+      <p>这条记录没有保存原始 PDF。</p>
+      <input type="file" id="pdf-attach-input" accept="application/pdf,.pdf" hidden>
+      <button class="btn primary small" id="btn-pdf-attach" type="button">关联 PDF</button>
+    </div>
+    <div id="pdf-viewer" class="pdf-viewer" hidden>
+      <div class="pdf-toolbar">
+        <button class="pdf-icon-btn" id="btn-pdf-prev" type="button" title="上一页" aria-label="上一页">‹</button>
+        <label class="pdf-page-control" title="跳转页码">
+          <input id="pdf-page-input" type="number" min="1" value="1" aria-label="PDF 页码">
+          <span id="pdf-page-count">/ 1</span>
+        </label>
+        <button class="pdf-icon-btn" id="btn-pdf-next" type="button" title="下一页" aria-label="下一页">›</button>
+        <span class="spacer"></span>
+        <button class="pdf-icon-btn" id="btn-pdf-zoom-out" type="button" title="缩小" aria-label="缩小">−</button>
+        <span id="pdf-zoom-label" class="pdf-zoom-label">100%</span>
+        <button class="pdf-icon-btn" id="btn-pdf-zoom-in" type="button" title="放大" aria-label="放大">＋</button>
+        <button class="pdf-icon-btn" id="btn-pdf-download" type="button" title="下载 PDF" aria-label="下载 PDF">↓</button>
+      </div>
+      <div class="pdf-canvas-wrap" id="pdf-canvas-wrap">
+        <div id="pdf-loading" class="pdf-loading">正在载入 PDF…</div>
+        <canvas id="pdf-canvas"></canvas>
+      </div>
+    </div>
+  </aside>
+  </div>
 </main>
 
 <div class="modal-mask" id="modal-arxiv" hidden>
