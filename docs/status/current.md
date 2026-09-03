@@ -32,9 +32,10 @@
 ## 进行中事项
 
 - 2026-09-03 与作者集中拍板：方向为先修缺陷、再做模块设计；PDF 解析取消页数限制；DashScope 正则放宽支持多段区域域名；局域网视为完全可信；Windows 外壳缓议；整库迁移与技能来源等转入 Issue。
+- 同日与作者完成「论文记录生命周期」grilling 设计并全部拍板：`papers.js` deep module 统一拥有记录生命周期，设计由 [ADR-0004](../adr/0004-paper-lifecycle-module.md) 接受，四步实施计划经 Issue #9 跟踪，尚未开工。
 - PR #3 已以 merge commit（`107d1b2`）合入 `main`，未采用 squash 或 rebase；`npm test` 全绿（17 个测试与 Markdown 检查全部通过）。
 - 新增 Issue #4（整库导出/导入，暂缓）、#5（`skills/*.md` 为运行时技能正式来源）、#6（GBK 控制台崩溃）、#7（mock 末尾未终止 SSE）、#8（书库视图渲染异常待复现），均带 `ready-for-agent` 标签。
-- “论文记录生命周期”是当前首选 deepening 候选，缺陷修复完成后进入设计；[待决技术与产品事项](../draft/2026-09-02-open-decisions.md) 汇总剩余未拍板内容。
+- “论文记录生命周期”设计已接受（ADR-0004），是当前首选实施项；[待决技术与产品事项](../draft/2026-09-02-open-decisions.md) 汇总剩余未拍板内容。
 
 ## 待确认问题
 
@@ -42,5 +43,6 @@
 
 ## 下一步
 
-1. 使用 grilling 明确“论文记录生命周期” module 的职责、不变量和 seam（作者已确认缺陷修复后进入模块设计）。
+1. 按 Issue #9 的四步计划实现 `papers.js`（第 1 步：模块骨架 + 两处创建点切换，吸收 `db.js`），每步保持 `npm test` 全绿。
 2. 安排 Issue #4–#8 的处理时机；其中 #5 涉及服务端技能加载入口与 `skills.js` 内置定义去留，需要先讨论设计再实现。
+3. 「阅读生成任务」作为下一个 deepening 候选，经 `saveAnalysis` 缝与 `papers.js` 衔接，时机另议。
