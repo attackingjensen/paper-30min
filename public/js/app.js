@@ -1,5 +1,5 @@
 // 主逻辑：书库 / 精读 / 原文 / 问答 / 设置 / 技能库
-import * as db from './db.js';
+import * as papers from './papers.js';
 import * as api from './api.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
 import {
@@ -11,40 +11,12 @@ import { parseArxivHtml, parsePdfFile, parsePlainText } from './parser.js';
 const $ = sel => document.querySelector(sel);
 const $$ = sel => [...document.querySelectorAll(sel)];
 
-const SECTION_DEFS = [
-  { id: 'abstract',     skillId: 'abstract',     label: 'Abstract · 摘要',      hint: '英文原文 + 规范中文翻译' },
-  { id: 'introduction', skillId: 'introduction', label: 'Introduction · 引言',  hint: '领域背景 / 相关工作 / 要解决的问题 / 贡献' },
-  { id: 'method',       skillId: 'method',       label: 'Method · 方法',        hint: '核心创新点 / 方法详解 / 为什么有效' },
-  { id: 'experiments',  skillId: 'experiments',  label: 'Experiment · 实验',    hint: '基准与结果 / 训练推理细节 / 消融实验 / 洞察' },
-];
-
-function paperSectionDefs(paper) {
-  if (!paper?.parts?.length) return SECTION_DEFS;
-  const abstract = SECTION_DEFS[0];
-  const parts = paper.parts.map((part, index) => ({
-    id: part.id,
-    skillId: part.semanticType === 'experiments'
-      ? 'experiments'
-      : part.semanticType === 'introduction'
-        ? 'introduction'
-        : part.semanticType === 'method'
-          ? 'method'
-          : 'part',
-    label: `第 ${index + 1} 部分 · ${part.title || part.heading || '未命名章节'}`,
-    pickerLabel: part.title || `第 ${index + 1} 部分`,
-    hint: part.semanticType === 'experiments'
-      ? '实验设置 / 主要结果 / 消融与洞察'
-      : `论文正文第 ${index + 1} 部分 · ${part.semanticType === 'method' ? '方法深度精读' : '通用章节精读'}`,
-  }));
-  return [abstract, ...parts];
-}
-
 function escapeTemplate(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // ---------------- 全局状态 ----------------
-let papers = [];
+let library = [];
 let current = null;          // 当前打开的论文
 let aborter = null;          // 生成中断控制器
 let generating = false;
@@ -66,10 +38,6 @@ let organizeDraft = { rating: 0, categories: [], tags: [] };
 function renderMarkdownInto(element, text) {
   element.innerHTML = renderMarkdown(text);
   typesetMath(element);
-}
-
-function uid() {
-  return crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2);
 }
 
 function fmtDate(ts) {
@@ -121,15 +89,15 @@ function dayKey(ts) {
 
 function updateStreakBadge() {
   const streak = computeStreak();
-  const total = papers.length;
-  const doneCount = papers.reduce((n, p) => n + paperSectionDefs(p).filter(s => p.analyses?.[s.id]?.text).length, 0);
-  const sectionCount = papers.reduce((n, p) => n + paperSectionDefs(p).length, 0);
+  const total = library.length;
+  const doneCount = library.reduce((n, p) => n + papers.readingParts(p).filter(s => p.analyses?.[s.id]?.text).length, 0);
+  const sectionCount = library.reduce((n, p) => n + papers.readingParts(p).length, 0);
   $('#streak-badge').textContent = total ? `🔥 连续 ${streak} 天 · 已读 ${total} 篇 · 精读 ${doneCount}/${sectionCount} 节` : '';
 }
 
 function computeStreak() {
   const days = new Set();
-  for (const p of papers) {
+  for (const p of library) {
     days.add(dayKey(p.addedAt));
     for (const a of Object.values(p.analyses || {})) if (a?.updatedAt) days.add(dayKey(a.updatedAt));
   }
@@ -142,14 +110,14 @@ function computeStreak() {
 
 // ---------------- 书库视图 ----------------
 async function refreshLibrary() {
-  papers = (await db.getAllPapers()).sort((a, b) => b.addedAt - a.addedAt);
+  library = await papers.listPapers();
   const list = $('#paper-list');
   list.innerHTML = '';
 
   updateStreakBadge();
 
   const categorySelect = $('#filter-category');
-  const categories = cleanTokens(papers.flatMap(paperCategories)).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const categories = cleanTokens(library.flatMap(paperCategories)).sort((a, b) => a.localeCompare(b, 'zh-CN'));
   categorySelect.innerHTML = '<option value="">全部分类</option>';
   for (const category of categories) {
     const option = document.createElement('option');
@@ -161,7 +129,7 @@ async function refreshLibrary() {
   if (categoryFilter && !categories.includes(categoryFilter)) categoryFilter = '';
 
   const query = libraryQuery.trim().toLocaleLowerCase();
-  const visiblePapers = papers.filter(paper => {
+  const visiblePapers = library.filter(paper => {
     const haystack = [paper.title, ...metadataTokens(paper)].join(' ').toLocaleLowerCase();
     return (!query || haystack.includes(query)) &&
       (!categoryFilter || paperCategories(paper).includes(categoryFilter)) &&
@@ -169,7 +137,7 @@ async function refreshLibrary() {
   });
   const empty = $('#empty-state');
   empty.hidden = visiblePapers.length > 0;
-  empty.innerHTML = papers.length
+  empty.innerHTML = library.length
     ? '<p>没有符合当前筛选条件的论文。</p>'
     : '<p>书库还是空的。</p><p>点击右上角「导入论文 PDF」，或先「打开示例论文」体验一遍精读流程。</p>';
 
@@ -181,7 +149,7 @@ async function refreshLibrary() {
   for (const p of visiblePapers) {
     const card = document.createElement('div');
     card.className = 'paper-card';
-    const defs = paperSectionDefs(p);
+    const defs = papers.readingParts(p);
     const done = defs.filter(s => p.analyses?.[s.id]?.text).length;
     card.innerHTML = `
       <div style="min-width:0;flex:1">
@@ -220,7 +188,7 @@ async function refreshLibrary() {
     card.querySelector('[data-act="open"]').onclick = () => openPaper(p);
     card.querySelector('[data-act="del"]').onclick = async () => {
       if (!confirm(`确定删除「${p.title.slice(0, 40)}…」及其精读记录？`)) return;
-      await db.deletePaper(p.id);
+      await papers.removeRecord(p.id);
       refreshLibrary();
     };
     list.appendChild(card);
@@ -230,7 +198,7 @@ async function refreshLibrary() {
 // ---------------- 精读视图 ----------------
 function openPaper(p) {
   current = p;
-  digestSection = paperSectionDefs(p)[0]?.id || 'abstract';
+  digestSection = papers.readingParts(p)[0]?.id || 'abstract';
   sourceTab = 'abstract';
   translateSection = digestSection;
   pdfPage = 1;
@@ -268,7 +236,7 @@ function switchTab(name) {
 
 function updateReaderMeta() {
   if (!current) return;
-  const defs = paperSectionDefs(current);
+  const defs = papers.readingParts(current);
   const done = defs.filter(s => current.analyses?.[s.id]?.text).length;
   const categories = paperCategories(current);
   const tags = paperTags(current);
@@ -285,7 +253,7 @@ function updateReaderMeta() {
 }
 
 function renderDigest() {
-  const defs = paperSectionDefs(current);
+  const defs = papers.readingParts(current);
   const picker = $('#digest-section-picker');
   const wrap = $('#digest-cards');
   picker.innerHTML = '';
@@ -352,7 +320,7 @@ function renderDigest() {
       if (!txt) return toast('请先粘贴原文', true);
       current.sections[def.id] = txt;
       current.updatedAt = Date.now();
-      await db.putPaper(current);
+      await papers.saveRecord(current);
       toast('已保存本节原文，现在可以生成精读了');
       renderDigest();
     };
@@ -372,7 +340,7 @@ function truncate(text, max) {
 }
 
 async function generateSection(sectionId, { silent = false } = {}) {
-  const def = paperSectionDefs(current).find(section => section.id === sectionId);
+  const def = papers.readingParts(current).find(section => section.id === sectionId);
   const skill = getSkill(def?.skillId || sectionId);
   const content = current.sections?.[sectionId]?.trim();
   if (!content) {
@@ -403,7 +371,7 @@ async function generateSection(sectionId, { silent = false } = {}) {
     current.analyses = current.analyses || {};
     current.analyses[sectionId] = { text, updatedAt: Date.now() };
     current.updatedAt = Date.now();
-    await db.putPaper(current);
+    await papers.saveRecord(current);
     setCardStatus(sectionId, `✓ ${fmtDate(Date.now())}`, 'ok');
     btn.textContent = '重新生成';
     updateReaderMeta();
@@ -415,7 +383,7 @@ async function generateSection(sectionId, { silent = false } = {}) {
     if (aborted && partial.length > 60) {
       current.analyses = current.analyses || {};
       current.analyses[sectionId] = { text: partial + '\n\n> ⚠️ 生成被中断，内容为部分结果。', updatedAt: Date.now() };
-      await db.putPaper(current);
+      await papers.saveRecord(current);
       setCardStatus(sectionId, '⚠ 已停止（保留部分）', 'err');
     } else {
       body.classList.add('empty-hint');
@@ -441,7 +409,7 @@ async function generateAll() {
   const initialSection = digestSection;
   $('#btn-gen-all').disabled = true;
   $('#btn-stop').hidden = false;
-  for (const def of paperSectionDefs(current)) {
+  for (const def of papers.readingParts(current)) {
     if (!generating) break;
     digestSection = def.id;
     renderDigest();
@@ -498,7 +466,7 @@ function renderRecallImages() {
       if (!confirm('从回忆卡中移除这张图片？')) return;
       current.recallCard.images = current.recallCard.images.filter(item => item.id !== image.id);
       current.recallCard.updatedAt = Date.now();
-      await db.putPaper(current);
+      await papers.saveRecord(current);
       renderRecallImages();
     };
     figure.append(img, remove);
@@ -525,7 +493,7 @@ async function saveRecallCard({ silent = false } = {}) {
     updatedAt: Date.now(),
   };
   current.updatedAt = Date.now();
-  await db.putPaper(current);
+  await papers.saveRecord(current);
   $('#recall-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   $('#btn-recall-generate').textContent = current.recallCard.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
   if (!silent) toast('回忆卡已保存');
@@ -537,7 +505,7 @@ async function generateRecallDraft() {
     openSettingsModal();
     return;
   }
-  const completed = paperSectionDefs(current)
+  const completed = papers.readingParts(current)
     .map(def => ({ def, text: current.analyses?.[def.id]?.text?.trim() }))
     .filter(item => item.text);
   if (!completed.length) return toast('请先完成至少一个章节的 AI 精读', true);
@@ -621,7 +589,7 @@ async function addRecallImages(files) {
   try {
     const additions = [];
     for (const file of imageFiles) {
-      additions.push({ id: uid(), name: file.name || '粘贴的图片', dataUrl: await prepareRecallImage(file) });
+      additions.push({ id: papers.uid(), name: file.name || '粘贴的图片', dataUrl: await prepareRecallImage(file) });
     }
     current.recallCard = {
       ...recallCard(),
@@ -629,7 +597,7 @@ async function addRecallImages(files) {
       images: [...existing, ...additions],
       updatedAt: Date.now(),
     };
-    await db.putPaper(current);
+    await papers.saveRecord(current);
     renderRecallImages();
     $('#recall-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   } catch (err) {
@@ -643,7 +611,7 @@ let sourceTab = 'abstract';
 function renderSource() {
   const chips = $('#source-chips');
   chips.innerHTML = '';
-  const paperDefs = paperSectionDefs(current);
+  const paperDefs = papers.readingParts(current);
   const defs = [...paperDefs, { id: 'conclusion', label: 'Conclusion' }, { id: '__full', label: '全文' }];
   for (const def of defs) {
     const has = def.id === '__full' ? !!current.fullText : !!current.sections?.[def.id]?.trim();
@@ -708,7 +676,7 @@ async function initPdfViewer() {
     $('#pdf-page-count').textContent = `/ ${pdfDocument.numPages}`;
     if (current.numPages !== pdfDocument.numPages) {
       current.numPages = pdfDocument.numPages;
-      await db.putPaper(current);
+      await papers.saveRecord(current);
       updateReaderMeta();
     }
     await new Promise(resolve => requestAnimationFrame(resolve));
@@ -792,7 +760,7 @@ async function attachPdf(file) {
   current.pdfBlob = file;
   current.pdfName = file.name;
   current.updatedAt = Date.now();
-  await db.putPaper(current);
+  await papers.saveRecord(current);
   updatePdfSidebar();
   await initPdfViewer();
   toast('PDF 已关联，可与精读结果对照查看');
@@ -816,7 +784,7 @@ function translationKey(sectionId = translateSection, language = $('#translate-l
 function renderTranslate() {
   if (!current) return;
   const select = $('#translate-section');
-  const defs = [...paperSectionDefs(current), { id: '__full', label: '全文' }];
+  const defs = [...papers.readingParts(current), { id: '__full', label: '全文' }];
   if (!defs.some(def => def.id === translateSection)) translateSection = defs[0]?.id || '__full';
   select.innerHTML = '';
   for (const def of defs) {
@@ -901,7 +869,7 @@ async function translateCurrentText() {
       text, source, updatedAt: Date.now(),
     };
     current.updatedAt = Date.now();
-    await db.putPaper(current);
+    await papers.saveRecord(current);
     $('#translate-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   } catch (err) {
     if (err.name === 'AbortError') $('#translate-status').textContent = '已停止';
@@ -921,7 +889,7 @@ async function translateCurrentText() {
 function buildChatContext(p) {
   const cap = 5000;
   const parts = [`论文标题：${p.title}`];
-  for (const def of paperSectionDefs(p)) {
+  for (const def of papers.readingParts(p)) {
     const t = p.sections?.[def.id]?.trim();
     if (t) parts.push(`\n===== ${def.label} =====\n${truncate(t, cap)}`);
   }
@@ -983,7 +951,7 @@ async function sendChat() {
     renderMarkdownInto(bubble, text || '（无回复）');
     current.chat.push({ role: 'assistant', content: text });
     if (current.chat.length > 40) current.chat = current.chat.slice(-40);
-    await db.putPaper(current);
+    await papers.saveRecord(current);
   } catch (err) {
     bubble.classList.add('err');
     bubble.textContent = err.name === 'AbortError' ? '已停止。' : `出错了：${err.message}`;
@@ -1000,30 +968,10 @@ async function importPdfFile(file) {
   btn.textContent = '解析中…';
   try {
     const parsed = await parsePdfFile(file);
-    const paper = {
-      id: uid(),
-      title: parsed.title || file.name.replace(/\.pdf$/i, ''),
-      addedAt: Date.now(),
-      updatedAt: Date.now(),
-      numPages: parsed.numPages,
-      sections: parsed.sections,
-      sectionPages: parsed.sectionPages,
-      parts: parsed.parts,
-      fullText: parsed.fullText,
-      pdfBlob: file,
-      pdfName: file.name,
-      analyses: {},
-      translations: {},
-      recallCard: { markdown: '', images: [], updatedAt: 0 },
-      rating: 0,
-      categories: [],
-      tags: [],
-      chat: [],
-    };
-    await db.putPaper(paper);
+    const paper = await papers.createPdfPaper(parsed, file);
     await refreshLibrary();
     openPaper(paper);
-    const found = paperSectionDefs(paper).filter(s => paper.sections?.[s.id]?.trim()).length;
+    const found = papers.readingParts(paper).filter(s => paper.sections?.[s.id]?.trim()).length;
     toast(`导入成功，自动识别出 ${found} 个精读部分`);
   } catch (err) {
     console.error(err);
@@ -1058,18 +1006,11 @@ async function importArxiv() {
       const pdfResponse = await fetch(`/api/arxiv-pdf?id=${encodeURIComponent(id)}`);
       if (pdfResponse.ok) pdfBlob = await pdfResponse.blob();
     } catch { /* HTML 导入仍可继续，之后可手动关联 PDF */ }
-    const paper = {
-      id: uid(), title: parsed.title, arxivId: id, sourceType: parsed.sourceType,
-      addedAt: Date.now(), updatedAt: Date.now(), numPages: 0,
-      sections: parsed.sections, parts: parsed.parts, fullText: parsed.fullText,
-      pdfBlob, pdfName: pdfBlob ? `${id}.pdf` : '', analyses: {}, translations: {},
-      recallCard: { markdown: '', images: [], updatedAt: 0 }, rating: 0, categories: [], tags: [], chat: [],
-    };
-    await db.putPaper(paper);
+    const paper = await papers.createArxivPaper(parsed, id, pdfBlob);
     $('#modal-arxiv').hidden = true;
     await refreshLibrary();
     openPaper(paper);
-    const found = paperSectionDefs(paper).filter(s => paper.sections?.[s.id]?.trim()).length;
+    const found = papers.readingParts(paper).filter(s => paper.sections?.[s.id]?.trim()).length;
     toast(`arXiv HTML 导入成功，识别出 ${found} 个精读部分${pdfBlob ? '，PDF 已保存' : ''}`);
   } catch (err) {
     console.error(err);
@@ -1092,7 +1033,7 @@ function exportNotes() {
   if (current.recallCard?.markdown) {
     lines.push('## 回忆卡', '', current.recallCard.markdown, '');
   }
-  for (const def of paperSectionDefs(current)) {
+  for (const def of papers.readingParts(current)) {
     lines.push(`## ${def.label}`, '');
     lines.push(current.analyses?.[def.id]?.text || '（尚未生成精读）', '');
   }
@@ -1148,8 +1089,8 @@ function addOrganizeTokens(kind) {
 
 function fillMetadataSuggestions() {
   const groups = [
-    { id: 'category-suggestions', values: cleanTokens(papers.flatMap(paperCategories)) },
-    { id: 'tag-suggestions', values: cleanTokens(papers.flatMap(paperTags)) },
+    { id: 'category-suggestions', values: cleanTokens(library.flatMap(paperCategories)) },
+    { id: 'tag-suggestions', values: cleanTokens(library.flatMap(paperTags)) },
   ];
   for (const group of groups) {
     const datalist = $(`#${group.id}`);
@@ -1182,8 +1123,8 @@ async function saveOrganizeMetadata() {
   current.categories = cleanTokens(organizeDraft.categories);
   current.tags = cleanTokens(organizeDraft.tags);
   current.updatedAt = Date.now();
-  await db.putPaper(current);
-  papers = papers.map(paper => paper.id === current.id ? current : paper);
+  await papers.saveRecord(current);
+  library = library.map(paper => paper.id === current.id ? current : paper);
   $('#modal-organize').hidden = true;
   updateReaderMeta();
   toast('评分、分类和标签已保存');
@@ -1400,7 +1341,7 @@ function bindEvents() {
     current.parts = parts;
     current.fullText = fullText;
     current.updatedAt = Date.now();
-    await db.putPaper(current);
+    await papers.saveRecord(current);
     renderSource();
     renderDigest();
     $('#source-empty').hidden = true;
@@ -1452,5 +1393,6 @@ function bindEvents() {
 }
 
 // ---------------- 启动 ----------------
+papers.init(papers.createIndexedDBStore());
 bindEvents();
 refreshLibrary();
