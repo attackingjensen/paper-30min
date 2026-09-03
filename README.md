@@ -51,11 +51,12 @@
 
 ## 技能库
 
-每个章节对应一个技能（提示词模板），占位符：`{title}` = 论文标题，`{content}` = 章节原文。
+每个章节对应一个技能（提示词模板），占位符：`{title}` = 论文标题、`{section}` = 章节名、`{content}` = 章节原文。
 
-- 在 App 内「技能库」面板中编辑、保存、恢复默认；
-- `skills/` 目录内置了 4 个基础技能（`.md` + YAML frontmatter），可作为改造起点；
-- 找到优秀的开源技能后，把文件放进任意目录，在技能库中「导入 .md」即可。frontmatter 格式：
+- **`skills/` 目录是运行时技能的正式来源**：内置 5 个技能（`.md` + YAML frontmatter），启动时由 `server.py` 的 `/api/skills` 提供给前端，改完文件刷新页面即生效；
+- 在 App 内「技能库」面板中编辑、保存、恢复默认（按浏览器保存自定义覆盖）；
+- 接口失败时前端自动回退到 `public/js/skills.js` 的内置副本，测试会强制两者保持一致（改文件需同步内置副本）；
+- 找到优秀的开源技能后，把文件放进任意目录，在技能库中「导入 .md」即可覆盖对应技能。frontmatter 格式：
 
   ```markdown
   ---
@@ -80,11 +81,11 @@
 ├── start.bat / start.sh # 一键启动
 ├── public/              # 前端（纯原生 JS，无需构建）
 │   ├── js/parser.js     #   PDF 解析与章节切分（支持双栏排版）
-│   ├── js/skills.js     #   技能库（内置提示词 + 自定义覆盖 + .md 导入）
+│   ├── js/skills.js     #   技能库（skills/*.md 加载 + 兜底副本 + 自定义覆盖 + .md 导入）
 │   ├── js/api.js        #   OpenAI 兼容 API 客户端（流式）
 │   ├── js/db.js         #   IndexedDB 本地存储
 │   └── js/app.js        #   主界面逻辑
-├── skills/              # 技能库基础模板（可改造、可新增）
+├── skills/              # 运行时技能的正式来源（可改造、可新增）
 ├── docs/
 │   ├── background/      #   原始需求、调研和可行性分析
 │   ├── status/          #   项目当前状态（持续覆盖更新）

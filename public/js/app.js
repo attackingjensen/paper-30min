@@ -4,7 +4,7 @@ import * as api from './api.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
 import {
   effectiveSkills, getSkill, buildPrompt, saveCustomSkill, resetSkill,
-  parseSkillFile, loadCustomSkills, CHAT_SYSTEM_TEMPLATE,
+  parseSkillFile, loadCustomSkills, loadSkills, CHAT_SYSTEM_TEMPLATE,
 } from './skills.js';
 import { parseArxivHtml, parsePdfFile, parsePlainText } from './parser.js';
 
@@ -1319,4 +1319,6 @@ function bindEvents() {
 // ---------------- 启动 ----------------
 papers.init(papers.createIndexedDBStore());
 bindEvents();
+const skillsReady = loadSkills();
 refreshLibrary();
+if ((await skillsReady) === 'builtin') toast('技能文件加载失败，已使用内置提示词', true);

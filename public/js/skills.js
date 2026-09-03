@@ -1,5 +1,6 @@
-// 技能库：每个章节对应一个精读提示词模板（可编辑、可导入 .md 覆盖）
-// 占位符：{title} = 论文标题，{content} = 该章节原文
+// 技能库：运行时技能以 skills/*.md 为正式来源（server.py 的 /api/skills 提供文件清单），
+// BUILTIN_SKILLS 仅作接口失败时的降级兜底，两者内容由测试强制同步。
+// 占位符：{title} = 论文标题，{content} = 该章节原文，{section} = 章节名
 const SKILLS_KEY = 'pr.skills.v1';
 
 export const BUILTIN_SKILLS = [
@@ -136,6 +137,57 @@ export const CHAT_SYSTEM_TEMPLATE = `你是「论文精读助手」，正在帮�
 
 请基于论文内容用中文回答用户问题；引用原文时给出英文原句；如果论文中没有相关内容，请如实说明，不要编造。回答使用 Markdown 格式。`;
 
+// ---------- skills/*.md 文件加载 ----------
+// 技能展示顺序：核心章节在前，新增 section 按字典序排在后面。
+const SECTION_ORDER = ['abstract', 'introduction', 'part', 'method', 'experiments'];
+
+let fileSkills = null; // null 表示尚未加载或加载失败，此时使用内置兜底。
+
+/** 从单个 .md 文件构造技能对象；id 取 frontmatter 的 section（localStorage 覆盖键）。 */
+export function skillFromFile(filename, text) {
+  const parsed = parseSkillFile(filename, text);
+  return { id: parsed.section, ...parsed };
+}
+
+/** 把 /api/skills 的文件清单转换成技能列表：跳过缺 section 的文件、同 section 去重（先到先得）、按固定优先级排序。 */
+export function fileSkillsFrom(files) {
+  const byId = new Map();
+  for (const { file, text } of files) {
+    const skill = skillFromFile(file, text);
+    if (!skill.id) {
+      console.warn(`技能文件 ${file} 缺少 frontmatter section，已忽略`);
+      continue;
+    }
+    if (byId.has(skill.id)) {
+      console.warn(`技能文件 ${file} 的 section「${skill.id}」与已加载技能重复，已忽略`);
+      continue;
+    }
+    byId.set(skill.id, skill);
+  }
+  return [...byId.values()].sort((a, b) => {
+    const ia = SECTION_ORDER.indexOf(a.id);
+    const ib = SECTION_ORDER.indexOf(b.id);
+    return (ia === -1 ? SECTION_ORDER.length : ia) - (ib === -1 ? SECTION_ORDER.length : ib)
+      || a.id.localeCompare(b.id);
+  });
+}
+
+/** 启动时拉取 skills/*.md；任何失败都退回内置定义，不阻塞应用。返回实际生效的来源：'file' | 'builtin'。 */
+export async function loadSkills() {
+  try {
+    const res = await fetch('/api/skills', { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const files = await res.json();
+    const parsed = fileSkillsFrom(files);
+    if (!parsed.length) throw new Error('技能目录为空或不可用');
+    fileSkills = parsed;
+  } catch (err) {
+    console.warn('技能文件加载失败，使用内置定义兜底：', err);
+    fileSkills = null;
+  }
+  return fileSkills ? 'file' : 'builtin';
+}
+
 // ---------- 自定义覆盖的读写 ----------
 export function loadCustomSkills() {
   try { return JSON.parse(localStorage.getItem(SKILLS_KEY)) || {}; } catch { return {}; }
@@ -156,7 +208,7 @@ export function resetSkill(id) {
 /** 获取当前生效的技能列表（含是否已自定义标记） */
 export function effectiveSkills() {
   const custom = loadCustomSkills();
-  return BUILTIN_SKILLS.map(s => ({
+  return (fileSkills ?? BUILTIN_SKILLS).map(s => ({
     ...s,
     prompt: custom[s.id] ?? s.prompt,
     customized: s.id in custom,
@@ -177,11 +229,13 @@ export function buildPrompt(skill, title, content, section = '') {
 
 /** 解析 .md 技能文件：支持 YAML frontmatter（name/description/section），正文为提示词 */
 export function parseSkillFile(filename, text) {
+  // Windows 保存的 .md 常为 CRLF 行尾，先归一化为 LF，避免 \r 混入提示词。
+  text = text.replace(/\r\n?/g, '\n');
   let name = filename.replace(/\.(md|txt)$/i, '');
   let description = '';
   let section = '';
   let body = text;
-  const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  const fm = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (fm) {
     for (const line of fm[1].split(/\r?\n/)) {
       const m = line.match(/^(name|description|section)\s*:\s*(.+)$/i);

@@ -16,7 +16,9 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'public')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.join(BASE_DIR, 'public')
+SKILLS_DIR = os.path.join(BASE_DIR, 'skills')
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -29,6 +31,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == '/api/skills':
+            self._serve_skills()
+            return
         if parsed.path not in ('/api/arxiv', '/api/arxiv-pdf'):
             return super().do_GET()
 
@@ -58,6 +63,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as err:
             print(f'arXiv import error: {err}', file=sys.stderr)
             self.send_error(502, 'Failed to fetch arXiv HTML')
+
+    def _serve_skills(self):
+        """列出 skills/ 下的 .md 文件与原文；frontmatter 解析由前端 parseSkillFile 完成。"""
+        try:
+            entries = []
+            for name in sorted(os.listdir(SKILLS_DIR)):
+                path = os.path.join(SKILLS_DIR, name)
+                if not name.lower().endswith('.md') or not os.path.isfile(path):
+                    continue
+                with open(path, encoding='utf-8') as f:
+                    entries.append({'file': name, 'text': f.read()})
+        except OSError as err:
+            print(f'skills read error: {err}', file=sys.stderr)
+            self.send_error(500, 'Failed to read skills')
+            return
+        body = json.dumps(entries, ensure_ascii=False).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         if self.path != '/api/forward':
