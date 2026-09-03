@@ -140,31 +140,34 @@ export async function chat(messages, { stream = true, signal, onDelta } = {}) {
   const decoder = new TextDecoder();
   let buf = '';
   let full = '';
+  const processLine = (line) => {
+    const t = line.trim();
+    if (!t.startsWith('data:')) return;
+    const payload = t.slice(5).trim();
+    if (payload === '[DONE]') return;
+    try {
+      const obj = JSON.parse(payload);
+      const delta = obj.choices?.[0]?.delta?.content ?? obj.choices?.[0]?.message?.content ?? '';
+      if (delta) {
+        full += delta;
+        onDelta?.(full);
+      }
+      const finish = obj.choices?.[0]?.finish_reason;
+      if (finish && finish !== 'stop' && finish !== 'end_turn') {
+        console.warn('finish_reason:', finish);
+      }
+    } catch { /* 忽略无法解析的行 */ }
+  };
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     const lines = buf.split('\n');
     buf = lines.pop(); // 保留未完整的最后一行
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t.startsWith('data:')) continue;
-      const payload = t.slice(5).trim();
-      if (payload === '[DONE]') continue;
-      try {
-        const obj = JSON.parse(payload);
-        const delta = obj.choices?.[0]?.delta?.content ?? obj.choices?.[0]?.message?.content ?? '';
-        if (delta) {
-          full += delta;
-          onDelta?.(full);
-        }
-        const finish = obj.choices?.[0]?.finish_reason;
-        if (finish && finish !== 'stop' && finish !== 'end_turn') {
-          console.warn('finish_reason:', finish);
-        }
-      } catch { /* 忽略无法解析的行 */ }
-    }
+    for (const line of lines) processLine(line);
   }
+  buf += decoder.decode();
+  for (const line of buf.split('\n')) processLine(line);
   return full;
 }
 

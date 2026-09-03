@@ -1,0 +1,9 @@
+{
+  "name": "paper-30min",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test && node tools/check_markdown.mjs"
+  }
+}
