@@ -78,7 +78,7 @@ updated: 2026-09-03
 
 | 候选 | 当前建议强度 | 观察到的问题 | 尚未决定的方向 |
 | --- | --- | --- | --- |
-| 论文记录生命周期 | **设计已接受** | 论文结构、不变量、重切分和写入规则散落在多个调用方 | 无——[ADR-0004](../adr/0004-paper-lifecycle-module.md) 已接受设计，实施经 Issue #9 跟踪 |
+| 论文记录生命周期 | **已实施** | 论文结构、不变量、重切分和写入规则散落在多个调用方 | 无——[ADR-0004](../adr/0004-paper-lifecycle-module.md) 接受设计，Issue #9 四步实施完成并关闭 |
 | 阅读生成任务 | Strong | `current`、`aborter` 和 `generating` 共享，异步结果缺少稳定任务归属 | 是否让独立 deep module 拥有论文 identity、状态、取消和原始增量 |
 | 上游转发 | Worth exploring | curl、urllib、请求策略和响应写入集中在 Handler，局域网信任假设已由 [ADR-0003](../adr/0003-lan-fully-trusted.md) 接受 | 是否深化 forwarding module |
 
@@ -113,7 +113,7 @@ updated: 2026-09-03
 
 ## 已移出（2026-09-03 拍板）
 
-- 「论文记录生命周期」module 设计全部拍板：见 [ADR-0004](../adr/0004-paper-lifecycle-module.md)，实施计划经 Issue #9 跟踪；打卡活动语义已写入 `CONTEXT.md`。
+- 「论文记录生命周期」module 设计全部拍板并已实施完成：见 [ADR-0004](../adr/0004-paper-lifecycle-module.md) 与 Issue #9（已关闭）；打卡活动语义已写入 `CONTEXT.md`。
 - 产品契约歧义四项全部拍板：PDF 取消 30 页限制（已实现）；整库导出/导入记录为 Issue #4；`skills/*.md` 为正式技能来源（Issue #5）；局域网信任见 [ADR-0003](../adr/0003-lan-fully-trusted.md)。
 - `package.json` 统一测试命令已落地（`npm test`）。
 - DashScope 主机正则已放宽支持多段区域域名（含回归测试）。
