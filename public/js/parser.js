@@ -351,8 +351,7 @@ export async function parsePdfFile(file) {
   const allLines = [];
   let firstPageData = null;
 
-  const maxPages = Math.min(doc.numPages, 30); // 正文通常在前 30 页内
-  for (let p = 1; p <= maxPages; p++) {
+  for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
     const { items, pageWidth, pageHeight } = await getPageItems(page);
     if (p === 1) firstPageData = { items, pageWidth, pageHeight };
