@@ -1274,17 +1274,14 @@ function bindEvents() {
   $('#btn-paste-split').onclick = async () => {
     const text = $('#paste-area').value.trim();
     if (!text) return toast('请先粘贴全文', true);
-    const { sections, sectionPages, parts, fullText, headingCount } = parsePlainText(text);
-    current.sections = { ...current.sections, ...Object.fromEntries(Object.entries(sections).filter(([, v]) => v)) };
-    current.sectionPages = { ...current.sectionPages, ...Object.fromEntries(Object.entries(sectionPages).filter(([, v]) => v)) };
-    current.parts = parts;
-    current.fullText = fullText;
-    current.updatedAt = Date.now();
-    await papers.saveRecord(current);
+    const parsed = parsePlainText(text);
+    const { discarded } = await papers.applyResplit(current, parsed);
     renderSource();
     renderDigest();
     $('#source-empty').hidden = true;
-    toast(`重新切分完成，识别出 ${headingCount} 个标题`);
+    toast(discarded
+      ? `重新切分完成，识别出 ${parsed.headingCount} 个标题；${discarded} 条已失效的精读/翻译结果被作废`
+      : `重新切分完成，识别出 ${parsed.headingCount} 个标题`);
   };
 
   $('#btn-chat-send').onclick = sendChat;

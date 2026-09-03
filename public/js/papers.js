@@ -227,15 +227,46 @@ export async function setNumPages(paper, numPages) {
   return true;
 }
 
-// ---------------- 书库与投影 ----------------
+// ---------------- 重新切分 ----------------
+
+function nonEmptyEntries(source) {
+  return Object.fromEntries(Object.entries(source || {}).filter(([, value]) => value));
+}
 
 /**
- * 通用持久化入口（过渡）：原样落库，不施加写入规则。
- * Issue #9 第 2 步会把各调用点逐一替换为带规则的写入函数，届时移除。
+ * 重新切分：把新的切分结果合并进记录，并作废失去指涉的成果（ADR-0004）。
+ * 规则：除摘要外的精读结果与翻译一律作废；摘要原文未变时保留摘要的结果与翻译；
+ * 全文被整体替换，__full 翻译总是作废。返回 { discarded } 供界面提示。
  */
-export async function saveRecord(paper) {
+export async function applyResplit(paper, parseResult) {
+  const abstractBefore = paper.sections?.abstract || '';
+  paper.sections = { ...paper.sections, ...nonEmptyEntries(parseResult.sections) };
+  paper.sectionPages = { ...paper.sectionPages, ...nonEmptyEntries(parseResult.sectionPages) };
+  paper.parts = parseResult.parts;
+  paper.fullText = parseResult.fullText;
+  const abstractUnchanged = (paper.sections.abstract || '') === abstractBefore;
+
+  let discarded = 0;
+  const keptAnalyses = {};
+  for (const [sectionId, analysis] of Object.entries(paper.analyses || {})) {
+    if (sectionId === 'abstract' && abstractUnchanged) keptAnalyses[sectionId] = analysis;
+    else discarded++;
+  }
+  paper.analyses = keptAnalyses;
+
+  const keptTranslations = {};
+  for (const [key, translation] of Object.entries(paper.translations || {})) {
+    if (key.split(':')[0] === 'abstract' && abstractUnchanged) keptTranslations[key] = translation;
+    else discarded++;
+  }
+  paper.translations = keptTranslations;
+
+  paper.updatedAt = Date.now();
   await store.put(paper);
+  return { discarded };
 }
+
+// ---------------- 书库与投影 ----------------
 
 /** 删除一条论文记录。 */
 export async function removeRecord(id) {

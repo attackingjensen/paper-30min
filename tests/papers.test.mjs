@@ -229,3 +229,54 @@ test('cleanTokens trims, collapses whitespace and dedupes case-insensitively', (
   assert.deepEqual(papers.cleanTokens('not-an-array'), []);
 });
 
+function resplitFixture(sections = {}, parts = []) {
+  return { sections, sectionPages: {}, parts, fullText: 'new full text', headingCount: parts.length };
+}
+
+test('applyResplit merges sections without clobbering kept text, and replaces parts/fullText', async () => {
+  const paper = await storedPaper();
+  paper.sections['old-kept'] = 'kept';
+
+  await papers.applyResplit(paper, resplitFixture(
+    { abstract: 'New Abs', 'part-1': 'New part', 'old-kept': '' },
+    [{ id: 'part-1', title: 'One', semanticType: 'method' }],
+  ));
+
+  assert.equal(paper.sections.abstract, 'New Abs');
+  assert.equal(paper.sections['part-1'], 'New part');
+  assert.equal(paper.sections['old-kept'], 'kept'); // empty new value must not clobber
+  assert.equal(paper.fullText, 'new full text');
+  assert.equal(paper.parts.length, 1);
+});
+
+test('applyResplit discards stale results when the abstract changes', async () => {
+  const paper = await storedPaper();
+  await papers.saveAnalysis(paper, 'abstract', '摘要精读');
+  await papers.saveAnalysis(paper, 'part-1', '精读结果');
+  await papers.saveTranslation(paper, '__full', 'zh', '全文翻译', 'src');
+
+  const { discarded } = await papers.applyResplit(paper, resplitFixture({ abstract: 'Changed abstract' }, []));
+
+  assert.equal(discarded, 3);
+  assert.deepEqual(paper.analyses, {});
+  assert.deepEqual(paper.translations, {});
+});
+
+test('applyResplit keeps abstract results when the abstract is untouched', async () => {
+  const paper = await storedPaper();
+  await papers.saveAnalysis(paper, 'abstract', '摘要精读');
+  await papers.saveTranslation(paper, 'abstract', 'zh', '摘要翻译', 'Abs');
+  await papers.saveAnalysis(paper, 'part-1', '精读结果');
+
+  const { discarded } = await papers.applyResplit(paper, resplitFixture(
+    { 'part-1': 'new source' },
+    [{ id: 'part-1', title: 'One', semanticType: 'method' }],
+  ));
+
+  assert.equal(discarded, 1);
+  assert.ok(paper.analyses.abstract);
+  assert.ok(paper.translations['abstract:zh']);
+  assert.equal(paper.analyses['part-1'], undefined);
+});
+
+
