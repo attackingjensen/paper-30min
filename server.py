@@ -29,7 +29,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path != '/api/arxiv':
+        if parsed.path not in ('/api/arxiv', '/api/arxiv-pdf'):
             return super().do_GET()
 
         paper_id = parse_qs(parsed.query).get('id', [''])[0].strip()
@@ -37,20 +37,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(400, 'Invalid arXiv ID')
             return
         try:
+            is_pdf = parsed.path == '/api/arxiv-pdf'
             req = urllib.request.Request(
-                f'https://arxiv.org/html/{paper_id}',
+                f'https://arxiv.org/{"pdf" if is_pdf else "html"}/{paper_id}',
                 headers={'User-Agent': 'PaperReader/1.0 (local research tool)'},
             )
             with urllib.request.urlopen(req, timeout=45) as upstream:
-                body = upstream.read(30 * 1024 * 1024 + 1)
-                if len(body) > 30 * 1024 * 1024:
-                    raise ValueError('arXiv HTML is too large')
+                limit = (100 if is_pdf else 30) * 1024 * 1024
+                body = upstream.read(limit + 1)
+                if len(body) > limit:
+                    raise ValueError(f'arXiv {"PDF" if is_pdf else "HTML"} is too large')
                 self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Type', 'application/pdf' if is_pdf else 'text/html; charset=utf-8')
+                if is_pdf:
+                    self.send_header('Content-Disposition', f'inline; filename="{paper_id.replace("/", "_")}.pdf"')
                 self.end_headers()
                 self.wfile.write(body)
         except urllib.error.HTTPError as err:
-            self.send_error(err.code, 'arXiv HTML is unavailable for this paper')
+            self.send_error(err.code, f'arXiv {"PDF" if parsed.path == "/api/arxiv-pdf" else "HTML"} is unavailable for this paper')
         except Exception as err:
             print(f'arXiv import error: {err}', file=sys.stderr)
             self.send_error(502, 'Failed to fetch arXiv HTML')

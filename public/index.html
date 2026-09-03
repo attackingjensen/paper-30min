@@ -32,6 +32,21 @@
       <button class="btn" id="btn-sample">打开示例论文</button>
     </div>
   </div>
+  <div class="library-filters" id="library-filters">
+    <input id="library-search" type="search" placeholder="搜索标题、分类或标签">
+    <select id="filter-category" aria-label="按分类筛选">
+      <option value="">全部分类</option>
+    </select>
+    <select id="filter-rating" aria-label="按评分筛选">
+      <option value="0">全部评分</option>
+      <option value="5">5 星</option>
+      <option value="4">4 星及以上</option>
+      <option value="3">3 星及以上</option>
+      <option value="2">2 星及以上</option>
+      <option value="1">1 星及以上</option>
+    </select>
+    <button class="btn ghost filter-reset" id="btn-filter-reset" type="button" title="清除筛选" aria-label="清除筛选">×</button>
+  </div>
   <div id="api-warning" class="banner" hidden></div>
   <div id="paper-list" class="paper-list"></div>
   <div id="empty-state" class="empty" hidden>
@@ -48,17 +63,25 @@
       <h2 id="reader-title"></h2>
       <div class="reader-meta" id="reader-meta"></div>
     </div>
+    <button class="btn ghost" id="btn-organize" title="评分、分类与标签">整理</button>
     <button class="btn ghost" id="btn-export" title="导出精读笔记 Markdown">⬇ 导出笔记</button>
   </div>
 
-  <nav class="tabs">
-    <button class="tab active" data-tab="digest">✨ AI 精读</button>
-    <button class="tab" data-tab="source">📄 原文</button>
-    <button class="tab" data-tab="chat">💬 提问</button>
-  </nav>
+  <div class="reader-nav-row">
+    <nav class="tabs">
+      <button class="tab active" data-tab="digest">✨ AI 精读</button>
+      <button class="tab" data-tab="recall">▣ 回忆卡</button>
+      <button class="tab" data-tab="source">📄 原文</button>
+      <button class="tab" data-tab="translate">译 翻译</button>
+      <button class="tab" data-tab="chat">💬 提问</button>
+    </nav>
+    <button class="btn small pdf-toggle" id="btn-pdf-toggle" type="button" aria-expanded="true" title="显示或隐藏 PDF 对照栏">PDF 对照</button>
+  </div>
 
-  <!-- AI 精读 -->
-  <section id="tab-digest" class="tab-panel">
+  <div class="reader-workspace" id="reader-workspace">
+  <div class="reader-primary">
+    <!-- AI 精读 -->
+    <section id="tab-digest" class="tab-panel">
     <div class="digest-toolbar">
       <button class="btn primary" id="btn-gen-all">▶ 一键生成全部精读</button>
       <button class="btn danger" id="btn-stop" hidden>■ 停止</button>
@@ -66,10 +89,36 @@
     </div>
     <div class="digest-section-picker" id="digest-section-picker" role="tablist" aria-label="选择精读部分"></div>
     <div id="digest-cards"></div>
-  </section>
+    </section>
 
-  <!-- 原文 -->
-  <section id="tab-source" class="tab-panel" hidden>
+    <!-- 回忆卡 -->
+    <section id="tab-recall" class="tab-panel" hidden>
+      <div class="recall-toolbar">
+        <button class="btn primary" id="btn-recall-generate" type="button">生成 AI 草稿</button>
+        <button class="btn danger" id="btn-recall-stop" type="button" hidden>停止</button>
+        <button class="btn" id="btn-recall-save" type="button">保存修改</button>
+        <span class="muted" id="recall-status"></span>
+      </div>
+      <div class="recall-surface">
+        <label class="recall-pane">
+          <span>卡片内容</span>
+          <textarea id="recall-editor" spellcheck="false" placeholder="AI 会根据已经完成的精读生成初稿，你也可以直接填写。"></textarea>
+        </label>
+        <div class="recall-pane recall-preview-pane">
+          <span>预览</span>
+          <div id="recall-preview" class="recall-preview md"></div>
+        </div>
+      </div>
+      <div class="recall-media-head">
+        <strong>图片</strong>
+        <input id="recall-image-input" type="file" accept="image/*" multiple hidden>
+        <button class="pdf-icon-btn" id="btn-recall-image" type="button" title="添加图片" aria-label="添加图片">＋</button>
+      </div>
+      <div id="recall-image-gallery" class="recall-image-gallery"></div>
+    </section>
+
+    <!-- 原文 -->
+    <section id="tab-source" class="tab-panel" hidden>
     <div class="source-chips" id="source-chips"></div>
     <pre id="source-text" class="source-text"></pre>
     <div id="source-empty" class="empty" hidden>
@@ -78,16 +127,77 @@
       <textarea id="paste-area" rows="8" placeholder="在此粘贴论文全文……"></textarea>
       <button class="btn primary" id="btn-paste-split">重新切分</button>
     </div>
-  </section>
+    </section>
 
-  <!-- 提问 -->
-  <section id="tab-chat" class="tab-panel" hidden>
+    <!-- 翻译 -->
+    <section id="tab-translate" class="tab-panel" hidden>
+      <div class="translate-toolbar">
+        <label>原文范围
+          <select id="translate-section"></select>
+        </label>
+        <label>目标语言
+          <select id="translate-language">
+            <option value="zh-CN">简体中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <button class="btn primary" id="btn-translate" type="button">开始翻译</button>
+        <button class="btn danger" id="btn-translate-stop" type="button" hidden>停止</button>
+        <span class="muted" id="translate-status"></span>
+      </div>
+      <div class="translate-grid">
+        <label class="translate-pane">
+          <span>待翻译原文</span>
+          <textarea id="translate-source" spellcheck="false" placeholder="选择章节后会自动填入原文，也可以只粘贴需要翻译的段落。"></textarea>
+        </label>
+        <div class="translate-pane">
+          <span>翻译结果</span>
+          <div id="translate-output" class="translate-output md"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 提问 -->
+    <section id="tab-chat" class="tab-panel" hidden>
     <div id="chat-log" class="chat-log"></div>
     <div class="chat-input-row">
       <textarea id="chat-input" rows="2" placeholder="基于这篇论文向 AI 提问，例如：这个方法的消融实验说明了什么？"></textarea>
       <button class="btn primary" id="btn-chat-send">发送</button>
     </div>
-  </section>
+    </section>
+  </div>
+
+  <aside class="pdf-sidebar" id="pdf-sidebar" aria-label="PDF 对照阅读器">
+    <div class="pdf-sidebar-head">
+      <strong>PDF 原文</strong>
+      <button class="pdf-icon-btn" id="btn-pdf-close" type="button" title="关闭 PDF 对照栏" aria-label="关闭 PDF 对照栏">×</button>
+    </div>
+    <div id="pdf-empty" class="pdf-empty" hidden>
+      <p>这条记录没有保存原始 PDF。</p>
+      <input type="file" id="pdf-attach-input" accept="application/pdf,.pdf" hidden>
+      <button class="btn primary small" id="btn-pdf-attach" type="button">关联 PDF</button>
+    </div>
+    <div id="pdf-viewer" class="pdf-viewer" hidden>
+      <div class="pdf-toolbar">
+        <button class="pdf-icon-btn" id="btn-pdf-prev" type="button" title="上一页" aria-label="上一页">‹</button>
+        <label class="pdf-page-control" title="跳转页码">
+          <input id="pdf-page-input" type="number" min="1" value="1" aria-label="PDF 页码">
+          <span id="pdf-page-count">/ 1</span>
+        </label>
+        <button class="pdf-icon-btn" id="btn-pdf-next" type="button" title="下一页" aria-label="下一页">›</button>
+        <span class="spacer"></span>
+        <button class="pdf-icon-btn" id="btn-pdf-zoom-out" type="button" title="缩小" aria-label="缩小">−</button>
+        <span id="pdf-zoom-label" class="pdf-zoom-label">100%</span>
+        <button class="pdf-icon-btn" id="btn-pdf-zoom-in" type="button" title="放大" aria-label="放大">＋</button>
+        <button class="pdf-icon-btn" id="btn-pdf-download" type="button" title="下载 PDF" aria-label="下载 PDF">↓</button>
+      </div>
+      <div class="pdf-canvas-wrap" id="pdf-canvas-wrap">
+        <div id="pdf-loading" class="pdf-loading">正在载入 PDF…</div>
+        <canvas id="pdf-canvas"></canvas>
+      </div>
+    </div>
+  </aside>
+  </div>
 </main>
 
 <div class="modal-mask" id="modal-arxiv" hidden>
@@ -110,10 +220,11 @@
 <div class="modal-mask" id="modal-settings" hidden>
   <div class="modal">
     <h3>API 设置</h3>
-    <p class="muted">填写任意 OpenAI 兼容接口（OpenAI / DeepSeek / Moonshot / 通义 / Ollama 等）。</p>
+    <p class="muted">填写任意 OpenAI 兼容接口（OpenAI / DeepSeek / Moonshot / 阿里云百炼 / Ollama 等）。</p>
     <label>API Base URL
-      <input id="set-baseurl" placeholder="例如：https://api.deepseek.com/v1 或 https://api.openai.com/v1">
+      <input id="set-baseurl" placeholder="例如：https://api.deepseek.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1">
     </label>
+    <p class="muted hint-baseurl">阿里云百炼（通义）也可以直接粘贴 <code>https://dashscope.aliyuncs.com</code>，会自动切换到兼容模式。</p>
     <label>API Key
       <input id="set-apikey" type="password" placeholder="sk-...">
     </label>
@@ -134,6 +245,47 @@
       <span class="spacer"></span>
       <button class="btn ghost" data-close>取消</button>
       <button class="btn primary" id="btn-save-settings">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 论文整理弹窗 ============ -->
+<div class="modal-mask" id="modal-organize" hidden>
+  <div class="modal organize-modal">
+    <h3>论文整理</h3>
+    <div class="organize-group">
+      <span class="organize-label">对我的用处</span>
+      <div class="rating-control" id="rating-control" role="radiogroup" aria-label="论文评分">
+        <button type="button" data-rating="1" role="radio" aria-label="1 星">☆</button>
+        <button type="button" data-rating="2" role="radio" aria-label="2 星">☆</button>
+        <button type="button" data-rating="3" role="radio" aria-label="3 星">☆</button>
+        <button type="button" data-rating="4" role="radio" aria-label="4 星">☆</button>
+        <button type="button" data-rating="5" role="radio" aria-label="5 星">☆</button>
+        <button class="rating-clear" id="btn-rating-clear" type="button">清除</button>
+      </div>
+    </div>
+    <div class="organize-group">
+      <label for="category-input">分类</label>
+      <div class="token-input-row">
+        <input id="category-input" list="category-suggestions" placeholder="例如：方向:VLA、领域:自动驾驶">
+        <datalist id="category-suggestions"></datalist>
+        <button class="btn" id="btn-category-add" type="button">添加</button>
+      </div>
+      <div class="token-list" id="category-list"></div>
+    </div>
+    <div class="organize-group">
+      <label for="tag-input">标签</label>
+      <div class="token-input-row">
+        <input id="tag-input" list="tag-suggestions" placeholder="例如：世界模型、扩散模型、端到端">
+        <datalist id="tag-suggestions"></datalist>
+        <button class="btn" id="btn-tag-add" type="button">添加</button>
+      </div>
+      <div class="token-list" id="tag-list"></div>
+    </div>
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button class="btn ghost" data-close>取消</button>
+      <button class="btn primary" id="btn-organize-save">保存</button>
     </div>
   </div>
 </div>

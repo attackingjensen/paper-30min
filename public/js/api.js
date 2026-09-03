@@ -39,6 +39,13 @@ export function endpoint(s, path) {
     throw new Error('API Base URL 格式无效，请填写以 http:// 或 https:// 开头的完整地址');
   }
 
+  // 阿里云百炼（DashScope）的 OpenAI 兼容接口在 /compatible-mode/v1，裸域名或
+  // 文档里的原生 API 地址都走不通，统一改写以便用户直接粘贴控制台地址。
+  if (/^dashscope(-\w+)?\.aliyuncs\.com$/i.test(url.hostname)
+      && !/^\/compatible-mode(\/|$)/i.test(url.pathname)) {
+    url.pathname = '/compatible-mode/v1';
+  }
+
   const target = path.replace(/^\/+/, '');
   let pathname = url.pathname.replace(/\/+$/, '');
 
@@ -64,7 +71,10 @@ async function readError(res) {
   if (res.status === 403 && /error code:\s*1010|cloudflare/i.test(detail)) {
     return new Error('中转站的 Cloudflare 拒绝了请求（HTTP 403 / 1010）。请重启本应用后重试；若仍失败，需让中转站解除当前 IP 或 API 客户端限制。');
   }
-  return new Error(`API 请求失败（HTTP ${res.status}）${detail ? '：' + detail.slice(0, 300) : ''}`);
+  const hint = res.status === 404
+    ? '（该地址不存在，请检查 Base URL 是否为 OpenAI 兼容端点，阿里云百炼需以 /compatible-mode/v1 结尾）'
+    : '';
+  return new Error(`API 请求失败（HTTP ${res.status}）${detail ? '：' + detail.slice(0, 300) : ''}${hint}`);
 }
 
 async function apiFetch(url, options = {}) {

@@ -4,10 +4,25 @@ function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function isLikelyMath(value) {
+  const content = value.startsWith('\\(') ? value.slice(2, -2) : value.slice(1, -1);
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+
+  // 中文只能出现在显式的 TeX 文本命令中；否则通常是模型误加了公式定界符。
+  const withoutTextCommands = trimmed.replace(/\\(?:text|textrm|textnormal|operatorname)\s*\{[^{}]*\}/g, '');
+  if (/[\u3400-\u9fff\uf900-\ufaff]/u.test(withoutTextCommands)) return false;
+
+  return /\\[a-zA-Z]+|[0-9]|[=+\-*/^_{}<>]|[≤≥≈≠±×÷∑∏√∞∫]|^[a-zA-Z](?:\s*[,;]\s*[a-zA-Z])*$/u.test(trimmed);
+}
+
 function inline(s) {
   const math = [];
   // Markdown 的 * 和 _ 规则不能进入 TeX 表达式，否则公式会在 MathJax 处理前损坏。
   s = s.replace(/\\\([\s\S]+?\\\)|(?<!\\)\$(?!\$)(?:\\.|[^$\n])+?(?<!\\)\$/g, value => {
+    if (!isLikelyMath(value)) {
+      return value.startsWith('\\(') ? value.slice(2, -2) : value.slice(1, -1);
+    }
     math.push(value);
     return `\u0000MATH${math.length - 1}\u0000`;
   });
