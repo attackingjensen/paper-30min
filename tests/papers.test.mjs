@@ -121,3 +121,111 @@ test('readingProgress is derived from analyses and counts partial results', () =
 test('readingProgress counts the four fallback sections for part-less papers', () => {
   assert.deepEqual(papers.readingProgress({}), { done: 0, total: 4 });
 });
+
+async function storedPaper() {
+  const store = memoryStore();
+  papers.init(store);
+  return papers.createPdfPaper(parsedPdfFixture(), { name: 'p.pdf' });
+}
+
+test('saveAnalysis writes the result, bumps updatedAt and persists', async () => {
+  const paper = await storedPaper();
+  paper.updatedAt = 0;
+
+  await papers.saveAnalysis(paper, 'part-1', '精读内容');
+
+  assert.deepEqual(paper.analyses['part-1'], { text: '精读内容', updatedAt: paper.analyses['part-1'].updatedAt });
+  assert.ok(paper.analyses['part-1'].updatedAt > 0);
+  assert.ok(paper.updatedAt > 0);
+});
+
+test('saveSectionSource stores the pasted source text', async () => {
+  const paper = await storedPaper();
+  await papers.saveSectionSource(paper, 'part-2', 'pasted text');
+  assert.equal(paper.sections['part-2'], 'pasted text');
+  assert.equal(paper.sections.abstract, 'Abs');
+});
+
+test('saveTranslation stores under the section:language key', async () => {
+  const paper = await storedPaper();
+  assert.equal(papers.translationKey('__full', 'zh'), '__full:zh');
+
+  await papers.saveTranslation(paper, 'abstract', 'zh', '译文', 'Abs');
+
+  const saved = paper.translations['abstract:zh'];
+  assert.equal(saved.text, '译文');
+  assert.equal(saved.source, 'Abs');
+  assert.ok(saved.updatedAt > 0);
+});
+
+test('saveRecallCard replaces the whole card', async () => {
+  const paper = await storedPaper();
+  const images = [{ id: 'img-1', name: 'a.png', dataUrl: 'data:' }];
+
+  await papers.saveRecallCard(paper, '卡片正文', images);
+
+  assert.deepEqual(paper.recallCard.markdown, '卡片正文');
+  assert.equal(paper.recallCard.images, images);
+  assert.ok(paper.recallCard.updatedAt > 0);
+});
+
+test('removeRecallImage keeps the markdown and drops only the target image', async () => {
+  const paper = await storedPaper();
+  await papers.saveRecallCard(paper, '正文', [
+    { id: 'img-1', name: 'a.png', dataUrl: 'data:1' },
+    { id: 'img-2', name: 'b.png', dataUrl: 'data:2' },
+  ]);
+
+  await papers.removeRecallImage(paper, 'img-1');
+
+  assert.equal(paper.recallCard.markdown, '正文');
+  assert.deepEqual(paper.recallCard.images.map(image => image.id), ['img-2']);
+});
+
+test('appendChatMessage persists every message and keeps the newest 40', async () => {
+  const paper = await storedPaper();
+  for (let i = 0; i < 42; i++) {
+    await papers.appendChatMessage(paper, { role: 'user', content: `m${i}` });
+  }
+  assert.equal(paper.chat.length, 40);
+  assert.equal(paper.chat[0].content, 'm2');
+  assert.equal(paper.chat[39].content, 'm41');
+});
+
+test('saveOrganize clamps nothing but cleans tokens case-insensitively', async () => {
+  const paper = await storedPaper();
+
+  await papers.saveOrganize(paper, {
+    rating: 4,
+    categories: ['  LLM ', 'llm', 'Agent'],
+    tags: ['x y', '  x   y  ', 'z'],
+  });
+
+  assert.equal(paper.rating, 4);
+  assert.deepEqual(paper.categories, ['LLM', 'Agent']);
+  assert.deepEqual(paper.tags, ['x y', 'z']);
+});
+
+test('attachPdf records the file and its name', async () => {
+  const paper = await storedPaper();
+  const file = { name: 'other.pdf' };
+  await papers.attachPdf(paper, file);
+  assert.equal(paper.pdfBlob, file);
+  assert.equal(paper.pdfName, 'other.pdf');
+});
+
+test('setNumPages is a no-op when unchanged and reports real changes', async () => {
+  const paper = await storedPaper();
+  assert.equal(await papers.setNumPages(paper, 2), false);
+
+  paper.updatedAt = 0;
+  assert.equal(await papers.setNumPages(paper, 7), true);
+  assert.equal(paper.numPages, 7);
+  assert.ok(paper.updatedAt > 0);
+});
+
+test('cleanTokens trims, collapses whitespace and dedupes case-insensitively', () => {
+  assert.deepEqual(papers.cleanTokens(['  A b ', 'a   B', 'c', '']), ['A b', 'c']);
+  assert.deepEqual(papers.cleanTokens('not-an-array'), []);
+});
+

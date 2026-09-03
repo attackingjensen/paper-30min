@@ -123,6 +123,110 @@ export async function createArxivPaper(parsed, arxivId, pdfBlob) {
   return paper;
 }
 
+// ---------------- 分类与标签 ----------------
+
+/** 分类/标签清洗：去首尾空白、压缩内部空白、按大小写不敏感去重。 */
+export function cleanTokens(values) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map(value => String(value).trim().replace(/\s+/g, ' '))
+    .filter(value => value && !seen.has(value.toLocaleLowerCase()) && seen.add(value.toLocaleLowerCase()));
+}
+
+export function paperCategories(paper) {
+  return cleanTokens(paper?.categories);
+}
+
+export function paperTags(paper) {
+  return cleanTokens(paper?.tags);
+}
+
+// ---------------- 写入规则 ----------------
+// 每个写入函数统一执行：变更 + 推进 updatedAt + 持久化（ADR-0004）。
+
+/** 精读结果写入。生成任务模块经此缝提交；部分结果由调用方在 text 中携带警示标记。 */
+export async function saveAnalysis(paper, sectionId, text) {
+  paper.analyses = paper.analyses || {};
+  paper.analyses[sectionId] = { text, updatedAt: Date.now() };
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+}
+
+/** 章节原文保存（手动粘贴）。 */
+export async function saveSectionSource(paper, sectionId, text) {
+  paper.sections = paper.sections || {};
+  paper.sections[sectionId] = text;
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+}
+
+/** 译文存储键。 */
+export function translationKey(sectionId, language) {
+  return `${sectionId}:${language}`;
+}
+
+/** 翻译结果写入。 */
+export async function saveTranslation(paper, sectionId, language, text, source) {
+  paper.translations = paper.translations || {};
+  paper.translations[translationKey(sectionId, language)] = { text, source, updatedAt: Date.now() };
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+}
+
+/** 回忆卡整体替换（正文 + 图片）。 */
+export async function saveRecallCard(paper, markdown, images) {
+  paper.recallCard = { markdown, images, updatedAt: Date.now() };
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+}
+
+/** 移除回忆卡中的一张图片，不改动正文。 */
+export async function removeRecallImage(paper, imageId) {
+  const card = paper.recallCard || { markdown: '', images: [] };
+  paper.recallCard = {
+    ...card,
+    images: (card.images || []).filter(image => image.id !== imageId),
+    updatedAt: Date.now(),
+  };
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+}
+
+/** 追加一条问答消息，只保留最近 40 条。 */
+export async function appendChatMessage(paper, message) {
+  paper.chat = paper.chat || [];
+  paper.chat.push(message);
+  if (paper.chat.length > 40) paper.chat = paper.chat.slice(-40);
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+}
+
+/** 评分、分类与标签写入。 */
+export async function saveOrganize(paper, { rating, categories, tags }) {
+  paper.rating = rating;
+  paper.categories = cleanTokens(categories);
+  paper.tags = cleanTokens(tags);
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+}
+
+/** 关联 PDF 文件。 */
+export async function attachPdf(paper, file) {
+  paper.pdfBlob = file;
+  paper.pdfName = file.name;
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+}
+
+/** 纠正页数；无变化时不写入，返回是否发生了变化。 */
+export async function setNumPages(paper, numPages) {
+  if (paper.numPages === numPages) return false;
+  paper.numPages = numPages;
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+  return true;
+}
+
 // ---------------- 书库与投影 ----------------
 
 /**

@@ -57,28 +57,13 @@ function toast(msg, isError = false) {
   setTimeout(() => el.remove(), 3200);
 }
 
-function cleanTokens(values) {
-  const seen = new Set();
-  return (Array.isArray(values) ? values : [])
-    .map(value => String(value).trim().replace(/\s+/g, ' '))
-    .filter(value => value && !seen.has(value.toLocaleLowerCase()) && seen.add(value.toLocaleLowerCase()));
-}
-
-function paperCategories(paper) {
-  return cleanTokens(paper?.categories);
-}
-
-function paperTags(paper) {
-  return cleanTokens(paper?.tags);
-}
-
 function ratingText(value) {
   const rating = Math.min(Math.max(Number(value) || 0, 0), 5);
   return rating ? `${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}` : '未评分';
 }
 
 function metadataTokens(paper) {
-  return [...paperCategories(paper), ...paperTags(paper)];
+  return [...papers.paperCategories(paper), ...papers.paperTags(paper)];
 }
 
 // ---------------- 打卡（连续天数） ----------------
@@ -117,7 +102,7 @@ async function refreshLibrary() {
   updateStreakBadge();
 
   const categorySelect = $('#filter-category');
-  const categories = cleanTokens(library.flatMap(paperCategories)).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const categories = papers.cleanTokens(library.flatMap(papers.paperCategories)).sort((a, b) => a.localeCompare(b, 'zh-CN'));
   categorySelect.innerHTML = '<option value="">全部分类</option>';
   for (const category of categories) {
     const option = document.createElement('option');
@@ -132,7 +117,7 @@ async function refreshLibrary() {
   const visiblePapers = library.filter(paper => {
     const haystack = [paper.title, ...metadataTokens(paper)].join(' ').toLocaleLowerCase();
     return (!query || haystack.includes(query)) &&
-      (!categoryFilter || paperCategories(paper).includes(categoryFilter)) &&
+      (!categoryFilter || papers.paperCategories(paper).includes(categoryFilter)) &&
       (!ratingFilter || (Number(paper.rating) || 0) >= ratingFilter);
   });
   const empty = $('#empty-state');
@@ -172,13 +157,13 @@ async function refreshLibrary() {
     rating.className = 'pc-rating' + (p.rating ? '' : ' empty');
     rating.textContent = ratingText(p.rating);
     metadata.appendChild(rating);
-    for (const category of paperCategories(p)) {
+    for (const category of papers.paperCategories(p)) {
       const chip = document.createElement('span');
       chip.className = 'metadata-chip category';
       chip.textContent = category;
       metadata.appendChild(chip);
     }
-    for (const tag of paperTags(p)) {
+    for (const tag of papers.paperTags(p)) {
       const chip = document.createElement('span');
       chip.className = 'metadata-chip tag';
       chip.textContent = `#${tag}`;
@@ -238,8 +223,8 @@ function updateReaderMeta() {
   if (!current) return;
   const defs = papers.readingParts(current);
   const done = defs.filter(s => current.analyses?.[s.id]?.text).length;
-  const categories = paperCategories(current);
-  const tags = paperTags(current);
+  const categories = papers.paperCategories(current);
+  const tags = papers.paperTags(current);
   const details = [
     current.numPages ? `${current.numPages} 页` : '',
     `导入于 ${fmtDate(current.addedAt)}`,
@@ -318,9 +303,7 @@ function renderDigest() {
     saveBtn.onclick = async () => {
       const txt = card.querySelector('[data-role="manual"]').value.trim();
       if (!txt) return toast('请先粘贴原文', true);
-      current.sections[def.id] = txt;
-      current.updatedAt = Date.now();
-      await papers.saveRecord(current);
+      await papers.saveSectionSource(current, def.id, txt);
       toast('已保存本节原文，现在可以生成精读了');
       renderDigest();
     };
@@ -368,10 +351,7 @@ async function generateSection(sectionId, { silent = false } = {}) {
     body.classList.remove('cursor');
     if (!text.trim()) throw new Error('模型未返回内容');
     renderMarkdownInto(body, text);
-    current.analyses = current.analyses || {};
-    current.analyses[sectionId] = { text, updatedAt: Date.now() };
-    current.updatedAt = Date.now();
-    await papers.saveRecord(current);
+    await papers.saveAnalysis(current, sectionId, text);
     setCardStatus(sectionId, `✓ ${fmtDate(Date.now())}`, 'ok');
     btn.textContent = '重新生成';
     updateReaderMeta();
@@ -381,9 +361,7 @@ async function generateSection(sectionId, { silent = false } = {}) {
     const aborted = err.name === 'AbortError';
     const partial = body.textContent.trim();
     if (aborted && partial.length > 60) {
-      current.analyses = current.analyses || {};
-      current.analyses[sectionId] = { text: partial + '\n\n> ⚠️ 生成被中断，内容为部分结果。', updatedAt: Date.now() };
-      await papers.saveRecord(current);
+      await papers.saveAnalysis(current, sectionId, partial + '\n\n> ⚠️ 生成被中断，内容为部分结果。');
       setCardStatus(sectionId, '⚠ 已停止（保留部分）', 'err');
     } else {
       body.classList.add('empty-hint');
@@ -464,9 +442,7 @@ function renderRecallImages() {
     remove.textContent = '×';
     remove.onclick = async () => {
       if (!confirm('从回忆卡中移除这张图片？')) return;
-      current.recallCard.images = current.recallCard.images.filter(item => item.id !== image.id);
-      current.recallCard.updatedAt = Date.now();
-      await papers.saveRecord(current);
+      await papers.removeRecallImage(current, image.id);
       renderRecallImages();
     };
     figure.append(img, remove);
@@ -485,15 +461,7 @@ function renderRecall() {
 }
 
 async function saveRecallCard({ silent = false } = {}) {
-  const previous = recallCard();
-  current.recallCard = {
-    ...previous,
-    markdown: $('#recall-editor').value.trim(),
-    images: previous.images || [],
-    updatedAt: Date.now(),
-  };
-  current.updatedAt = Date.now();
-  await papers.saveRecord(current);
+  await papers.saveRecallCard(current, $('#recall-editor').value.trim(), recallCard().images || []);
   $('#recall-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   $('#btn-recall-generate').textContent = current.recallCard.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
   if (!silent) toast('回忆卡已保存');
@@ -591,13 +559,7 @@ async function addRecallImages(files) {
     for (const file of imageFiles) {
       additions.push({ id: papers.uid(), name: file.name || '粘贴的图片', dataUrl: await prepareRecallImage(file) });
     }
-    current.recallCard = {
-      ...recallCard(),
-      markdown: $('#recall-editor').value.trim(),
-      images: [...existing, ...additions],
-      updatedAt: Date.now(),
-    };
-    await papers.saveRecord(current);
+    await papers.saveRecallCard(current, $('#recall-editor').value.trim(), [...existing, ...additions]);
     renderRecallImages();
     $('#recall-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   } catch (err) {
@@ -674,11 +636,7 @@ async function initPdfViewer() {
     pdfPage = Math.min(Math.max(pdfPage, 1), pdfDocument.numPages);
     $('#pdf-page-input').max = pdfDocument.numPages;
     $('#pdf-page-count').textContent = `/ ${pdfDocument.numPages}`;
-    if (current.numPages !== pdfDocument.numPages) {
-      current.numPages = pdfDocument.numPages;
-      await papers.saveRecord(current);
-      updateReaderMeta();
-    }
+    if (await papers.setNumPages(current, pdfDocument.numPages)) updateReaderMeta();
     await new Promise(resolve => requestAnimationFrame(resolve));
     await fitPdfPage();
   } catch (err) {
@@ -757,10 +715,7 @@ async function attachPdf(file) {
     toast('请选择 PDF 文件', true);
     return;
   }
-  current.pdfBlob = file;
-  current.pdfName = file.name;
-  current.updatedAt = Date.now();
-  await papers.saveRecord(current);
+  await papers.attachPdf(current, file);
   updatePdfSidebar();
   await initPdfViewer();
   toast('PDF 已关联，可与精读结果对照查看');
@@ -777,10 +732,6 @@ function downloadCurrentPdf() {
 }
 
 // ---------------- 独立翻译 ----------------
-function translationKey(sectionId = translateSection, language = $('#translate-language').value) {
-  return `${sectionId}:${language}`;
-}
-
 function renderTranslate() {
   if (!current) return;
   const select = $('#translate-section');
@@ -802,7 +753,7 @@ function loadTranslationSection() {
   if (!current) return;
   const source = translateSection === '__full' ? current.fullText : current.sections?.[translateSection];
   $('#translate-source').value = source || '';
-  const saved = current.translations?.[translationKey()];
+  const saved = current.translations?.[papers.translationKey(translateSection, $('#translate-language').value)];
   const output = $('#translate-output');
   output.classList.toggle('empty-hint', !saved?.text);
   if (saved?.text) renderMarkdownInto(output, saved.text);
@@ -864,12 +815,7 @@ async function translateCurrentText() {
     const text = translated.join('\n\n');
     if (!text.trim()) throw new Error('模型未返回译文');
     renderMarkdownInto(output, text);
-    current.translations = current.translations || {};
-    current.translations[translationKey(translateSection, language)] = {
-      text, source, updatedAt: Date.now(),
-    };
-    current.updatedAt = Date.now();
-    await papers.saveRecord(current);
+    await papers.saveTranslation(current, translateSection, language, text, source);
     $('#translate-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   } catch (err) {
     if (err.name === 'AbortError') $('#translate-status').textContent = '已停止';
@@ -931,8 +877,7 @@ async function sendChat() {
   const q = input.value.trim();
   if (!q || generating) return;
   input.value = '';
-  current.chat = current.chat || [];
-  current.chat.push({ role: 'user', content: q });
+  await papers.appendChatMessage(current, { role: 'user', content: q });
   appendChatBubble('user', q);
   const bubble = appendChatBubble('assistant', '…');
 
@@ -949,13 +894,11 @@ async function sendChat() {
       onDelta: full => { renderMarkdownInto(bubble, full); $('#chat-log').scrollTop = $('#chat-log').scrollHeight; },
     });
     renderMarkdownInto(bubble, text || '（无回复）');
-    current.chat.push({ role: 'assistant', content: text });
-    if (current.chat.length > 40) current.chat = current.chat.slice(-40);
-    await papers.saveRecord(current);
+    await papers.appendChatMessage(current, { role: 'assistant', content: text });
   } catch (err) {
     bubble.classList.add('err');
     bubble.textContent = err.name === 'AbortError' ? '已停止。' : `出错了：${err.message}`;
-    current.chat.push({ role: 'assistant', content: `（出错：${err.message}）` });
+    await papers.appendChatMessage(current, { role: 'assistant', content: `（出错：${err.message}）` });
   } finally {
     aborter = null;
   }
@@ -1026,8 +969,8 @@ function exportNotes() {
     `导入日期：${fmtDate(current.addedAt)}`,
     `导出日期：${fmtDate(Date.now())}`,
     `评分：${ratingText(current.rating)}`,
-    paperCategories(current).length ? `分类：${paperCategories(current).join('、')}` : '',
-    paperTags(current).length ? `标签：${paperTags(current).join('、')}` : '',
+    papers.paperCategories(current).length ? `分类：${papers.paperCategories(current).join('、')}` : '',
+    papers.paperTags(current).length ? `标签：${papers.paperTags(current).join('、')}` : '',
   ].filter(Boolean).join(' · ');
   const lines = [`# 精读笔记：${current.title}`, '', `> ${meta}`, ''];
   if (current.recallCard?.markdown) {
@@ -1082,15 +1025,15 @@ function renderOrganizeTokens(kind) {
 function addOrganizeTokens(kind) {
   const input = $(`#${kind === 'categories' ? 'category' : 'tag'}-input`);
   const additions = input.value.split(/[，,;；\n]+/).map(value => value.trim()).filter(Boolean);
-  organizeDraft[kind] = cleanTokens([...organizeDraft[kind], ...additions]);
+  organizeDraft[kind] = papers.cleanTokens([...organizeDraft[kind], ...additions]);
   input.value = '';
   renderOrganizeTokens(kind);
 }
 
 function fillMetadataSuggestions() {
   const groups = [
-    { id: 'category-suggestions', values: cleanTokens(library.flatMap(paperCategories)) },
-    { id: 'tag-suggestions', values: cleanTokens(library.flatMap(paperTags)) },
+    { id: 'category-suggestions', values: papers.cleanTokens(library.flatMap(papers.paperCategories)) },
+    { id: 'tag-suggestions', values: papers.cleanTokens(library.flatMap(papers.paperTags)) },
   ];
   for (const group of groups) {
     const datalist = $(`#${group.id}`);
@@ -1106,8 +1049,8 @@ function fillMetadataSuggestions() {
 function openOrganizeModal() {
   organizeDraft = {
     rating: Math.min(Math.max(Number(current.rating) || 0, 0), 5),
-    categories: paperCategories(current),
-    tags: paperTags(current),
+    categories: papers.paperCategories(current),
+    tags: papers.paperTags(current),
   };
   $('#category-input').value = '';
   $('#tag-input').value = '';
@@ -1119,11 +1062,7 @@ function openOrganizeModal() {
 }
 
 async function saveOrganizeMetadata() {
-  current.rating = organizeDraft.rating;
-  current.categories = cleanTokens(organizeDraft.categories);
-  current.tags = cleanTokens(organizeDraft.tags);
-  current.updatedAt = Date.now();
-  await papers.saveRecord(current);
+  await papers.saveOrganize(current, organizeDraft);
   library = library.map(paper => paper.id === current.id ? current : paper);
   $('#modal-organize').hidden = true;
   updateReaderMeta();
