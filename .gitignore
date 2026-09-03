@@ -6,6 +6,7 @@ venv/
 
 # Local runtime files
 tmp/
+paper-list/
 *.log
 .env
 .env.*

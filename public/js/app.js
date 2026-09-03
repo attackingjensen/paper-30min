@@ -52,11 +52,16 @@ let editingSkillId = null;
 let digestSection = 'abstract';
 let translateSection = 'abstract';
 let translateAborter = null;
+let recallAborter = null;
 let pdfDocument = null;
 let pdfRenderTask = null;
 let pdfPage = 1;
 let pdfScale = 1;
 let pdfSidebarOpen = true;
+let libraryQuery = '';
+let categoryFilter = '';
+let ratingFilter = 0;
+let organizeDraft = { rating: 0, categories: [], tags: [] };
 
 function renderMarkdownInto(element, text) {
   element.innerHTML = renderMarkdown(text);
@@ -82,6 +87,30 @@ function toast(msg, isError = false) {
   });
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 3200);
+}
+
+function cleanTokens(values) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map(value => String(value).trim().replace(/\s+/g, ' '))
+    .filter(value => value && !seen.has(value.toLocaleLowerCase()) && seen.add(value.toLocaleLowerCase()));
+}
+
+function paperCategories(paper) {
+  return cleanTokens(paper?.categories);
+}
+
+function paperTags(paper) {
+  return cleanTokens(paper?.tags);
+}
+
+function ratingText(value) {
+  const rating = Math.min(Math.max(Number(value) || 0, 0), 5);
+  return rating ? `${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}` : '未评分';
+}
+
+function metadataTokens(paper) {
+  return [...paperCategories(paper), ...paperTags(paper)];
 }
 
 // ---------------- 打卡（连续天数） ----------------
@@ -116,16 +145,40 @@ async function refreshLibrary() {
   papers = (await db.getAllPapers()).sort((a, b) => b.addedAt - a.addedAt);
   const list = $('#paper-list');
   list.innerHTML = '';
-  $('#empty-state').hidden = papers.length > 0;
 
   updateStreakBadge();
+
+  const categorySelect = $('#filter-category');
+  const categories = cleanTokens(papers.flatMap(paperCategories)).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  categorySelect.innerHTML = '<option value="">全部分类</option>';
+  for (const category of categories) {
+    const option = document.createElement('option');
+    option.value = category;
+    option.textContent = category;
+    option.selected = category === categoryFilter;
+    categorySelect.appendChild(option);
+  }
+  if (categoryFilter && !categories.includes(categoryFilter)) categoryFilter = '';
+
+  const query = libraryQuery.trim().toLocaleLowerCase();
+  const visiblePapers = papers.filter(paper => {
+    const haystack = [paper.title, ...metadataTokens(paper)].join(' ').toLocaleLowerCase();
+    return (!query || haystack.includes(query)) &&
+      (!categoryFilter || paperCategories(paper).includes(categoryFilter)) &&
+      (!ratingFilter || (Number(paper.rating) || 0) >= ratingFilter);
+  });
+  const empty = $('#empty-state');
+  empty.hidden = visiblePapers.length > 0;
+  empty.innerHTML = papers.length
+    ? '<p>没有符合当前筛选条件的论文。</p>'
+    : '<p>书库还是空的。</p><p>点击右上角「导入论文 PDF」，或先「打开示例论文」体验一遍精读流程。</p>';
 
   const ready = api.settingsReady();
   const warn = $('#api-warning');
   warn.hidden = ready;
-  if (!ready) warn.textContent = '⚠️ 尚未配置大模型 API，AI 精读功能暂不可用。点击这里前往设置（支持 OpenAI / DeepSeek / Moonshot / 通义 / Ollama 等兼容接口）。';
+  if (!ready) warn.textContent = '⚠️ 尚未配置大模型 API，AI 精读功能暂不可用。点击这里前往设置（支持 OpenAI / DeepSeek / Moonshot / 阿里云百炼 / Ollama 等兼容接口）。';
 
-  for (const p of papers) {
+  for (const p of visiblePapers) {
     const card = document.createElement('div');
     card.className = 'paper-card';
     const defs = paperSectionDefs(p);
@@ -139,12 +192,30 @@ async function refreshLibrary() {
           <span>${p.numPages ? p.numPages + ' 页 · ' : ''}导入于 ${fmtDate(p.addedAt)}</span>
           ${done ? `<span>最近精读 ${fmtDate(Math.max(...Object.values(p.analyses).map(a => a.updatedAt || 0)))}</span>` : ''}
         </div>
+        <div class="pc-metadata" data-role="metadata"></div>
       </div>
       <div class="pc-actions">
         <button class="btn small primary" data-act="open">继续阅读</button>
         <button class="btn small danger" data-act="del">删除</button>
       </div>`;
     card.querySelector('.pc-title').textContent = p.title;
+    const metadata = card.querySelector('[data-role="metadata"]');
+    const rating = document.createElement('span');
+    rating.className = 'pc-rating' + (p.rating ? '' : ' empty');
+    rating.textContent = ratingText(p.rating);
+    metadata.appendChild(rating);
+    for (const category of paperCategories(p)) {
+      const chip = document.createElement('span');
+      chip.className = 'metadata-chip category';
+      chip.textContent = category;
+      metadata.appendChild(chip);
+    }
+    for (const tag of paperTags(p)) {
+      const chip = document.createElement('span');
+      chip.className = 'metadata-chip tag';
+      chip.textContent = `#${tag}`;
+      metadata.appendChild(chip);
+    }
     card.querySelector('.pc-title').onclick = () => openPaper(p);
     card.querySelector('[data-act="open"]').onclick = () => openPaper(p);
     card.querySelector('[data-act="del"]').onclick = async () => {
@@ -170,6 +241,7 @@ function openPaper(p) {
   $('#reader-title').textContent = p.title;
   switchTab('digest');
   renderDigest();
+  renderRecall();
   renderSource();
   renderTranslate();
   renderChat();
@@ -180,6 +252,7 @@ function openPaper(p) {
 function closePaper() {
   destroyPdfViewer();
   translateAborter?.abort();
+  recallAborter?.abort();
   current = null;
   $('#view-reader').hidden = true;
   $('#view-library').hidden = false;
@@ -188,7 +261,7 @@ function closePaper() {
 
 function switchTab(name) {
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  for (const id of ['digest', 'source', 'translate', 'chat']) {
+  for (const id of ['digest', 'recall', 'source', 'translate', 'chat']) {
     $(`#tab-${id}`).hidden = id !== name;
   }
 }
@@ -197,7 +270,17 @@ function updateReaderMeta() {
   if (!current) return;
   const defs = paperSectionDefs(current);
   const done = defs.filter(s => current.analyses?.[s.id]?.text).length;
-  $('#reader-meta').textContent = `${current.numPages ? current.numPages + ' 页 · ' : ''}导入于 ${fmtDate(current.addedAt)} · 精读进度 ${done}/${defs.length}`;
+  const categories = paperCategories(current);
+  const tags = paperTags(current);
+  const details = [
+    current.numPages ? `${current.numPages} 页` : '',
+    `导入于 ${fmtDate(current.addedAt)}`,
+    `精读进度 ${done}/${defs.length}`,
+    ratingText(current.rating),
+    categories.join(' · '),
+    tags.length ? tags.map(tag => `#${tag}`).join(' ') : '',
+  ].filter(Boolean);
+  $('#reader-meta').textContent = details.join(' · ');
   updateStreakBadge();
 }
 
@@ -380,6 +463,178 @@ function finishBatch() {
   generating = false;
   $('#btn-gen-all').disabled = false;
   $('#btn-stop').hidden = true;
+}
+
+// ---------------- 回忆卡 ----------------
+function recallCard() {
+  return current?.recallCard || { markdown: '', images: [], updatedAt: 0 };
+}
+
+function updateRecallPreview() {
+  const preview = $('#recall-preview');
+  const markdown = $('#recall-editor').value.trim();
+  preview.classList.toggle('empty-hint', !markdown);
+  if (markdown) renderMarkdownInto(preview, markdown);
+  else preview.textContent = '尚未生成或填写回忆卡。';
+}
+
+function renderRecallImages() {
+  const gallery = $('#recall-image-gallery');
+  gallery.innerHTML = '';
+  const images = recallCard().images || [];
+  gallery.hidden = images.length === 0;
+  for (const image of images) {
+    const figure = document.createElement('figure');
+    const img = document.createElement('img');
+    img.src = image.dataUrl;
+    img.alt = image.name || '回忆卡图片';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'recall-image-remove';
+    remove.title = '移除图片';
+    remove.setAttribute('aria-label', `移除图片 ${img.alt}`);
+    remove.textContent = '×';
+    remove.onclick = async () => {
+      if (!confirm('从回忆卡中移除这张图片？')) return;
+      current.recallCard.images = current.recallCard.images.filter(item => item.id !== image.id);
+      current.recallCard.updatedAt = Date.now();
+      await db.putPaper(current);
+      renderRecallImages();
+    };
+    figure.append(img, remove);
+    gallery.appendChild(figure);
+  }
+}
+
+function renderRecall() {
+  if (!current) return;
+  const card = recallCard();
+  $('#recall-editor').value = card.markdown || '';
+  $('#recall-status').textContent = card.updatedAt ? `已保存 · ${fmtDate(card.updatedAt)}` : '';
+  $('#btn-recall-generate').textContent = card.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
+  updateRecallPreview();
+  renderRecallImages();
+}
+
+async function saveRecallCard({ silent = false } = {}) {
+  const previous = recallCard();
+  current.recallCard = {
+    ...previous,
+    markdown: $('#recall-editor').value.trim(),
+    images: previous.images || [],
+    updatedAt: Date.now(),
+  };
+  current.updatedAt = Date.now();
+  await db.putPaper(current);
+  $('#recall-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
+  $('#btn-recall-generate').textContent = current.recallCard.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
+  if (!silent) toast('回忆卡已保存');
+}
+
+async function generateRecallDraft() {
+  if (!api.settingsReady()) {
+    toast('请先在「设置」中配置 API', true);
+    openSettingsModal();
+    return;
+  }
+  const completed = paperSectionDefs(current)
+    .map(def => ({ def, text: current.analyses?.[def.id]?.text?.trim() }))
+    .filter(item => item.text);
+  if (!completed.length) return toast('请先完成至少一个章节的 AI 精读', true);
+  if ($('#recall-editor').value.trim() && !confirm('重新生成会覆盖当前卡片文字，已添加的图片会保留。继续吗？')) return;
+
+  const source = completed.map(({ def, text }) => `===== ${def.label} =====\n${text}`).join('\n\n').slice(0, 32000);
+  const messages = [
+    {
+      role: 'system',
+      content: '你是论文回忆卡编辑器。根据精读笔记生成高度凝练、事实准确、便于快速复习的中文 Markdown 卡片。不要复述章节结构，不要编造笔记中没有的信息。',
+    },
+    {
+      role: 'user',
+      content: `论文标题：${current.title}\n\n精读笔记：\n${source}\n\n请严格使用以下结构：\n## 一句话回忆\n一句话说明这项工作解决什么问题、如何解决。\n\n## 主要贡献\n- 2 至 4 条最重要贡献\n\n## 核心创新\n- 2 至 4 条方法或设计创新，并说明为什么有效\n\n## 关键证据\n- 最能支撑结论的实验结果或消融\n\n## 使用边界\n- 局限、适用条件或需要继续确认的问题`,
+    },
+  ];
+  const editor = $('#recall-editor');
+  const button = $('#btn-recall-generate');
+  button.disabled = true;
+  $('#btn-recall-stop').hidden = false;
+  $('#recall-status').textContent = '生成中…';
+  recallAborter = new AbortController();
+  try {
+    const text = await api.chat(messages, {
+      stream: true,
+      signal: recallAborter.signal,
+      onDelta: full => {
+        editor.value = full;
+        updateRecallPreview();
+      },
+    });
+    if (!text.trim()) throw new Error('模型未返回卡片内容');
+    editor.value = text;
+    updateRecallPreview();
+    await saveRecallCard({ silent: true });
+    toast('AI 草稿已生成，可以继续编辑');
+  } catch (err) {
+    if (err.name === 'AbortError') $('#recall-status').textContent = '已停止，当前文字尚未保存';
+    else {
+      $('#recall-status').textContent = '生成失败';
+      toast(err.message, true);
+    }
+  } finally {
+    button.disabled = false;
+    $('#btn-recall-stop').hidden = true;
+    recallAborter = null;
+  }
+}
+
+function readAsDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function prepareRecallImage(file) {
+  if (!file?.type?.startsWith('image/')) throw new Error('请选择图片文件');
+  if (file.size > 12 * 1024 * 1024) throw new Error('单张图片不能超过 12 MB');
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.86));
+    if (blob) return await readAsDataUrl(blob);
+  } catch { /* 不支持解码时保留原图 */ }
+  return readAsDataUrl(file);
+}
+
+async function addRecallImages(files) {
+  const imageFiles = [...files].filter(file => file.type?.startsWith('image/'));
+  if (!imageFiles.length) return;
+  const existing = recallCard().images || [];
+  if (existing.length + imageFiles.length > 8) return toast('每张回忆卡最多保存 8 张图片', true);
+  try {
+    const additions = [];
+    for (const file of imageFiles) {
+      additions.push({ id: uid(), name: file.name || '粘贴的图片', dataUrl: await prepareRecallImage(file) });
+    }
+    current.recallCard = {
+      ...recallCard(),
+      markdown: $('#recall-editor').value.trim(),
+      images: [...existing, ...additions],
+      updatedAt: Date.now(),
+    };
+    await db.putPaper(current);
+    renderRecallImages();
+    $('#recall-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
+  } catch (err) {
+    toast(err.message, true);
+  }
 }
 
 // ---------------- 原文视图 ----------------
@@ -759,6 +1014,10 @@ async function importPdfFile(file) {
       pdfName: file.name,
       analyses: {},
       translations: {},
+      recallCard: { markdown: '', images: [], updatedAt: 0 },
+      rating: 0,
+      categories: [],
+      tags: [],
       chat: [],
     };
     await db.putPaper(paper);
@@ -803,7 +1062,8 @@ async function importArxiv() {
       id: uid(), title: parsed.title, arxivId: id, sourceType: parsed.sourceType,
       addedAt: Date.now(), updatedAt: Date.now(), numPages: 0,
       sections: parsed.sections, parts: parsed.parts, fullText: parsed.fullText,
-      pdfBlob, pdfName: pdfBlob ? `${id}.pdf` : '', analyses: {}, translations: {}, chat: [],
+      pdfBlob, pdfName: pdfBlob ? `${id}.pdf` : '', analyses: {}, translations: {},
+      recallCard: { markdown: '', images: [], updatedAt: 0 }, rating: 0, categories: [], tags: [], chat: [],
     };
     await db.putPaper(paper);
     $('#modal-arxiv').hidden = true;
@@ -821,7 +1081,17 @@ async function importArxiv() {
 
 // ---------------- 导出笔记 ----------------
 function exportNotes() {
-  const lines = [`# 精读笔记：${current.title}`, '', `> 导入日期：${fmtDate(current.addedAt)} · 导出日期：${fmtDate(Date.now())}`, ''];
+  const meta = [
+    `导入日期：${fmtDate(current.addedAt)}`,
+    `导出日期：${fmtDate(Date.now())}`,
+    `评分：${ratingText(current.rating)}`,
+    paperCategories(current).length ? `分类：${paperCategories(current).join('、')}` : '',
+    paperTags(current).length ? `标签：${paperTags(current).join('、')}` : '',
+  ].filter(Boolean).join(' · ');
+  const lines = [`# 精读笔记：${current.title}`, '', `> ${meta}`, ''];
+  if (current.recallCard?.markdown) {
+    lines.push('## 回忆卡', '', current.recallCard.markdown, '');
+  }
   for (const def of paperSectionDefs(current)) {
     lines.push(`## ${def.label}`, '');
     lines.push(current.analyses?.[def.id]?.text || '（尚未生成精读）', '');
@@ -832,6 +1102,91 @@ function exportNotes() {
   a.download = `${current.title.slice(0, 60).replace(/[\\/:*?"<>|]/g, '_')}.精读笔记.md`;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+// ---------------- 评分、分类与标签 ----------------
+function renderRatingControl() {
+  $$('#rating-control [data-rating]').forEach(button => {
+    const value = Number(button.dataset.rating);
+    const active = value <= organizeDraft.rating;
+    button.textContent = active ? '★' : '☆';
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-checked', String(value === organizeDraft.rating));
+  });
+}
+
+function renderOrganizeTokens(kind) {
+  const values = organizeDraft[kind];
+  const list = $(`#${kind === 'categories' ? 'category' : 'tag'}-list`);
+  list.innerHTML = '';
+  for (const value of values) {
+    const token = document.createElement('span');
+    token.className = `editable-token ${kind === 'categories' ? 'category' : 'tag'}`;
+    const text = document.createElement('span');
+    text.textContent = kind === 'tags' ? `#${value}` : value;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.title = `移除${kind === 'categories' ? '分类' : '标签'}`;
+    remove.setAttribute('aria-label', `移除 ${value}`);
+    remove.textContent = '×';
+    remove.onclick = () => {
+      organizeDraft[kind] = organizeDraft[kind].filter(item => item !== value);
+      renderOrganizeTokens(kind);
+    };
+    token.append(text, remove);
+    list.appendChild(token);
+  }
+}
+
+function addOrganizeTokens(kind) {
+  const input = $(`#${kind === 'categories' ? 'category' : 'tag'}-input`);
+  const additions = input.value.split(/[，,;；\n]+/).map(value => value.trim()).filter(Boolean);
+  organizeDraft[kind] = cleanTokens([...organizeDraft[kind], ...additions]);
+  input.value = '';
+  renderOrganizeTokens(kind);
+}
+
+function fillMetadataSuggestions() {
+  const groups = [
+    { id: 'category-suggestions', values: cleanTokens(papers.flatMap(paperCategories)) },
+    { id: 'tag-suggestions', values: cleanTokens(papers.flatMap(paperTags)) },
+  ];
+  for (const group of groups) {
+    const datalist = $(`#${group.id}`);
+    datalist.innerHTML = '';
+    for (const value of group.values) {
+      const option = document.createElement('option');
+      option.value = value;
+      datalist.appendChild(option);
+    }
+  }
+}
+
+function openOrganizeModal() {
+  organizeDraft = {
+    rating: Math.min(Math.max(Number(current.rating) || 0, 0), 5),
+    categories: paperCategories(current),
+    tags: paperTags(current),
+  };
+  $('#category-input').value = '';
+  $('#tag-input').value = '';
+  fillMetadataSuggestions();
+  renderRatingControl();
+  renderOrganizeTokens('categories');
+  renderOrganizeTokens('tags');
+  $('#modal-organize').hidden = false;
+}
+
+async function saveOrganizeMetadata() {
+  current.rating = organizeDraft.rating;
+  current.categories = cleanTokens(organizeDraft.categories);
+  current.tags = cleanTokens(organizeDraft.tags);
+  current.updatedAt = Date.now();
+  await db.putPaper(current);
+  papers = papers.map(paper => paper.id === current.id ? current : paper);
+  $('#modal-organize').hidden = true;
+  updateReaderMeta();
+  toast('评分、分类和标签已保存');
 }
 
 // ---------------- 设置弹窗 ----------------
@@ -910,6 +1265,7 @@ function importSkillFile(file) {
 function bindEvents() {
   $('#brand-home').onclick = closePaper;
   $('#btn-back').onclick = closePaper;
+  $('#btn-organize').onclick = openOrganizeModal;
   $('#btn-import').onclick = () => $('#file-input').click();
   $('#btn-arxiv').onclick = () => {
     $('#arxiv-input').value = '';
@@ -931,6 +1287,26 @@ function bindEvents() {
     }
   };
   $('#api-warning').onclick = openSettingsModal;
+  $('#library-search').oninput = e => {
+    libraryQuery = e.target.value;
+    refreshLibrary();
+  };
+  $('#filter-category').onchange = e => {
+    categoryFilter = e.target.value;
+    refreshLibrary();
+  };
+  $('#filter-rating').onchange = e => {
+    ratingFilter = Number(e.target.value) || 0;
+    refreshLibrary();
+  };
+  $('#btn-filter-reset').onclick = () => {
+    libraryQuery = '';
+    categoryFilter = '';
+    ratingFilter = 0;
+    $('#library-search').value = '';
+    $('#filter-rating').value = '0';
+    refreshLibrary();
+  };
   $('#btn-settings').onclick = openSettingsModal;
   $('#btn-save-settings').onclick = saveSettings;
   $('#btn-test-api').onclick = async () => {
@@ -947,6 +1323,24 @@ function bindEvents() {
   };
 
   $$('.tab').forEach(t => t.onclick = () => switchTab(t.dataset.tab));
+  $('#recall-editor').oninput = () => {
+    updateRecallPreview();
+    $('#recall-status').textContent = '有未保存的修改';
+  };
+  $('#recall-editor').addEventListener('paste', event => {
+    const images = [...(event.clipboardData?.files || [])].filter(file => file.type.startsWith('image/'));
+    if (!images.length) return;
+    event.preventDefault();
+    addRecallImages(images);
+  });
+  $('#btn-recall-generate').onclick = generateRecallDraft;
+  $('#btn-recall-stop').onclick = () => recallAborter?.abort();
+  $('#btn-recall-save').onclick = () => saveRecallCard();
+  $('#btn-recall-image').onclick = () => $('#recall-image-input').click();
+  $('#recall-image-input').onchange = e => {
+    if (e.target.files?.length) addRecallImages(e.target.files);
+    e.target.value = '';
+  };
   $('#btn-pdf-toggle').onclick = () => togglePdfSidebar();
   $('#btn-pdf-close').onclick = () => togglePdfSidebar(false);
   $('#btn-pdf-attach').onclick = () => $('#pdf-attach-input').click();
@@ -972,6 +1366,26 @@ function bindEvents() {
   $('#translate-language').onchange = loadTranslationSection;
   $('#btn-translate').onclick = translateCurrentText;
   $('#btn-translate-stop').onclick = () => translateAborter?.abort();
+
+  $$('#rating-control [data-rating]').forEach(button => {
+    button.onclick = () => {
+      organizeDraft.rating = Number(button.dataset.rating);
+      renderRatingControl();
+    };
+  });
+  $('#btn-rating-clear').onclick = () => {
+    organizeDraft.rating = 0;
+    renderRatingControl();
+  };
+  $('#btn-category-add').onclick = () => addOrganizeTokens('categories');
+  $('#btn-tag-add').onclick = () => addOrganizeTokens('tags');
+  $('#category-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); addOrganizeTokens('categories'); }
+  });
+  $('#tag-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); addOrganizeTokens('tags'); }
+  });
+  $('#btn-organize-save').onclick = saveOrganizeMetadata;
 
   $('#btn-gen-all').onclick = generateAll;
   $('#btn-stop').onclick = stopGeneration;
@@ -1015,7 +1429,7 @@ function bindEvents() {
   $('#skill-file').onchange = e => { if (e.target.files[0]) importSkillFile(e.target.files[0]); e.target.value = ''; };
 
   // 点击遮罩关闭弹窗
-  for (const id of ['modal-arxiv', 'modal-settings', 'modal-skills']) {
+  for (const id of ['modal-arxiv', 'modal-settings', 'modal-skills', 'modal-organize']) {
     const mask = $(`#${id}`);
     mask.addEventListener('click', e => { if (e.target === mask) mask.hidden = true; });
     mask.querySelectorAll('[data-close]').forEach(b => b.onclick = () => mask.hidden = true);
@@ -1025,6 +1439,7 @@ function bindEvents() {
       $('#modal-arxiv').hidden = true;
       $('#modal-settings').hidden = true;
       $('#modal-skills').hidden = true;
+      $('#modal-organize').hidden = true;
     }
   });
   let resizeTimer = null;

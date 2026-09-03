@@ -41,7 +41,7 @@
    | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
    | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
    | Moonshot | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-   | 通义 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-max` |
+   | 阿里云百炼（通义） | `https://dashscope.aliyuncs.com/compatible-mode/v1`（直接填裸域名 `https://dashscope.aliyuncs.com` 也可以，会自动改写） | `qwen-max` |
    | Ollama（本地） | `http://127.0.0.1:11434/v1` | `qwen2.5:14b` |
 
    填完点「测试连接」验证。
