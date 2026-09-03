@@ -1,11 +1,11 @@
 ---
 status: draft
-updated: 2026-09-02
+updated: 2026-09-03
 ---
 
 # 待决技术与产品事项
 
-本文汇总截至 2026-09-02 已讨论但尚未接受的建议、假设和问题。它是后续讨论入口，不代表项目决定；当前进度以 [`docs/status/current.md`](../status/current.md) 为准，已接受决策以 [`docs/adr/`](../adr/) 为准。
+本文汇总截至 2026-09-03 已讨论但尚未接受的建议、假设和问题。它是后续讨论入口，不代表项目决定；当前进度以 [`docs/status/current.md`](../status/current.md) 为准，已接受决策以 [`docs/adr/`](../adr/) 为准。
 
 ## 技术栈
 
@@ -35,6 +35,10 @@ updated: 2026-09-02
 - 当前形态是本地 Web App，通过启动脚本运行，可供电脑和同一局域网内的手机访问。
 - 本地优先已经由 [ADR-0001](../adr/0001-local-first-reading.md) 接受，但它没有规定必须永久使用浏览器外壳。
 
+### 决定记录
+
+- 作者 2026-09-03 决定**缓议**：先稳定 deep module 与产品契约，待安装包、开始菜单入口或无终端启动出现真实痛点后，再评估 pywebview 原型。
+
 ### 已讨论倾向
 
 - Windows 应用应作为现有 Web App 的桌面 adapter，而非重写阅读界面和核心逻辑。
@@ -42,7 +46,7 @@ updated: 2026-09-02
 - Tauri 更适合产品成熟后的轻量安装包；Electron 和 WinUI 全面重写目前缺少足够收益。
 - 原型应验证 PDF worker、IndexedDB、模型流式输出、手机访问、进程退出和无 Python 环境运行。
 
-### 待拍板
+### 待拍板（缓议期间冻结）
 
 - 作者是否需要安装包、开始菜单入口和无终端启动。
 - Windows 外壳是否必须继续向手机提供局域网访问。
@@ -55,20 +59,20 @@ updated: 2026-09-02
 
 - 顶层结构与当前规模匹配，`public/`、`vendor/`、`skills/`、`tools/` 和 `docs/` 的职责基本清楚。
 - [`public/js/app.js`](../../public/js/app.js) 同时承担 DOM、当前论文、生成任务、问答、导入和持久化协调。
-- [`tools/check_parser.mjs`](../../tools/check_parser.mjs) 实际承担测试职责，但目前与生成器和 mock 工具放在一起。
+- 统一测试入口已落地：`npm test` 串起 `node --test`（自动发现 `tests/*.test.mjs`）与 `tools/check_markdown.mjs`；`tools/check_parser.mjs` 承担人工查看的解析检查，不在门禁内。
 
 ### 已讨论倾向
 
 - 不进行纯目录重排，也不引入多层 `src/domain/application` 结构。
-- 随回归测试增加建立 `tests/`，让 `tools/` 保留生成器、mock 和开发辅助工具。
+- `tests/` 已建立，让 `tools/` 保留生成器、mock 和开发辅助工具。
 - 只有在知识归属明确后，才从 `app.js` 提取有真实 depth 的 module；不按页面或函数数量机械拆分。
 - `server.py` 当前规模可以保持单文件，待转发策略或桌面生命周期出现独立测试需求后再深化。
 
 ### 待拍板
 
-- 测试目录、文件命名和统一运行入口。
+- 测试文件命名与覆盖范围的约定。
 - “论文记录生命周期”与“阅读生成任务”的最终职责划分。
-- `skills/*.md` 的正式定位确定后，相关文件应留在当前位置还是调整目录。
+- 技能文件加载的服务端入口与 `skills.js` 内置定义的去留（技能事实来源已拍板，见 Issue #5）。
 
 ## Deepening 候选
 
@@ -76,50 +80,39 @@ updated: 2026-09-02
 | --- | --- | --- | --- |
 | 论文记录生命周期 | Strong | 论文结构、不变量、重切分和写入规则散落在多个调用方 | 是否建立统一拥有记录创建、章节投影和结果写入的 deep module |
 | 阅读生成任务 | Strong | `current`、`aborter` 和 `generating` 共享，异步结果缺少稳定任务归属 | 是否让独立 deep module 拥有论文 identity、状态、取消和原始增量 |
-| 技能目录 | Worth exploring | `skills/*.md` 与 `public/js/skills.js` 是两套默认定义 | 哪一处应成为事实来源，另一处应删除、生成还是仅作为示例 |
-| 上游转发 | Worth exploring | curl、urllib、请求策略和响应写入集中在 Handler，局域网信任假设不明确 | 是否深化 forwarding module，以及如何限制其可转发范围 |
+| 上游转发 | Worth exploring | curl、urllib、请求策略和响应写入集中在 Handler，局域网信任假设已由 [ADR-0003](../adr/0003-lan-fully-trusted.md) 接受 | 是否深化 forwarding module |
 
-当前倾向是先探索“论文记录生命周期”，再让“阅读生成任务”通过它提交结果。具体 interface、不变量和迁移方式尚未讨论，应通过 `grill-with-docs` 决定。
-
-## 产品契约歧义
-
-以下事项已经从 README 与实现之间观察到差异，但尚不能判断是文档错误、刻意限制还是遗漏需求：
-
-| 事项 | 当前实现或表述 | 需要作者确认 |
-| --- | --- | --- |
-| PDF 页数 | PDF 只解析前 30 页，界面仍称“全文” | 保留限制并明确提示，还是读取完整论文 |
-| 书库迁移 | README 称整库导出/导入已可迁移，界面只有单篇笔记导出 | 修改文档，还是补齐既有需求 |
-| 技能事实来源 | 运行时内置 5 个技能，`skills/*.md` 只有 4 个且不会自动加载 | Markdown 文件是示例还是正式技能来源 |
-| 局域网信任 | 本地服务器监听所有网卡，转发入口可接受任意 HTTP(S) 目标 | 局域网是否默认可信，是否需要约束目标或访问者 |
+技能目录候选已拍板（`skills/*.md` 为正式来源），转入 Issue #5，不再作为候选。当前倾向是先探索“论文记录生命周期”，再让“阅读生成任务”通过它提交结果。作者 2026-09-03 决定先修缺陷、再做模块设计；具体 interface、不变量和迁移方式应通过 grilling 讨论。
 
 ## 测试与质量基线
 
 ### 当前事实
 
-- 现有检查主要覆盖示例 PDF 和一个合成章节场景。
-- Markdown 表头和 SSE 尾段问题已经有可执行的最小复现，并建立 GitHub Issue。
-- 阅读任务、IndexedDB、模型传输和服务器端点缺少系统性回归测试。
+- `npm test` 覆盖 SSE 流式边界、DashScope 地址改写、API 错误分支与 Markdown 渲染；解析行为由示例 PDF 和一个合成章节场景检查。
+- `tools/check_parser.mjs` 曾因 `package.json` 的 `type: module` 改变 `require()` 对 UMD 的返回值而无法运行，已于 2026-09-03 修复。
+- 阅读任务、IndexedDB、模型传输和服务器端点仍缺少系统性回归测试。
 
 ### 已讨论倾向
 
 - 优先使用 Node.js 与 Python 标准库提供的测试能力，避免仅为测试引入大型工具链。
 - 测试应通过公开 interface 验证行为，不为测试额外暴露内部实现。
-- 两个小 Bug 可以作为建立 `tests/` 和统一检查入口的第一批案例。
 
 ### 待拍板
 
-- 是否引入 `package.json` 统一测试命令，还是继续使用直接命令。
 - 何时增加 CI，以及 CI 应覆盖哪些平台和浏览器行为。
 - IndexedDB 与 DOM 交互使用真实浏览器测试，还是先通过小型 adapter 测试。
 
 ## 建议讨论顺序
 
-以下顺序仅是建议，尚未成为项目计划：
+作者 2026-09-03 决定先修缺陷、再做模块设计。据此调整后的顺序（仅建议，尚未成为项目计划）：
 
-1. 分别修复两个已复现的小 Bug，并建立最小回归测试。
-2. 使用 `grill-with-docs` 明确“论文记录生命周期”的职责、不变量和 seam。
-3. 将产品契约歧义集中交给作者确认。
-4. 根据实际使用需求决定是否制作 Windows 外壳原型。
-5. 在 module 稳定后重新评估 TypeScript、测试工具和 CI。
+1. 缺陷修复优先：PDF 全文解析、DashScope 多段区域域名支持与 `check_parser` 修复已于 2026-09-03 完成；其余缺陷经 Issue #4–#8 跟踪，作者决定暂不修复。
+2. 使用 grilling 明确“论文记录生命周期”的职责、不变量和 seam。
+3. 安排 Issue #4–#8 的处理时机，其中 #5（技能来源）涉及服务端加载入口的设计。
+4. 在 module 稳定后重新评估 TypeScript、测试工具和 CI；Windows 外壳在痛点出现后再议。
 
-任何事项拍板后，应从本文移出：领域术语进入 `CONTEXT.md`，难以逆转且存在真实取舍的决定进入 ADR，可执行工作进入 GitHub Issue，当前进度进入 `docs/status/current.md`。
+## 已移出（2026-09-03 拍板）
+
+- 产品契约歧义四项全部拍板：PDF 取消 30 页限制（已实现）；整库导出/导入记录为 Issue #4；`skills/*.md` 为正式技能来源（Issue #5）；局域网信任见 [ADR-0003](../adr/0003-lan-fully-trusted.md)。
+- `package.json` 统一测试命令已落地（`npm test`）。
+- DashScope 主机正则已放宽支持多段区域域名（含回归测试）。

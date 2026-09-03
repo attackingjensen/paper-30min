@@ -4,7 +4,7 @@
 
 ## 当前目标
 
-在不主动扩展作者需求的前提下，修复已确认缺陷，补齐工程验证，并逐步改善现有功能的可靠性与 module depth。`steven123397/dev` 是协作开发分支；`main` 由项目作者主导维护，协作方拥有同等推送权限。
+在作者已拍板的方向上先修缺陷、再做模块设计，不主动扩展作者需求。`steven123397/dev` 是协作开发分支；`main` 由项目作者主导维护，协作方拥有同等推送权限。
 
 ## 已实现能力
 
@@ -15,40 +15,32 @@
 - 在本地书库中保存论文、精读结果、论文问答和阅读进度。
 - 支持 Markdown、LaTeX 公式、连续阅读统计和单篇笔记导出。
 - PDF 对照阅读、按章节或全文的独立翻译、论文整理与回想卡片。
-- 阿里云百炼（DashScope）地址自动改写为 `/compatible-mode/v1`，用户可直接粘贴控制台里的裸域名。
+- 阿里云百炼（DashScope）地址自动改写为 `/compatible-mode/v1`，支持裸域名与 `dashscope-intl`、`dashscope-vpc`、`dashscope-cn-beijing` 等多段区域域名。
+- PDF 解析覆盖完整论文（2026-09-03 取消前 30 页限制），与界面“全文”表述一致。
 - 提供示例论文、mock 模型和解析器检查脚本。
 
 ## 工程基线
 
 - 运行栈为原生 JavaScript 前端与 Python 标准库本地服务器，无前端构建步骤。
-- `npm test` 是统一测试入口，串起 `node --test`（自动发现 `tests/*.test.mjs`）与 `tools/check_markdown.mjs`。`tools/check_parser.mjs` 没有断言、只输出 JSON 供人工查看，因此不在门禁内。
-- 示例 PDF 解析检查和 Python 语法编译检查通过；PDF.js 会报告标准字体资源警告。
-- 自动化验证覆盖解析器、SSE 流式传输、Markdown 表格渲染与公式边界、DashScope 地址改写和 API 错误分支的关键边界；阅读任务、持久化、模型传输的其余行为和 Markdown 渲染仍缺少系统性回归测试。
+- `npm test` 是统一测试入口，串起 `node --test`（自动发现 `tests/*.test.mjs`，当前 17 个测试）与 `tools/check_markdown.mjs`。`tools/check_parser.mjs` 没有断言、只输出 JSON 供人工查看，因此不在门禁内。
+- 示例 PDF 解析检查和 Python 语法编译检查通过；PDF.js 会报告标准字体资源警告。`check_parser.mjs` 曾因 `package.json` 的 `type: module` 使 `require()` 返回空模块命名空间而无法加载 UMD，2026-09-03 修复：改为依赖 UMD 自行注册 `globalThis.pdfjsLib` / `globalThis.pdfjsWorker`（Node 下 fake worker 依赖后者）。
+- 自动化验证覆盖解析器、SSE 流式传输、Markdown 表格渲染与公式边界、DashScope 地址改写（含多段区域域名与伪装域名负例）和 API 错误分支的关键边界；阅读任务、持久化、模型传输的其余行为和 Markdown 渲染仍缺少系统性回归测试。
 - 已配合 `tools/mock_llm.py` 在浏览器中做过一次端到端验证：页面加载零控制台错误，示例论文解析出 6 个章节，PDF 取回 200；直接调用 `chat()` 得到 15 次增量 `onDelta`、长度按 18 字符单调累积、253 字符全文结尾与 mock 源码逐字一致；UI 精读流程落库 392 字符摘要，结尾同样逐字一致。合并双方的改动（表格 `<thead>` 与 `isLikelyMath`）在浏览器中确认互不干扰。
 - 该次验证的边界需明确记录：交互由 `element.click()` 派发而非真实指针事件（内置浏览器视口处于 hidden），focus、hover 与键盘路径未覆盖；未做任何视觉确认，MathJax 实际排版、PDF 页面绘制与 CSS 布局均未验证；回忆卡与翻译两个标签页仅确认存在、未实际操作。
-- 已建立 GitHub Issues、triage 标签、领域词汇表与 ADR 结构。
+- 已建立 GitHub Issues、triage 标签、领域词汇表与 ADR 结构；局域网信任假设由 ADR-0003 接受。
 
 ## 进行中事项
 
-- 本分支已合并 `main`（`9764c6b`），无冲突，`npm test` 全绿。`main` 现已是本分支祖先，可直接快进。
-- PR #3 含 7 个提交、`mergeable` 为真，尚未选定合并方式。squash 与 merge commit 均已确认零冲突风险；rebase 会丢弃合并提交 `4c044fa` 并把 6 个原始提交逐个重放到 `9764c6b`，其中三个提交与 `main` 改动了同样三个文件，是否冲突未实测。
-- “论文记录生命周期”是当前首选 deepening 候选，尚未进入设计或实现阶段。
-- [待决技术与产品事项](../draft/2026-09-02-open-decisions.md) 汇总了已讨论但尚未接受的建议与问题。
+- 2026-09-03 与作者集中拍板：方向为先修缺陷、再做模块设计；PDF 解析取消页数限制；DashScope 正则放宽支持多段区域域名；局域网视为完全可信；Windows 外壳缓议；整库迁移与技能来源等转入 Issue。
+- PR #3 已以 merge commit（`107d1b2`）合入 `main`，未采用 squash 或 rebase；`npm test` 全绿（17 个测试与 Markdown 检查全部通过）。
+- 新增 Issue #4（整库导出/导入，暂缓）、#5（`skills/*.md` 为运行时技能正式来源）、#6（GBK 控制台崩溃）、#7（mock 末尾未终止 SSE）、#8（书库视图渲染异常待复现），均带 `ready-for-agent` 标签。
+- “论文记录生命周期”是当前首选 deepening 候选，缺陷修复完成后进入设计；[待决技术与产品事项](../draft/2026-09-02-open-decisions.md) 汇总剩余未拍板内容。
 
 ## 待确认问题
 
-- PDF 只处理前 30 页是有意约束，还是需要向用户明确的当前限制。
-- README 中“整库导出/导入已可迁移”是文档错误，还是尚未闭环的既有需求。
-- `skills/*.md` 是示例资料，还是应成为运行时技能的事实来源。
-- 局域网访问是否默认处于完全可信环境。
-- Windows 应用外壳是否进入未来规划；当前未作决定。
-- `endpoint()` 的 DashScope 主机正则为 `^dashscope(-\w+)?\.aliyuncs\.com$`，`\w` 不含连字符，因此 `dashscope-intl` 与 `dashscope-vpc` 会被改写，而形如 `dashscope-cn-beijing` 的多段区域域名不会。是否存在此类端点需向作者确认，确认前不擅自放宽正则。
-- 书库视图曾同时渲染论文卡片与“没有符合当前筛选条件的论文。”，且点击「生成精读」后视图退回书库而非就地显示结果。精读数据已正确落库，故疑似重渲染或导航问题；仅观察到一次，需确认是否为 `main` 上的既有缺陷。
-- 在 GBK 控制台下直接运行 `python server.py` 会因启动横幅中的 emoji 抛 `UnicodeEncodeError` 而退出，`start.bat` 靠 `chcp 65001` 规避。是否需要让 `server.py` 自身对该场景健壮。
-- `tools/mock_llm.py` 的每个 SSE 事件都以 `\n\n` 结尾，因此无法复现“最后一个事件无换行”的场景，该路径目前只有单元测试覆盖。是否需要让 mock 支持不终止的末尾事件。
+- 无。原待作者确认的问题已于 2026-09-03 全部拍板：可执行工作进入 GitHub Issue（#4–#8），长期决定进入 ADR-0003，其余决定见待决事项草稿的“已移出”一节。
 
 ## 下一步
 
-1. 使用 `grill-with-docs` 明确“论文记录生命周期” module 的职责、不变量和 seam。
-2. 将需要作者判断的待确认问题集中反馈，不依据推测扩展产品功能。
-3. 选定 PR #3 的合并方式并合入 `main`。
+1. 使用 grilling 明确“论文记录生命周期” module 的职责、不变量和 seam（作者已确认缺陷修复后进入模块设计）。
+2. 安排 Issue #4–#8 的处理时机；其中 #5 涉及服务端技能加载入口与 `skills.js` 内置定义去留，需要先讨论设计再实现。
