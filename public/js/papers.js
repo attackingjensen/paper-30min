@@ -268,6 +268,35 @@ export async function applyResplit(paper, parseResult) {
 
 // ---------------- 书库与投影 ----------------
 
+// ---------------- 打卡 ----------------
+
+function dayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+/** 阅读活动日：导入论文与产生精读结果（语义见 CONTEXT.md「打卡」）。 */
+export function activityDays(paper) {
+  const days = [dayKey(paper.addedAt)];
+  for (const analysis of Object.values(paper.analyses || {})) {
+    if (analysis?.updatedAt) days.push(dayKey(analysis.updatedAt));
+  }
+  return days;
+}
+
+/** 连续阅读天数：从今天向前数连续天数；今天尚无活动时从昨天起算。 */
+export function streakDays(allPapers) {
+  const days = new Set();
+  for (const paper of allPapers) {
+    for (const day of activityDays(paper)) days.add(day);
+  }
+  let streak = 0;
+  const cursor = new Date();
+  if (!days.has(dayKey(cursor.getTime()))) cursor.setDate(cursor.getDate() - 1);
+  while (days.has(dayKey(cursor.getTime()))) { streak++; cursor.setDate(cursor.getDate() - 1); }
+  return streak;
+}
+
 /** 删除一条论文记录。 */
 export async function removeRecord(id) {
   await store.delete(id);

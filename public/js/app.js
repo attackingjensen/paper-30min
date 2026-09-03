@@ -67,30 +67,16 @@ function metadataTokens(paper) {
 }
 
 // ---------------- 打卡（连续天数） ----------------
-function dayKey(ts) {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-}
-
 function updateStreakBadge() {
-  const streak = computeStreak();
   const total = library.length;
-  const doneCount = library.reduce((n, p) => n + papers.readingParts(p).filter(s => p.analyses?.[s.id]?.text).length, 0);
-  const sectionCount = library.reduce((n, p) => n + papers.readingParts(p).length, 0);
-  $('#streak-badge').textContent = total ? `🔥 连续 ${streak} 天 · 已读 ${total} 篇 · 精读 ${doneCount}/${sectionCount} 节` : '';
-}
-
-function computeStreak() {
-  const days = new Set();
+  let doneCount = 0;
+  let sectionCount = 0;
   for (const p of library) {
-    days.add(dayKey(p.addedAt));
-    for (const a of Object.values(p.analyses || {})) if (a?.updatedAt) days.add(dayKey(a.updatedAt));
+    const progress = papers.readingProgress(p);
+    doneCount += progress.done;
+    sectionCount += progress.total;
   }
-  let streak = 0;
-  const d = new Date();
-  if (!days.has(dayKey(d.getTime()))) d.setDate(d.getDate() - 1); // 今天还没读，从昨天算起
-  while (days.has(dayKey(d.getTime()))) { streak++; d.setDate(d.getDate() - 1); }
-  return streak;
+  $('#streak-badge').textContent = total ? `🔥 连续 ${papers.streakDays(library)} 天 · 已读 ${total} 篇 · 精读 ${doneCount}/${sectionCount} 节` : '';
 }
 
 // ---------------- 书库视图 ----------------
@@ -135,7 +121,7 @@ async function refreshLibrary() {
     const card = document.createElement('div');
     card.className = 'paper-card';
     const defs = papers.readingParts(p);
-    const done = defs.filter(s => p.analyses?.[s.id]?.text).length;
+    const { done } = papers.readingProgress(p);
     card.innerHTML = `
       <div style="min-width:0;flex:1">
         <p class="pc-title"></p>
@@ -221,14 +207,13 @@ function switchTab(name) {
 
 function updateReaderMeta() {
   if (!current) return;
-  const defs = papers.readingParts(current);
-  const done = defs.filter(s => current.analyses?.[s.id]?.text).length;
+  const { done, total } = papers.readingProgress(current);
   const categories = papers.paperCategories(current);
   const tags = papers.paperTags(current);
   const details = [
     current.numPages ? `${current.numPages} 页` : '',
     `导入于 ${fmtDate(current.addedAt)}`,
-    `精读进度 ${done}/${defs.length}`,
+    `精读进度 ${done}/${total}`,
     ratingText(current.rating),
     categories.join(' · '),
     tags.length ? tags.map(tag => `#${tag}`).join(' ') : '',

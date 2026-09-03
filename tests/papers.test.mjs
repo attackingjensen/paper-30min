@@ -279,4 +279,52 @@ test('applyResplit keeps abstract results when the abstract is untouched', async
   assert.equal(paper.analyses['part-1'], undefined);
 });
 
+function daysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  d.setHours(12, 0, 0, 0);
+  return d.getTime();
+}
+
+test('activityDays derives reading days from the import and analysis timestamps', () => {
+  const paper = {
+    addedAt: daysAgo(2),
+    analyses: {
+      abstract: { text: 'x', updatedAt: daysAgo(1) },
+      'part-1': { text: 'y', updatedAt: daysAgo(0) },
+    },
+  };
+  assert.equal(new Set(papers.activityDays(paper)).size, 3);
+});
+
+test('streakDays counts consecutive reading days including today', () => {
+  const allPapers = [
+    { addedAt: daysAgo(0), analyses: {} },
+    { addedAt: daysAgo(1), analyses: {} },
+    { addedAt: daysAgo(2), analyses: {} },
+  ];
+  assert.equal(papers.streakDays(allPapers), 3);
+});
+
+test('streakDays starts from yesterday when today has no activity yet', () => {
+  const allPapers = [
+    { addedAt: daysAgo(1), analyses: {} },
+    { addedAt: daysAgo(2), analyses: {} },
+  ];
+  assert.equal(papers.streakDays(allPapers), 2);
+});
+
+test('streakDays stops at a gap', () => {
+  const allPapers = [
+    { addedAt: daysAgo(0), analyses: {} },
+    { addedAt: daysAgo(2), analyses: {} },
+  ];
+  assert.equal(papers.streakDays(allPapers), 1);
+});
+
+test('streakDays is zero for an empty library', () => {
+  assert.equal(papers.streakDays([]), 0);
+});
+
+
 
