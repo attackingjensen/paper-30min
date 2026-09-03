@@ -3,7 +3,12 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 const require = createRequire(import.meta.url);
-globalThis.pdfjsLib = require('../public/vendor/pdf.min.js');
+// UMD 构建会自行把 pdfjsLib / pdfjsWorker 挂到 globalThis；package.json 声明
+// type:module 后，require() 返回的是空的模块命名空间对象，不能用来覆盖全局。
+require('../public/vendor/pdf.min.js');
+// Node 环境没有真正的 Worker，pdf.js 的 fake worker 依赖主线程暴露的
+// WorkerMessageHandler。
+require('../public/vendor/pdf.worker.min.js');
 
 const { parsePdfFile, splitTextToSections } = await import('../public/js/parser.js');
 pdfjsLib.GlobalWorkerOptions.workerSrc = resolve('public/vendor/pdf.worker.min.js');
