@@ -168,10 +168,11 @@ export function getSkill(id) {
 }
 
 export function buildPrompt(skill, title, content, section = '') {
+  // 论文标题与原文可能含 $&、$' 等替换模式，字符串替换值会解释它们，须用函数按字面注入。
   return skill.prompt
-    .replaceAll('{title}', title)
-    .replaceAll('{section}', section)
-    .replaceAll('{content}', content);
+    .replaceAll('{title}', () => title)
+    .replaceAll('{section}', () => section)
+    .replaceAll('{content}', () => content);
 }
 
 /** 解析 .md 技能文件：支持 YAML frontmatter（name/description/section），正文为提示词 */

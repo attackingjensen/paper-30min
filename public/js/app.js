@@ -327,11 +327,13 @@ async function generateSection(sectionId, { silent = false } = {}) {
   setCardStatus(sectionId, '生成中…', '');
 
   aborter = new AbortController();
+  // 中断保存必须用原始 Markdown；body.textContent 是渲染后的纯文本，会丢失格式。
+  let streamed = '';
   try {
     const text = await api.chat([{ role: 'user', content: prompt }], {
       stream: true,
       signal: aborter.signal,
-      onDelta: full => { renderMarkdownInto(body, full); },
+      onDelta: full => { streamed = full; renderMarkdownInto(body, full); },
     });
     body.classList.remove('cursor');
     if (!text.trim()) throw new Error('模型未返回内容');
@@ -344,7 +346,7 @@ async function generateSection(sectionId, { silent = false } = {}) {
   } catch (err) {
     body.classList.remove('cursor');
     const aborted = err.name === 'AbortError';
-    const partial = body.textContent.trim();
+    const partial = streamed.trim();
     if (aborted && partial.length > 60) {
       await papers.saveAnalysis(current, sectionId, partial + '\n\n> ⚠️ 生成被中断，内容为部分结果。');
       setCardStatus(sectionId, '⚠ 已停止（保留部分）', 'err');
@@ -824,9 +826,10 @@ function buildChatContext(p) {
     const t = p.sections?.[def.id]?.trim();
     if (t) parts.push(`\n===== ${def.label} =====\n${truncate(t, cap)}`);
   }
+  // 函数形式替换：标题与上下文按字面注入，避免 $ 模式被替换值解释。
   return CHAT_SYSTEM_TEMPLATE
-    .replaceAll('{title}', p.title)
-    .replaceAll('{content}', parts.join('\n').slice(0, 24000));
+    .replaceAll('{title}', () => p.title)
+    .replaceAll('{content}', () => parts.join('\n').slice(0, 24000));
 }
 
 function renderChat() {
