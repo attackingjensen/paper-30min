@@ -41,7 +41,9 @@ export function endpoint(s, path) {
 
   // 阿里云百炼（DashScope）的 OpenAI 兼容接口在 /compatible-mode/v1，裸域名或
   // 文档里的原生 API 地址都走不通，统一改写以便用户直接粘贴控制台地址。
-  if (/^dashscope(-\w+)?\.aliyuncs\.com$/i.test(url.hostname)
+  // 主机允许带连字符的后缀，覆盖 dashscope-intl、dashscope-vpc 以及
+  // dashscope-cn-beijing 这类多段区域域名。
+  if (/^dashscope(-[\w-]+)?\.aliyuncs\.com$/i.test(url.hostname)
       && !/^\/compatible-mode(\/|$)/i.test(url.pathname)) {
     url.pathname = '/compatible-mode/v1';
   }

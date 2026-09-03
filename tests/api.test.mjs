@@ -78,6 +78,20 @@ test('endpoint rewrites the international DashScope host', () => {
   );
 });
 
+test('endpoint rewrites multi-segment DashScope region hosts', () => {
+  assert.equal(
+    endpoint({ baseUrl: 'https://dashscope-cn-beijing.aliyuncs.com' }, '/chat/completions'),
+    'https://dashscope-cn-beijing.aliyuncs.com/compatible-mode/v1/chat/completions',
+  );
+});
+
+test('endpoint does not rewrite hosts that merely embed the DashScope name', () => {
+  assert.equal(
+    endpoint({ baseUrl: 'https://dashscope.aliyuncs.com.attacker.com' }, '/chat/completions'),
+    'https://dashscope.aliyuncs.com.attacker.com/v1/chat/completions',
+  );
+});
+
 test('endpoint leaves non-DashScope hosts untouched', () => {
   assert.equal(
     endpoint({ baseUrl: 'https://api.deepseek.com/v1' }, '/chat/completions'),
