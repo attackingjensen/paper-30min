@@ -23,9 +23,9 @@
 ## 工程基线
 
 - 运行栈为原生 JavaScript 前端与 Python 标准库本地服务器，无前端构建步骤。
-- `npm test` 是统一测试入口，串起 `node --test`（自动发现 `tests/*.test.mjs`，当前 58 个测试）与 `tools/check_markdown.mjs`。`tools/check_parser.mjs` 没有断言、只输出 JSON 供人工查看，因此不在门禁内。`tests/skills.test.mjs` 含「内置兜底技能与 skills/*.md 逐字一致」的同步守卫——修改技能文件必须同步 `skills.js` 兜底副本，否则门禁失败。`tests/mock_llm.test.mjs` 会真实启动 `tools/mock_llm.py` 验证 SSE 字节流形态，无 python 环境时自动跳过。
+- `npm test` 是统一测试入口，串起 `node --test`（自动发现 `tests/*.test.mjs`，当前 79 个测试）与 `tools/check_markdown.mjs`。`tools/check_parser.mjs` 没有断言、只输出 JSON 供人工查看，因此不在门禁内。`tests/skills.test.mjs` 含「内置兜底技能与 skills/*.md 逐字一致」的同步守卫——修改技能文件必须同步 `skills.js` 兜底副本，否则门禁失败。`tests/mock_llm.test.mjs` 会真实启动 `tools/mock_llm.py` 验证 SSE 字节流形态，无 python 环境时自动跳过。
 - 示例 PDF 解析检查和 Python 语法编译检查通过；PDF.js 会报告标准字体资源警告。`check_parser.mjs` 曾因 `package.json` 的 `type: module` 使 `require()` 返回空模块命名空间而无法加载 UMD，2026-09-03 修复：改为依赖 UMD 自行注册 `globalThis.pdfjsLib` / `globalThis.pdfjsWorker`（Node 下 fake worker 依赖后者）。
-- 自动化验证覆盖解析器、SSE 流式传输、Markdown 表格渲染与公式边界、DashScope 地址改写（含多段区域域名与伪装域名负例）和 API 错误分支的关键边界；阅读任务、持久化、模型传输的其余行为和 Markdown 渲染仍缺少系统性回归测试。
+- 自动化验证覆盖解析器、SSE 流式传输、Markdown 表格渲染与公式边界、DashScope 地址改写（含多段区域域名与伪装域名负例）和 API 错误分支的关键边界；阅读生成任务的中断、离开、并发边界与批量编排经 `generation.js` 公开接口有 Node 回归（21 例）；持久化、模型传输的其余行为和 Markdown 渲染仍缺少系统性回归测试。
 - 已配合 `tools/mock_llm.py` 在浏览器中做过一次端到端验证：页面加载零控制台错误，示例论文解析出 6 个章节，PDF 取回 200；直接调用 `chat()` 得到 15 次增量 `onDelta`、长度按 18 字符单调累积、253 字符全文结尾与 mock 源码逐字一致；UI 精读流程落库 392 字符摘要，结尾同样逐字一致。合并双方的改动（表格 `<thead>` 与 `isLikelyMath`）在浏览器中确认互不干扰。
 - 该次验证的边界需明确记录：交互由 `element.click()` 派发而非真实指针事件（内置浏览器视口处于 hidden），focus、hover 与键盘路径未覆盖；未做任何视觉确认，MathJax 实际排版、PDF 页面绘制与 CSS 布局均未验证；回忆卡与翻译两个标签页仅确认存在、未实际操作。
 - 已建立 GitHub Issues、triage 标签、领域词汇表与 ADR 结构；局域网信任假设由 ADR-0003 接受。
@@ -40,6 +40,7 @@
 - Issue #8 已关闭（2026-09-04，commit `18841ba`）：两个原始现象静态+浏览器实测双重确认不可复现、当前代码不可达（现象 1 文案自 9764c6b 才存在于 dev 线，非 main 既有缺陷；原始观测推测为缓存旧 app.js 或误触 `#brand-home`）。实测找到并修复同缝 4 个缺陷：`closePaper` 统一中断精读/问答生成并等收尾后再刷新书库；`generateSection`/`sendChat` 捕获论文引用防 `current` 置 null 崩坏；`generateAll` 守卫 + try/finally 修复按钮永久卡死；问答中断不再落库错误消息。Chrome CDP 复测（单节/批量中断返回、立即重进、完整批量回归）console 零异常，`npm test` 50 个测试全绿。
 - Issue #6 已修复并关闭（2026-09-04）：GBK 控制台直接运行 `python server.py` 时横幅 emoji 抛 `UnicodeEncodeError` 致进程退出；修复为 `main()` 启动时对 stdout/stderr 做 `reconfigure(errors='replace')`（保持原编码，emoji 降级为 `?`；带 `hasattr` 守卫覆盖 pythonw 等无流/嵌入式场景）。GBK 模拟（`PYTHONIOENCODING=gbk`）、UTF-8 终端 emoji 原样保留、stdout=None 场景均实测通过，HTTP 服务正常；`npm test` 50 个测试全绿。
 - Issue #7 已修复（2026-09-04）：`tools/mock_llm.py` 新增 `--unterminated-tail`——末尾内容事件不带 `\n\n`、不发 `data: [DONE]`，直接关连接，精确复现「最后一个 data 行没有换行符」场景（与 `tests/api.test.mjs` 单测形态一致）；同时新增 `--port`（0 = 系统分配）并给启动横幅加 `flush=True`（修复 stdout 被管道捕获时缓冲不可见，否则自动化测试拿不到端口）。新增 `tests/mock_llm.test.mjs` 真实启动 mock 两条模式：断言原始字节流尾部形态，并用前端 `chat()` 走完残留 buf 收尾解析、确认收全文本；curl 冒烟字节级确认尾部无换行无 `[DONE]`。`npm test` 52 个测试全绿；浏览器端走查待作者。
+- Issue #12 已完成（2026-09-04）：「阅读生成任务」module 落地。设计经两轮 grilling 全部拍板（[ADR-0005](../adr/0005-generation-task-module.md) accepted，CONTEXT.md 补「生成任务 / 批量生成 / 中断部分结果」术语）：新建 `public/js/generation.js` 统一拥有精读生成任务的身份（唯一 id + 归属键，任务持有论文引用、落库不读全局 `current`）、状态机（`running → completed | failed | cancelling → cancelled`，`done` 只 resolve 不 reject，取消幂等）、增量流归属（任务累积缓冲 + 调用方注入 `onUpdate` sink）、中断部分结果规则（trim 后 >60 字符拼警示标记经 `papers.saveAnalysis` 落库，逐字保持现状）与批量生成编排（串行、失败续跑、无原文跳过、取消不推进，UI 推进经 `onSectionStart`/`onSectionSettled` 钩子）。同论文精读任务互斥、重复启动拒绝并 toast（修复旧「共享 aborter 被覆盖产生孤儿任务」缺陷，为唯一有意的边缘行为变化）；问答改用独立 `chatAborter` 消除与精读的共享 aborter；翻译/回忆卡未动。`app.js` 收编 `aborter`/`inflightStream`/`generating` 三个全局，`generation.init({ chat, loadSettings })` 在启动时接线。新增 `tests/generation.test.mjs` 21 例 Node 回归（完成/失败/中断阈值/幂等/互斥/cancelling 占线/提示词截断组装/批量顺序与并发度 1/批量取消/离开再进入/界面回调与落库错误隔离）；code-review 双轴复核后修复「done resolve-only 契约未守住」与「批量按钮保底恢复」两处回归风险。`npm test` 79 个测试全绿；浏览器端走查待作者。
 - Issue #4 已完成（2026-09-04）：整库导出/导入落地。作者拍板五项设计：JSON 信封（格式标识 + 版本号）、导出包含全部 PDF（base64）、设置导出但清空 apiKey、导入按 id 合并（同 id 跳过并报告）、自定义技能同 id 以导入为准。实现：`papers.js` 拥有信封格式与论文序列化（`exportLibrary`/`parseLibraryFile`/`importLibrary`，Blob↔base64 走 arrayBuffer 路径、Node 可测）；`skills.js` 增 `importCustomSkills`；`api.js` 增 `mergeImportedSettings`（空 apiKey 不覆盖本地密钥）；书库工具栏增「导出书库 / 导入书库」。新增 6 个回归测试（导出信封、PDF 往返、id 合并、格式校验、设置合并、技能合并），`npm test` 58 个测试全绿；浏览器端走查待作者。至此 Issue #4–#11 全部关闭。
 - “论文记录生命周期”设计已接受（ADR-0004），是当前首选实施项；[待决技术与产品事项](../draft/2026-09-02-open-decisions.md) 汇总剩余未拍板内容。
 
@@ -52,5 +53,5 @@
 作者安排（2026-09-03）：以下各项由作者逐个开启独立对话推进，会话内不要自行启动下一项；本批改动合入 `main` 的 PR 暂缓。
 
 1. 浏览器端走查 `papers.js` 迁移与 Issue #10 修复：示例论文导入、精读生成（含中断后部分结果的 Markdown 保留）、重切分作废提示与打卡显示；一并走查 Issue #5：技能列表从文件加载、编辑/导入/恢复默认、改 `skills/*.md` 后刷新生效；Issue #8 修复（`18841ba`）已经 Chrome CDP 实测验证，可并入本次走查。
-2. 设计「阅读生成任务」module（Issue #12：先 grilling 定设计——任务 identity、状态、取消、增量归属；经 `saveAnalysis` 缝与 `papers.js` 衔接；`app.js` 现有 `current/aborter/inflightStream/generating` 生成态是收编对象）。
+2. 浏览器端走查 Issue #12：单节与批量生成、停止按钮、中断部分结果保留（>60 字符带警示标记）、生成中离开再进入；边缘行为变化确认——生成中点击其它节「生成精读」按钮现在被 toast 拒绝（原为共享 aborter 被覆盖的孤儿任务缺陷）。
 3. 浏览器端走查整库导出/导入（可与第 1 项一并进行：导出 → 换浏览器或清除站点数据后导入 → 核对论文、PDF、自定义技能、设置齐备且已有记录不被覆盖；#7 的端到端验证同理：`python tools/mock_llm.py --unterminated-tail` 启动后跑一次精读，确认未终止末尾事件下结果完整落库）。

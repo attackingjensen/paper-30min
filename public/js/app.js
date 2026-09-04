@@ -1,9 +1,10 @@
 // 主逻辑：书库 / 精读 / 原文 / 问答 / 设置 / 技能库
 import * as papers from './papers.js';
 import * as api from './api.js';
+import * as generation from './generation.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
 import {
-  effectiveSkills, getSkill, buildPrompt, saveCustomSkill, resetSkill,
+  effectiveSkills, getSkill, saveCustomSkill, resetSkill,
   parseSkillFile, loadCustomSkills, loadSkills, importCustomSkills, CHAT_SYSTEM_TEMPLATE,
 } from './skills.js';
 import { parseArxivHtml, parsePdfFile, parsePlainText } from './parser.js';
@@ -18,9 +19,8 @@ function escapeTemplate(value) {
 // ---------------- 全局状态 ----------------
 let library = [];
 let current = null;          // 当前打开的论文
-let aborter = null;          // 生成中断控制器
-let inflightStream = null;   // 进行中的精读生成 Promise，closePaper 等待其收尾
-let generating = false;
+let chatAborter = null;      // 问答中断控制器（独立于精读生成任务）
+let activeBatch = null;      // 进行中的批量生成句柄，停止按钮经它取消
 let editingSkillId = null;
 let digestSection = 'abstract';
 let translateSection = 'abstract';
@@ -191,15 +191,17 @@ function openPaper(p) {
 
 async function closePaper() {
   destroyPdfViewer();
-  // 精读/问答共用的 aborter 一并中断：离开即取消进行中的生成，部分结果由 generateSection 落库。
-  aborter?.abort();
+  // 离开即取消进行中的生成：生成任务经 cancelForPaper 中断，问答/翻译/回忆卡各自中断。
+  const paper = current;
+  const settling = paper ? generation.cancelForPaper(paper) : null;
+  chatAborter?.abort();
   translateAborter?.abort();
   recallAborter?.abort();
   current = null;
   $('#view-reader').hidden = true;
   $('#view-library').hidden = false;
-  // 等待进行中的生成收尾（中断保存完成）再刷新书库，避免读到落库前的旧快照。
-  if (inflightStream) await inflightStream.catch(() => {});
+  // 等待生成任务收尾（中断保存完成）再刷新书库，避免读到落库前的旧快照。
+  if (settling) await settling.catch(() => {});
   refreshLibrary();
 }
 
@@ -312,114 +314,104 @@ function truncate(text, max) {
   return text.slice(0, max) + '\n\n[……原文过长，已截断……]';
 }
 
-function generateSection(sectionId, options = {}) {
-  // 登记进行中的生成：closePaper 等待它收尾，保证中断保存先于书库刷新完成。
-  const promise = runSectionGeneration(sectionId, options);
-  inflightStream = promise;
-  const cleanup = () => { if (inflightStream === promise) inflightStream = null; };
-  promise.then(cleanup, cleanup);
-  return promise;
+// 生成任务的生命周期、取消与落库归 generation.js（ADR-0005）；此处只做 DOM 呈现。
+// 卡片随 renderDigest 重建，返回的渲染目标可能已脱离 DOM（批量推进中用户切换精读部分）。
+function digestCardRefs(sectionId) {
+  const card = $(`#card-${sectionId}`);
+  if (!card) return null;
+  return {
+    body: card.querySelector('[data-role="body"]'),
+    btn: card.querySelector('[data-role="gen"]'),
+  };
 }
 
-async function runSectionGeneration(sectionId, { silent = false } = {}) {
-  // 捕获当前论文引用：生成期间用户可能返回书库（current 置 null），结果仍须落到原论文。
-  const paper = current;
-  const def = papers.readingParts(paper).find(section => section.id === sectionId);
-  const skill = getSkill(def?.skillId || sectionId);
-  const content = paper.sections?.[sectionId]?.trim();
-  if (!content) {
-    if (!silent) toast('该章节没有原文，请先在卡片中粘贴原文', true);
-    return false;
+function generateSection(sectionId) {
+  const refs = digestCardRefs(sectionId);
+  const started = generation.startSection(current, sectionId, {
+    onStart: () => markCardGenerating(sectionId, refs.body, refs.btn),
+    onUpdate: full => renderMarkdownInto(refs.body, full),
+    onSettled: result => settleDigestCard(sectionId, result, refs),
+  });
+  if (!started.accepted) {
+    toast(started.reason === 'no-source' ? '该章节没有原文，请先在卡片中粘贴原文' : '已有生成任务进行中', true);
   }
-  const { maxChars } = api.loadSettings();
-  const prompt = buildPrompt(skill, paper.title, truncate(content, maxChars), def?.label || sectionId);
+}
 
-  const card = $(`#card-${sectionId}`);
-  const body = card.querySelector('[data-role="body"]');
-  const btn = card.querySelector('[data-role="gen"]');
+function markCardGenerating(sectionId, body, btn) {
   btn.disabled = true;
   body.classList.remove('empty-hint');
   body.classList.add('cursor');
   setCardStatus(sectionId, '生成中…', '');
+}
 
-  aborter = new AbortController();
-  // 中断保存必须用原始 Markdown；body.textContent 是渲染后的纯文本，会丢失格式。
-  let streamed = '';
-  try {
-    const text = await api.chat([{ role: 'user', content: prompt }], {
-      stream: true,
-      signal: aborter.signal,
-      onDelta: full => { streamed = full; renderMarkdownInto(body, full); },
-    });
-    body.classList.remove('cursor');
-    if (!text.trim()) throw new Error('模型未返回内容');
-    renderMarkdownInto(body, text);
-    await papers.saveAnalysis(paper, sectionId, text);
+function settleDigestCard(sectionId, result, { body, btn }, { silent = false } = {}) {
+  body.classList.remove('cursor');
+  if (result.status === 'completed') {
+    renderMarkdownInto(body, result.text);
     setCardStatus(sectionId, `✓ ${fmtDate(Date.now())}`, 'ok');
     btn.textContent = '重新生成';
     updateReaderMeta();
-    return true;
-  } catch (err) {
-    body.classList.remove('cursor');
-    const aborted = err.name === 'AbortError';
-    const partial = streamed.trim();
-    if (aborted && partial.length > 60) {
-      await papers.saveAnalysis(paper, sectionId, partial + '\n\n> ⚠️ 生成被中断，内容为部分结果。');
-      setCardStatus(sectionId, '⚠ 已停止（保留部分）', 'err');
-    } else {
-      body.classList.add('empty-hint');
-      body.innerHTML = aborted ? '已停止生成。' : `生成失败：${err.message}`;
-      setCardStatus(sectionId, aborted ? '已停止' : '失败', 'err');
-      if (!silent) toast(err.message, true);
-    }
-    return false;
-  } finally {
-    btn.disabled = false;
-    aborter = null;
+  } else if (result.status === 'cancelled' && result.saved) {
+    setCardStatus(sectionId, '⚠ 已停止（保留部分）', 'err');
+  } else {
+    body.classList.add('empty-hint');
+    body.innerHTML = result.status === 'cancelled' ? '已停止生成。' : `生成失败：${result.error.message}`;
+    setCardStatus(sectionId, result.status === 'cancelled' ? '已停止' : '失败', 'err');
+    if (!silent) toast(result.error.message, true);
   }
+  btn.disabled = false;
 }
 
 async function generateAll() {
-  if (generating) return;
   if (!api.settingsReady()) {
     toast('请先在「设置」中配置 API', true);
     openSettingsModal();
     return;
   }
-  generating = true;
   const paper = current;
   const initialSection = digestSection;
-  $('#btn-gen-all').disabled = true;
-  $('#btn-stop').hidden = false;
-  // 用户可能在批量生成中返回书库（current 易主或置 null）：每轮迭代前守卫，
-  // 且任何异常都不能跳过 finishBatch，否则按钮永久卡死。
-  try {
-    for (const def of papers.readingParts(paper)) {
-      if (!generating || current !== paper) break;
+  const started = generation.startBatch(paper, {
+    onSectionStart(def) {
       digestSection = def.id;
       renderDigest();
-      await generateSection(def.id, { silent: true });
-    }
+      const refs = digestCardRefs(def.id);
+      return {
+        onStart: () => markCardGenerating(def.id, refs.body, refs.btn),
+        onUpdate: full => renderMarkdownInto(refs.body, full),
+      };
+    },
+    onSectionSettled(def, result) {
+      if (result.status === 'skipped') return;
+      const refs = digestCardRefs(def.id);
+      if (!refs) return;
+      settleDigestCard(def.id, result, refs, { silent: true });
+    },
+  });
+  if (!started.accepted) {
+    toast('已有生成任务进行中', true);
+    return;
+  }
+  activeBatch = started.batch;
+  $('#btn-gen-all').disabled = true;
+  $('#btn-stop').hidden = false;
+  // 任何异常都不能跳过按钮与章节的恢复，否则按钮永久卡死。
+  let result = null;
+  try {
+    result = await started.done;
   } finally {
-    const completed = generating && current === paper;
-    finishBatch();
+    activeBatch = null;
+    $('#btn-gen-all').disabled = false;
+    $('#btn-stop').hidden = true;
     digestSection = initialSection;
-    if (current === paper) {
-      renderDigest();
-      toast(completed ? '全部精读生成完毕' : '已停止');
-    }
+  }
+  if (current === paper) {
+    renderDigest();
+    toast(result.status === 'completed' ? '全部精读生成完毕' : '已停止');
   }
 }
 
 function stopGeneration() {
-  generating = false;
-  aborter?.abort();
-}
-
-function finishBatch() {
-  generating = false;
-  $('#btn-gen-all').disabled = false;
-  $('#btn-stop').hidden = true;
+  activeBatch?.cancel();
 }
 
 // ---------------- 回忆卡 ----------------
@@ -887,7 +879,7 @@ function appendChatBubble(role, content, extraClass = '') {
 async function sendChat() {
   const input = $('#chat-input');
   const q = input.value.trim();
-  if (!q || generating) return;
+  if (!q || activeBatch) return;
   // 捕获当前论文引用：问答期间用户可能返回书库（current 置 null）。
   const paper = current;
   input.value = '';
@@ -900,11 +892,11 @@ async function sendChat() {
     { role: 'system', content: buildChatContext(paper) },
     ...history,
   ];
-  aborter = new AbortController();
+  chatAborter = new AbortController();
   try {
     const text = await api.chat(messages, {
       stream: true,
-      signal: aborter.signal,
+      signal: chatAborter.signal,
       onDelta: full => { renderMarkdownInto(bubble, full); $('#chat-log').scrollTop = $('#chat-log').scrollHeight; },
     });
     renderMarkdownInto(bubble, text || '（无回复）');
@@ -919,7 +911,7 @@ async function sendChat() {
       await papers.appendChatMessage(paper, { role: 'assistant', content: `（出错：${err.message}）` });
     }
   } finally {
-    aborter = null;
+    chatAborter = null;
   }
 }
 
@@ -1407,6 +1399,7 @@ function bindEvents() {
 
 // ---------------- 启动 ----------------
 papers.init(papers.createIndexedDBStore());
+generation.init({ chat: api.chat, loadSettings: api.loadSettings });
 bindEvents();
 const skillsReady = loadSkills();
 refreshLibrary();
