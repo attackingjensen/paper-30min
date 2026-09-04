@@ -220,6 +220,11 @@ def lan_ip():
 
 
 def main():
+    # GBK 等窄编码控制台下 emoji 不可编码，降级为 '?' 而非崩溃；
+    # pythonw 等场景下流为 None 或无 reconfigure，直接跳过
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='replace')
     with Server(('0.0.0.0', PORT), Handler) as httpd:
         local = f'http://127.0.0.1:{PORT}'
         lan = f'http://{lan_ip()}:{PORT}'
