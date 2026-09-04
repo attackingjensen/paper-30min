@@ -19,6 +19,7 @@ function escapeTemplate(value) {
 let library = [];
 let current = null;          // 当前打开的论文
 let aborter = null;          // 生成中断控制器
+let inflightStream = null;   // 进行中的精读生成 Promise，closePaper 等待其收尾
 let generating = false;
 let editingSkillId = null;
 let digestSection = 'abstract';
@@ -188,13 +189,17 @@ function openPaper(p) {
   initPdfViewer();
 }
 
-function closePaper() {
+async function closePaper() {
   destroyPdfViewer();
+  // 精读/问答共用的 aborter 一并中断：离开即取消进行中的生成，部分结果由 generateSection 落库。
+  aborter?.abort();
   translateAborter?.abort();
   recallAborter?.abort();
   current = null;
   $('#view-reader').hidden = true;
   $('#view-library').hidden = false;
+  // 等待进行中的生成收尾（中断保存完成）再刷新书库，避免读到落库前的旧快照。
+  if (inflightStream) await inflightStream.catch(() => {});
   refreshLibrary();
 }
 
@@ -307,16 +312,27 @@ function truncate(text, max) {
   return text.slice(0, max) + '\n\n[……原文过长，已截断……]';
 }
 
-async function generateSection(sectionId, { silent = false } = {}) {
-  const def = papers.readingParts(current).find(section => section.id === sectionId);
+function generateSection(sectionId, options = {}) {
+  // 登记进行中的生成：closePaper 等待它收尾，保证中断保存先于书库刷新完成。
+  const promise = runSectionGeneration(sectionId, options);
+  inflightStream = promise;
+  const cleanup = () => { if (inflightStream === promise) inflightStream = null; };
+  promise.then(cleanup, cleanup);
+  return promise;
+}
+
+async function runSectionGeneration(sectionId, { silent = false } = {}) {
+  // 捕获当前论文引用：生成期间用户可能返回书库（current 置 null），结果仍须落到原论文。
+  const paper = current;
+  const def = papers.readingParts(paper).find(section => section.id === sectionId);
   const skill = getSkill(def?.skillId || sectionId);
-  const content = current.sections?.[sectionId]?.trim();
+  const content = paper.sections?.[sectionId]?.trim();
   if (!content) {
     if (!silent) toast('该章节没有原文，请先在卡片中粘贴原文', true);
     return false;
   }
   const { maxChars } = api.loadSettings();
-  const prompt = buildPrompt(skill, current.title, truncate(content, maxChars), def?.label || sectionId);
+  const prompt = buildPrompt(skill, paper.title, truncate(content, maxChars), def?.label || sectionId);
 
   const card = $(`#card-${sectionId}`);
   const body = card.querySelector('[data-role="body"]');
@@ -338,7 +354,7 @@ async function generateSection(sectionId, { silent = false } = {}) {
     body.classList.remove('cursor');
     if (!text.trim()) throw new Error('模型未返回内容');
     renderMarkdownInto(body, text);
-    await papers.saveAnalysis(current, sectionId, text);
+    await papers.saveAnalysis(paper, sectionId, text);
     setCardStatus(sectionId, `✓ ${fmtDate(Date.now())}`, 'ok');
     btn.textContent = '重新生成';
     updateReaderMeta();
@@ -348,7 +364,7 @@ async function generateSection(sectionId, { silent = false } = {}) {
     const aborted = err.name === 'AbortError';
     const partial = streamed.trim();
     if (aborted && partial.length > 60) {
-      await papers.saveAnalysis(current, sectionId, partial + '\n\n> ⚠️ 生成被中断，内容为部分结果。');
+      await papers.saveAnalysis(paper, sectionId, partial + '\n\n> ⚠️ 生成被中断，内容为部分结果。');
       setCardStatus(sectionId, '⚠ 已停止（保留部分）', 'err');
     } else {
       body.classList.add('empty-hint');
@@ -371,20 +387,28 @@ async function generateAll() {
     return;
   }
   generating = true;
+  const paper = current;
   const initialSection = digestSection;
   $('#btn-gen-all').disabled = true;
   $('#btn-stop').hidden = false;
-  for (const def of papers.readingParts(current)) {
-    if (!generating) break;
-    digestSection = def.id;
-    renderDigest();
-    await generateSection(def.id, { silent: true });
+  // 用户可能在批量生成中返回书库（current 易主或置 null）：每轮迭代前守卫，
+  // 且任何异常都不能跳过 finishBatch，否则按钮永久卡死。
+  try {
+    for (const def of papers.readingParts(paper)) {
+      if (!generating || current !== paper) break;
+      digestSection = def.id;
+      renderDigest();
+      await generateSection(def.id, { silent: true });
+    }
+  } finally {
+    const completed = generating && current === paper;
+    finishBatch();
+    digestSection = initialSection;
+    if (current === paper) {
+      renderDigest();
+      toast(completed ? '全部精读生成完毕' : '已停止');
+    }
   }
-  const completed = generating;
-  finishBatch();
-  digestSection = initialSection;
-  renderDigest();
-  toast(completed ? '全部精读生成完毕' : '已停止');
 }
 
 function stopGeneration() {
@@ -864,14 +888,16 @@ async function sendChat() {
   const input = $('#chat-input');
   const q = input.value.trim();
   if (!q || generating) return;
+  // 捕获当前论文引用：问答期间用户可能返回书库（current 置 null）。
+  const paper = current;
   input.value = '';
-  await papers.appendChatMessage(current, { role: 'user', content: q });
+  await papers.appendChatMessage(paper, { role: 'user', content: q });
   appendChatBubble('user', q);
   const bubble = appendChatBubble('assistant', '…');
 
-  const history = current.chat.slice(-12).map(m => ({ role: m.role, content: m.content }));
+  const history = paper.chat.slice(-12).map(m => ({ role: m.role, content: m.content }));
   const messages = [
-    { role: 'system', content: buildChatContext(current) },
+    { role: 'system', content: buildChatContext(paper) },
     ...history,
   ];
   aborter = new AbortController();
@@ -882,11 +908,16 @@ async function sendChat() {
       onDelta: full => { renderMarkdownInto(bubble, full); $('#chat-log').scrollTop = $('#chat-log').scrollHeight; },
     });
     renderMarkdownInto(bubble, text || '（无回复）');
-    await papers.appendChatMessage(current, { role: 'assistant', content: text });
+    await papers.appendChatMessage(paper, { role: 'assistant', content: text });
   } catch (err) {
     bubble.classList.add('err');
-    bubble.textContent = err.name === 'AbortError' ? '已停止。' : `出错了：${err.message}`;
-    await papers.appendChatMessage(current, { role: 'assistant', content: `（出错：${err.message}）` });
+    // 中断（含离开阅读视图）不落库错误消息；真实错误才写入问答记录。
+    if (err.name === 'AbortError') {
+      bubble.textContent = '已停止。';
+    } else {
+      bubble.textContent = `出错了：${err.message}`;
+      await papers.appendChatMessage(paper, { role: 'assistant', content: `（出错：${err.message}）` });
+    }
   } finally {
     aborter = null;
   }
