@@ -29,6 +29,7 @@
 ## 工程基线
 
 - `npm test` 是统一门禁，当前 79 个测试全部通过。
+- GitHub Actions CI（`.github/workflows/ci.yml`，Issue #14）在 push 与 PR 时运行：`windows-latest`（产品基准）与 `ubuntu-latest`（路径、文件名大小写等跨平台检查）矩阵，固定 Node 24 与 Python 3.11；门禁为 `npm test`、`server.py`/`tools/mock_llm.py`/`tools/make_sample_pdf.py` 的内存编译检查，以及 `tools/check_syntax.mjs` 对自有 JavaScript 的纯语法检查（覆盖未被测试导入的入口文件，排除 `public/vendor/`）；不生成或提交缓存与解析输出。
 - 自动化测试覆盖论文生命周期、书库迁移、技能加载、生成任务、SSE、模型地址与错误处理，以及 Markdown 关键边界。
 - 已使用真实 Edge 与慢速 mock 模型走查示例论文导入、PDF 显示、单节与批量生成、中断落库、技能编辑、整库迁移和论文问答；走查期间控制台无异常。
 - `tools/check_parser.mjs` 用于人工检查解析结果，不属于自动门禁；运行时仍会出现 PDF.js 标准字体资源警告。
@@ -37,7 +38,7 @@
 
 - PR #3 已合入 `main`。
 - GitHub Issue #1 至 #13 均已关闭。
-- Issue #14 跟踪 Windows 主导的最小 CI；Issue #15 在 CI 稳定后试点 `checkJs`。
+- Issue #14 的最小 CI 已在 `steven123397/dev` 实现，本地三步门禁（npm test、Python 编译检查、JS 语法检查）均验证通过；待推送后观察 GitHub Actions 干净检出下的实际运行再关闭。Issue #15 在 CI 稳定后试点 `checkJs`。
 - Issue #16 跟踪重切分作废/保留提示在正常 UI 流程不可达的产品决策；Issue #17 跟踪重切分粘贴区残留与标题计数文案两个小缺陷。
 - PR #3 之后的功能、修复与 deep module 工作保留在 `steven123397/dev`，暂不创建新的 PR。
 
@@ -49,7 +50,7 @@
 ## 后续讨论
 
 - Windows 应用外壳继续缓议。
-- CI 范围已转入 Issue #14；`checkJs` 小范围试点已转入 Issue #15，正式 TypeScript 迁移与前端构建步骤仍未决定。
+- CI 已由 Issue #14 落地（范围见工程基线）；`checkJs` 小范围试点已转入 Issue #15，正式 TypeScript 迁移与前端构建步骤仍未决定。
 - forwarding module 暂不实施；应先补服务器端行为测试，待转发策略复杂化、出现第二个调用场景或 Windows 外壳带来新职责后重新评估。
 - 其他未定建议统一见 [待决技术与产品事项](../draft/2026-09-02-open-decisions.md)。
-- 当前顺序为 Issue #14 → Issue #15，由作者分别安排新对话执行；Issue #16 是产品决策项，待作者拍板。
+- 当前顺序为 Issue #14（已实现，待推送验证）→ Issue #15，由作者分别安排新对话执行；Issue #16 是产品决策项，待作者拍板。

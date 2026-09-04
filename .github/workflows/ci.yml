@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest 是产品基准环境；ubuntu-latest 检查路径、文件名大小写与跨平台假设。
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run tests
+        run: npm test
+
+      # 内存编译检查，不生成 __pycache__ 等缓存文件。
+      - name: Python compile check
+        run: >-
+          python -c "import pathlib; files = ['server.py', 'tools/mock_llm.py', 'tools/make_sample_pdf.py']; [compile(pathlib.Path(f).read_text(encoding='utf-8'), f, 'exec') for f in files]; print('python compile check passed: ' + str(len(files)) + ' files')"
+
+      # 纯语法检查，不执行代码；覆盖未被测试导入的入口文件，排除 public/vendor/。
+      - name: JavaScript syntax check
+        run: node tools/check_syntax.mjs
