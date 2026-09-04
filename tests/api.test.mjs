@@ -12,7 +12,7 @@ globalThis.localStorage = {
   setItem: () => {},
 };
 
-const { chat, endpoint } = await import('../public/js/api.js');
+const { chat, endpoint, mergeImportedSettings } = await import('../public/js/api.js');
 
 function sseResponse(chunks) {
   const encoder = new TextEncoder();
@@ -156,4 +156,27 @@ test('chat extracts the message from a JSON error body', async () => {
     assert.match(err.message, /invalid api key/);
     return true;
   });
+});
+
+test('mergeImportedSettings merges fields but keeps the local apiKey when the import blanks it', () => {
+  const backup = globalThis.localStorage;
+  const backing = new Map();
+  globalThis.localStorage = {
+    getItem: key => backing.get(key) ?? null,
+    setItem: (key, value) => backing.set(key, String(value)),
+  };
+  try {
+    backing.set('pr.settings.v1', JSON.stringify({ baseUrl: 'https://old.example/v1', apiKey: 'secret-key', model: 'old-model' }));
+
+    assert.equal(mergeImportedSettings({ baseUrl: 'https://new.example/v1', apiKey: '', model: 'new-model' }), true);
+    const merged = JSON.parse(backing.get('pr.settings.v1'));
+    assert.equal(merged.apiKey, 'secret-key');
+    assert.equal(merged.baseUrl, 'https://new.example/v1');
+    assert.equal(merged.model, 'new-model');
+
+    assert.equal(mergeImportedSettings(null), false);
+    assert.equal(mergeImportedSettings('not-an-object'), false);
+  } finally {
+    globalThis.localStorage = backup;
+  }
 });

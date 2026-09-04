@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 import {
-  BUILTIN_SKILLS, buildPrompt, skillFromFile, fileSkillsFrom,
+  BUILTIN_SKILLS, buildPrompt, skillFromFile, fileSkillsFrom, importCustomSkills,
 } from '../public/js/skills.js';
 
 const skillsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills');
@@ -90,4 +90,27 @@ test('buildPrompt injects title, section and content literally despite $ replace
   assert.ok(prompt.includes(title));
   assert.ok(prompt.includes(section));
   assert.ok(prompt.includes(content));
+});
+
+test('importCustomSkills overwrites same ids, adds new ones, ignores non-string values', () => {
+  const backup = globalThis.localStorage;
+  const backing = new Map();
+  globalThis.localStorage = {
+    getItem: key => backing.get(key) ?? null,
+    setItem: (key, value) => backing.set(key, String(value)),
+  };
+  try {
+    backing.set('pr.skills.v1', JSON.stringify({ method: '旧提示词', abstract: '保留' }));
+
+    const stats = importCustomSkills({ method: '新提示词', part: '新增', broken: 42 });
+
+    assert.deepEqual(stats, { added: 1, overwritten: 1 });
+    assert.deepEqual(JSON.parse(backing.get('pr.skills.v1')), {
+      method: '新提示词',
+      abstract: '保留',
+      part: '新增',
+    });
+  } finally {
+    globalThis.localStorage = backup;
+  }
 });

@@ -4,7 +4,7 @@ import * as api from './api.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
 import {
   effectiveSkills, getSkill, buildPrompt, saveCustomSkill, resetSkill,
-  parseSkillFile, loadCustomSkills, loadSkills, CHAT_SYSTEM_TEMPLATE,
+  parseSkillFile, loadCustomSkills, loadSkills, importCustomSkills, CHAT_SYSTEM_TEMPLATE,
 } from './skills.js';
 import { parseArxivHtml, parsePdfFile, parsePlainText } from './parser.js';
 
@@ -1007,6 +1007,57 @@ function exportNotes() {
   URL.revokeObjectURL(a.href);
 }
 
+// ---------------- 整库导出 / 导入 ----------------
+async function exportLibrary() {
+  const btn = $('#btn-export-library');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '导出中…';
+  try {
+    const settings = api.loadSettings();
+    const json = await papers.exportLibrary({
+      skills: loadCustomSkills(),
+      // 密钥不随备份文件扩散：导出时清空，导入端不会用空值覆盖本地密钥。
+      settings: { ...settings, apiKey: '' },
+    });
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `论文精读书库-${fmtDate(Date.now())}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('书库已导出（API Key 未包含在内）');
+  } catch (err) {
+    toast('导出失败：' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function importLibraryFile(file) {
+  const btn = $('#btn-import-library');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '导入中…';
+  try {
+    const payload = papers.parseLibraryFile(await file.text());
+    const { added, skipped } = await papers.importLibrary(payload);
+    const skillStats = importCustomSkills(payload.skills || {});
+    if (payload.settings) api.mergeImportedSettings(payload.settings);
+    await refreshLibrary();
+    const skillNote = skillStats.added + skillStats.overwritten
+      ? `，技能 +${skillStats.added} / 覆盖 ${skillStats.overwritten}`
+      : '';
+    toast(`导入完成：新增 ${added} 篇，跳过已存在 ${skipped} 篇${skillNote}`);
+  } catch (err) {
+    toast('导入失败：' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 // ---------------- 评分、分类与标签 ----------------
 function renderRatingControl() {
   $$('#rating-control [data-rating]').forEach(button => {
@@ -1184,6 +1235,13 @@ function bindEvents() {
     } catch (err) {
       toast('示例论文不可用：' + err.message, true);
     }
+  };
+  $('#btn-export-library').onclick = exportLibrary;
+  $('#btn-import-library').onclick = () => $('#library-file-input').click();
+  $('#library-file-input').onchange = e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) importLibraryFile(file);
   };
   $('#api-warning').onclick = openSettingsModal;
   $('#library-search').oninput = e => {

@@ -205,6 +205,22 @@ export function resetSkill(id) {
   localStorage.setItem(SKILLS_KEY, JSON.stringify(all));
 }
 
+/** 批量导入自定义覆盖（整库导入用）：同 id 以导入值为准。返回 { added, overwritten }。 */
+export function importCustomSkills(incoming) {
+  const current = loadCustomSkills();
+  const merged = { ...current };
+  let added = 0;
+  let overwritten = 0;
+  for (const [id, prompt] of Object.entries(incoming || {})) {
+    if (typeof prompt !== 'string') continue;
+    if (id in current) overwritten++;
+    else added++;
+    merged[id] = prompt;
+  }
+  localStorage.setItem(SKILLS_KEY, JSON.stringify(merged));
+  return { added, overwritten };
+}
+
 /** 获取当前生效的技能列表（含是否已自定义标记） */
 export function effectiveSkills() {
   const custom = loadCustomSkills();

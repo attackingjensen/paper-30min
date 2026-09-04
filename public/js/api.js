@@ -23,6 +23,16 @@ export function saveSettings(s) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 }
 
+/** 合并导入设置（整库导入用）：字段以导入值为准，但空 apiKey 不覆盖本地密钥。 */
+export function mergeImportedSettings(incoming) {
+  if (!incoming || typeof incoming !== 'object') return false;
+  const current = loadSettings();
+  const merged = { ...current, ...incoming };
+  if (!incoming.apiKey) merged.apiKey = current.apiKey;
+  saveSettings(merged);
+  return true;
+}
+
 export function settingsReady() {
   const s = loadSettings();
   return !!(s.baseUrl && s.apiKey && s.model);

@@ -326,5 +326,71 @@ test('streakDays is zero for an empty library', () => {
   assert.equal(papers.streakDays([]), 0);
 });
 
+// ---------------- 整库导出 / 导入 ----------------
+
+test('exportLibrary serializes papers with PDF blobs into the envelope', async () => {
+  const store = memoryStore();
+  papers.init(store);
+  const pdf = new Blob(['%PDF-1.4 fake content'], { type: 'application/pdf' });
+  store.records.set('paper-a', { id: 'paper-a', title: 'A', addedAt: 10, pdfBlob: pdf });
+  store.records.set('paper-b', { id: 'paper-b', title: 'B', addedAt: 20, pdfBlob: null });
+
+  const payload = JSON.parse(await papers.exportLibrary({
+    skills: { method: 'x' },
+    settings: { baseUrl: 'https://b.example/v1', apiKey: '' },
+  }));
+
+  assert.equal(payload.format, 'paper-30min-library');
+  assert.equal(payload.version, 1);
+  assert.deepEqual(payload.skills, { method: 'x' });
+  assert.equal(payload.papers.length, 2);
+  assert.equal(payload.papers[0].id, 'paper-b'); // 按导入时间倒序
+  const exportedPdf = payload.papers.find(p => p.id === 'paper-a').pdfBlob;
+  assert.equal(typeof exportedPdf.base64, 'string');
+  assert.equal(exportedPdf.type, 'application/pdf');
+  assert.equal(payload.papers.find(p => p.id === 'paper-b').pdfBlob, null);
+});
+
+test('importLibrary restores PDF blobs and merges by id', async () => {
+  const source = memoryStore();
+  papers.init(source);
+  const pdf = new Blob(['%PDF-1.4 fake content'], { type: 'application/pdf' });
+  source.records.set('paper-a', { id: 'paper-a', title: 'A', addedAt: 10, pdfBlob: pdf });
+  const payload = papers.parseLibraryFile(await papers.exportLibrary());
+
+  const target = memoryStore();
+  papers.init(target);
+  target.records.set('paper-a', { id: 'paper-a', title: 'existing', addedAt: 5 });
+
+  assert.deepEqual(await papers.importLibrary(payload), { added: 0, skipped: 1 });
+  assert.equal(target.records.get('paper-a').title, 'existing');
+
+  target.records.delete('paper-a');
+  assert.deepEqual(await papers.importLibrary(payload), { added: 1, skipped: 0 });
+  const restored = target.records.get('paper-a');
+  assert.ok(restored.pdfBlob instanceof Blob);
+  assert.equal(await restored.pdfBlob.text(), '%PDF-1.4 fake content');
+});
+
+test('importLibrary skips records without a usable id', async () => {
+  papers.init(memoryStore());
+  const stats = await papers.importLibrary({ papers: [{ title: 'no id' }, null, { id: '', title: 'empty' }] });
+  assert.deepEqual(stats, { added: 0, skipped: 3 });
+});
+
+test('parseLibraryFile rejects files that are not library exports', () => {
+  assert.throws(() => papers.parseLibraryFile('not json'), /有效的 JSON/);
+  assert.throws(() => papers.parseLibraryFile('{}'), /不是论文精读书库导出文件/);
+  assert.throws(
+    () => papers.parseLibraryFile(JSON.stringify({ format: 'paper-30min-library', version: 99, papers: [] })),
+    /不支持的导出版本/,
+  );
+  assert.throws(
+    () => papers.parseLibraryFile(JSON.stringify({ format: 'paper-30min-library', version: 1 })),
+    /缺少论文列表/,
+  );
+});
+
+
 
 

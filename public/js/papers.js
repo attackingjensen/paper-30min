@@ -308,6 +308,101 @@ export async function listPapers() {
   return all.sort((a, b) => b.addedAt - a.addedAt);
 }
 
+// ---------------- 整库导出 / 导入 ----------------
+
+const LIBRARY_FORMAT = 'paper-30min-library';
+const LIBRARY_VERSION = 1;
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function serializePaper(paper) {
+  const copy = { ...paper };
+  if (copy.pdfBlob instanceof Blob && copy.pdfBlob.size > 0) {
+    const bytes = new Uint8Array(await copy.pdfBlob.arrayBuffer());
+    copy.pdfBlob = { base64: bytesToBase64(bytes), type: copy.pdfBlob.type || 'application/pdf' };
+  } else {
+    copy.pdfBlob = null;
+  }
+  return copy;
+}
+
+function deserializePaper(raw) {
+  const paper = { ...raw };
+  const marker = paper.pdfBlob;
+  if (marker && typeof marker === 'object' && typeof marker.base64 === 'string') {
+    paper.pdfBlob = new Blob([base64ToBytes(marker.base64)], { type: marker.type || 'application/pdf' });
+  } else if (!(paper.pdfBlob instanceof Blob)) {
+    paper.pdfBlob = null;
+  }
+  return paper;
+}
+
+/**
+ * 导出整个书库为 JSON 字符串。信封格式由本模块拥有；
+ * skills 与 settings 是调用方传入的不透明载荷（settings 不应携带 apiKey）。
+ */
+export async function exportLibrary({ skills = null, settings = null } = {}) {
+  const all = await listPapers();
+  const papers = [];
+  for (const paper of all) papers.push(await serializePaper(paper));
+  return JSON.stringify({
+    format: LIBRARY_FORMAT,
+    version: LIBRARY_VERSION,
+    exportedAt: new Date().toISOString(),
+    papers,
+    skills,
+    settings,
+  });
+}
+
+/** 解析并校验导出文件；格式错误时抛出可读错误。 */
+export function parseLibraryFile(text) {
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error('文件不是有效的 JSON');
+  }
+  if (!payload || payload.format !== LIBRARY_FORMAT) {
+    throw new Error('这不是论文精读书库导出文件');
+  }
+  if (payload.version !== LIBRARY_VERSION) {
+    throw new Error(`不支持的导出版本 ${payload.version}（当前支持 ${LIBRARY_VERSION}）`);
+  }
+  if (!Array.isArray(payload.papers)) {
+    throw new Error('导出文件缺少论文列表');
+  }
+  return payload;
+}
+
+/** 导入导出载荷：按 id 合并——同 id 记录跳过，新 id 加入书库。返回 { added, skipped }。 */
+export async function importLibrary(payload) {
+  let added = 0;
+  let skipped = 0;
+  for (const raw of payload.papers) {
+    if (!raw || typeof raw.id !== 'string' || !raw.id) { skipped++; continue; }
+    const existing = await store.get(raw.id);
+    if (existing) { skipped++; continue; }
+    await store.put(deserializePaper(raw));
+    added++;
+  }
+  return { added, skipped };
+}
+
 // 论文没有识别出实际章节时的四个固定精读部分。
 const FALLBACK_PARTS = [
   { id: 'abstract',     skillId: 'abstract',     label: 'Abstract · 摘要',      hint: '英文原文 + 规范中文翻译' },
