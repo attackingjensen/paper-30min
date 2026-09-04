@@ -4,7 +4,14 @@
     python tools/mock_llm.py            # 默认端口 8799
 然后在 App「设置」中填写：
     Base URL: http://127.0.0.1:8799/v1    API Key: mock    模型: mock-reader-1
+
+可选参数：
+    --port N                监听端口（默认 8799；0 = 由系统分配，见启动横幅）
+    --unterminated-tail     复现「最后一个 data 行没有换行符」的 SSE 场景：
+                            末尾内容事件不带 \\n\\n、不发送 data: [DONE]，
+                            直接关闭连接（Issue #7，用于浏览器端端到端验证）
 """
+import argparse
 import json
 import re
 import time
@@ -13,6 +20,7 @@ from socketserver import ThreadingTCPServer
 
 PORT = 8799
 MODEL_ID = 'mock-reader-1'
+UNTERMINATED_TAIL = False
 
 REPLIES = {
     'abstract': """**【规范中文翻译】**
@@ -176,14 +184,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/event-stream')
             self.end_headers()
             try:
-                for i in range(0, len(reply), 18):
-                    chunk = reply[i:i + 18]
+                chunks = [reply[i:i + 18] for i in range(0, len(reply), 18)]
+                for i, chunk in enumerate(chunks):
                     payload = json.dumps({'choices': [{'delta': {'content': chunk}}]}, ensure_ascii=False)
-                    self.wfile.write(f'data: {payload}\n\n'.encode('utf-8'))
+                    # 未终止模式：末尾事件不带 \n\n，复现「最后一个 data 行没有换行符」
+                    tail = '' if UNTERMINATED_TAIL and i == len(chunks) - 1 else '\n\n'
+                    self.wfile.write(f'data: {payload}{tail}'.encode('utf-8'))
                     self.wfile.flush()
                     time.sleep(0.012)
-                self.wfile.write(b'data: [DONE]\n\n')
-                self.wfile.flush()
+                if not UNTERMINATED_TAIL:
+                    self.wfile.write(b'data: [DONE]\n\n')
+                    self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
         else:
@@ -195,6 +206,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    print(f'mock LLM 已启动：http://127.0.0.1:{PORT}/v1 （模型名：{MODEL_ID}，Key 随意）')
+    parser = argparse.ArgumentParser(description='本地 mock LLM 服务（OpenAI 兼容，流式输出）')
+    parser.add_argument('--port', type=int, default=PORT, help='监听端口（默认 %(default)s；0 = 由系统分配）')
+    parser.add_argument('--unterminated-tail', action='store_true',
+                        help='末尾 SSE 事件不带换行、不发 [DONE]，复现「最后一个 data 行没有换行符」场景')
+    args = parser.parse_args()
+    UNTERMINATED_TAIL = args.unterminated_tail
     ThreadingTCPServer.allow_reuse_address = True
-    ThreadingTCPServer(('127.0.0.1', PORT), Handler).serve_forever()
+    server = ThreadingTCPServer(('127.0.0.1', args.port), Handler)
+    # flush=True：stdout 被管道捕获时（如自动化测试）也能立刻读到横幅
+    print(f'mock LLM 已启动：http://127.0.0.1:{server.server_address[1]}/v1 （模型名：{MODEL_ID}，Key 随意）', flush=True)
+    server.serve_forever()
