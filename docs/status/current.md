@@ -38,7 +38,7 @@
 
 - PR #3 已合入 `main`。
 - GitHub Issue #1 至 #13 均已关闭。
-- Issue #14 的最小 CI 已在 `steven123397/dev` 实现，本地三步门禁（npm test、Python 编译检查、JS 语法检查）均验证通过；待推送后观察 GitHub Actions 干净检出下的实际运行再关闭。Issue #15 在 CI 稳定后试点 `checkJs`。
+- Issue #14 的最小 CI 已在 `steven123397/dev` 实现并推送（0b17761），本地三步门禁（npm test、Python 编译检查、JS 语法检查）均验证通过；首次 Actions 运行（run 33889794169）因账号账单锁定未能启动作业，待作者解锁后重跑验证再关闭。Issue #15 在 CI 稳定后试点 `checkJs`。
 - Issue #16 跟踪重切分作废/保留提示在正常 UI 流程不可达的产品决策；Issue #17 跟踪重切分粘贴区残留与标题计数文案两个小缺陷。
 - PR #3 之后的功能、修复与 deep module 工作保留在 `steven123397/dev`，暂不创建新的 PR。
 
