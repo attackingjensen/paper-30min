@@ -36,6 +36,7 @@
 - PR #3 已以 merge commit（`107d1b2`）合入 `main`，未采用 squash 或 rebase；`npm test` 全绿（17 个测试与 Markdown 检查全部通过）。
 - 新增 Issue #4（整库导出/导入，暂缓）、#6（GBK 控制台崩溃）、#7（mock 末尾未终止 SSE）、#8（书库视图渲染异常待复现），均带 `ready-for-agent` 标签；Issue #5 已于 2026-09-04 完成：设计三要点（内置定义保留作降级兜底、接口返回文件原文清单、id = frontmatter section）与作者确认后实现，`npm test` 50 个测试全绿，服务端冒烟（curl `/api/skills` + Node 模拟前端加载链路）通过，浏览器端交互验证待作者走查。
 - Issues #10、#11 已修复：中断保存的部分精读结果改用原始流式 Markdown 落库（不再取渲染后的 `textContent`，避免格式永久丢失）；`buildPrompt` 与 `buildChatContext` 改为函数形式替换，论文标题与原文按字面注入提示词，不受 `$&`、`$'` 等替换模式腐蚀。`tests/skills.test.mjs` 覆盖字面注入；中断保存路径在 `app.js` 内、暂无 Node 侧回归，两处修复均待浏览器端验证。
+- Issue #8 已关闭（2026-09-04，commit `18841ba`）：两个原始现象静态+浏览器实测双重确认不可复现、当前代码不可达（现象 1 文案自 9764c6b 才存在于 dev 线，非 main 既有缺陷；原始观测推测为缓存旧 app.js 或误触 `#brand-home`）。实测找到并修复同缝 4 个缺陷：`closePaper` 统一中断精读/问答生成并等收尾后再刷新书库；`generateSection`/`sendChat` 捕获论文引用防 `current` 置 null 崩坏；`generateAll` 守卫 + try/finally 修复按钮永久卡死；问答中断不再落库错误消息。Chrome CDP 复测（单节/批量中断返回、立即重进、完整批量回归）console 零异常，`npm test` 50 个测试全绿。
 - “论文记录生命周期”设计已接受（ADR-0004），是当前首选实施项；[待决技术与产品事项](../draft/2026-09-02-open-decisions.md) 汇总剩余未拍板内容。
 
 ## 待确认问题
@@ -46,6 +47,6 @@
 
 作者安排（2026-09-03）：以下各项由作者逐个开启独立对话推进，会话内不要自行启动下一项；本批改动合入 `main` 的 PR 暂缓。
 
-1. 浏览器端走查 `papers.js` 迁移与 Issue #10 修复：示例论文导入、精读生成（含中断后部分结果的 Markdown 保留）、重切分作废提示与打卡显示；一并走查 Issue #5：技能列表从文件加载、编辑/导入/恢复默认、改 `skills/*.md` 后刷新生效。
-2. 设计「阅读生成任务」module（下一个 Strong 候选，经 `saveAnalysis` 缝与 `papers.js` 衔接）。
-3. 安排 Issue #4、#6、#7、#8 的处理时机。
+1. 浏览器端走查 `papers.js` 迁移与 Issue #10 修复：示例论文导入、精读生成（含中断后部分结果的 Markdown 保留）、重切分作废提示与打卡显示；一并走查 Issue #5：技能列表从文件加载、编辑/导入/恢复默认、改 `skills/*.md` 后刷新生效；Issue #8 修复（`18841ba`）已经 Chrome CDP 实测验证，可并入本次走查。
+2. 设计「阅读生成任务」module（下一个 Strong 候选，经 `saveAnalysis` 缝与 `papers.js` 衔接；注意 `app.js` 现有 `current/aborter/inflightStream/generating` 生成态是未来的收编对象）。
+3. 安排 Issue #4、#6、#7 的处理时机（#8 已完成并关闭）。
