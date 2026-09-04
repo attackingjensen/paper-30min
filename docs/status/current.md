@@ -52,5 +52,5 @@
 作者安排（2026-09-03）：以下各项由作者逐个开启独立对话推进，会话内不要自行启动下一项；本批改动合入 `main` 的 PR 暂缓。
 
 1. 浏览器端走查 `papers.js` 迁移与 Issue #10 修复：示例论文导入、精读生成（含中断后部分结果的 Markdown 保留）、重切分作废提示与打卡显示；一并走查 Issue #5：技能列表从文件加载、编辑/导入/恢复默认、改 `skills/*.md` 后刷新生效；Issue #8 修复（`18841ba`）已经 Chrome CDP 实测验证，可并入本次走查。
-2. 设计「阅读生成任务」module（下一个 Strong 候选，经 `saveAnalysis` 缝与 `papers.js` 衔接；注意 `app.js` 现有 `current/aborter/inflightStream/generating` 生成态是未来的收编对象）。
+2. 设计「阅读生成任务」module（Issue #12：先 grilling 定设计——任务 identity、状态、取消、增量归属；经 `saveAnalysis` 缝与 `papers.js` 衔接；`app.js` 现有 `current/aborter/inflightStream/generating` 生成态是收编对象）。
 3. 浏览器端走查整库导出/导入（可与第 1 项一并进行：导出 → 换浏览器或清除站点数据后导入 → 核对论文、PDF、自定义技能、设置齐备且已有记录不被覆盖；#7 的端到端验证同理：`python tools/mock_llm.py --unterminated-tail` 启动后跑一次精读，确认未终止末尾事件下结果完整落库）。

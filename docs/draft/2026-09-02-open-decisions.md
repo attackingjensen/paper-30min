@@ -71,7 +71,7 @@ updated: 2026-09-03
 ### 待拍板
 
 - 测试文件命名与覆盖范围的约定。
-- “论文记录生命周期”与“阅读生成任务”的最终职责划分。
+- “阅读生成任务”与已实施的 `papers.js` 的职责边界，及翻译、回忆卡生成是否纳入（随 Issue #12 的 grilling 设计决定）。
 - 技能文件加载的服务端入口与 `skills.js` 内置定义的去留（技能事实来源已拍板，见 Issue #5）。
 
 ## Deepening 候选
@@ -79,7 +79,7 @@ updated: 2026-09-03
 | 候选 | 当前建议强度 | 观察到的问题 | 尚未决定的方向 |
 | --- | --- | --- | --- |
 | 论文记录生命周期 | **已实施** | 论文结构、不变量、重切分和写入规则散落在多个调用方 | 无——[ADR-0004](../adr/0004-paper-lifecycle-module.md) 接受设计，Issue #9 四步实施完成并关闭 |
-| 阅读生成任务 | Strong | `current`、`aborter` 和 `generating` 共享，异步结果缺少稳定任务归属 | 是否让独立 deep module 拥有论文 identity、状态、取消和原始增量 |
+| 阅读生成任务 | **转入 Issue** | `current`、`aborter` 和 `generating` 共享，异步结果缺少稳定任务归属 | 已建 [Issue #12](https://github.com/attackingjensen/paper-30min/issues/12)：先 grilling 定设计（任务 identity、状态、取消、增量归属），再实现独立 module |
 | 上游转发 | Worth exploring | curl、urllib、请求策略和响应写入集中在 Handler，局域网信任假设已由 [ADR-0003](../adr/0003-lan-fully-trusted.md) 接受 | 是否深化 forwarding module |
 
 技能目录候选已拍板（`skills/*.md` 为正式来源），转入 Issue #5，不再作为候选。「论文记录生命周期」的设计已于 2026-09-03 经 grilling 全部拍板（ADR-0004）：建立 `papers.js` deep module 统一拥有记录生命周期，阅读生成任务未来经 `saveAnalysis` 缝提交结果。
