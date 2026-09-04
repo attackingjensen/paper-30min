@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as papers from '../public/js/papers.js';
+import { parsePlainText } from '../public/js/parser.js';
 
 function memoryStore() {
   const records = new Map();
@@ -277,6 +278,29 @@ test('applyResplit keeps abstract results when the abstract is untouched', async
   assert.ok(paper.analyses.abstract);
   assert.ok(paper.translations['abstract:zh']);
   assert.equal(paper.analyses['part-1'], undefined);
+});
+
+// Issue #17：重切分 toast 的计数口径必须是「摘要 + 编号部分」的精读部分数，
+// 与精读视图实际展示一致，而非 parsePlainText 的语义标题数。
+test('resplit count source matches the digest parts shown for pasted numbered text', async () => {
+  const paper = await storedPaper();
+  const body = 'The quick brown fox jumps over the lazy dog again and again while researchers measure every observable detail of each leap. ';
+  const text = [
+    'Abstract',
+    'We study how pasted full text is split into reading parts and report the count users actually see in the reader view.',
+    '1 Opening', body.repeat(2).trim(),
+    '2 Middle', body.repeat(2).trim(),
+    '3 Final', body.repeat(2).trim(),
+  ].join('\n');
+
+  const parsed = parsePlainText(text);
+  assert.equal(parsed.parts.length, 3);
+  assert.equal(parsed.headingCount, 1); // 旧口径仅含语义标题，不含编号部分
+
+  await papers.applyResplit(paper, parsed);
+  const visible = papers.readingParts(paper).filter(s => paper.sections?.[s.id]?.trim());
+  assert.deepEqual(visible.map(s => s.id), ['abstract', 'part-1', 'part-2', 'part-3']);
+  assert.equal(visible.length, 4);
 });
 
 function daysAgo(n) {

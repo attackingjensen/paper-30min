@@ -176,6 +176,7 @@ function openPaper(p) {
   pdfPage = 1;
   pdfScale = 1;
   pdfSidebarOpen = true;
+  $('#paste-area').value = '';
   $('#view-library').hidden = true;
   $('#view-reader').hidden = false;
   $('#reader-title').textContent = p.title;
@@ -1345,12 +1346,14 @@ function bindEvents() {
     if (!text) return toast('请先粘贴全文', true);
     const parsed = parsePlainText(text);
     const { discarded } = await papers.applyResplit(current, parsed);
+    $('#paste-area').value = '';
     renderSource();
     renderDigest();
     $('#source-empty').hidden = true;
+    const found = papers.readingParts(current).filter(s => current.sections?.[s.id]?.trim()).length;
     toast(discarded
-      ? `重新切分完成，识别出 ${parsed.headingCount} 个标题；${discarded} 条已失效的精读/翻译结果被作废`
-      : `重新切分完成，识别出 ${parsed.headingCount} 个标题`);
+      ? `重新切分完成，识别出 ${found} 个精读部分；${discarded} 条已失效的精读/翻译结果被作废`
+      : `重新切分完成，识别出 ${found} 个精读部分`);
   };
 
   $('#btn-chat-send').onclick = sendChat;
