@@ -1,6 +1,6 @@
 # 项目当前状态
 
-> 更新时间：2026-09-04
+> 更新时间：2026-09-05
 
 ## 当前目标
 
@@ -28,7 +28,7 @@
 
 ## 工程基线
 
-- `npm test` 是统一门禁，当前 79 个测试全部通过。
+- `npm test` 是统一门禁，当前 80 个测试全部通过。
 - GitHub Actions CI（`.github/workflows/ci.yml`，Issue #14）在 push 与 PR 时运行：`windows-latest`（产品基准）与 `ubuntu-latest`（路径、文件名大小写等跨平台检查）矩阵，固定 Node 24 与 Python 3.11；门禁为 `npm test`、`server.py`/`tools/mock_llm.py`/`tools/make_sample_pdf.py` 的内存编译检查，以及 `tools/check_syntax.mjs` 对自有 JavaScript 的纯语法检查（覆盖未被测试导入的入口文件，排除 `public/vendor/`）；不生成或提交缓存与解析输出。
 - 自动化测试覆盖论文生命周期、书库迁移、技能加载、生成任务、SSE、模型地址与错误处理，以及 Markdown 关键边界。
 - 已使用真实 Edge 与慢速 mock 模型走查示例论文导入、PDF 显示、单节与批量生成、中断落库、技能编辑、整库迁移和论文问答；走查期间控制台无异常。
@@ -39,7 +39,7 @@
 - PR #3 已合入 `main`。
 - GitHub Issue #1 至 #13 均已关闭。
 - Issue #14 的最小 CI 已在 `steven123397/dev` 实现并推送（0b17761），本地三步门禁（npm test、Python 编译检查、JS 语法检查）均验证通过；首次 Actions 运行（run 33889794169）因账号账单锁定未能启动作业，待作者解锁后重跑验证再关闭。Issue #15 在 CI 稳定后试点 `checkJs`。
-- Issue #16 跟踪重切分作废/保留提示在正常 UI 流程不可达的产品决策；Issue #17 跟踪重切分粘贴区残留与标题计数文案两个小缺陷。
+- Issue #16 跟踪重切分作废/保留提示在正常 UI 流程不可达的产品决策；Issue #17 的两个重切分小缺陷（粘贴区跨论文残留、标题计数口径）已在 `steven123397/dev` 修复（03f21cf），含计数口径回归测试，待作者浏览器走查验证后关闭。
 - PR #3 之后的功能、修复与 deep module 工作保留在 `steven123397/dev`，暂不创建新的 PR。
 
 ## 剩余验证缺口
