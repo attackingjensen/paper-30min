@@ -1,0 +1,161 @@
+:root {
+  color-scheme: light;
+  font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f5f4f0;
+  color: #24231f;
+}
+
+.app-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 16px 24px;
+  background: #2e3b34;
+  color: #f5f4f0;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.app-badge {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+  display: grid;
+  gap: 16px;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #e3e0d8;
+  border-radius: 10px;
+  padding: 16px 20px;
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 16px;
+}
+
+.muted {
+  color: #6d6a62;
+  font-size: 13px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+button {
+  border: 1px solid #c8c4b8;
+  background: #fdfcf9;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #efede6;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.danger {
+  border-color: #b4553f;
+  color: #b4553f;
+}
+
+.tasks {
+  display: grid;
+  gap: 10px;
+}
+
+.task-card {
+  border: 1px solid #e3e0d8;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.task-card[data-status="succeeded"] {
+  border-color: #7fa583;
+}
+
+.task-card[data-status="failed"],
+.task-card[data-status="cancelled"] {
+  border-color: #c08a7d;
+}
+
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.task-head progress {
+  flex: 1;
+}
+
+.task-card progress {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.task-status {
+  margin-left: auto;
+  font-weight: 600;
+}
+
+.task-stream {
+  margin: 8px 0 0;
+  max-height: 120px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: #4c4a43;
+}
+
+.log {
+  margin-top: 12px;
+  max-height: 220px;
+  overflow: auto;
+  background: #fbfaf7;
+  border: 1px solid #e3e0d8;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+dialog {
+  border: 1px solid #e3e0d8;
+  border-radius: 10px;
+  padding: 20px 24px;
+  max-width: 460px;
+}
+
+dialog::backdrop {
+  background: rgba(30, 30, 28, 0.35);
+}

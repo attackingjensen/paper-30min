@@ -1,12 +1,13 @@
 // 对仓库自有 JavaScript 做纯语法检查（node --check，不执行代码），
-// 覆盖未被测试导入的入口文件；排除第三方目录 public/vendor/。
+// 覆盖未被测试导入的入口文件；排除第三方目录 public/vendor/ 与构建产物目录
+// （node_modules、Rust target，后者含压缩后的二进制资源而非源码）。
 import { readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const skippedDirs = new Set(['.git', 'node_modules', join('public', 'vendor')]);
+const skippedDirs = new Set(['.git', 'node_modules', 'target', join('public', 'vendor')]);
 
 function collectJsFiles(dir) {
   const files = [];

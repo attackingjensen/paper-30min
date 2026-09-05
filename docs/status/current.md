@@ -69,3 +69,5 @@
 - Wayfinder 地图已完成；Issue #14、#15、#16、#17 的独立处理状态按各自票据记录，不属于该地图终点。
 - Issue #22 已完成决策并关闭；正式客户端与前端边界规格见 [client-and-frontend-boundaries.md](../specs/client-and-frontend-boundaries.md)。
 - Issue #23 已完成决策并关闭；Rust/JavaScript 本地能力接口规格见 [client-local-rust-js-boundary.md](../specs/client-local-rust-js-boundary.md)。客户端正式实施可据此另起任务。
+- 三张正式规格 Issue 已发布并统一改为中文：Windows 正式客户端与本地书库（#24）、论文移动阅读云端同步服务（#25）、Android 移动阅读伴侣（#26）。#24 已通过 GitHub 原生 sub-issue 关系挂载 6 张实施票，并设置原生 blocking 依赖：#27 Tauri 桥接、#28 SQLite 书库、#29 附件/PDF、#30 浏览器迁移、#31 论文与任务接入、#32 安装升级验收；后续按阻塞关系推进，云端和 Android 暂不拆票。
+- Issue #27（Windows Tauri 外壳与 Rust/JavaScript 桥接）已在 `app/` 实现：应用标识 `com.paper30min.reader`，版本化命令 `invoke(command, input)`、`start/subscribe/getTask` 任务事件流、统一错误结构 `{code, message, retryable, details}`、取消幂等且只在安全检查点停止、关闭前运行中任务查询与“等待完成/停止任务”关闭选择；验证入口为 `cargo test`、`node --test` 契约测试和 `--bridge-smoke` 冒烟命令，debug 与 release 构建均经真实窗口走查（启动、事件流、三条关闭路径、退出不留进程）。SQLite 书库（#28）、附件/PDF（#29）、浏览器迁移（#30）、论文与任务接入（#31）按阻塞关系随后推进。

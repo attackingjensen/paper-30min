@@ -1,0 +1,12 @@
+# crates.io 直连过慢，项目级使用 rsproxy 镜像（与原型验证时相同）
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[registries.rsproxy]
+index = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true

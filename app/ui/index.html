@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>论文精读</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>论文精读</h1>
+    <span class="app-badge">Windows 客户端 · 外壳预览</span>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>书库</h2>
+      <p class="muted">
+        本地书库、论文阅读与精读生成将在后续实施票接入（当前票仅覆盖 Tauri 外壳与
+        Rust/JavaScript 桥接）。既有浏览器阅读器继续可用，书库可通过整库导出迁入。
+      </p>
+    </section>
+
+    <section class="panel">
+      <h2>桥接自检</h2>
+      <div class="button-row">
+        <button id="btn-info">应用信息</button>
+        <button id="btn-echo">回声命令</button>
+        <button id="btn-stream">启动演示任务</button>
+        <button id="btn-stream-long">启动长演示任务</button>
+        <button id="btn-fail">启动失败演示</button>
+        <button id="btn-active">查询活动任务</button>
+      </div>
+      <div id="tasks" class="tasks"></div>
+      <pre id="log" class="log" aria-live="polite"></pre>
+    </section>
+  </main>
+
+  <dialog id="close-dialog">
+    <h2>仍有任务在运行</h2>
+    <p class="muted">以下任务尚未结束，关闭前请选择处理方式：</p>
+    <ul id="close-task-list"></ul>
+    <div class="button-row">
+      <button id="btn-close-wait">等待任务完成</button>
+      <button id="btn-close-stop" class="danger">停止任务并退出</button>
+      <button id="btn-close-cancel">取消关闭</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

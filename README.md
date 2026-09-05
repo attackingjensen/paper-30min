@@ -87,6 +87,7 @@
 │   ├── js/db.js         #   IndexedDB 本地存储
 │   └── js/app.js        #   主界面逻辑
 ├── skills/              # 运行时技能的正式来源（可改造、可新增）
+├── app/                 # Windows 正式客户端（Tauri 外壳 + Rust/JavaScript 桥接，实施中）
 ├── docs/
 │   ├── background/      #   原始需求、调研和可行性分析
 │   ├── status/          #   项目当前状态（持续覆盖更新）
