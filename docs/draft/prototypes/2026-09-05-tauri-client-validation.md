@@ -55,7 +55,7 @@ Android 模拟器可用于构建和基础走查，PDF 性能、触摸操作及�
 
 ## 验证结论（2026-09-05，Issue #20 已关闭）
 
-原型实现于 `prototype/tauri-client` 分支 `prototype/tauri-reader/`（commit 4f51f94），验证矩阵逐项实测结果、环境与未验证项记录见 [Issue #20 决议评论](https://github.com/attackingjensen/paper-30min/issues/20)。摘要：Windows 与荣耀真机（BVL-AN16，Android 16）双端关键场景全部通过，据实推荐 Tauri 为正式客户端基础；发现 Android 状态栏安全区适配、网络层归口 Rust、构建镜像配置三项正式实施输入；小米手机、较大 PDF、未缓存附件离线状态、WebView2 缺失补装路径标未验证。
+原型代码存档于 `steven123397/dev` 分支 `prototype/tauri-reader/`（commit e0a9d3b），构建产物（node_modules/target/gen）未入库、可随时重建；验证矩阵逐项实测结果、环境与未验证项记录见 [Issue #20 决议评论](https://github.com/attackingjensen/paper-30min/issues/20)。摘要：Windows 与荣耀真机（BVL-AN16，Android 16）双端关键场景全部通过，据实推荐 Tauri 为正式客户端基础；发现 Android 状态栏安全区适配、网络层归口 Rust、构建镜像配置三项正式实施输入；小米手机、较大 PDF、未缓存附件离线状态、WebView2 缺失补装路径标未验证。
 
 ## 本机工具链检查
 
