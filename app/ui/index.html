@@ -9,16 +9,23 @@
 <body>
   <header class="app-header">
     <h1>论文精读</h1>
-    <span class="app-badge">Windows 客户端 · 外壳预览</span>
+    <span class="app-badge">Windows 客户端 · 书库预览</span>
   </header>
 
   <main>
     <section class="panel">
       <h2>书库</h2>
       <p class="muted">
-        本地书库、论文阅读与精读生成将在后续实施票接入（当前票仅覆盖 Tauri 外壳与
-        Rust/JavaScript 桥接）。既有浏览器阅读器继续可用，书库可通过整库导出迁入。
+        本地书库已接入 SQLite 基础记录（论文、原文章节、精读部分、精读结果、翻译、回想卡片、论文问答和阅读位置）。附件 / PDF、浏览器迁移与论文阅读流程仍由后续实施票接入。既有浏览器阅读器继续可用。
       </p>
+      <div class="button-row">
+        <button id="btn-library-info">书库信息</button>
+        <button id="btn-library-save">写入示例论文</button>
+        <button id="btn-library-load">读取示例论文</button>
+        <button id="btn-library-position">保存阅读位置</button>
+        <button id="btn-library-list">列出书库</button>
+        <button id="btn-library-delete">删除示例论文</button>
+      </div>
     </section>
 
     <section class="panel">

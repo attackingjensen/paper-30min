@@ -117,6 +117,51 @@ document.getElementById('btn-active').addEventListener('click', guard('tasks.lis
   log('tasks.list@1（仅活动任务）', result);
 }));
 
+const SAMPLE_PAPER_ID = 'ui-sample-paper';
+
+function samplePaper() {
+  const now = new Date().toISOString();
+  return {
+    id: SAMPLE_PAPER_ID,
+    title: '桥接自检示例论文',
+    sourceType: 'plain-text',
+    fullText: '这是用于书库自检的示例原文。',
+    addedAt: now,
+    updatedAt: now,
+    sections: [{ id: 'abstract', sourceText: '这是用于书库自检的示例原文。' }],
+    analyses: [{ sectionId: 'abstract', text: '示例精读结果', updatedAt: now }],
+    translations: [{ sectionId: 'abstract', language: 'zh', text: '示例译文', source: 'manual', updatedAt: now }],
+    recallCard: { markdown: '示例回想卡片', images: [], updatedAt: now },
+    chat: [{ role: 'user', content: '这篇论文在讲什么？', createdAt: now }],
+  };
+}
+
+document.getElementById('btn-library-info').addEventListener('click', guard('library.info@1 失败', async () => {
+  log('library.info@1', await bridge.invoke('library.info@1'));
+}));
+
+document.getElementById('btn-library-save').addEventListener('click', guard('library.putPaper@1 失败', async () => {
+  log('library.putPaper@1', await bridge.invoke('library.putPaper@1', { paper: samplePaper() }));
+}));
+
+document.getElementById('btn-library-load').addEventListener('click', guard('library.getPaper@1 失败', async () => {
+  log('library.getPaper@1', await bridge.invoke('library.getPaper@1', { paperId: SAMPLE_PAPER_ID }));
+}));
+
+document.getElementById('btn-library-position').addEventListener('click', guard('library.putReadingPosition@1 失败', async () => {
+  log('library.putReadingPosition@1', await bridge.invoke('library.putReadingPosition@1', {
+    position: { paperId: SAMPLE_PAPER_ID, view: 'digest', sectionId: 'abstract' },
+  }));
+}));
+
+document.getElementById('btn-library-list').addEventListener('click', guard('library.listPapers@1 失败', async () => {
+  log('library.listPapers@1', await bridge.invoke('library.listPapers@1'));
+}));
+
+document.getElementById('btn-library-delete').addEventListener('click', guard('library.deletePaper@1 失败', async () => {
+  log('library.deletePaper@1', await bridge.invoke('library.deletePaper@1', { paperId: SAMPLE_PAPER_ID }));
+}));
+
 // 关闭流程：窗口被拦截时提示等待完成或停止任务。
 bridge.onCloseRequested((payload) => {
   const active = activeTasks(payload.tasks ?? []);

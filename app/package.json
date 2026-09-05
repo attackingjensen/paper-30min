@@ -3,10 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "论文精读 Windows 正式客户端（Tauri 外壳与 Rust/JavaScript 桥接，issue #27）",
+  "description": "论文精读 Windows 正式客户端（Tauri 外壳、桥接与 SQLite 书库，issue #28）",
   "scripts": {
     "tauri": "tauri",
-    "test": "node --test tests/",
+    "test": "node --test tests/bridge.test.mjs",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "smoke": "cargo run --manifest-path src-tauri/Cargo.toml -- --bridge-smoke"
   },

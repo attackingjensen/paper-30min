@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::error::BridgeError;
+use crate::library::{Library, PaperDto, ReadingPositionDto};
 use crate::tasks::{available_task_kinds, TaskRegistry};
 
 pub const BRIDGE_SCHEMA_VERSION: u32 = 1;
@@ -16,6 +17,14 @@ pub fn available_commands() -> &'static [&'static str] {
         "tasks.get@1",
         "tasks.cancel@1",
         "app.close-window@1",
+        "library.info@1",
+        "library.listPapers@1",
+        "library.getPaper@1",
+        "library.putPaper@1",
+        "library.deletePaper@1",
+        "library.getReadingPosition@1",
+        "library.putReadingPosition@1",
+        "library.deleteReadingPosition@1",
     ]
 }
 
@@ -23,6 +32,7 @@ pub fn available_commands() -> &'static [&'static str] {
 /// `app.close-window@1` 需要窗口句柄，由 Tauri 命令层拦截，不在此分发。
 pub fn invoke(
     registry: &Arc<TaskRegistry>,
+    library: &Library,
     command: &str,
     input: &Value,
 ) -> Result<Value, BridgeError> {
@@ -53,7 +63,7 @@ pub fn invoke(
             }))
         }
         "tasks.get@1" => {
-            let task_id = required_task_id(command, input)?;
+            let task_id = required_string(command, input, "taskId")?;
             let task = registry
                 .get(task_id)
                 .ok_or_else(|| BridgeError::task_not_found(task_id))?;
@@ -63,20 +73,83 @@ pub fn invoke(
             }))
         }
         "tasks.cancel@1" => {
-            let task_id = required_task_id(command, input)?;
+            let task_id = required_string(command, input, "taskId")?;
             let task = registry.request_cancel(task_id)?;
             Ok(json!({
                 "schemaVersion": BRIDGE_SCHEMA_VERSION,
                 "task": task,
             }))
         }
+        "library.info@1" => serde_json::to_value(library.info())
+            .map_err(|err| BridgeError::internal(format!("序列化书库信息失败: {err}"))),
+        "library.listPapers@1" => Ok(json!({
+            "schemaVersion": BRIDGE_SCHEMA_VERSION,
+            "papers": library.list_papers()?,
+        })),
+        "library.getPaper@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "paper": library.get_paper(paper_id)?,
+            }))
+        }
+        "library.putPaper@1" => {
+            let paper = parse_dto::<PaperDto>(command, input, "paper")?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "paper": library.put_paper(paper)?,
+            }))
+        }
+        "library.deletePaper@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            library.delete_paper(paper_id)?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "deleted": true,
+            }))
+        }
+        "library.getReadingPosition@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "position": library.get_reading_position(paper_id)?,
+            }))
+        }
+        "library.putReadingPosition@1" => {
+            let position = parse_dto::<ReadingPositionDto>(command, input, "position")?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "position": library.put_reading_position(position)?,
+            }))
+        }
+        "library.deleteReadingPosition@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let deleted = library.delete_reading_position(paper_id)?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "deleted": deleted,
+            }))
+        }
         _ => Err(BridgeError::unknown_command(command)),
     }
 }
 
-fn required_task_id<'a>(command: &str, input: &'a Value) -> Result<&'a str, BridgeError> {
+fn required_string<'a>(command: &str, input: &'a Value, field: &str) -> Result<&'a str, BridgeError> {
     input
-        .get("taskId")
+        .get(field)
         .and_then(Value::as_str)
-        .ok_or_else(|| BridgeError::invalid_input(format!("{command} 需要字符串参数 taskId")))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| BridgeError::invalid_input(format!("{command} 需要字符串参数 {field}")))
+}
+
+fn parse_dto<T: serde::de::DeserializeOwned>(
+    command: &str,
+    input: &Value,
+    field: &str,
+) -> Result<T, BridgeError> {
+    let value = input
+        .get(field)
+        .ok_or_else(|| BridgeError::invalid_input(format!("{command} 需要 {field}")))?;
+    serde_json::from_value(value.clone())
+        .map_err(|err| BridgeError::invalid_input(format!("{command} 的 {field} 无效: {err}")))
 }

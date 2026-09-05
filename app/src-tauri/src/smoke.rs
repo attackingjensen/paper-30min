@@ -6,8 +6,23 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use crate::bridge;
+use crate::library::Library;
 use crate::tasks::{TaskRegistry, TaskStatus};
 use crate::testkit::{wait_terminal, Collector};
+
+fn scratch_library() -> (std::path::PathBuf, Library) {
+    let root = std::env::temp_dir().join(format!(
+        "paper30min-smoke-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let library = Library::open(&root).expect("打开冒烟书库");
+    (root, library)
+}
 
 fn check(name: &str, f: impl FnOnce() -> Result<String, String>, report: &mut Vec<Value>) {
     let (pass, detail) = match f() {
@@ -20,10 +35,11 @@ fn check(name: &str, f: impl FnOnce() -> Result<String, String>, report: &mut Ve
 pub fn run() -> i32 {
     let mut report: Vec<Value> = Vec::new();
     let registry = TaskRegistry::new();
+    let (root, library) = scratch_library();
 
     check(
         "app.info@1 返回 schemaVersion",
-        || match bridge::invoke(&registry, "app.info@1", &json!({})) {
+        || match bridge::invoke(&registry, &library, "app.info@1", &json!({})) {
             Ok(value) if value["schemaVersion"] == json!(1) => Ok("schemaVersion=1".to_string()),
             Ok(value) => Err(format!("schemaVersion 不符: {value}")),
             Err(error) => Err(format!("调用失败: {error}")),
@@ -35,7 +51,7 @@ pub fn run() -> i32 {
         "bridge.echo@1 原样回显",
         || {
             let input = json!({ "message": "桥接自检", "n": 1 });
-            match bridge::invoke(&registry, "bridge.echo@1", &input) {
+            match bridge::invoke(&registry, &library, "bridge.echo@1", &input) {
                 Ok(value) if value["echo"] == input => Ok("回显一致".to_string()),
                 Ok(value) => Err(format!("回显不符: {value}")),
                 Err(error) => Err(format!("调用失败: {error}")),
@@ -46,7 +62,7 @@ pub fn run() -> i32 {
 
     check(
         "未知命令返回统一错误结构",
-        || match bridge::invoke(&registry, "no.such-command@1", &json!({})) {
+        || match bridge::invoke(&registry, &library, "no.such-command@1", &json!({})) {
             Err(error) if error.code == "unknown_command" && !error.retryable => {
                 Ok("code=unknown_command retryable=false".to_string())
             }
@@ -146,6 +162,75 @@ pub fn run() -> i32 {
                 return Err("已取消任务仍出现在活动查询里".to_string());
             }
             Ok("活动查询与取消批量操作正常".to_string())
+        },
+        &mut report,
+    );
+
+    check(
+        "library.info@1 创建版本化书库目录",
+        || match bridge::invoke(&registry, &library, "library.info@1", &json!({})) {
+            Ok(value)
+                if value["databaseVersion"] == json!(1)
+                    && value["partitions"]
+                        .as_array()
+                        .map(|items| items.iter().any(|item| item == "database"))
+                        .unwrap_or(false) =>
+            {
+                Ok("databaseVersion=1".to_string())
+            }
+            Ok(value) => Err(format!("书库信息不符: {value}")),
+            Err(error) => Err(format!("调用失败: {error}")),
+        },
+        &mut report,
+    );
+
+    check(
+        "论文与阅读位置可写入并在重开后恢复",
+        || {
+            let paper = json!({
+                "paper": {
+                    "id": "smoke-paper",
+                    "title": "冒烟论文",
+                    "addedAt": "2026-09-05T00:00:00Z",
+                    "updatedAt": "2026-09-05T00:00:00Z",
+                    "analyses": [
+                        { "sectionId": "abstract", "text": "精读", "updatedAt": "2026-09-05T00:00:00Z" }
+                    ]
+                }
+            });
+            bridge::invoke(&registry, &library, "library.putPaper@1", &paper)
+                .map_err(|error| format!("写入论文失败: {error}"))?;
+            bridge::invoke(
+                &registry,
+                &library,
+                "library.putReadingPosition@1",
+                &json!({ "position": { "paperId": "smoke-paper", "view": "digest", "sectionId": "abstract" } }),
+            )
+            .map_err(|error| format!("写入阅读位置失败: {error}"))?;
+            drop(library);
+            let reopened = Library::open(&root).map_err(|error| format!("重开书库失败: {error}"))?;
+            let loaded = bridge::invoke(
+                &registry,
+                &reopened,
+                "library.getPaper@1",
+                &json!({ "paperId": "smoke-paper" }),
+            )
+            .map_err(|error| format!("读取论文失败: {error}"))?;
+            if loaded["paper"]["title"] != json!("冒烟论文") {
+                return Err(format!("论文未恢复: {loaded}"));
+            }
+            let position = bridge::invoke(
+                &registry,
+                &reopened,
+                "library.getReadingPosition@1",
+                &json!({ "paperId": "smoke-paper" }),
+            )
+            .map_err(|error| format!("读取阅读位置失败: {error}"))?;
+            if position["position"]["view"] != json!("digest") {
+                return Err(format!("阅读位置未恢复: {position}"));
+            }
+            let _ = std::fs::remove_dir_all(&root);
+            Ok("论文与阅读位置重开后完整恢复".to_string())
         },
         &mut report,
     );

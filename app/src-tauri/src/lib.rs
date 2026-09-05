@@ -1,5 +1,6 @@
 pub mod bridge;
 pub mod error;
+pub mod library;
 pub mod smoke;
 pub mod tasks;
 pub mod testkit;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 
 use error::BridgeError;
+use library::Library;
 use tasks::{EventSink, TaskEvent, TaskRegistry};
 
 /// 生产事件出口：`subscribe(taskId)` 对应 `task:{taskId}` 事件通道。
@@ -26,6 +28,7 @@ impl EventSink for TauriEventSink {
 
 pub struct AppState {
     registry: Arc<TaskRegistry>,
+    library: Library,
     /// 用户在前端确认过关闭选择后置位，之后 CloseRequested 直接放行。
     force_close: AtomicBool,
 }
@@ -55,7 +58,7 @@ fn bridge_invoke(
             "closing": true,
         }));
     }
-    bridge::invoke(&state.registry, &command, &input)
+    bridge::invoke(&state.registry, &state.library, &command, &input)
 }
 
 #[tauri::command]
@@ -76,9 +79,15 @@ fn bridge_start(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState {
-            registry: TaskRegistry::new(),
-            force_close: AtomicBool::new(false),
+        .setup(|app| {
+            let root = app.path().app_data_dir()?;
+            let library = Library::open(&root)?;
+            app.manage(AppState {
+                registry: TaskRegistry::new(),
+                library,
+                force_close: AtomicBool::new(false),
+            });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![bridge_invoke, bridge_start])
         .on_window_event(|window, event| match event {

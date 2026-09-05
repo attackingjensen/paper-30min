@@ -39,6 +39,20 @@ impl BridgeError {
             .with_details(serde_json::json!({ "taskId": task_id }))
     }
 
+    pub fn paper_not_found(paper_id: &str) -> Self {
+        Self::new("not_found", format!("论文不存在: {paper_id}"), false)
+            .with_details(serde_json::json!({ "paperId": paper_id }))
+    }
+
+    pub fn schema_unsupported(found: i32, supported: i32) -> Self {
+        Self::new(
+            "schema_unsupported",
+            format!("书库数据库版本 {found} 高于当前支持的 {supported}"),
+            false,
+        )
+        .with_details(serde_json::json!({ "found": found, "supported": supported }))
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new("internal", message, true)
     }

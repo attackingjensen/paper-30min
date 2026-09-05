@@ -1,8 +1,8 @@
 # 论文精读 Windows 正式客户端（`app/`）
 
 基于 Tauri 的 Windows 正式客户端。Rust 提供窄接口的本地能力，JavaScript 负责领域流程编排与界面。
-当前范围（issue #27）：最小可运行闭环 —— 应用启动、Web 阅读入口外壳、版本化命令调用、任务事件流、
-关闭前任务查询与关闭选择。书库、附件、迁移和论文任务接入见后续实施票。
+当前范围（issue #28）：在 #27 桥接之上建立应用数据根目录、版本化 SQLite 与书库基础记录。
+覆盖论文、原文章节、精读部分、精读结果、翻译、回想卡片、论文问答和阅读位置；不处理附件文件和浏览器迁移。
 
 实现约束见 `docs/specs/client-and-frontend-boundaries.md` 与 `docs/specs/client-local-rust-js-boundary.md`；
 领域术语见根目录 `CONTEXT.md`。`prototype/tauri-reader/` 的临时代码不作为本目录来源。
@@ -10,7 +10,7 @@
 ## 桥接形状
 
 - `bridge_invoke(command, input)`：短时、幂等或事务性操作。命令名带版本后缀（`app.info@1`、
-  `bridge.echo@1`、`tasks.list@1`、`tasks.get@1`、`tasks.cancel@1`、`app.close-window@1`）。
+  `bridge.echo@1`、`tasks.*@1`、`library.*@1`、`app.close-window@1`）。
 - `bridge_start(taskKind, input)`：长任务，返回 `{ schemaVersion, taskId }`；
   事件经 `task:{taskId}` 通道推送（`chunk` / `progress` / `status`），终态可用 `tasks.get@1` 查询。
 - 与接口规格措辞的对应：`invoke` → `bridge_invoke`，`start` → `bridge_start`，
@@ -40,4 +40,6 @@ npm run smoke          # 不开窗口的桥接冒烟检查（debug 构建，退�
 ## 数据位置
 
 应用数据目录由 Tauri 管理（`app_data_dir`，标识 `com.paper30min.reader`），与原型
-（`com.paper30min.prototype`）和浏览器书库相互隔离。
+（`com.paper30min.prototype`）和浏览器书库相互隔离。首次启动会创建
+`database/`、`attachments/`、`operations/`、`exports/`，并在 `database/library.sqlite`
+建立版本化书库。JavaScript 只通过 `library.*@1` 命令读写领域 DTO，不依赖表结构。
