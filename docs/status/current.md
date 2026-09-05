@@ -56,7 +56,8 @@
 - Q42–Q47 已确认：移动副本包含精读结果、翻译、回想卡片和论文问答，不含 API Key 或应用设置；账号可登录多台 Android 设备；删除采用可重试队列；内容同步使用开始时版本；管理员重置密码使旧会话失效；前端优先改善导航、阅读状态、同步状态和任务反馈，不扩张功能范围。
 - 原型工具链已于 2026-09-05 在 Issue #19 补齐并实测：Rust 1.98.1（含四个 Android target）、Microsoft OpenJDK 17.0.20.1、Android SDK（platform-tools 37.0.1、android-35、build-tools 35.0.0、NDK 29.0.14206865 稳定版）装于 `D:\dev\`，环境变量已持久化；宿主与 `aarch64-linux-android` 冒烟构建均通过。干净 Windows 验证已调整口径：开发机新建干净本地账户覆盖安装与覆盖安装验证，仓库持有者主力机（Win11，预装 WebView2）只做一次真实环境确认，WebView2 缺失补装路径标未验证；荣耀手机（HONOR BVL-AN16，Android 16 / MagicOS 10.0.0.175，WebView 138.0.7204.179）已完成 USB 调试授权并经 adb 验证；小米手机短期不可得，其真机走查推迟到原型验证时补测并在此之前标未验证。Issue #19 已关闭，Tauri 原型构建与走查前提齐备，#20 解除阻塞。
 - 现有服务器位于北京，暂无域名。已同意暂缓域名购买、公网入口与备案安排，先完成客户端原型验证；正式部署前确认云厂商接入要求，公网或私有组网方案尚未选择。
-- 已创建 Wayfinder 地图 [论文阅读器三端工程化规格路线](https://github.com/attackingjensen/paper-30min/issues/18)，目标是形成可分阶段交给实施会话的正式规格。工具链票（#19）与 Tauri 原型票（#20）已关闭并回写地图；新票 [#23 正式客户端本地能力的 Rust/JavaScript 接口边界](https://github.com/attackingjensen/paper-30min/issues/23) 由原型毕业产生，与 [#21 云端同步契约](https://github.com/attackingjensen/paper-30min/issues/21)、[#22 客户端与前端边界](https://github.com/attackingjensen/paper-30min/issues/22) 同在可取前沿。地图不直接实施代码。
+- Wayfinder 地图 [论文阅读器三端工程化规格路线](https://github.com/attackingjensen/paper-30min/issues/18) 已关闭：工具链、Tauri 原型、云端同步契约、客户端与前端边界、Rust/JavaScript 接口边界的决策票均已完成，正式规格已形成。后续实施按规格另起任务，地图不再产生决策票。
+- Wayfinder 票 [#21 云端同步契约](https://github.com/attackingjensen/paper-30min/issues/21) 已完成决策并关闭：确定账号会话、移动阅读副本、不可变内容版本、分单元增量同步、阅读位置冲突、删除 tombstone、统一错误恢复和 5 GB 全局容量上限；契约不绑定 Tauri、Rust、JavaScript 或 Android 外壳。后续客户端与前端规格票可直接引用该契约。
 - Windows、云端与 Android 客户端形态正在进行 `grill-with-docs` 设计，当前讨论记录见 [客户端形态草稿](../draft/2026-09-05-client-platform-design.md)；草稿不代表已接受需求。
 - 客户端设计已确认论文内容手动增量同步并原子切换版本，界面统一称“云端同步”；阅读位置自动同步，版本不一致时保留各自位置，新版就绪后尝试对应章节，失败时由用户选择。Android 打开时自动检查内容更新，阅读中收到新版则退出阅读页后切换；移动书架提供内容同步状态及逐篇、批量操作。
 - Windows 直接调用模型且 API Key 仅留本地。当前最多 2 人使用，计划由管理员创建 `diaozx` 和 `liangjq` 两个独立账号并手动重置密码；云端共享容量上限初始为 5 GB。现有磁盘和 COS 的分配留到部署时讨论。
@@ -65,4 +66,6 @@
 - CI 已由 Issue #14 落地（范围见工程基线）；`checkJs` 小范围试点已转入 Issue #15，正式 TypeScript 迁移与前端构建步骤仍未决定。
 - forwarding module 暂不实施；应先补服务器端行为测试，待转发策略复杂化、出现第二个调用场景或 Windows 外壳带来新职责后重新评估。
 - 其他未定建议统一见 [待决技术与产品事项](../draft/2026-09-02-open-decisions.md)。
-- 当前顺序为 Issue #14（已实现，待推送验证）→ Issue #15，由作者分别安排新对话执行；Issue #16 是产品决策项，待作者拍板。
+- Wayfinder 地图已完成；Issue #14、#15、#16、#17 的独立处理状态按各自票据记录，不属于该地图终点。
+- Issue #22 已完成决策并关闭；正式客户端与前端边界规格见 [client-and-frontend-boundaries.md](../specs/client-and-frontend-boundaries.md)。
+- Issue #23 已完成决策并关闭；Rust/JavaScript 本地能力接口规格见 [client-local-rust-js-boundary.md](../specs/client-local-rust-js-boundary.md)。客户端正式实施可据此另起任务。
