@@ -4,7 +4,7 @@
 
 ## 当前目标
 
-在作者已确认的需求范围内维护现有产品：先完成现有能力验证，再建立自动化质量门禁，不主动扩展产品需求。`steven123397/dev` 是协作开发分支；当前不创建新的合入 `main` 的 PR。
+将仓库持有者使用 Codex 制作并接受的需求原型工程化为可实际使用、可验证和可持续维护的项目。仓库持有者是实际使用者与需求确认者；协作方负责工程质量，不在缺少使用反馈时自行扩展产品需求。`steven123397/dev` 是协作开发分支；当前不创建新的合入 `main` 的 PR。
 
 ## 当前能力
 
@@ -49,7 +49,19 @@
 
 ## 后续讨论
 
-- Windows 应用外壳继续缓议。
+- Tauri 原型已于 2026-09-05 验证通过（Issue #20，分支 `prototype/tauri-client`）：Windows 与荣耀真机（BVL-AN16）双端关键场景全过，据实推荐 Tauri 为正式客户端基础，Web 阅读器保留；正式实施输入：Android 状态栏安全区适配、网络层归口 Rust、构建镜像配置。小米手机、较大 PDF、未缓存附件离线状态标未验证。
+- [Tauri 双端验证范围与通过标准](../draft/prototypes/2026-09-05-tauri-client-validation.md) 已附验证结论；正式实现另起任务，不继承原型临时代码。
+- 真机目标已知为协作开发者的荣耀与仓库持有者的小米，均为各自最新系统；具体机型和基础版本留到验证时记录。下一轮讨论前端改版、Windows 设备与关闭行为、Android 后台和下载策略、离线位置冲突、缓存删除及 PDF 操作范围。
+- 已确认渐进式重设计、每账号一台主要 Windows、关闭任务时提示等待或停止、PDF 支持在线按需读取与主动下载、Android 首版 PDF 只做翻页/页码跳转/双指缩放/位置恢复。Android 后台下载不作持续保证，回到前台后继续；过期离线阅读位置不自动覆盖较新位置；移动数据不做额外限制；移出移动书架后联网确认时清理手机缓存。Q34–Q41 的产品行为已闭合。
+- Q42–Q47 已确认：移动副本包含精读结果、翻译、回想卡片和论文问答，不含 API Key 或应用设置；账号可登录多台 Android 设备；删除采用可重试队列；内容同步使用开始时版本；管理员重置密码使旧会话失效；前端优先改善导航、阅读状态、同步状态和任务反馈，不扩张功能范围。
+- 原型工具链已于 2026-09-05 在 Issue #19 补齐并实测：Rust 1.98.1（含四个 Android target）、Microsoft OpenJDK 17.0.20.1、Android SDK（platform-tools 37.0.1、android-35、build-tools 35.0.0、NDK 29.0.14206865 稳定版）装于 `D:\dev\`，环境变量已持久化；宿主与 `aarch64-linux-android` 冒烟构建均通过。干净 Windows 验证已调整口径：开发机新建干净本地账户覆盖安装与覆盖安装验证，仓库持有者主力机（Win11，预装 WebView2）只做一次真实环境确认，WebView2 缺失补装路径标未验证；荣耀手机（HONOR BVL-AN16，Android 16 / MagicOS 10.0.0.175，WebView 138.0.7204.179）已完成 USB 调试授权并经 adb 验证；小米手机短期不可得，其真机走查推迟到原型验证时补测并在此之前标未验证。Issue #19 已关闭，Tauri 原型构建与走查前提齐备，#20 解除阻塞。
+- 现有服务器位于北京，暂无域名。已同意暂缓域名购买、公网入口与备案安排，先完成客户端原型验证；正式部署前确认云厂商接入要求，公网或私有组网方案尚未选择。
+- 已创建 Wayfinder 地图 [论文阅读器三端工程化规格路线](https://github.com/attackingjensen/paper-30min/issues/18)，目标是形成可分阶段交给实施会话的正式规格。工具链票（#19）与 Tauri 原型票（#20）已关闭并回写地图；新票 [#23 正式客户端本地能力的 Rust/JavaScript 接口边界](https://github.com/attackingjensen/paper-30min/issues/23) 由原型毕业产生，与 [#21 云端同步契约](https://github.com/attackingjensen/paper-30min/issues/21)、[#22 客户端与前端边界](https://github.com/attackingjensen/paper-30min/issues/22) 同在可取前沿。地图不直接实施代码。
+- Windows、云端与 Android 客户端形态正在进行 `grill-with-docs` 设计，当前讨论记录见 [客户端形态草稿](../draft/2026-09-05-client-platform-design.md)；草稿不代表已接受需求。
+- 客户端设计已确认论文内容手动增量同步并原子切换版本，界面统一称“云端同步”；阅读位置自动同步，版本不一致时保留各自位置，新版就绪后尝试对应章节，失败时由用户选择。Android 打开时自动检查内容更新，阅读中收到新版则退出阅读页后切换；移动书架提供内容同步状态及逐篇、批量操作。
+- Windows 直接调用模型且 API Key 仅留本地。当前最多 2 人使用，计划由管理员创建 `diaozx` 和 `liangjq` 两个独立账号并手动重置密码；云端共享容量上限初始为 5 GB。现有磁盘和 COS 的分配留到部署时讨论。
+- 客户端交付方向已确认：Windows 普通安装包、Android 直接分发签名 APK，两端手动覆盖升级并保留数据；旧浏览器书库通过整库导出文件迁入，API Key 重新配置。下一步讨论客户端与云端技术选型，Windows 代码签名和安装器细节待定。
+- 云端已在设计讨论中选定独立 FastAPI + Uvicorn + SQLite 服务及 Docker Compose 部署，尚未实施。Windows 正在比较 pywebview 与 Tauri，Android 正在比较 Capacitor、Tauri 与 Kotlin 原生界面方案，客户端 Rust 使用范围未定。现有服务器为腾讯云轻量应用服务器，协作开发者具备网站部署与 TCR 使用经验；GitHub CI 账号锁定等待仓库持有者处理，设计和本地验证可继续。
 - CI 已由 Issue #14 落地（范围见工程基线）；`checkJs` 小范围试点已转入 Issue #15，正式 TypeScript 迁移与前端构建步骤仍未决定。
 - forwarding module 暂不实施；应先补服务器端行为测试，待转发策略复杂化、出现第二个调用场景或 Windows 外壳带来新职责后重新评估。
 - 其他未定建议统一见 [待决技术与产品事项](../draft/2026-09-02-open-decisions.md)。
