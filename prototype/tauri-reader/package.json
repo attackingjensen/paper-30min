@@ -1,0 +1,12 @@
+{
+  "name": "paper30min-prototype",
+  "private": true,
+  "version": "1.0.0",
+  "description": "THROWAWAY PROTOTYPE for issue #20 - not production code",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

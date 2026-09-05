@@ -1,0 +1,25 @@
+/* THROWAWAY PROTOTYPE */
+* { box-sizing: border-box; }
+body { font-family: system-ui, "Segoe UI", sans-serif; margin: 0; padding-bottom: 140px; }
+header { display: flex; gap: 12px; align-items: center; padding: 8px 16px; background: #fff7ed; border-bottom: 2px solid #d97706; position: sticky; top: 0; }
+header strong { color: #b45309; }
+#conn { color: #78716c; font-size: 12px; }
+main { padding: 12px 16px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+button { padding: 6px 12px; border: 1px solid #d6d3d1; border-radius: 6px; background: #fff; cursor: pointer; }
+button:disabled { opacity: 0.4; cursor: default; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #e7e5e4; padding: 6px 10px; text-align: left; font-size: 14px; }
+.badge { background: #e0f2fe; color: #0369a1; border-radius: 4px; padding: 2px 8px; font-size: 12px; }
+.badge.warn { background: #fef3c7; color: #b45309; }
+.tab.active { background: #0369a1; color: #fff; border-color: #0369a1; }
+.pane { max-width: 860px; }
+.pane table { margin: 8px 0; }
+.math-block { overflow-x: auto; padding: 4px 0; }
+#pdf-canvas { border: 1px solid #d6d3d1; max-width: 100%; touch-action: pinch-zoom; }
+#stream-box { border-top: 2px dashed #d6d3d1; margin-top: 16px; }
+#stream-out { white-space: pre-wrap; font-size: 14px; line-height: 1.7; }
+#stream-out.streaming::after { content: "▌"; animation: blink 0.8s infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+footer { position: fixed; bottom: 0; left: 0; right: 0; height: 128px; background: #1c1917; }
+#log { color: #a8a29e; font-size: 11px; height: 100%; margin: 0; padding: 6px 12px; overflow-y: auto; }

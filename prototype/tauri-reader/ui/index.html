@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<!-- THROWAWAY PROTOTYPE (issue #20) -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Paper30min PROTOTYPE</title>
+  <link rel="stylesheet" href="style.css" />
+  <script>
+    window.MathJax = { tex: { inlineMath: [['\\(', '\\)'], ['$', '$']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
+  </script>
+  <script src="vendor/mathjax-tex-svg.js"></script>
+  <script src="vendor/pdf.min.js"></script>
+</head>
+<body>
+  <header>
+    <strong>⚠ Paper30min PROTOTYPE</strong>
+    <span id="conn">mock: http://127.0.0.1:8791</span>
+    <button id="btn-back" hidden>← 书架</button>
+  </header>
+
+  <main id="view-shelf">
+    <div class="row">
+      <button id="btn-import">从模拟服务导入示例论文 (v1)</button>
+      <button id="btn-import-fail">模拟中断下载</button>
+    </div>
+    <table id="papers">
+      <thead><tr><th>论文</th><th>版本</th><th>PDF</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </main>
+
+  <main id="view-reader" hidden>
+    <div class="row">
+      <h2 id="paper-title"></h2>
+      <span id="paper-version" class="badge"></span>
+      <span id="update-badge" class="badge warn" hidden></span>
+    </div>
+    <div class="row">
+      <button data-tab="md" class="tab active">精读内容</button>
+      <button data-tab="pdf" class="tab">PDF</button>
+      <button id="btn-stream">开始流式精读</button>
+      <button id="btn-stream-stop" disabled>中断</button>
+    </div>
+    <div id="pane-md" class="pane"></div>
+    <div id="pane-pdf" class="pane" hidden>
+      <div class="row">
+        <button id="pdf-prev">上一页</button>
+        <span id="pdf-page">-/-</span>
+        <button id="pdf-next">下一页</button>
+        <button id="pdf-zoom-out">-</button>
+        <button id="pdf-zoom-in">+</button>
+      </div>
+      <canvas id="pdf-canvas"></canvas>
+      <p id="pdf-missing" hidden>附件未缓存（离线状态下不可读）。</p>
+    </div>
+    <div id="stream-box" hidden>
+      <h3>流式输出</h3>
+      <div id="stream-out"></div>
+    </div>
+  </main>
+
+  <footer><pre id="log"></pre></footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
