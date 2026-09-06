@@ -751,6 +751,8 @@ async function generateRecallDraft() {
         editor.value = full;
         updateRecallPreview();
       },
+      // 任务中心「重试」：重跑回想卡片草稿生成。
+      retry: () => { void generateRecallDraft(); },
     });
     if (!text.trim()) throw new Error('模型未返回卡片内容');
     editor.value = text;
@@ -916,6 +918,8 @@ async function translateCurrentText() {
         stream: true,
         signal: translateAborter.signal,
         onDelta: full => renderMarkdownInto(output, [...translated, full].join('\n\n')),
+        // 任务中心「重试」：重跑整段翻译流程（分段从头发起，完成仍落库）。
+        retry: () => { void translateCurrentText(); },
       });
       translated.push(piece);
     }
@@ -1001,27 +1005,32 @@ async function sendChat() {
     { role: 'system', content: buildChatContext(paper) },
     ...history,
   ];
-  chatAborter = new AbortController();
-  try {
-    const text = await model.chat(messages, {
-      stream: true,
-      signal: chatAborter.signal,
-      onDelta: full => { renderMarkdownInto(bubble, full); $('#chat-log').scrollTop = $('#chat-log').scrollHeight; },
-    });
-    renderMarkdownInto(bubble, text || '（无回复）');
-    // assistant 完成才落库；中断（AbortError）不落库。
-    await papers.appendChatMessage(paper, { role: 'assistant', content: text });
-  } catch (err) {
-    bubble.classList.add('err');
-    if (err.name === 'AbortError') {
-      bubble.textContent = '已停止。';
-    } else {
-      bubble.textContent = `出错了：${err.message}`;
-      await papers.appendChatMessage(paper, { role: 'assistant', content: `（出错：${err.message}）` });
+  // 模型补全段提成本地函数：任务中心「重试」重跑补全；用户消息已落库，不重复追加。
+  const askOnce = async () => {
+    chatAborter = new AbortController();
+    try {
+      const text = await model.chat(messages, {
+        stream: true,
+        signal: chatAborter.signal,
+        onDelta: full => { renderMarkdownInto(bubble, full); $('#chat-log').scrollTop = $('#chat-log').scrollHeight; },
+        retry: () => { void askOnce(); },
+      });
+      renderMarkdownInto(bubble, text || '（无回复）');
+      // assistant 完成才落库；中断（AbortError）不落库。
+      await papers.appendChatMessage(paper, { role: 'assistant', content: text });
+    } catch (err) {
+      bubble.classList.add('err');
+      if (err.name === 'AbortError') {
+        bubble.textContent = '已停止。';
+      } else {
+        bubble.textContent = `出错了：${err.message}`;
+        await papers.appendChatMessage(paper, { role: 'assistant', content: `（出错：${err.message}）` });
+      }
+    } finally {
+      chatAborter = null;
     }
-  } finally {
-    chatAborter = null;
-  }
+  };
+  await askOnce();
 }
 
 // ---------------- PDF 对照阅读 ----------------
@@ -2040,7 +2049,7 @@ function bindEvents() {
 }
 
 // ---------------- 启动序列 ----------------
-model.initModel(bridge);
+model.initModel(bridge, { registerTask: registerSessionTask });
 parser.initParser({ fetchText, downloadPdf });
 store = createTauriStore(bridge);
 papers.init(store, { pdfBase64: p => store.pdf.base64(p) });

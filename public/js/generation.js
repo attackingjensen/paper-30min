@@ -87,6 +87,8 @@ async function runTask(task, def, content, sinks) {
         task.text = full;
         safeCall(sinks.onUpdate, full);
       },
+      // 任务中心「重试」：重跑本节精读生成，同一 sinks 让卡片就地更新，结果仍经 saveAnalysis 落库。
+      retry: () => { startSection(paper, sectionId, sinks); },
     });
     if (!text.trim()) throw new Error('模型未返回内容');
     await papers.saveAnalysis(paper, sectionId, text);
