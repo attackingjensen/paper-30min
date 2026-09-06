@@ -1,6 +1,5 @@
 use paper30min_lib::bridge;
 use paper30min_lib::error::BridgeError;
-use paper30min_lib::tasks::TaskRegistry;
 use serde_json::json;
 
 mod common;
@@ -68,7 +67,7 @@ fn tasks_get_unknown_id_returns_task_not_found() {
 
 #[test]
 fn unknown_task_kind_is_rejected_at_start() {
-    let registry = TaskRegistry::new();
+    let (registry, _library, _dir) = common::env();
     let sink: std::sync::Arc<dyn paper30min_lib::tasks::EventSink> =
         std::sync::Arc::new(NoopSink);
     let error = registry.start("papers.generate@1", json!({}), sink).unwrap_err();

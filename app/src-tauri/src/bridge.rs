@@ -34,6 +34,15 @@ pub fn available_commands() -> &'static [&'static str] {
         "files.cleanupTemps@1",
         "migration.inspect@1",
         "migration.commit@1",
+        "settings.get@1",
+        "settings.putModel@1",
+        "settings.putSkillsOverrides@1",
+        "skills.list@1",
+        "exports.write@1",
+        // dialog.*@1 的分发在 lib.rs 拦截（打开系统对话框需要窗口句柄），
+        // 这里列出只为保持 app.info@1 的命令契约完整。
+        "dialog.pickFile@1",
+        "dialog.saveFile@1",
     ]
 }
 
@@ -200,6 +209,14 @@ pub fn invoke(
             let token = required_string(command, input, "token")?;
             library.commit_migration(token)
         }
+        "settings.get@1" => crate::settings::get(library),
+        "settings.putModel@1" => crate::settings::put_model(library, input),
+        "settings.putSkillsOverrides@1" => crate::settings::put_skills_overrides(library, input),
+        "skills.list@1" => Ok(json!({
+            "schemaVersion": BRIDGE_SCHEMA_VERSION,
+            "skills": crate::skills::list_skills(),
+        })),
+        "exports.write@1" => crate::exports::write_export(library, input),
         _ => Err(BridgeError::unknown_command(command)),
     }
 }

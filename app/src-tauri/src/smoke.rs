@@ -10,7 +10,7 @@ use base64::Engine;
 use crate::bridge;
 use crate::library::Library;
 use crate::tasks::{TaskRegistry, TaskStatus};
-use crate::testkit::{wait_terminal, Collector};
+use crate::testkit::{wait_terminal, Collector, MockHttp, MockResponse};
 
 fn scratch_library() -> (std::path::PathBuf, Library) {
     let root = std::env::temp_dir().join(format!(
@@ -36,8 +36,10 @@ fn check(name: &str, f: impl FnOnce() -> Result<String, String>, report: &mut Ve
 
 pub fn run() -> i32 {
     let mut report: Vec<Value> = Vec::new();
-    let registry = TaskRegistry::new();
     let (root, library) = scratch_library();
+    // 注册表与命令分发共享同一份书库句柄（&Arc<Library> 自动 deref 成 &Library）。
+    let library = std::sync::Arc::new(library);
+    let registry = TaskRegistry::new(std::sync::Arc::clone(&library));
 
     check(
         "app.info@1 返回 schemaVersion",
@@ -172,16 +174,234 @@ pub fn run() -> i32 {
         "library.info@1 创建版本化书库目录",
         || match bridge::invoke(&registry, &library, "library.info@1", &json!({})) {
             Ok(value)
-                if value["databaseVersion"] == json!(2)
+                if value["databaseVersion"] == json!(3)
                     && value["partitions"]
                         .as_array()
                         .map(|items| items.iter().any(|item| item == "database"))
                         .unwrap_or(false) =>
             {
-                Ok("databaseVersion=2".to_string())
+                Ok("databaseVersion=3".to_string())
             }
             Ok(value) => Err(format!("书库信息不符: {value}")),
             Err(error) => Err(format!("调用失败: {error}")),
+        },
+        &mut report,
+    );
+
+    check(
+        "settings 存取往返",
+        || {
+            bridge::invoke(
+                &registry,
+                &library,
+                "settings.putModel@1",
+                &json!({ "settings": { "model": "smoke-model", "temperature": 0.8 } }),
+            )
+            .map_err(|error| format!("写入设置失败: {error}"))?;
+            let loaded = bridge::invoke(&registry, &library, "settings.get@1", &json!({}))
+                .map_err(|error| format!("读取设置失败: {error}"))?;
+            if loaded["model"]["model"] != json!("smoke-model")
+                || loaded["model"]["temperature"] != json!(0.8)
+                || loaded["model"]["maxTokens"] != json!(4096)
+            {
+                return Err(format!("设置往返不符: {loaded}"));
+            }
+            Ok("模型设置写入后可读回，缺省字段保持缺省值".to_string())
+        },
+        &mut report,
+    );
+
+    check(
+        "skills.list@1 返回五条技能",
+        || match bridge::invoke(&registry, &library, "skills.list@1", &json!({})) {
+            Ok(value) if value["skills"].as_array().map(|items| items.len()) == Some(5) => {
+                Ok("5 条技能".to_string())
+            }
+            Ok(value) => Err(format!("技能数量不符: {value}")),
+            Err(error) => Err(format!("调用失败: {error}")),
+        },
+        &mut report,
+    );
+
+    check(
+        "exports.write@1 落入 exports 分区",
+        || {
+            let written = bridge::invoke(
+                &registry,
+                &library,
+                "exports.write@1",
+                &json!({ "fileName": "smoke-export.md", "contentBase64": "aGVsbG8=" }),
+            )
+            .map_err(|error| format!("写导出失败: {error}"))?;
+            if written["location"] != json!("exports") || written["fileName"] != json!("smoke-export.md") {
+                return Err(format!("导出结果不符: {written}"));
+            }
+            let bytes = std::fs::read(root.join("exports").join("smoke-export.md"))
+                .map_err(|error| format!("读取导出文件失败: {error}"))?;
+            if bytes != b"hello" {
+                return Err("导出内容与输入不一致".to_string());
+            }
+            Ok("location=exports，字节一致".to_string())
+        },
+        &mut report,
+    );
+
+    check(
+        "model.chat@1 流式输出（mock SSE）",
+        || {
+            let mock = MockHttp::start(|request, _hit| {
+                if request.path == "/v1/chat/completions" {
+                    MockResponse::sse(
+                        vec![
+                            json!({"choices": [{"delta": {"content": "冒烟"}}]}).to_string(),
+                            json!({"choices": [{"delta": {"content": "流式"}}]}).to_string(),
+                            "[DONE]".to_string(),
+                        ],
+                        Duration::from_millis(5),
+                    )
+                } else {
+                    MockResponse::json(404, json!({"error": {"message": "no such route"}}))
+                }
+            });
+            bridge::invoke(
+                &registry,
+                &library,
+                "settings.putModel@1",
+                &json!({ "settings": { "baseUrl": mock.url(""), "apiKey": "sk-smoke", "model": "smoke-model" } }),
+            )
+            .map_err(|error| format!("写入模型设置失败: {error}"))?;
+            let sink = Collector::new();
+            let task_id = registry
+                .start(
+                    "model.chat@1",
+                    json!({ "messages": [{ "role": "user", "content": "你好" }] }),
+                    sink.clone(),
+                )
+                .map_err(|error| format!("启动失败: {error}"))?;
+            match wait_terminal(&registry, &task_id, Duration::from_secs(10)) {
+                Some(TaskStatus::Succeeded) => {}
+                other => return Err(format!("终态不符: {other:?}")),
+            }
+            let text: String = sink
+                .events()
+                .iter()
+                .filter(|event| event.event == "chunk")
+                .filter_map(|event| event.chunk.clone())
+                .collect();
+            if text != "冒烟流式" {
+                return Err(format!("流式内容拼接不符: {text:?}"));
+            }
+            let requests = mock.requests();
+            let request = requests.first().ok_or("mock 未收到请求")?;
+            if request.header("authorization") != Some("Bearer sk-smoke") {
+                return Err("Authorization 头不符".to_string());
+            }
+            let ua = request.header("user-agent").unwrap_or("");
+            if !ua.contains("Mozilla/5.0") {
+                return Err(format!("User-Agent 不是浏览器 UA: {ua}"));
+            }
+            Ok("SSE 增量按序拼接，请求带鉴权与浏览器 UA".to_string())
+        },
+        &mut report,
+    );
+
+    check(
+        "net.fetch-text@1 返回文本（mock）",
+        || {
+            let mock = MockHttp::start(|request, _hit| {
+                if request.path == "/paper" {
+                    MockResponse::bytes(200, "text/plain; charset=utf-8", "论文正文冒烟文本")
+                } else {
+                    MockResponse::json(404, json!({"error": {"message": "no such route"}}))
+                }
+            });
+            let sink = Collector::new();
+            let task_id = registry
+                .start(
+                    "net.fetch-text@1",
+                    json!({ "url": mock.url("/paper") }),
+                    sink.clone(),
+                )
+                .map_err(|error| format!("启动失败: {error}"))?;
+            match wait_terminal(&registry, &task_id, Duration::from_secs(10)) {
+                Some(TaskStatus::Succeeded) => {}
+                other => return Err(format!("终态不符: {other:?}")),
+            }
+            let chunks: Vec<String> = sink
+                .events()
+                .iter()
+                .filter(|event| event.event == "chunk")
+                .filter_map(|event| event.chunk.clone())
+                .collect();
+            if chunks != vec!["论文正文冒烟文本".to_string()] {
+                return Err(format!("抓取文本不符: {chunks:?}"));
+            }
+            let snapshot = registry.get(&task_id).ok_or("任务快照缺失")?;
+            if snapshot.progress.as_ref().map(|p| p.done) != Some("论文正文冒烟文本".len() as u64) {
+                return Err(format!("进度不符: {:?}", snapshot.progress));
+            }
+            Ok("单 chunk 全文与字节进度正确".to_string())
+        },
+        &mut report,
+    );
+
+    check(
+        "files.download@1 落盘并登记元数据（mock）",
+        || {
+            bridge::invoke(
+                &registry,
+                &library,
+                "library.putPaper@1",
+                &json!({ "paper": { "id": "smoke-download", "title": "下载冒烟论文" } }),
+            )
+            .map_err(|error| format!("写入论文失败: {error}"))?;
+            let body: Vec<u8> = (0..50_000_u32).map(|i| (i % 251) as u8).collect();
+            let expected_sha256 = crate::files::sha256_hex(&body);
+            let mock = MockHttp::start(move |_request, _hit| {
+                MockResponse::bytes(200, "application/octet-stream", body.clone())
+            });
+            let sink = Collector::new();
+            let task_id = registry
+                .start(
+                    "files.download@1",
+                    json!({
+                        "paperId": "smoke-download",
+                        "attachmentId": "pdf",
+                        "name": "smoke.pdf",
+                        "contentType": "application/pdf",
+                        "url": mock.url("/file"),
+                    }),
+                    sink,
+                )
+                .map_err(|error| format!("启动失败: {error}"))?;
+            match wait_terminal(&registry, &task_id, Duration::from_secs(10)) {
+                Some(TaskStatus::Succeeded) => {}
+                other => return Err(format!("终态不符: {other:?}")),
+            }
+            let snapshot = registry.get(&task_id).ok_or("任务快照缺失")?;
+            let result = snapshot.result.ok_or("succeeded 未携带 result")?;
+            if result["attachment"]["id"] != json!("pdf")
+                || result["attachment"]["sha256"] != json!(expected_sha256)
+                || result["attachment"]["size"] != json!(50_000)
+            {
+                return Err(format!("result.attachment 不符: {result}"));
+            }
+            let loaded = bridge::invoke(
+                &registry,
+                &library,
+                "files.getAttachment@1",
+                &json!({ "paperId": "smoke-download", "attachmentId": "pdf" }),
+            )
+            .map_err(|error| format!("读取附件元数据失败: {error}"))?;
+            if loaded["attachment"]["sha256"] != json!(expected_sha256)
+                || loaded["attachment"]["contentType"] != json!("application/pdf")
+            {
+                return Err(format!("元数据不符: {loaded}"));
+            }
+            if root.join("attachments").join("smoke-download").join("pdf.part").exists() {
+                return Err("成功后不应留下 .part 临时文件".to_string());
+            }
+            Ok("落盘、sha256、contentType 与 result.attachment 一致".to_string())
         },
         &mut report,
     );
@@ -225,7 +445,7 @@ pub fn run() -> i32 {
                 }),
             )
             .map_err(|error| format!("写入附件失败: {error}"))?;
-            drop(library);
+            // 注册表持有书库句柄无法 drop；另开一条连接只读到已提交数据，同样验证持久化。
             let reopened = Library::open(&root).map_err(|error| format!("重开书库失败: {error}"))?;
             let loaded = bridge::invoke(
                 &registry,
@@ -285,9 +505,10 @@ pub fn run() -> i32 {
             {
                 return Err(format!("预检结果不符: {inspected}"));
             }
+            // 预检不应写入论文：与预检前的论文数一致即可（前面的检查已写过两篇）。
             let before = bridge::invoke(&registry, &reopened, "library.listPapers@1", &json!({}))
                 .map_err(|error| format!("列出书库失败: {error}"))?;
-            if before["papers"].as_array().map(|items| items.len()).unwrap_or(0) != 1 {
+            if before["papers"].as_array().map(|items| items.len()).unwrap_or(0) != 2 {
                 return Err("预检不应写入论文".to_string());
             }
             let committed = bridge::invoke(

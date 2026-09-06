@@ -1,8 +1,13 @@
 pub mod bridge;
 pub mod error;
+pub mod exports;
 pub mod files;
 pub mod library;
 pub mod migration;
+pub mod model;
+pub mod net;
+pub mod settings;
+pub mod skills;
 pub mod smoke;
 pub mod tasks;
 pub mod testkit;
@@ -11,6 +16,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 
 use error::BridgeError;
 use library::Library;
@@ -30,7 +36,8 @@ impl EventSink for TauriEventSink {
 
 pub struct AppState {
     registry: Arc<TaskRegistry>,
-    library: Library,
+    /// 书库句柄：任务注册表与命令分发共享同一份（bridge::invoke 经自动 deref 仍收 &Library）。
+    library: Arc<Library>,
     /// 用户在前端确认过关闭选择后置位，之后 CloseRequested 直接放行。
     force_close: AtomicBool,
 }
@@ -43,6 +50,12 @@ fn bridge_invoke(
     input: Option<Value>,
 ) -> Result<Value, BridgeError> {
     let input = input.unwrap_or(Value::Null);
+    if command == "dialog.pickFile@1" {
+        return dialog_pick_file(&window, &input);
+    }
+    if command == "dialog.saveFile@1" {
+        return dialog_save_file(&window, &input);
+    }
     if command == "app.close-window@1" {
         let cancel_tasks = input
             .get("cancelTasks")
@@ -63,6 +76,50 @@ fn bridge_invoke(
     bridge::invoke(&state.registry, &state.library, &command, &input)
 }
 
+/// 打开单选文件对话框（阻塞式）；取消返回 path: null。
+/// 需要窗口句柄，由 Tauri 命令层拦截，不进 bridge::invoke 纯函数分发。
+fn dialog_pick_file(window: &WebviewWindow, input: &Value) -> Result<Value, BridgeError> {
+    let mut builder = window.dialog().file();
+    if let Some(title) = input.get("title").and_then(Value::as_str) {
+        builder = builder.set_title(title);
+    }
+    if let Some(filters) = input.get("filters").and_then(Value::as_array) {
+        for filter in filters {
+            let name = filter
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let extensions: Vec<&str> = filter
+                .get("extensions")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            builder = builder.add_filter(name, &extensions);
+        }
+    }
+    let path = builder.blocking_pick_file().map(|path| path.to_string());
+    Ok(json!({
+        "schemaVersion": bridge::BRIDGE_SCHEMA_VERSION,
+        "path": path,
+    }))
+}
+
+/// 打开保存对话框（阻塞式）；取消返回 path: null。
+fn dialog_save_file(window: &WebviewWindow, input: &Value) -> Result<Value, BridgeError> {
+    let mut builder = window.dialog().file();
+    if let Some(title) = input.get("title").and_then(Value::as_str) {
+        builder = builder.set_title(title);
+    }
+    if let Some(default_name) = input.get("defaultName").and_then(Value::as_str) {
+        builder = builder.set_file_name(default_name);
+    }
+    let path = builder.blocking_save_file().map(|path| path.to_string());
+    Ok(json!({
+        "schemaVersion": bridge::BRIDGE_SCHEMA_VERSION,
+        "path": path,
+    }))
+}
+
 #[tauri::command]
 fn bridge_start(
     app: AppHandle,
@@ -81,11 +138,12 @@ fn bridge_start(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let root = app.path().app_data_dir()?;
-            let library = Library::open(&root)?;
+            let library = Arc::new(Library::open(&root)?);
             app.manage(AppState {
-                registry: TaskRegistry::new(),
+                registry: TaskRegistry::new(Arc::clone(&library)),
                 library,
                 force_close: AtomicBool::new(false),
             });

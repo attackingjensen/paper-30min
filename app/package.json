@@ -6,7 +6,7 @@
   "description": "论文精读 Windows 正式客户端（Tauri 外壳、桥接、SQLite 书库、附件/PDF 与浏览器迁移，issue #30）",
   "scripts": {
     "tauri": "tauri",
-    "test": "node --test tests/bridge.test.mjs",
+    "test": "node --test",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "smoke": "cargo run --manifest-path src-tauri/Cargo.toml -- --bridge-smoke"
   },

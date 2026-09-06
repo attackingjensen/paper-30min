@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "论文精读 Windows 正式客户端默认权限",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }

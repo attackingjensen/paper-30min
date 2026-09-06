@@ -1,3 +1,5 @@
+mod common;
+
 use paper30min_lib::tasks::{TaskRegistry, TaskStatus};
 use paper30min_lib::testkit::{wait_terminal, Collector};
 use serde_json::json;
@@ -10,7 +12,7 @@ fn terminal(registry: &Arc<TaskRegistry>, task_id: &str) -> TaskStatus {
 
 #[test]
 fn stream_text_task_streams_chunks_then_succeeds() {
-    let registry = TaskRegistry::new();
+    let (registry, _library, _dir) = common::env();
     let sink = Collector::new();
     let task_id = registry
         .start(
@@ -46,7 +48,7 @@ fn stream_text_task_streams_chunks_then_succeeds() {
 
 #[test]
 fn cancel_stops_stream_task_at_safe_checkpoint_and_is_idempotent() {
-    let registry = TaskRegistry::new();
+    let (registry, _library, _dir) = common::env();
     let sink = Collector::new();
     let task_id = registry
         .start(
@@ -73,14 +75,14 @@ fn cancel_stops_stream_task_at_safe_checkpoint_and_is_idempotent() {
 
 #[test]
 fn cancel_unknown_task_returns_task_not_found() {
-    let registry = TaskRegistry::new();
+    let (registry, _library, _dir) = common::env();
     let error = registry.request_cancel("task-424242").unwrap_err();
     assert_eq!(error.code, "task_not_found");
 }
 
 #[test]
 fn fail_task_ends_failed_with_unified_error() {
-    let registry = TaskRegistry::new();
+    let (registry, _library, _dir) = common::env();
     let sink = Collector::new();
     let task_id = registry
         .start("demo.fail@1", json!({ "message": "预期失败" }), sink)
@@ -96,7 +98,7 @@ fn fail_task_ends_failed_with_unified_error() {
 
 #[test]
 fn active_list_only_contains_non_terminal_tasks() {
-    let registry = TaskRegistry::new();
+    let (registry, _library, _dir) = common::env();
     let sink = Collector::new();
     let done_id = registry
         .start("demo.stream-text@1", json!({ "chunks": 1, "chunkDelayMs": 0 }), sink.clone())
@@ -119,7 +121,7 @@ fn active_list_only_contains_non_terminal_tasks() {
 
 #[test]
 fn snapshot_uses_versioned_camel_case_dto() {
-    let registry = TaskRegistry::new();
+    let (registry, _library, _dir) = common::env();
     let sink = Collector::new();
     let task_id = registry
         .start("demo.stream-text@1", json!({ "chunks": 1, "chunkDelayMs": 0 }), sink)

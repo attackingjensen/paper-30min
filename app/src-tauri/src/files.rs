@@ -48,7 +48,7 @@ fn sqlite_error(err: rusqlite::Error) -> BridgeError {
     BridgeError::internal(format!("书库数据库错误: {err}"))
 }
 
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
@@ -153,6 +153,126 @@ pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<(), BridgeError>
         return Err(io_error(error));
     }
     Ok(())
+}
+
+/// .old 备份路径（与 write_atomic 的备份语义一致）。
+fn old_backup_path(dest: &Path) -> Result<PathBuf, BridgeError> {
+    let file_name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| BridgeError::invalid_input("附件文件名无效"))?;
+    Ok(dest.with_file_name(format!("{file_name}{OLD_SUFFIX}")))
+}
+
+/// .part → 目标路径：目标已存在时先备份为 .old，rename 失败时恢复 .old（同 write_atomic）。
+fn promote_temp(temp: &Path, dest: &Path) -> Result<(), BridgeError> {
+    let old = old_backup_path(dest)?;
+    if dest.exists() {
+        if old.exists() {
+            fs::remove_file(&old).map_err(io_error)?;
+        }
+        fs::rename(dest, &old).map_err(io_error)?;
+    }
+    if let Err(error) = fs::rename(temp, dest) {
+        if old.exists() {
+            let _ = fs::rename(&old, dest);
+        }
+        return Err(io_error(error));
+    }
+    Ok(())
+}
+
+/// 元数据提交失败后的回滚：删除已就位文件并恢复 .old 备份（与 put_attachment 一致）。
+pub(crate) fn rollback_promoted(dest: &Path) {
+    let _ = fs::remove_file(dest);
+    if let Ok(old) = old_backup_path(dest) {
+        if old.exists() {
+            let _ = fs::rename(&old, dest);
+        }
+    }
+}
+
+/// 提交成功后清掉 .old 备份。
+pub(crate) fn discard_old_backup(dest: &Path) {
+    if let Ok(old) = old_backup_path(dest) {
+        let _ = fs::remove_file(old);
+    }
+}
+
+/// 流式附件写入器：数据先写 .part 临时文件并累计 sha256，finish 时 fsync + rename 就位。
+/// 未完成时被 Drop 会清掉 .part，与 write_atomic / cleanup_temps 的临时文件语义一致。
+pub(crate) struct AttachmentStreamWriter {
+    file: File,
+    temp: PathBuf,
+    dest: PathBuf,
+    hasher: Sha256,
+    written: u64,
+    finished: bool,
+}
+
+impl AttachmentStreamWriter {
+    /// 开始流式写入：创建（或截断）目标旁的 .part 临时文件。
+    pub(crate) fn begin(dest: &Path) -> Result<Self, BridgeError> {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(io_error)?;
+        }
+        let file_name = dest
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| BridgeError::invalid_input("附件文件名无效"))?;
+        let temp = dest.with_file_name(format!("{file_name}{TEMP_SUFFIX}"));
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)
+            .map_err(io_error)?;
+        Ok(Self {
+            file,
+            temp,
+            dest: dest.to_path_buf(),
+            hasher: Sha256::new(),
+            written: 0,
+            finished: false,
+        })
+    }
+
+    /// 追加一块数据并累计 sha256。
+    pub(crate) fn write_chunk(&mut self, bytes: &[u8]) -> Result<(), BridgeError> {
+        self.file.write_all(bytes).map_err(io_error)?;
+        self.hasher.update(bytes);
+        self.written += bytes.len() as u64;
+        Ok(())
+    }
+
+    pub(crate) fn bytes_written(&self) -> u64 {
+        self.written
+    }
+
+    /// 已写内容的 sha256（hex），可在 finish 前调用。
+    pub(crate) fn sha256_hex(&self) -> String {
+        let digest = self.hasher.clone().finalize();
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// fsync 后把 .part rename 就位（沿用 write_atomic 的 .old 备份语义）；失败时清掉 .part。
+    pub(crate) fn finish(mut self) -> Result<(), BridgeError> {
+        self.file.sync_all().map_err(io_error)?;
+        self.finished = true;
+        let result = promote_temp(&self.temp, &self.dest);
+        if result.is_err() {
+            let _ = fs::remove_file(&self.temp);
+        }
+        result
+    }
+}
+
+impl Drop for AttachmentStreamWriter {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = fs::remove_file(&self.temp);
+        }
+    }
 }
 
 pub(crate) fn insert_attachment_row(

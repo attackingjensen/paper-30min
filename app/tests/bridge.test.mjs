@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createBridge,
+  trackTask,
   taskStatusLabel,
   isTerminalStatus,
   activeTasks,
@@ -114,4 +115,78 @@ test('activeTasks 只保留仍在运行的任务', () => {
     { taskId: 'd', status: 'cancelled' },
   ]);
   assert.deepEqual(active.map((t) => t.taskId), ['a', 'c']);
+});
+
+// ---------------- trackTask：subscribe + tasks.get@1 快照复核的公共收尾 ----------------
+
+// 假 bridge：手动派发事件序列；tasks.get@1 快照可预置。
+function createTaskBridge({ snapshot } = {}) {
+  const calls = [];
+  const handlers = new Map();
+  return {
+    calls,
+    emit: (taskId, event) => handlers.get(taskId)?.(event),
+    async subscribe(taskId, handler) {
+      handlers.set(taskId, handler);
+      return () => handlers.delete(taskId);
+    },
+    async invoke(command, input = {}) {
+      calls.push({ command, input });
+      if (command === 'tasks.get@1') {
+        // 与真实桥一致：{ schemaVersion, task }，终态字段在 task 上。
+        return { schemaVersion: 1, task: snapshot ?? { taskId: input.taskId, status: 'running' } };
+      }
+      if (command === 'tasks.cancel@1') return { schemaVersion: 1 };
+      throw new Error(`未 mock 的命令：${command}`);
+    },
+  };
+}
+
+// 等 subscribe/快照复核的微任务链走完再派发事件。
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test('trackTask：chunk 转发 onChunk，终态 status 解出 { status, result }', async () => {
+  const bridge = createTaskBridge();
+  const chunks = [];
+  const statuses = [];
+  const promise = trackTask(bridge, 'task-1', {
+    onChunk: chunk => chunks.push(chunk),
+    onStatus: status => statuses.push(status),
+  });
+  await tick();
+
+  bridge.emit('task-1', { event: 'chunk', chunk: '甲' });
+  bridge.emit('task-1', { event: 'status', status: 'retry_waiting' });
+  bridge.emit('task-1', { event: 'chunk', chunk: '乙' });
+  bridge.emit('task-1', { event: 'status', status: 'succeeded', result: { ok: true } });
+
+  assert.deepEqual(await promise, { status: 'succeeded', error: undefined, result: { ok: true } });
+  assert.deepEqual(chunks, ['甲', '乙']);
+  assert.ok(!statuses.includes('chunk'), 'onStatus 只收 status 事件');
+});
+
+test('trackTask：订阅前已终态时由 tasks.get@1 快照复核收尾（事件不重放）', async () => {
+  const bridge = createTaskBridge({
+    snapshot: { taskId: 'task-1', status: 'failed', error: { code: 'boom', message: '坏了', retryable: true } },
+  });
+  const outcome = await trackTask(bridge, 'task-1', {});
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.error.code, 'boom');
+  assert.ok(bridge.calls.some(c => c.command === 'tasks.get@1' && c.input.taskId === 'task-1'));
+});
+
+test('trackTask：signal abort 调 tasks.cancel@1，cancelled 终态照常收尾', async () => {
+  const bridge = createTaskBridge();
+  const controller = new AbortController();
+  const promise = trackTask(bridge, 'task-1', { signal: controller.signal });
+  await tick();
+
+  controller.abort();
+  await tick();
+  const cancels = bridge.calls.filter(c => c.command === 'tasks.cancel@1');
+  assert.equal(cancels.length, 1);
+  assert.equal(cancels[0].input.taskId, 'task-1');
+
+  bridge.emit('task-1', { event: 'status', status: 'cancelled' });
+  assert.equal((await promise).status, 'cancelled');
 });

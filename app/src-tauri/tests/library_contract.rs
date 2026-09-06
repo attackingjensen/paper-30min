@@ -73,7 +73,7 @@ fn first_launch_creates_versioned_database_and_partitions() {
     let (registry, library, dir) = common::env();
     let info = invoke(&registry, &library, "library.info@1", json!({}));
     assert_eq!(info["schemaVersion"], json!(1));
-    assert_eq!(info["databaseVersion"], json!(2));
+    assert_eq!(info["databaseVersion"], json!(3));
     let root = info["dataRoot"].as_str().expect("dataRoot");
     assert_eq!(root, dir.path().to_string_lossy().as_ref());
     let partitions = info["partitions"].as_array().expect("partitions");
@@ -295,23 +295,22 @@ fn reading_position_for_unknown_paper_is_not_found() {
 #[test]
 fn restart_restores_paper_and_reading_position() {
     let dir = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new();
-    {
-        let library = Library::open(dir.path()).unwrap();
-        invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "注意力论文"));
-        invoke(
-            &registry,
-            &library,
-            "library.putReadingPosition@1",
-            json!({
-                "position": {
-                    "paperId": "paper-a",
-                    "view": "digest",
-                    "sectionId": "abstract"
-                }
-            }),
-        );
-    }
+    let library = Arc::new(Library::open(dir.path()).unwrap());
+    let registry = TaskRegistry::new(Arc::clone(&library));
+    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "注意力论文"));
+    invoke(
+        &registry,
+        &library,
+        "library.putReadingPosition@1",
+        json!({
+            "position": {
+                "paperId": "paper-a",
+                "view": "digest",
+                "sectionId": "abstract"
+            }
+        }),
+    );
+    // 另开一条连接只读到已提交数据，验证落盘持久化。
     let library = Library::open(dir.path()).unwrap();
     let paper = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-a" }));
     assert_eq!(paper["paper"]["title"], json!("注意力论文"));
@@ -326,7 +325,6 @@ fn restart_restores_paper_and_reading_position() {
 fn concurrent_puts_of_same_paper_do_not_tear_nested_records() {
     let (registry, library, _dir) = common::env();
     invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "初始"));
-    let library = Arc::new(library);
 
     let mut handles = Vec::new();
     for label in ["A", "B"] {

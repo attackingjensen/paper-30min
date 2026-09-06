@@ -12,7 +12,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::error::BridgeError;
 
-pub const DATABASE_VERSION: i32 = 2;
+pub const DATABASE_VERSION: i32 = 3;
 pub const LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 const PARTITIONS: &[&str] = &["database", "attachments", "operations", "exports"];
@@ -391,6 +391,36 @@ impl Library {
         Ok(changed > 0)
     }
 
+    /// 读取应用设置值；未写入过返回 None。设置不进论文/导出 DTO。
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, BridgeError> {
+        if key.trim().is_empty() {
+            return Err(BridgeError::invalid_input("设置需要非空 key"));
+        }
+        let conn = self.lock_conn()?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sqlite_error)
+    }
+
+    /// 写入应用设置值，重复写入覆盖同 key 的旧值。
+    pub fn put_setting(&self, key: &str, value: &str) -> Result<(), BridgeError> {
+        if key.trim().is_empty() {
+            return Err(BridgeError::invalid_input("设置需要非空 key"));
+        }
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
+        )
+        .map_err(sqlite_error)?;
+        Ok(())
+    }
+
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
@@ -505,6 +535,7 @@ fn migrate(conn: &Connection) -> Result<(), BridgeError> {
         .map_err(sqlite_error)?;
     }
     migrate_attachments(conn)?;
+    migrate_settings(conn)?;
     Ok(())
 }
 
@@ -529,6 +560,29 @@ fn migrate_attachments(conn: &Connection) -> Result<(), BridgeError> {
           PRIMARY KEY (paper_id, attachment_id)
         );
         PRAGMA user_version = 2;
+        COMMIT;
+        ",
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
+/// v3：应用设置键值表。设置（含 API Key）只进这张表，不进任何论文/导出 DTO。
+fn migrate_settings(conn: &Connection) -> Result<(), BridgeError> {
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(sqlite_error)?;
+    if version >= 3 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        BEGIN;
+        CREATE TABLE settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+        PRAGMA user_version = 3;
         COMMIT;
         ",
     )

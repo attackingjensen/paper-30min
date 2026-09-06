@@ -180,14 +180,13 @@ fn leftover_temp_file_is_not_usable_and_cleanup_removes_it() {
 #[test]
 fn reopen_discards_leftover_temp_files() {
     let dir = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new();
-    {
-        let library = Library::open(dir.path()).unwrap();
-        put_paper(&registry, &library, "paper-a");
-    }
+    let library = Arc::new(Library::open(dir.path()).unwrap());
+    let registry = TaskRegistry::new(Arc::clone(&library));
+    put_paper(&registry, &library, "paper-a");
     let part = dir.path().join("attachments").join("paper-a").join("pdf.part");
     std::fs::create_dir_all(part.parent().unwrap()).unwrap();
     std::fs::write(&part, "HALF-WRITTEN").unwrap();
+    // 另开一条连接：打开时会清掉中断留下的临时文件。
     let library = Library::open(dir.path()).unwrap();
     assert!(!part.exists(), "重开书库时应清掉中断留下的临时文件");
     let listed = invoke(
@@ -306,9 +305,9 @@ fn delete_paper_removes_attachments_with_records() {
 #[test]
 fn restart_restores_attachment_and_app_info_lists_file_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new();
+    let library = Arc::new(Library::open(dir.path()).unwrap());
+    let registry = TaskRegistry::new(Arc::clone(&library));
     {
-        let library = Library::open(dir.path()).unwrap();
         put_paper(&registry, &library, "paper-a");
         invoke(
             &registry,
@@ -317,6 +316,7 @@ fn restart_restores_attachment_and_app_info_lists_file_commands() {
             put_pdf_input("paper-a", "pdf", "attention.pdf"),
         );
     }
+    // 另开一条连接只读到已提交数据，验证落盘持久化。
     let library = Library::open(dir.path()).unwrap();
     let loaded = invoke(
         &registry,
