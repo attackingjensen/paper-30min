@@ -93,7 +93,7 @@ test('put：记录 → DTO（ISO 日期、sections 数组、parts sortOrder、tr
   assert.ok(!('pdfAttachment' in dto));
 });
 
-test('put：瞬时 pdfBlob 先经 files.putAttachment@1 落附件，上传后从记录剥离', async () => {
+test('put：先经 library.putPaper@1 落记录，再传 files.putAttachment@1 附件，上传后 pdfBlob 剥离', async () => {
   const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3]);
   const bridge = createFakeBridge({
     'files.putAttachment@1': () => ({ schemaVersion: 1, attachment: {} }),
@@ -104,7 +104,9 @@ test('put：瞬时 pdfBlob 先经 files.putAttachment@1 落附件，上传后从
   await store.put(paper);
 
   assert.equal(bridge.calls.length, 2);
-  const upload = bridge.calls[0];
+  // putAttachment 校验论文必须已存在，落记录必须先行
+  assert.equal(bridge.calls[0].command, 'library.putPaper@1');
+  const upload = bridge.calls[1];
   assert.equal(upload.command, 'files.putAttachment@1');
   assert.equal(upload.input.paperId, 'p1');
   assert.deepEqual(
@@ -112,7 +114,6 @@ test('put：瞬时 pdfBlob 先经 files.putAttachment@1 落附件，上传后从
     { id: 'pdf', name: 'x.pdf', contentType: 'application/pdf', contentBase64: '<略>' },
   );
   assert.deepEqual([...base64ToBytes(upload.input.attachment.contentBase64)], [...bytes]);
-  assert.equal(bridge.calls[1].command, 'library.putPaper@1');
   // 上传成功后瞬时句柄被清掉，后续 put 不再重复上传
   assert.equal(paper.pdfBlob, null);
 });

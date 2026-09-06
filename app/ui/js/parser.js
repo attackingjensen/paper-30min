@@ -371,7 +371,10 @@ export function splitTextToSections(rawLines) {
 // PDF 字节 → 结构化章节的公共管线：parsePdfFile 与 parsePdfBytes 共用。
 async function parsePdfBuffer(buf, fallbackName) {
   const pdfjs = getPdfjs();
-  const doc = await pdfjs.getDocument({ data: buf }).promise;
+  // pdf.js 会把 data 的底层缓冲 transfer 给 worker，主线程字节随之 detach；
+  // 传入副本，调用方随后仍能用原字节构造 File 落附件。
+  const data = new Uint8Array(buf).slice();
+  const doc = await pdfjs.getDocument({ data }).promise;
   const allLines = [];
   let firstPageData = null;
 

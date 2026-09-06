@@ -6,7 +6,7 @@
 // - parts 在 DTO 只存元数据（id/title/heading/semanticType/sortOrder），记录侧的
 //   text/pageRange 冗余字段在载入时从 sections/sectionPages 重建，sourceRange 丢弃；
 // - translations 记录侧键为 `sectionId:language`，DTO 拆成独立字段；
-// - PDF 字节不进 DTO：写入前先经 files.putAttachment@1 落附件（id 固定 'pdf'）。
+// - PDF 字节不进 DTO：写入时先落论文记录，再经 files.putAttachment@1 落附件（id 固定 'pdf'）。
 
 // PDF 附件 id 与 migration.rs 的 convert_attachment 保持一致。
 const PDF_ATTACHMENT_ID = 'pdf';
@@ -351,13 +351,14 @@ export function createTauriStore(bridge) {
     get,
 
     async put(paper) {
-      // PDF 字节不随记录持久化：先落附件存储，再映射 DTO。
+      // PDF 字节不随记录持久化：pdfBlob 是运行时字段，不进 DTO。
+      // 必须先落论文记录再传附件——files.putAttachment@1 校验论文必须已存在。
+      await bridge.invoke('library.putPaper@1', { paper: recordToDto(paper) });
       if (isPdfBlob(paper.pdfBlob)) {
         await uploadPdfAttachment(bridge, paper);
         // 上传成功后清掉瞬时句柄，避免后续每次 put 重复上传整份 PDF。
         paper.pdfBlob = null;
       }
-      await bridge.invoke('library.putPaper@1', { paper: recordToDto(paper) });
     },
 
     async delete(id) {
