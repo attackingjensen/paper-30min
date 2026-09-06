@@ -5,6 +5,8 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use base64::Engine;
+
 use crate::bridge;
 use crate::library::Library;
 use crate::tasks::{TaskRegistry, TaskStatus};
@@ -170,13 +172,13 @@ pub fn run() -> i32 {
         "library.info@1 创建版本化书库目录",
         || match bridge::invoke(&registry, &library, "library.info@1", &json!({})) {
             Ok(value)
-                if value["databaseVersion"] == json!(1)
+                if value["databaseVersion"] == json!(2)
                     && value["partitions"]
                         .as_array()
                         .map(|items| items.iter().any(|item| item == "database"))
                         .unwrap_or(false) =>
             {
-                Ok("databaseVersion=1".to_string())
+                Ok("databaseVersion=2".to_string())
             }
             Ok(value) => Err(format!("书库信息不符: {value}")),
             Err(error) => Err(format!("调用失败: {error}")),
@@ -185,7 +187,7 @@ pub fn run() -> i32 {
     );
 
     check(
-        "论文与阅读位置可写入并在重开后恢复",
+        "论文、阅读位置与附件可写入并在重开后恢复",
         || {
             let paper = json!({
                 "paper": {
@@ -207,6 +209,22 @@ pub fn run() -> i32 {
                 &json!({ "position": { "paperId": "smoke-paper", "view": "digest", "sectionId": "abstract" } }),
             )
             .map_err(|error| format!("写入阅读位置失败: {error}"))?;
+            let bytes = base64::engine::general_purpose::STANDARD.encode(b"hello-pdf");
+            bridge::invoke(
+                &registry,
+                &library,
+                "files.putAttachment@1",
+                &json!({
+                    "paperId": "smoke-paper",
+                    "attachment": {
+                        "id": "pdf",
+                        "name": "smoke.pdf",
+                        "contentType": "application/pdf",
+                        "contentBase64": bytes
+                    }
+                }),
+            )
+            .map_err(|error| format!("写入附件失败: {error}"))?;
             drop(library);
             let reopened = Library::open(&root).map_err(|error| format!("重开书库失败: {error}"))?;
             let loaded = bridge::invoke(
@@ -229,8 +247,18 @@ pub fn run() -> i32 {
             if position["position"]["view"] != json!("digest") {
                 return Err(format!("阅读位置未恢复: {position}"));
             }
+            let range = bridge::invoke(
+                &registry,
+                &reopened,
+                "files.readRange@1",
+                &json!({ "paperId": "smoke-paper", "attachmentId": "pdf", "offset": 0, "length": 5 }),
+            )
+            .map_err(|error| format!("读取附件失败: {error}"))?;
+            if range["contentBase64"] != json!("aGVsbG8=") {
+                return Err(format!("附件范围读取不符: {range}"));
+            }
             let _ = std::fs::remove_dir_all(&root);
-            Ok("论文与阅读位置重开后完整恢复".to_string())
+            Ok("论文、阅读位置与附件重开后完整恢复".to_string())
         },
         &mut report,
     );

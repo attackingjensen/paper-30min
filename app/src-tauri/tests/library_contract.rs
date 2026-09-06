@@ -73,7 +73,7 @@ fn first_launch_creates_versioned_database_and_partitions() {
     let (registry, library, dir) = common::env();
     let info = invoke(&registry, &library, "library.info@1", json!({}));
     assert_eq!(info["schemaVersion"], json!(1));
-    assert_eq!(info["databaseVersion"], json!(1));
+    assert_eq!(info["databaseVersion"], json!(2));
     let root = info["dataRoot"].as_str().expect("dataRoot");
     assert_eq!(root, dir.path().to_string_lossy().as_ref());
     let partitions = info["partitions"].as_array().expect("partitions");
@@ -372,6 +372,8 @@ fn app_info_lists_library_commands() {
         "library.getReadingPosition@1",
         "library.putReadingPosition@1",
         "library.deleteReadingPosition@1",
+        "files.putAttachment@1",
+        "files.readRange@1",
     ] {
         assert!(commands.iter().any(|item| item == name), "app.info 未列出 {name}");
     }

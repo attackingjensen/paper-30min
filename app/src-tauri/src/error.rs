@@ -44,6 +44,25 @@ impl BridgeError {
             .with_details(serde_json::json!({ "paperId": paper_id }))
     }
 
+    pub fn attachment_not_found(paper_id: &str, attachment_id: &str) -> Self {
+        Self::new(
+            "not_found",
+            format!("附件不存在: {paper_id}/{attachment_id}"),
+            false,
+        )
+        .with_details(serde_json::json!({
+            "paperId": paper_id,
+            "attachmentId": attachment_id
+        }))
+    }
+
+    pub fn integrity_failed(paper_id: &str, attachment_id: &str, message: impl Into<String>) -> Self {
+        Self::new("integrity_failed", message, false).with_details(serde_json::json!({
+            "paperId": paper_id,
+            "attachmentId": attachment_id
+        }))
+    }
+
     pub fn schema_unsupported(found: i32, supported: i32) -> Self {
         Self::new(
             "schema_unsupported",

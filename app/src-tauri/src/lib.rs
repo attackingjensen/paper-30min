@@ -1,5 +1,6 @@
 pub mod bridge;
 pub mod error;
+pub mod files;
 pub mod library;
 pub mod smoke;
 pub mod tasks;

@@ -1,6 +1,6 @@
 # 项目当前状态
 
-> 更新时间：2026-09-05
+> 更新时间：2026-09-06
 
 ## 当前目标
 
@@ -70,4 +70,4 @@
 - Issue #22 已完成决策并关闭；正式客户端与前端边界规格见 [client-and-frontend-boundaries.md](../specs/client-and-frontend-boundaries.md)。
 - Issue #23 已完成决策并关闭；Rust/JavaScript 本地能力接口规格见 [client-local-rust-js-boundary.md](../specs/client-local-rust-js-boundary.md)。客户端正式实施可据此另起任务。
 - 三张正式规格 Issue 已发布并统一改为中文：Windows 正式客户端与本地书库（#24）、论文移动阅读云端同步服务（#25）、Android 移动阅读伴侣（#26）。#24 已通过 GitHub 原生 sub-issue 关系挂载 6 张实施票，并设置原生 blocking 依赖：#27 Tauri 桥接、#28 SQLite 书库、#29 附件/PDF、#30 浏览器迁移、#31 论文与任务接入、#32 安装升级验收；后续按阻塞关系推进，云端和 Android 暂不拆票。
-- Issue #27（Windows Tauri 外壳与 Rust/JavaScript 桥接）已在 `app/` 实现。Issue #28（本地数据目录与 SQLite 书库基础）已在同一目录接入：首次启动创建 `database/` 等逻辑分区与版本化 `library.sqlite`；论文、原文章节、精读部分、精读结果、翻译、回想卡片、论文问答和阅读位置经 `library.*@1` DTO 命令读写；同论文写入串行化并在事务中提交；关闭重开后记录可恢复。验证入口为 `cargo test`、`node --test` 契约测试和 `--bridge-smoke`（含书库重开恢复）。附件/PDF（#29）、浏览器迁移（#30）、论文与任务接入（#31）按阻塞关系随后推进。
+- Issue #27（Windows Tauri 外壳与 Rust/JavaScript 桥接）已在 `app/` 实现。Issue #28（本地数据目录与 SQLite 书库基础）已在同一目录接入：首次启动创建 `database/` 等逻辑分区与版本化 `library.sqlite`；论文、原文章节、精读部分、精读结果、翻译、回想卡片、论文问答和阅读位置经 `library.*@1` DTO 命令读写；同论文写入串行化并在事务中提交；关闭重开后记录可恢复。Issue #29（附件与 PDF 文件能力）已接入：PDF 和其他附件按 `attachments/{paperId}/` 分区保存，JavaScript 经 `files.*@1` 取得元数据与字节范围，不接触绝对路径；写入使用 `.part` 临时文件后原子改名；存在性、大小与 SHA-256 完整性可校验；删除论文时同步移除附件目录。验证入口为 `cargo test`、`node --test` 契约测试和 `--bridge-smoke`（含附件重开恢复）。浏览器迁移（#30）、论文与任务接入（#31）按阻塞关系随后推进。

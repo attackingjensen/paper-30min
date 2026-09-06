@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::error::BridgeError;
+use crate::files::AttachmentWrite;
 use crate::library::{Library, PaperDto, ReadingPositionDto};
 use crate::tasks::{available_task_kinds, TaskRegistry};
 
@@ -25,6 +26,12 @@ pub fn available_commands() -> &'static [&'static str] {
         "library.getReadingPosition@1",
         "library.putReadingPosition@1",
         "library.deleteReadingPosition@1",
+        "files.putAttachment@1",
+        "files.listAttachments@1",
+        "files.getAttachment@1",
+        "files.readRange@1",
+        "files.verifyAttachment@1",
+        "files.cleanupTemps@1",
     ]
 }
 
@@ -130,6 +137,59 @@ pub fn invoke(
                 "deleted": deleted,
             }))
         }
+        "files.putAttachment@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let attachment = parse_dto::<AttachmentWrite>(command, input, "attachment")?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "attachment": library.put_attachment(paper_id, attachment)?,
+            }))
+        }
+        "files.listAttachments@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "attachments": library.list_attachments(paper_id)?,
+            }))
+        }
+        "files.getAttachment@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let attachment_id = required_string(command, input, "attachmentId")?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "attachment": library.get_attachment(paper_id, attachment_id)?,
+            }))
+        }
+        "files.readRange@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let attachment_id = required_string(command, input, "attachmentId")?;
+            let offset = required_u64(command, input, "offset")?;
+            let length = required_u64(command, input, "length")?;
+            let (attachment, bytes) = library.read_range(paper_id, attachment_id, offset, length)?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "attachment": attachment,
+                "offset": offset,
+                "length": bytes.len() as u64,
+                "totalSize": attachment.size,
+                "contentBase64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+            }))
+        }
+        "files.verifyAttachment@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let attachment_id = required_string(command, input, "attachmentId")?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "attachment": library.verify_attachment(paper_id, attachment_id)?,
+            }))
+        }
+        "files.cleanupTemps@1" => {
+            let removed = library.cleanup_temps()?;
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "removed": removed,
+            }))
+        }
         _ => Err(BridgeError::unknown_command(command)),
     }
 }
@@ -140,6 +200,13 @@ fn required_string<'a>(command: &str, input: &'a Value, field: &str) -> Result<&
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| BridgeError::invalid_input(format!("{command} 需要字符串参数 {field}")))
+}
+
+fn required_u64(command: &str, input: &Value, field: &str) -> Result<u64, BridgeError> {
+    input
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| BridgeError::invalid_input(format!("{command} 需要整数参数 {field}")))
 }
 
 fn parse_dto<T: serde::de::DeserializeOwned>(

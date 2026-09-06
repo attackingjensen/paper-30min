@@ -12,7 +12,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::error::BridgeError;
 
-pub const DATABASE_VERSION: i32 = 1;
+pub const DATABASE_VERSION: i32 = 2;
 pub const LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 const PARTITIONS: &[&str] = &["database", "attachments", "operations", "exports"];
@@ -231,10 +231,12 @@ impl Library {
         conn.pragma_update(None, "foreign_keys", true).map_err(sqlite_error)?;
         conn.pragma_update(None, "journal_mode", "WAL").map_err(sqlite_error)?;
         migrate(&conn)?;
-        Ok(Self {
+        let library = Self {
             root,
             conn: Mutex::new(conn),
-        })
+        };
+        library.cleanup_temps()?;
+        Ok(library)
     }
 
     pub fn info(&self) -> LibraryInfo {
@@ -294,6 +296,8 @@ impl Library {
         if changed == 0 {
             return Err(BridgeError::paper_not_found(paper_id));
         }
+        drop(conn);
+        self.remove_paper_files(paper_id)?;
         Ok(())
     }
 
@@ -385,10 +389,25 @@ impl Library {
         Ok(changed > 0)
     }
 
-    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, BridgeError> {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, BridgeError> {
         self.conn
             .lock()
             .map_err(|_| BridgeError::internal("书库连接锁定失败"))
+    }
+
+    pub(crate) fn paper_exists(conn: &Connection, paper_id: &str) -> Result<bool, BridgeError> {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM papers WHERE id = ?1",
+                params![paper_id],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        Ok(count > 0)
     }
 }
 
@@ -402,7 +421,8 @@ fn migrate(conn: &Connection) -> Result<(), BridgeError> {
     if version == DATABASE_VERSION {
         return Ok(());
     }
-    conn.execute_batch(
+    if version == 0 {
+        conn.execute_batch(
         "
         BEGIN;
         CREATE TABLE papers (
@@ -477,6 +497,36 @@ fn migrate(conn: &Connection) -> Result<(), BridgeError> {
           updated_at TEXT NOT NULL
         );
         PRAGMA user_version = 1;
+        COMMIT;
+        ",
+        )
+        .map_err(sqlite_error)?;
+    }
+    migrate_attachments(conn)?;
+    Ok(())
+}
+
+fn migrate_attachments(conn: &Connection) -> Result<(), BridgeError> {
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(sqlite_error)?;
+    if version >= 2 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        BEGIN;
+        CREATE TABLE attachments (
+          paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+          attachment_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          content_type TEXT NOT NULL,
+          byte_size INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (paper_id, attachment_id)
+        );
+        PRAGMA user_version = 2;
         COMMIT;
         ",
     )
