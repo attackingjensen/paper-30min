@@ -72,6 +72,23 @@ impl BridgeError {
         .with_details(serde_json::json!({ "found": found, "supported": supported }))
     }
 
+    pub fn unsupported_export_version(found: i64, supported: i64) -> Self {
+        Self::new(
+            "unsupported_version",
+            format!("不支持的导出版本 {found}（当前支持 {supported}）"),
+            false,
+        )
+        .with_details(serde_json::json!({ "found": found, "supported": supported }))
+    }
+
+    pub fn token_expired() -> Self {
+        Self::new("token_expired", "预检令牌已过期，请重新预检", false)
+    }
+
+    pub fn source_changed() -> Self {
+        Self::new("source_changed", "导出文件已变化，请重新预检", false)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new("internal", message, true)
     }

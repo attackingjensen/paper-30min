@@ -54,7 +54,7 @@ fn now_iso() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -89,7 +89,7 @@ fn paper_dir(root: &Path, paper_id: &str) -> Result<PathBuf, BridgeError> {
     Ok(root.join("attachments").join(paper_id))
 }
 
-fn attachment_path(root: &Path, paper_id: &str, attachment_id: &str) -> Result<PathBuf, BridgeError> {
+pub(crate) fn attachment_path(root: &Path, paper_id: &str, attachment_id: &str) -> Result<PathBuf, BridgeError> {
     require_safe_segment(paper_id, "paperId")?;
     require_safe_segment(attachment_id, "attachmentId")?;
     let attachments_root = root.join("attachments");
@@ -120,7 +120,7 @@ fn ensure_within(root: &Path, candidate: &Path) -> Result<(), BridgeError> {
     Ok(())
 }
 
-fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<(), BridgeError> {
+pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<(), BridgeError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
     }
@@ -155,6 +155,32 @@ fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<(), BridgeError> {
     Ok(())
 }
 
+pub(crate) fn insert_attachment_row(
+    tx: &rusqlite::Transaction<'_>,
+    dto: &AttachmentDto,
+) -> Result<(), BridgeError> {
+    tx.execute(
+        "INSERT INTO attachments(paper_id, attachment_id, name, content_type, byte_size, sha256, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(paper_id, attachment_id) DO UPDATE SET
+           name=excluded.name,
+           content_type=excluded.content_type,
+           byte_size=excluded.byte_size,
+           sha256=excluded.sha256",
+        params![
+            dto.paper_id,
+            dto.id,
+            dto.name,
+            dto.content_type,
+            dto.size,
+            dto.sha256,
+            dto.created_at
+        ],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
 impl Library {
     pub fn put_attachment(&self, paper_id: &str, write: AttachmentWrite) -> Result<AttachmentDto, BridgeError> {
         require_safe_segment(paper_id, "paperId")?;
@@ -177,44 +203,7 @@ impl Library {
         let size = bytes.len() as i64;
         let created_at = now_iso();
         let dest = attachment_path(self.root(), paper_id, &write.id)?;
-
-        let mut conn = self.lock_conn()?;
-        if !Self::paper_exists(&conn, paper_id)? {
-            return Err(BridgeError::paper_not_found(paper_id));
-        }
-        write_atomic(&dest, &bytes)?;
-        let tx = conn.transaction().map_err(sqlite_error)?;
-        let sql_result = tx.execute(
-            "INSERT INTO attachments(paper_id, attachment_id, name, content_type, byte_size, sha256, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(paper_id, attachment_id) DO UPDATE SET
-               name=excluded.name,
-               content_type=excluded.content_type,
-               byte_size=excluded.byte_size,
-               sha256=excluded.sha256",
-            params![
-                paper_id,
-                write.id,
-                name,
-                content_type,
-                size,
-                sha256,
-                created_at
-            ],
-        )
-        .map_err(sqlite_error)
-        .and_then(|_| tx.commit().map_err(sqlite_error));
-        if let Err(error) = sql_result {
-            let _ = fs::remove_file(&dest);
-            let old = dest.with_file_name(format!("{}{OLD_SUFFIX}", write.id));
-            if old.exists() {
-                let _ = fs::rename(&old, &dest);
-            }
-            return Err(error);
-        }
-        let old = dest.with_file_name(format!("{}{OLD_SUFFIX}", write.id));
-        let _ = fs::remove_file(&old);
-        Ok(AttachmentDto {
+        let dto = AttachmentDto {
             paper_id: paper_id.to_string(),
             id: write.id,
             name: name.to_string(),
@@ -222,7 +211,27 @@ impl Library {
             size,
             sha256,
             created_at,
-        })
+        };
+
+        let mut conn = self.lock_conn()?;
+        if !Self::paper_exists(&conn, paper_id)? {
+            return Err(BridgeError::paper_not_found(paper_id));
+        }
+        write_atomic(&dest, &bytes)?;
+        let tx = conn.transaction().map_err(sqlite_error)?;
+        let sql_result = insert_attachment_row(&tx, &dto)
+            .and_then(|_| tx.commit().map_err(sqlite_error));
+        if let Err(error) = sql_result {
+            let _ = fs::remove_file(&dest);
+            let old = dest.with_file_name(format!("{}{OLD_SUFFIX}", dto.id));
+            if old.exists() {
+                let _ = fs::rename(&old, &dest);
+            }
+            return Err(error);
+        }
+        let old = dest.with_file_name(format!("{}{OLD_SUFFIX}", dto.id));
+        let _ = fs::remove_file(&old);
+        Ok(dto)
     }
 
     pub fn list_attachments(&self, paper_id: &str) -> Result<Vec<AttachmentDto>, BridgeError> {

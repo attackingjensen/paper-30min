@@ -2,6 +2,7 @@ pub mod bridge;
 pub mod error;
 pub mod files;
 pub mod library;
+pub mod migration;
 pub mod smoke;
 pub mod tasks;
 pub mod testkit;

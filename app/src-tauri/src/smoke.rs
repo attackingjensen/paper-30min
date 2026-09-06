@@ -187,7 +187,7 @@ pub fn run() -> i32 {
     );
 
     check(
-        "论文、阅读位置与附件可写入并在重开后恢复",
+        "论文、阅读位置、附件与浏览器迁移可写入并在重开后恢复",
         || {
             let paper = json!({
                 "paper": {
@@ -257,8 +257,61 @@ pub fn run() -> i32 {
             if range["contentBase64"] != json!("aGVsbG8=") {
                 return Err(format!("附件范围读取不符: {range}"));
             }
+            let export_path = root.join("exports").join("smoke-library.json");
+            let export = json!({
+                "format": "paper-30min-library",
+                "version": 1,
+                "papers": [{
+                    "id": "smoke-migrated",
+                    "title": "迁移论文",
+                    "addedAt": 1_788_249_600_000_i64,
+                    "updatedAt": 1_788_249_600_000_i64,
+                    "sections": { "abstract": "迁移摘要" },
+                    "pdfBlob": { "base64": "aGVsbG8tcGRm", "type": "application/pdf" },
+                    "pdfName": "smoke.pdf"
+                }],
+                "settings": { "apiKey": "sk-should-not-migrate" }
+            });
+            std::fs::write(&export_path, serde_json::to_vec(&export).unwrap())
+                .map_err(|error| format!("写入导出文件失败: {error}"))?;
+            let inspected = bridge::invoke(
+                &registry,
+                &reopened,
+                "migration.inspect@1",
+                &json!({ "sourcePath": export_path.to_string_lossy() }),
+            )
+            .map_err(|error| format!("预检失败: {error}"))?;
+            if inspected["conflicts"]["new"] != json!(1) || inspected["apiKeyStripped"] != json!(true)
+            {
+                return Err(format!("预检结果不符: {inspected}"));
+            }
+            let before = bridge::invoke(&registry, &reopened, "library.listPapers@1", &json!({}))
+                .map_err(|error| format!("列出书库失败: {error}"))?;
+            if before["papers"].as_array().map(|items| items.len()).unwrap_or(0) != 1 {
+                return Err("预检不应写入论文".to_string());
+            }
+            let committed = bridge::invoke(
+                &registry,
+                &reopened,
+                "migration.commit@1",
+                &json!({ "token": inspected["token"] }),
+            )
+            .map_err(|error| format!("提交迁移失败: {error}"))?;
+            if committed["added"] != json!(1) {
+                return Err(format!("提交结果不符: {committed}"));
+            }
+            let migrated = bridge::invoke(
+                &registry,
+                &reopened,
+                "library.getPaper@1",
+                &json!({ "paperId": "smoke-migrated" }),
+            )
+            .map_err(|error| format!("读取迁移论文失败: {error}"))?;
+            if migrated["paper"]["title"] != json!("迁移论文") {
+                return Err(format!("迁移论文未写入: {migrated}"));
+            }
             let _ = std::fs::remove_dir_all(&root);
-            Ok("论文、阅读位置与附件重开后完整恢复".to_string())
+            Ok("论文、阅读位置、附件与浏览器书库迁移重开后完整恢复".to_string())
         },
         &mut report,
     );

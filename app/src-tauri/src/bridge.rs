@@ -32,6 +32,8 @@ pub fn available_commands() -> &'static [&'static str] {
         "files.readRange@1",
         "files.verifyAttachment@1",
         "files.cleanupTemps@1",
+        "migration.inspect@1",
+        "migration.commit@1",
     ]
 }
 
@@ -189,6 +191,14 @@ pub fn invoke(
                 "schemaVersion": BRIDGE_SCHEMA_VERSION,
                 "removed": removed,
             }))
+        }
+        "migration.inspect@1" => {
+            let (source_path, ttl_seconds) = crate::migration::inspect_input(input)?;
+            library.inspect_migration(source_path, ttl_seconds)
+        }
+        "migration.commit@1" => {
+            let token = required_string(command, input, "token")?;
+            library.commit_migration(token)
         }
         _ => Err(BridgeError::unknown_command(command)),
     }

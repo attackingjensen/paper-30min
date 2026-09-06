@@ -4,7 +4,7 @@
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -22,6 +22,7 @@ const PARTITIONS: &[&str] = &["database", "attachments", "operations", "exports"
 pub struct Library {
     root: PathBuf,
     conn: Mutex<Connection>,
+    pub(crate) inspect_tokens: Mutex<HashMap<String, crate::migration::InspectToken>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -234,6 +235,7 @@ impl Library {
         let library = Self {
             root,
             conn: Mutex::new(conn),
+            inspect_tokens: Mutex::new(HashMap::new()),
         };
         library.cleanup_temps()?;
         Ok(library)
@@ -534,7 +536,7 @@ fn migrate_attachments(conn: &Connection) -> Result<(), BridgeError> {
     Ok(())
 }
 
-fn normalize_paper(paper: &mut PaperDto) -> Result<(), BridgeError> {
+pub(crate) fn normalize_paper(paper: &mut PaperDto) -> Result<(), BridgeError> {
     paper.id = paper.id.trim().to_string();
     paper.title = paper.title.trim().to_string();
     if paper.id.is_empty() {
@@ -624,7 +626,7 @@ where
     Ok(())
 }
 
-fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), BridgeError> {
+pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), BridgeError> {
     tx.execute(
         "INSERT INTO papers(
             id, title, source_type, arxiv_id, pdf_name, num_pages, full_text, rating,

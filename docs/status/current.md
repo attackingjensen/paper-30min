@@ -16,6 +16,7 @@
 - 整库可通过 JSON 信封导出和导入；导出排除 API Key，导入按论文 ID 合并。
 - 支持 Markdown、LaTeX 公式、阅读进度、连续阅读统计和单篇笔记导出。
 - 模型连接支持 OpenAI 兼容接口及 DashScope 地址改写。
+- Windows 正式客户端可将浏览器整库 JSON 预检后迁入本地 SQLite 书库，按论文 ID 合并记录与附件，不导入 API Key。
 
 ## 架构状态
 
@@ -28,7 +29,7 @@
 
 ## 工程基线
 
-- `npm test` 是统一门禁，当前 89 个测试全部通过。Windows 客户端另有 `cd app && npm run test:rust`（25 项）与 `npm run smoke`（8/8）。
+- `npm test` 是统一门禁，当前 89 个测试全部通过。Windows 客户端另有 `cd app && npm run test:rust`（41 项）与 `npm run smoke`（8/8）。
 - GitHub Actions CI（`.github/workflows/ci.yml`，Issue #14）在 push 与 PR 时运行：`windows-latest`（产品基准）与 `ubuntu-latest`（路径、文件名大小写等跨平台检查）矩阵，固定 Node 24 与 Python 3.11；门禁为 `npm test`、`server.py`/`tools/mock_llm.py`/`tools/make_sample_pdf.py` 的内存编译检查，以及 `tools/check_syntax.mjs` 对自有 JavaScript 的纯语法检查（覆盖未被测试导入的入口文件，排除 `public/vendor/`）；不生成或提交缓存与解析输出。
 - 自动化测试覆盖论文生命周期、书库迁移、技能加载、生成任务、SSE、模型地址与错误处理，以及 Markdown 关键边界。
 - 已使用真实 Edge 与慢速 mock 模型走查示例论文导入、PDF 显示、单节与批量生成、中断落库、技能编辑、整库迁移和论文问答；走查期间控制台无异常。
@@ -70,4 +71,4 @@
 - Issue #22 已完成决策并关闭；正式客户端与前端边界规格见 [client-and-frontend-boundaries.md](../specs/client-and-frontend-boundaries.md)。
 - Issue #23 已完成决策并关闭；Rust/JavaScript 本地能力接口规格见 [client-local-rust-js-boundary.md](../specs/client-local-rust-js-boundary.md)。客户端正式实施可据此另起任务。
 - 三张正式规格 Issue 已发布并统一改为中文：Windows 正式客户端与本地书库（#24）、论文移动阅读云端同步服务（#25）、Android 移动阅读伴侣（#26）。#24 已通过 GitHub 原生 sub-issue 关系挂载 6 张实施票，并设置原生 blocking 依赖：#27 Tauri 桥接、#28 SQLite 书库、#29 附件/PDF、#30 浏览器迁移、#31 论文与任务接入、#32 安装升级验收；后续按阻塞关系推进，云端和 Android 暂不拆票。
-- Issue #27（Windows Tauri 外壳与 Rust/JavaScript 桥接）已在 `app/` 实现。Issue #28（本地数据目录与 SQLite 书库基础）已在同一目录接入：首次启动创建 `database/` 等逻辑分区与版本化 `library.sqlite`；论文、原文章节、精读部分、精读结果、翻译、回想卡片、论文问答和阅读位置经 `library.*@1` DTO 命令读写；同论文写入串行化并在事务中提交；关闭重开后记录可恢复。Issue #29（附件与 PDF 文件能力）已关闭：PDF 和其他附件按 `attachments/{paperId}/` 分区保存，JavaScript 经 `files.*@1` 取得元数据与字节范围，不接触绝对路径；写入使用 `.part` 临时文件后原子改名；存在性、大小与 SHA-256 完整性可校验；删除论文时同步移除附件目录。验证入口为 `cargo test`、`node --test` 契约测试和 `--bridge-smoke`（含附件重开恢复）。阅读流程改走 `files.*@1`、大文件/云端按需读取走任务事件流，由 [Issue #31](https://github.com/attackingjensen/paper-30min/issues/31) 接手。浏览器迁移（#30）按阻塞关系随后推进。
+- Issue #27（Windows Tauri 外壳与 Rust/JavaScript 桥接）已在 `app/` 实现。Issue #28（本地数据目录与 SQLite 书库基础）已在同一目录接入：首次启动创建 `database/` 等逻辑分区与版本化 `library.sqlite`；论文、原文章节、精读部分、精读结果、翻译、回想卡片、论文问答和阅读位置经 `library.*@1` DTO 命令读写；同论文写入串行化并在事务中提交；关闭重开后记录可恢复。Issue #29（附件与 PDF 文件能力）已关闭：PDF 和其他附件按 `attachments/{paperId}/` 分区保存，JavaScript 经 `files.*@1` 取得元数据与字节范围，不接触绝对路径。Issue #30（浏览器书库迁移）已在同一目录接入：`migration.inspect@1` 预检整库 JSON，返回格式版本、论文数量、冲突统计和错误且不修改书库；`migration.commit@1` 只接受未过期且对应源文件的预检令牌，按论文 ID 合并记录与附件；API Key 与应用设置不进入迁移数据；源文件变化或令牌过期必须重新预检；提交失败保持事务一致且不改写原导出文件。验证入口为 `cargo test`、`node --test` 契约测试和 `--bridge-smoke`（含迁移提交）。阅读流程改走 `files.*@1`、大文件/云端按需读取走任务事件流，由 [Issue #31](https://github.com/attackingjensen/paper-30min/issues/31) 接手。

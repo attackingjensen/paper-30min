@@ -87,6 +87,21 @@ button.danger {
   color: #b4553f;
 }
 
+input[type="text"] {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid #c8c4b8;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+label.muted {
+  display: block;
+  margin-top: 8px;
+}
+
 .tasks {
   display: grid;
   gap: 10px;

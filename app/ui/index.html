@@ -16,7 +16,7 @@
     <section class="panel">
       <h2>书库</h2>
       <p class="muted">
-        本地书库已接入 SQLite 基础记录（论文、原文章节、精读部分、精读结果、翻译、回想卡片、论文问答和阅读位置）。附件 / PDF、浏览器迁移与论文阅读流程仍由后续实施票接入。既有浏览器阅读器继续可用。
+        本地书库已接入 SQLite 记录、附件 / PDF，以及浏览器整库 JSON 的预检与提交迁移。论文阅读流程仍由后续实施票接入。既有浏览器阅读器继续可用。
       </p>
       <div class="button-row">
         <button id="btn-library-info">书库信息</button>
@@ -25,6 +25,12 @@
         <button id="btn-library-position">保存阅读位置</button>
         <button id="btn-library-list">列出书库</button>
         <button id="btn-library-delete">删除示例论文</button>
+      </div>
+      <label class="muted" for="migration-path">浏览器书库导出文件路径</label>
+      <input id="migration-path" type="text" placeholder="例如 D:\\exports\\论文精读书库.json" />
+      <div class="button-row">
+        <button id="btn-migration-inspect">预检迁移</button>
+        <button id="btn-migration-commit">提交迁移</button>
       </div>
     </section>
 

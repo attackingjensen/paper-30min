@@ -162,6 +162,21 @@ document.getElementById('btn-library-delete').addEventListener('click', guard('l
   log('library.deletePaper@1', await bridge.invoke('library.deletePaper@1', { paperId: SAMPLE_PAPER_ID }));
 }));
 
+let lastMigrationToken = '';
+
+document.getElementById('btn-migration-inspect').addEventListener('click', guard('migration.inspect@1 失败', async () => {
+  const sourcePath = document.getElementById('migration-path').value.trim();
+  const result = await bridge.invoke('migration.inspect@1', { sourcePath });
+  lastMigrationToken = result.token || '';
+  log('migration.inspect@1', result);
+}));
+
+document.getElementById('btn-migration-commit').addEventListener('click', guard('migration.commit@1 失败', async () => {
+  const result = await bridge.invoke('migration.commit@1', { token: lastMigrationToken });
+  lastMigrationToken = '';
+  log('migration.commit@1', result);
+}));
+
 // 关闭流程：窗口被拦截时提示等待完成或停止任务。
 bridge.onCloseRequested((payload) => {
   const active = activeTasks(payload.tasks ?? []);
