@@ -1,3 +1,5 @@
+> 状态：本文件原为 #24 实施链的定稿规格，描述现行 Windows 客户端的既定架构。2026-09-07 起项目进行精读 harness 重新设计（#35），本文件移入 background/ 作为现状参考，不再承担现行规格职责。
+
 # 正式客户端本地能力 Rust/JavaScript 接口边界
 
 来源：[Wayfinder：正式客户端本地能力的 Rust/JavaScript 接口边界](https://github.com/attackingjensen/paper-30min/issues/23)
