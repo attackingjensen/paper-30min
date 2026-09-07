@@ -19,7 +19,7 @@
 ### Wayfinder 与规格
 
 - 规划工作通过 GitHub Issues 推进；决策票的讨论和 resolution comment 是权威来源。操作规则见 `docs/agents/issue-tracker.md`。
-- 已定稿、供实施会话读取的规格放在 `docs/specs/`，并回链来源 Issue；规格不脱离 Issue 形成独立需求版本。
+- 定稿规格以 GitHub Issue 发布（标题前缀 `Spec：`，就绪后加 `ready-for-agent` 标签），规格正文即 Issue 正文，回链来源地图/票据；规格修订以追加评论为准，正文仅在同步最新结论时更新。本地不再维护 `docs/specs/`。
 - 涉及 Tauri、本地书库、Android 阅读伴侣、Rust/JavaScript 接口或前端重设计时，先读取 `docs/background/client-and-frontend-boundaries.md`（现行实现的事实参考；新方向以 Issue #35 地图为准）。
 
 ### 当前路线
