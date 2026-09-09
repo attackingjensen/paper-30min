@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<!--
+  Paper30Min 一次性 UI 原型（issue #44，Wayfinder 地图 #35）
+  问题：#43 定稿的「地图落地页 + 节页两层导航」信息架构看起来应该是什么样？
+  形态：单文件双击即开，?variant=A|B|C 切换三种结构差异的地图页/节页布局，底部悬浮条或 ←/→ 键切换。
+  数据：示例论文《Attention Is All You Need》写死的演示数据，非真实产物。
+  不是正式实现，不合入主线；视觉细节（字号/间距/配色）未打磨，评议对象是结构与产物居住关系。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IA 原型 #44 · Paper30Min</title>
+<style>
+:root {
+  --bg: #f4f5f9; --card: #ffffff; --border: #e3e6ee; --text: #20242f;
+  --muted: #6b7280; --accent: #4f5de0; --accent-soft: #eef0fd;
+  --danger: #d64545; --ok: #2e9e5b; --warn: #b7791f;
+  --radius: 12px; --shadow: 0 1px 3px rgba(20,24,40,.06), 0 4px 16px rgba(20,24,40,.05);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font-family: "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif; font-size: 15px; line-height: 1.65; }
+button { font: inherit; cursor: pointer; }
+h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+/* 顶栏 */
+.topbar { display:flex; align-items:center; gap:14px; padding:10px 20px;
+  background:var(--card); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:50; }
+.brand { font-weight:700; font-size:17px; white-space:nowrap; }
+.proto-tag { font-size:12px; color:var(--warn); border:1px dashed var(--warn); border-radius:6px; padding:1px 8px; }
+.main-nav { display:flex; gap:4px; margin-left:6px; }
+.nav-btn { border:none; background:transparent; padding:7px 14px; border-radius:8px; font-size:14.5px; color:var(--muted); }
+.nav-btn:hover { background:var(--accent-soft); color:var(--accent); }
+.nav-btn.active { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+.topbar .spacer { flex:1; }
+
+/* 通用 */
+.view { padding: 18px 24px 96px; }
+.card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); }
+.btn { border:1px solid var(--border); background:var(--card); border-radius:9px; padding:7px 14px; color:var(--text); }
+.btn:hover { border-color:var(--accent); color:var(--accent); }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.btn.primary:hover { filter:brightness(1.07); color:#fff; }
+.btn.ghost { border-color:transparent; background:transparent; color:var(--muted); }
+.btn.ghost:hover { background:var(--accent-soft); color:var(--accent); }
+.btn.small { padding:4px 10px; font-size:13px; }
+.btn:disabled { opacity:.45; cursor:not-allowed; }
+.chip { display:inline-flex; align-items:center; gap:4px; background:var(--accent-soft); color:var(--accent);
+  border-radius:999px; padding:2px 10px; font-size:12.5px; font-weight:600; }
+.src { display:inline-block; font-size:12px; color:var(--accent); background:var(--accent-soft);
+  border-radius:5px; padding:0 6px; margin:0 2px; cursor:pointer; font-family:Consolas,monospace; }
+.src:hover { text-decoration:underline; }
+.dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:7px; flex:none; }
+.dot.todo { background:#c9cede; } .dot.dug { background:var(--warn); } .dot.marked { background:var(--ok); }
+
+/* 书库 */
+.paper-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:14px; }
+.paper-card { padding:14px 16px; cursor:pointer; }
+.paper-card:hover { border-color:var(--accent); }
+.paper-card h3 { font-size:15.5px; }
+.paper-meta { display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+.progress-track { width:90px; height:6px; background:var(--border); border-radius:99px; overflow:hidden; }
+.progress-fill { height:100%; background:var(--accent); }
+
+/* 任务中心 */
+.task-list { display:flex; flex-direction:column; gap:12px; max-width:860px; }
+.task-card { padding:14px 16px; }
+.task-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.task-steps { margin:10px 0 0; padding:0; list-style:none; font-size:13.5px; }
+.task-steps li { padding:3px 0 3px 22px; position:relative; color:var(--muted); }
+.task-steps li::before { content:""; position:absolute; left:6px; top:11px; width:7px; height:7px; border-radius:50%; background:#c9cede; }
+.task-steps li.done { color:var(--text); } .task-steps li.done::before { background:var(--ok); }
+.task-steps li.doing { color:var(--accent); font-weight:600; } .task-steps li.doing::before { background:var(--accent); }
+.task-steps code { background:var(--accent-soft); padding:0 5px; border-radius:4px; font-size:12.5px; }
+.badge { font-size:12px; border-radius:999px; padding:2px 9px; font-weight:600; }
+.badge.run { background:#e7f0ff; color:#2563eb; } .badge.ok { background:#e6f6ec; color:var(--ok); }
+.badge.wait { background:#f3f4f6; color:var(--muted); } .badge.warn { background:#fdf3e3; color:var(--warn); }
+
+/* 阅读视图骨架 */
+.reader-head { display:flex; align-items:center; gap:12px; padding:10px 20px;
+  background:var(--card); border-bottom:1px solid var(--border); }
+.reader-head h2 { font-size:16.5px; margin:0; }
+.tabs { display:flex; gap:2px; padding:0 20px; background:var(--card); border-bottom:1px solid var(--border); }
+.tab { border:none; background:transparent; padding:10px 16px; font-size:14.5px; color:var(--muted);
+  border-bottom:2.5px solid transparent; border-radius:0; }
+.tab:hover { color:var(--accent); }
+.tab.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+.reader-body { display:flex; align-items:flex-start; }
+.reader-main { flex:1; min-width:0; padding:18px 24px 60px; }
+.pdf-pane { width:340px; flex:none; border-left:1px solid var(--border); background:#eceef5;
+  padding:12px; position:sticky; top:53px; height:calc(100vh - 53px); overflow:auto; }
+.pdf-page { background:#fff; border:1px solid var(--border); border-radius:6px; margin-bottom:10px;
+  height:230px; display:flex; align-items:center; justify-content:center; color:#b3b9cc; font-size:13px; }
+
+/* 地图页·变体 A（文档式） */
+.map-doc { max-width:780px; margin:0 auto; }
+.map-doc .map-sec { padding:16px 20px; margin-bottom:14px; }
+.map-doc .map-sec h3 { font-size:15px; color:var(--accent); }
+.sec-row { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:9px; cursor:pointer; }
+.sec-row:hover { background:var(--accent-soft); }
+.sec-row .sec-name { font-weight:600; white-space:nowrap; }
+.sec-row .gist { color:var(--muted); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.sec-row .pages { font-size:12px; color:var(--muted); flex:none; }
+
+/* 地图页·变体 B（双栏代码库式） */
+.map-split { display:flex; gap:0; align-items:flex-start; }
+.map-tree { width:270px; flex:none; background:var(--card); border:1px solid var(--border);
+  border-radius:var(--radius); padding:12px; position:sticky; top:70px; }
+.tree-item { display:flex; align-items:center; gap:6px; width:100%; text-align:left; border:none;
+  background:transparent; padding:6px 8px; border-radius:7px; font-size:13.5px; }
+.tree-item:hover { background:var(--accent-soft); }
+.tree-item.cur { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+.tree-item .tname { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tree-item.sub { padding-left:24px; font-size:12.5px; color:var(--muted); }
+.tree-item.grey { color:#aab; }
+.map-content { flex:1; min-width:0; padding:0 0 0 18px; }
+.crumb { font-size:13px; color:var(--muted); margin-bottom:10px; }
+.crumb b { color:var(--accent); cursor:pointer; }
+
+/* 地图页·变体 C（仪表盘式） */
+.dash-top { display:grid; grid-template-columns:150px 1fr 1fr 1fr; gap:14px; margin-bottom:14px; }
+.ring { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:14px; }
+.ring .num { font-size:26px; font-weight:700; color:var(--accent); }
+.dash-card { padding:14px 16px; }
+.dash-card h4 { font-size:13px; color:var(--accent); text-transform:none; }
+.sec-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; }
+.sec-cell { padding:12px 14px; cursor:pointer; }
+.sec-cell:hover { border-color:var(--accent); }
+.sec-cell .gist { font-size:12.5px; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2;
+  -webkit-box-orient:vertical; overflow:hidden; min-height:2.6em; }
+
+/* 节页 */
+.secpage { max-width:820px; margin:0 auto; }
+.secpage .back { margin-bottom:12px; }
+.l2-card { padding:16px 20px; border-left:4px solid var(--accent); margin-bottom:14px; }
+.l2-card .gist { font-size:15.5px; font-weight:600; margin-bottom:8px; }
+.l2-card ul { margin:6px 0; padding-left:20px; }
+.dig-zone { padding:16px 20px; margin-bottom:14px; }
+.dig-empty { text-align:center; padding:26px 10px; }
+.dig-result h4 { font-size:14px; color:var(--accent); margin-top:12px; }
+.dig-result ul { margin:4px 0; padding-left:20px; }
+.fig-grid { display:flex; gap:12px; flex-wrap:wrap; }
+.fig-box { width:200px; }
+.fig-img { height:120px; background:repeating-linear-gradient(45deg,#eef0f8,#eef0f8 10px,#e3e7f5 10px,#e3e7f5 20px);
+  border:1px solid var(--border); border-radius:8px; display:flex; align-items:center; justify-content:center;
+  color:#97a0bd; font-size:13px; }
+.fig-cap { font-size:12px; color:var(--muted); margin-top:4px; }
+.sec-foot { display:flex; align-items:center; gap:14px; padding:16px 20px; }
+.mark-switch.on { color:var(--ok); font-weight:600; }
+
+/* 原文 tab */
+.src-doc { max-width:760px; margin:0 auto; }
+.src-sec { margin-bottom:26px; }
+.src-sec h3 { border-bottom:1px solid var(--border); padding-bottom:6px; }
+.src-block { margin:0 0 10px; padding:6px 10px; border-radius:7px; position:relative; }
+.src-block:hover { background:#f7f8fd; }
+.src-block .pg { position:absolute; right:8px; top:6px; font-size:11px; color:#b3b9cc; }
+.src-block mark { background:#fff1b8; padding:0 1px; border-radius:2px; }
+.fig-placeholder { border:1px dashed var(--accent); color:var(--accent); border-radius:8px;
+  padding:10px 14px; font-size:13.5px; margin:10px 0; background:var(--accent-soft); }
+.trans-toggle { display:flex; align-items:center; gap:8px; margin-bottom:14px; }
+.trans-line { color:var(--muted); font-size:13.5px; border-left:3px solid var(--border);
+  padding:2px 10px; margin:-6px 0 10px; }
+.float-ask { position:fixed; background:var(--accent); color:#fff; border:none; border-radius:8px;
+  padding:6px 14px; box-shadow:var(--shadow); font-size:13.5px; }
+
+/* 提问 tab */
+.chat-wrap { max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:12px; }
+.msg { max-width:88%; padding:10px 14px; border-radius:14px; }
+.msg.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
+.msg.bot { align-self:flex-start; background:var(--card); border:1px solid var(--border); border-bottom-left-radius:4px; }
+.msg .bind-chip { display:inline-flex; background:rgba(255,255,255,.22); border-radius:999px;
+  padding:1px 9px; font-size:12px; margin-bottom:6px; }
+.msg .quote-block { border-left:3px solid rgba(255,255,255,.5); padding:2px 10px; margin:0 0 6px;
+  font-size:13px; opacity:.9; }
+.msg.bot .src { margin-top:2px; }
+.chat-input { display:flex; gap:8px; margin-top:8px; }
+.chat-input .box { flex:1; border:1px solid var(--border); border-radius:10px; padding:10px 12px;
+  background:var(--card); color:var(--muted); font-size:14px; }
+
+/* 回想卡片 */
+.recall-wrap { max-width:820px; margin:0 auto; display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.recall-pane { padding:14px 16px; min-height:300px; }
+
+/* 建图前落地页 */
+.build-landing { max-width:640px; margin:60px auto; text-align:center; padding:34px 30px; }
+.build-landing h2 { font-size:20px; }
+
+/* 悬浮变体切换条 */
+.switcher { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); z-index:999;
+  display:flex; align-items:center; gap:12px; background:#20242f; color:#fff; border-radius:999px;
+  padding:8px 14px; box-shadow:0 6px 24px rgba(0,0,0,.3); font-size:13.5px; }
+.switcher button { border:none; background:rgba(255,255,255,.14); color:#fff; width:28px; height:28px;
+  border-radius:50%; font-size:15px; line-height:1; }
+.switcher button:hover { background:var(--accent); }
+.switcher .vname { min-width:180px; text-align:center; }
+.switcher .vname b { color:#9fb0ff; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">Paper30Min</span>
+  <span class="proto-tag">原型 #44 · 一次性</span>
+  <nav class="main-nav">
+    <button class="nav-btn" data-view="library">书库</button>
+    <button class="nav-btn" data-view="reader" id="nav-reader">阅读</button>
+    <button class="nav-btn" data-view="tasks">任务中心</button>
+  </nav>
+  <span class="spacer"></span>
+  <span class="muted small">示例论文：Attention Is All You Need</span>
+</div>
+
+<!-- ============ 书库 ============ -->
+<main id="view-library" class="view" hidden>
+  <h1>书库</h1>
+  <p class="muted small">卡片呈现建图状态：未建图＝状态点；建图中＝阶段进度；已建图＝已读完标记进度（n/N，点击进阅读视图由落地页分流）。</p>
+  <div class="paper-list">
+    <div class="card paper-card" onclick="goView('reader')">
+      <h3>Attention Is All You Need</h3>
+      <div class="muted small">Vaswani et al. · 2017 · arXiv</div>
+      <div class="paper-meta">
+        <span class="chip">已建图</span>
+        <span class="progress-track"><span class="progress-fill" style="width:37.5%"></span></span>
+        <span class="small muted">3/8 已标记</span>
+      </div>
+    </div>
+    <div class="card paper-card" onclick="goView('reader')">
+      <h3>BERT: Pre-training of Deep Bidirectional Transformers</h3>
+      <div class="muted small">Devlin et al. · 2018 · arXiv</div>
+      <div class="paper-meta">
+        <span class="badge run">建图中</span>
+        <span class="small muted">预渲染页图 ✓ → 生成节薄摘要 62%</span>
+      </div>
+    </div>
+    <div class="card paper-card" onclick="goView('reader')">
+      <h3>Language Models are Few-Shot Learners</h3>
+      <div class="muted small">Brown et al. · 2020 · 本地 PDF</div>
+      <div class="paper-meta">
+        <span class="dot todo"></span><span class="small muted">未建图</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- ============ 任务中心 ============ -->
+<main id="view-tasks" class="view" hidden>
+  <h1>任务中心</h1>
+  <p class="muted small">单任务粒度 + 类型徽章；建图带内部阶段，深挖带工具步骤流，批量深挖为编排任务带逐节子进度。</p>
+  <div class="task-list">
+    <div class="card task-card">
+      <div class="task-head">
+        <span class="chip">建图</span><b>BERT: Pre-training of…</b>
+        <span class="badge run">进行中</span><span class="spacer" style="flex:1"></span>
+        <button class="btn small">取消</button>
+      </div>
+      <ul class="task-steps">
+        <li class="done">预渲染页图与图表裁切（12 页）</li>
+        <li class="doing">调用① 生成节薄摘要 L2 · 7/11 节</li>
+        <li>调用② 合成阅读地图 L1</li>
+      </ul>
+    </div>
+    <div class="card task-card">
+      <div class="task-head">
+        <span class="chip">深挖</span><b>Attention… · Model Architecture</b>
+        <span class="badge ok">已完成</span><span style="flex:1"></span>
+        <button class="btn small ghost">取证轨迹 ▾</button>
+      </div>
+      <ul class="task-steps">
+        <li class="done">配方打底：L1 + 全部 L2 + 本节原文 + 页图 p2–p4</li>
+        <li class="done">第 1 步 <code>get_figure(fig_1)</code> · 越界取证</li>
+        <li class="done">第 2 步 <code>read_section(sec_4, L1-22)</code> · 越界取证</li>
+        <li class="done">第 3 步：无工具调用 → 完成（结果 4 段 · 11 条出处）</li>
+      </ul>
+    </div>
+    <div class="card task-card">
+      <div class="task-head">
+        <span class="chip">批量深挖</span><b>Attention… · 全部未深挖节</b>
+        <span class="badge run">进行中 2/5</span><span style="flex:1"></span>
+        <button class="btn small">取消（当前节后停止）</button>
+      </div>
+      <ul class="task-steps">
+        <li class="done">Introduction · 完成</li>
+        <li class="done">Background · 完成</li>
+        <li class="doing">Why Self-Attention · 第 2 步 <code>search_paper("BLEU")</code></li>
+        <li>Training</li>
+        <li>Results</li>
+      </ul>
+    </div>
+    <div class="card task-card">
+      <div class="task-head">
+        <span class="chip">综合</span><b>Attention… · 复述稿</b>
+        <span class="badge ok">已完成</span><span style="flex:1"></span>
+        <span class="small muted">结果在地图页底部区块</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- ============ 阅读视图 ============ -->
+<main id="view-reader" class="view" style="padding:0" hidden>
+  <div class="reader-head">
+    <button class="btn ghost" onclick="goView('library')">← 书库</button>
+    <div>
+      <h2>Attention Is All You Need</h2>
+      <div class="muted small">Vaswani et al. · 2017 · arXiv:1706.03762 · 12 页</div>
+    </div>
+    <span style="flex:1"></span>
+    <button class="btn ghost" title="评分、分类与标签">整理</button>
+    <button class="btn ghost" title="导出精读笔记 Markdown">⬇ 导出笔记</button>
+    <button class="btn small" id="pdf-toggle">PDF 对照</button>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="map">地图</button>
+    <button class="tab" data-tab="source">原文</button>
+    <button class="tab" data-tab="chat">提问</button>
+    <button class="tab" data-tab="recall">回想卡片</button>
+  </nav>
+  <div class="reader-body">
+    <div class="reader-main">
+      <section id="tab-map"></section>
+
+      <!-- 原文 tab：整篇 MD 连续滚动，节级翻译对照，选中片段浮动提问 -->
+      <section id="tab-source" hidden>
+        <div class="src-doc">
+          <div class="trans-toggle">
+            <span class="chip">译 节级翻译对照</span>
+            <label class="small muted"><input type="checkbox" id="trans-cb"> 对照显示当前节译文</label>
+            <span style="flex:1"></span>
+            <span class="small muted">选中文本可浮动「提问」（含跨节选择）</span>
+          </div>
+          <div class="src-sec">
+            <h3>Abstract <span class="muted small">sec_0 · p1</span></h3>
+            <p class="src-block">主流的序列转导模型基于复杂的循环或卷积神经网络，通常以编码器-解码器方式组织……<span class="pg">p1</span></p>
+            <p class="src-block"><mark>We propose a new simple network architecture, the Transformer, based solely on attention mechanisms</mark>, dispensing with recurrence and convolutions entirely.<span class="pg">p1</span></p>
+          </div>
+          <div class="src-sec">
+            <h3>3. Model Architecture <span class="muted small">sec_3 · p2–p5</span></h3>
+            <p class="src-block">编码器由 N=6 个相同层堆叠而成，每层包含多头自注意力与前馈网络两个子层……<span class="pg">p2</span></p>
+            <div class="fig-placeholder">[图 fig_1] Transformer 整体架构（点击跳节页图表区）</div>
+            <p class="src-block">多头注意力允许模型在不同位置联合关注来自不同表示子空间的信息……<span class="pg">p3</span></p>
+            <p class="src-block" id="trans-target">We employ h=8 parallel attention layers, or heads. For each of these we use d_k=d_v=d_model/h=64.<span class="pg">p3</span></p>
+            <div class="trans-line" id="trans-line" hidden>译文：我们采用 h=8 个并行注意力头，每个头使用 d_k=d_v=d_model/h=64。</div>
+          </div>
+          <div class="src-sec">
+            <h3>6. Results <span class="muted small">sec_6 · p7–p9</span></h3>
+            <p class="src-block">在 WMT 2014 英德翻译任务上，我们的模型取得 28.4 BLEU，比此前最佳结果高出 2.0……<span class="pg">p7</span></p>
+          </div>
+        </div>
+        <button class="float-ask" id="float-ask" style="right:380px; top:300px" onclick="goTab('chat')" title="demo：选中文本后出现">↑ 提问选中片段</button>
+      </section>
+
+      <!-- 提问 tab -->
+      <section id="tab-chat" hidden>
+        <div class="chat-wrap">
+          <div class="msg user">
+            <span class="bind-chip">@Model Architecture</span>
+            <div>自注意力相比循环结构的核心优势是什么？</div>
+          </div>
+          <div class="msg bot">
+            <div>核心优势有三：① 并行化——注意力对所有位置同时计算，摆脱循环的时序依赖；② 长程依赖路径长度为 O(1)；③ 每头计算成本可控。</div>
+            <div><span class="src">sec_3:L12-18</span><span class="src">sec_4:L3-9</span><span class="src">tbl_1</span></div>
+          </div>
+          <div class="msg user">
+            <div class="quote-block">"We propose a new simple network architecture…" <span style="opacity:.75">(sec_0:L2-4)</span></div>
+            <div>作者为什么在这里强调 simple？</div>
+          </div>
+          <div class="msg bot">
+            <div>这是与当时主流的循环/卷积堆叠对照：Transformer 只用一种机制（注意力）加前馈层即可完成转导，结构部件更少……</div>
+            <div><span class="src">sec_1:L6-11</span><span class="src">(p1)</span></div>
+          </div>
+          <div class="chat-input">
+            <div class="box">输入 @ 选择节绑定提问；选中原文片段会自动带入引用块…</div>
+            <button class="btn primary">发送</button>
+          </div>
+          <p class="small muted" style="text-align:center">三形态共用一条会话流 · 每请求携带最近 12 条历史 · 绑定注入不随历史重放</p>
+        </div>
+      </section>
+
+      <!-- 回想卡片 tab -->
+      <section id="tab-recall" hidden>
+        <div class="recall-wrap">
+          <div class="card recall-pane">
+            <h4>卡片内容</h4>
+            <p class="small muted">AI 草稿生成源 = L1 地图 + 全部 L2 + 已深挖结果（协议产物）。</p>
+            <p>Q：Transformer 相比 RNN/CNN 的三个核心优势？<br><br>Q：多头注意力的 h 与 d_k 取值？</p>
+          </div>
+          <div class="card recall-pane">
+            <h4>预览</h4>
+            <p class="muted small">（编辑/预览双栏沿用现状，图片区省略）</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- PDF 对照侧栏 -->
+    <aside class="pdf-pane" id="pdf-pane">
+      <div class="small muted" style="margin-bottom:8px">PDF 对照 · 随节页定位到该节起始页</div>
+      <div class="pdf-page">第 2 页</div>
+      <div class="pdf-page">第 3 页</div>
+      <div class="pdf-page">第 4 页</div>
+    </aside>
+  </div>
+</main>
+
+<!-- 悬浮变体切换条 -->
+<div class="switcher" id="switcher">
+  <button onclick="cycle(-1)">‹</button>
+  <span class="vname" id="vname"></span>
+  <button onclick="cycle(1)">›</button>
+</div>
+
+<script>
+/* ================= 演示数据 ================= */
+const SECTIONS = [
+  {id:'abstract', name:'Abstract', pages:'p1', gist:'提出仅基于注意力机制的 Transformer，抛弃循环与卷积。', state:'marked'},
+  {id:'part-1', name:'1. Introduction', pages:'p1–2', gist:'回顾序列转导主流架构，指出循环结构并行化瓶颈。', state:'marked'},
+  {id:'part-2', name:'2. Background', pages:'p2', gist:'梳理注意力作为组件的既有工作与自注意力先例。', state:'marked'},
+  {id:'part-3', name:'3. Model Architecture', pages:'p2–5', gist:'编码器-解码器堆叠、多头注意力与前馈子层的完整定义。', state:'dug'},
+  {id:'part-4', name:'4. Why Self-Attention', pages:'p5–6', gist:'从计算复杂度、并行度、路径长度三维度对比自注意力。', state:'todo'},
+  {id:'part-5', name:'5. Training', pages:'p6–7', gist:'训练配置：Adam 变学习率、dropout 与标签平滑。', state:'todo'},
+  {id:'part-6', name:'6. Results', pages:'p7–9', gist:'WMT 英德/英法 BLEU 创纪录，训练成本大幅下降。', state:'todo'},
+  {id:'part-7', name:'7. Conclusion', pages:'p9', gist:'总结并展望自注意力向多模态扩展。', state:'todo'},
+  {id:'refs', name:'References', pages:'p9–12', gist:'参考文献清单（进地址空间与问答，不参与 L2）', state:'grey'},
+];
+const state = {
+  marked: new Set(['abstract','part-1','part-2']),
+  dug: new Set(['part-3']),
+  built: true,          // 建图完成态；false 显示建图前落地页
+  section: null,        // 当前节页
+  tab: 'map',
+};
+const VARIANTS = {
+  A: 'A（文档式：单栏阅读流，节树在底部）',
+  B: 'B（双栏代码库式：节树常驻左栏）',
+  C: 'C（仪表盘式：卡片网格 + 进度环）',
+};
+const partCount = SECTIONS.filter(s=>s.state!=='grey').length;
+
+/* ================= 公共片段 ================= */
+const srcChip = t => `<span class="src">${t}</span>`;
+const dotCls = id => state.marked.has(id) ? 'marked' : (state.dug.has(id) ? 'dug' : 'todo');
+const progressHtml = () =>
+  `<span class="chip">${state.marked.size}/${partCount} 已标记</span>`;
+
+const l1Blocks = () => `
+  <div class="map-sec card"><h3>要解决的问题</h3>
+    序列转导模型普遍依赖循环或卷积，难以并行化、长程依赖路径长。 ${srcChip('sec_1:L3-8')}${srcChip('(p1)')}
+  </div>
+  <div class="map-sec card"><h3>方法概述</h3>
+    完全基于注意力机制的编码器-解码器架构 Transformer：多头自注意力 + 前馈子层 + 位置编码。 ${srcChip('fig_1')}${srcChip('sec_3:L1-10')}
+  </div>
+  <div class="map-sec card"><h3>贡献声明</h3>
+    <ul>
+      <li>提出完全摒弃循环/卷积的 Transformer 架构 ${srcChip('sec_3:L5')}</li>
+      <li>WMT 英德/英法翻译 BLEU 创纪录，训练成本降低一个数量级 ${srcChip('tbl_2')}${srcChip('tbl_3')}</li>
+      <li>验证自注意力的任务泛用性 ${srcChip('sec_7:L2-5')}</li>
+    </ul>
+  </div>
+  <div class="map-sec card"><h3>关键证据</h3>
+    ${srcChip('fig_1')} 整体架构 (p3) &nbsp; ${srcChip('tbl_2')} BLEU 对比 (p7) &nbsp; ${srcChip('tbl_3')} 训练成本 (p8)
+    <div class="small muted" style="margin-top:4px">点击图表指针跳节页图表区</div>
+  </div>
+  <div class="map-sec card"><h3>术语表</h3>
+    自注意力 ${srcChip('sec_3:L5')} &nbsp; 多头注意力 ${srcChip('sec_3:L22')} &nbsp; 位置编码 ${srcChip('sec_3:L40')}
+  </div>`;
+
+const retellBlock = () => `
+  <div class="map-sec card"><h3>复述稿（综合）</h3>
+    <p class="muted small">手动触发 · 输入 = L1 + 全部 L2 + 已有深挖 · 未深挖节将标注"未经深挖核验"</p>
+    <button class="btn primary">生成复述稿</button>
+    <span class="small muted" style="margin-left:8px">当前 5/8 节未经深挖核验</span>
+  </div>`;
+
+const buildLanding = () => `
+  <div class="card build-landing">
+    <h2>这篇论文还未建图</h2>
+    <p class="muted">建图将生成：L1 阅读地图、全部节薄摘要（L2），并备妥页图与图表裁切图。<br>建图完成后可进行深挖、复述稿与提问。</p>
+    <button class="btn primary" style="font-size:16px;padding:10px 26px" onclick="state.built=true;render()">▶ 开始建图</button>
+    <p class="small muted" style="margin-top:14px">建图进行中：此处显示任务进度，与任务中心联动。<br>建图前：原文 tab 与 PDF 对照可读，提问/节页不可用。</p>
+    <button class="btn ghost small" onclick="state.built=true;render()">（demo：直接看已建图态）</button>
+  </div>`;
+
+/* 节页（三变体共用内容，容器不同） */
+function sectionPage(sec) {
+  const isMarked = state.marked.has(sec.id), isDug = state.dug.has(sec.id);
+  const l2 = sec.id==='refs' ? '' : `
+    <div class="card l2-card">
+      <div class="chip" style="margin-bottom:6px">L2 节薄摘要</div>
+      <div class="gist">${sec.gist}</div>
+      <ul>
+        <li>编码器 6 层堆叠，每层含多头自注意力 + 前馈两个子层 ${srcChip('L8-14')}</li>
+        <li>多头注意力 h=8、d_k=64，缩放点积注意力 ${srcChip('L22-29')}</li>
+        <li>残差连接 + 层归一化包裹每个子层 ${srcChip('L31-34')}</li>
+      </ul>
+      <div class="small muted">关键图表 ${srcChip('fig_1')} · 页码 ${sec.pages}</div>
+    </div>`;
+  const dig = sec.id==='refs' ? `
+    <div class="card dig-zone"><div class="dig-empty muted">参考文献节不参与 L2 / 深挖，可经 @节提问 或 search 取证</div></div>` :
+    isDug ? `
+    <div class="card dig-zone">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div class="chip">L3 深挖结果</div><span style="flex:1"></span>
+        <button class="btn small">重新深挖</button>
+        <button class="btn small ghost" onclick="goView('tasks')">取证轨迹 → 任务中心</button>
+      </div>
+      <div class="dig-result">
+        <h4>核心论点</h4>
+        <ul><li>注意力的单一机制足以替代循环+卷积完成序列转导 ${srcChip('L5-9')}</li></ul>
+        <h4>关键细节</h4>
+        <ul><li>缩放点积除以 √d_k 防止 softmax 梯度消失 ${srcChip('L24-26')}</li>
+            <li>多头让不同子空间关注不同位置 ${srcChip('L27-29')}${srcChip('fig_1')}</li></ul>
+        <h4>与全局的关系</h4>
+        <ul><li>支撑贡献①；复杂度优势在第 4 节定量展开 ${srcChip('sec_4:L1-6')}</li></ul>
+        <h4>边界与存疑</h4>
+        <ul><li>长序列下 O(n²) 成本未在本节讨论 ${srcChip('L41-43')}</li></ul>
+      </div>
+    </div>` : `
+    <div class="card dig-zone"><div class="dig-empty">
+      <p class="muted">本节尚未深挖（L2 摘要已备）</p>
+      <button class="btn primary" onclick="digSection('${sec.id}')">▶ 开始深挖</button>
+      <p class="small muted" style="margin-top:8px">配方打底 + 工具越界取证；深挖任务在任务中心可回看步骤</p>
+    </div></div>`;
+  const figs = sec.id==='refs' ? '' : `
+    <div class="card dig-zone"><h4 style="font-size:14px;color:var(--accent)">图表区</h4>
+      <div class="fig-grid">
+        <div class="fig-box"><div class="fig-img">fig_1 裁切图</div><div class="fig-cap">图 1：Transformer 整体架构 (p3)</div></div>
+        <div class="fig-box"><div class="fig-img">tbl_1 裁切图</div><div class="fig-cap">表 1：路径长度对比 (p6)</div></div>
+      </div>
+    </div>`;
+  return `
+    <div class="secpage">
+      ${l2}${dig}${figs}
+      <div class="card sec-foot">
+        <button class="btn mark-switch ${isMarked?'on':''}" onclick="toggleMark('${sec.id}')">
+          ${isMarked?'✓ 已读完（点击撤销）':'○ 标记已读完'}</button>
+        <button class="btn ghost" onclick="goTab('source')">读原文 →</button>
+        <span style="flex:1"></span>
+        <span class="small muted">${sec.pages}</span>
+      </div>
+    </div>`;
+}
+
+/* ================= 变体渲染 ================= */
+function renderMap() {
+  if (!state.built) return buildLanding();
+  const sec = SECTIONS.find(s=>s.id===state.section);
+  const v = getVariant();
+
+  if (v==='A') {
+    if (sec) return `<div class="map-doc">
+      <div class="back"><button class="btn ghost" onclick="state.section=null;render()">← 地图 / ${sec.name}</button></div>
+      ${sectionPage(sec)}</div>`;
+    return `<div class="map-doc">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <h1 style="font-size:19px;margin:0">阅读地图</h1>${progressHtml()}<span style="flex:1"></span>
+        <button class="btn small">全部深挖</button>
+      </div>
+      ${l1Blocks()}
+      <div class="map-sec card"><h3>阅读路径（节树）</h3>
+        ${SECTIONS.map(s=>`<div class="sec-row" onclick="openSec('${s.id}')">
+          <span class="dot ${s.state==='grey'?'todo':dotCls(s.id)}"></span>
+          <span class="sec-name ${s.state==='grey'?'muted':''}">${s.name}</span>
+          <span class="gist">${s.gist}</span><span class="pages">${s.pages}</span></div>`).join('')}
+        <p class="small muted" style="margin:8px 4px 0">状态点：灰=未深挖 · 橙=已深挖 · 绿=已标记读完；标记操作在节页</p>
+      </div>
+      ${retellBlock()}
+    </div>`;
+  }
+
+  if (v==='B') {
+    const right = sec ? `<div class="crumb"><b onclick="state.section=null;render()">地图</b> / ${sec.name}</div>${sectionPage(sec)}`
+      : `<div class="crumb">地图</div>${l1Blocks()}${retellBlock()}`;
+    return `<div class="map-split">
+      <div class="map-tree">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">${progressHtml()}</div>
+        <button class="tree-item ${!sec?'cur':''}" onclick="state.section=null;render()">🏠 阅读地图</button>
+        ${SECTIONS.map(s=>`<button class="tree-item ${s.state==='grey'?'grey':''} ${sec&&sec.id===s.id?'cur':''}" onclick="openSec('${s.id}')">
+          <span class="dot ${s.state==='grey'?'todo':dotCls(s.id)}"></span><span class="tname">${s.name}</span></button>`).join('')}
+        <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
+          <button class="btn small primary" style="width:100%">▶ 全部深挖</button>
+        </div>
+      </div>
+      <div class="map-content">${right}</div>
+    </div>`;
+  }
+
+  // C 仪表盘
+  if (sec) return `<div class="secpage">
+    <div class="back"><button class="btn ghost" onclick="state.section=null;render()">← 地图 / ${sec.name}</button></div>
+    ${sectionPage(sec)}</div>`;
+  return `
+    <div class="dash-top">
+      <div class="card ring"><div class="num">${state.marked.size}/${partCount}</div><div class="small muted">已标记读完</div></div>
+      <div class="card dash-card"><h4>要解决的问题</h4><div class="small">循环/卷积难以并行化 ${srcChip('(p1)')}</div></div>
+      <div class="card dash-card"><h4>方法概述</h4><div class="small">纯注意力 Transformer ${srcChip('fig_1')}</div></div>
+      <div class="card dash-card"><h4>贡献声明</h4><div class="small">架构 + BLEU 纪录 + 泛用性 ${srcChip('tbl_2')}</div></div>
+    </div>
+    <div class="card dash-card" style="margin-bottom:14px"><h4>关键证据 / 术语</h4>
+      ${srcChip('fig_1')} ${srcChip('tbl_2')} ${srcChip('tbl_3')} &nbsp;·&nbsp; 自注意力 ${srcChip('sec_3:L5')} 多头 ${srcChip('sec_3:L22')}
+    </div>
+    <div style="display:flex;align-items:center;margin:6px 0 10px">
+      <h3 style="margin:0;font-size:15px">精读部分</h3><span style="flex:1"></span>
+      <button class="btn small primary">▶ 全部深挖</button>
+    </div>
+    <div class="sec-grid">
+      ${SECTIONS.map(s=>`<div class="card sec-cell" onclick="openSec('${s.id}')">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="dot ${s.state==='grey'?'todo':dotCls(s.id)}"></span>
+          <b class="small" style="${s.state==='grey'?'color:#aab':''}">${s.name}</b>
+          <span style="flex:1"></span>
+          ${state.marked.has(s.id)?'<span style="color:var(--ok)">✓</span>':''}
+        </div>
+        <div class="gist" style="margin-top:6px">${s.gist}</div>
+        <div class="small muted" style="margin-top:4px">${s.pages}${s.state==='grey'?' · 不参与 L2':''}</div>
+      </div>`).join('')}
+    </div>
+    <div style="margin-top:14px">${retellBlock()}</div>`;
+}
+
+/* ================= 交互 ================= */
+function getVariant(){ const p=new URLSearchParams(location.search).get('variant'); return VARIANTS[p]?p:'A'; }
+function cycle(d){ const keys=Object.keys(VARIANTS); const i=(keys.indexOf(getVariant())+d+keys.length)%keys.length;
+  history.replaceState(null,'','?variant='+keys[i]); render(); }
+document.addEventListener('keydown', e=>{
+  if(/INPUT|TEXTAREA/.test(e.target.tagName)) return;
+  if(e.key==='ArrowLeft') cycle(-1); if(e.key==='ArrowRight') cycle(1); });
+
+function openSec(id){ state.section=id; render(); }
+function toggleMark(id){ state.marked.has(id)?state.marked.delete(id):state.marked.add(id); render(); }
+function digSection(id){ state.dug.add(id); render(); }
+
+function goView(view){
+  document.querySelectorAll('.view').forEach(el=>el.hidden=true);
+  document.getElementById('view-'+view).hidden=false;
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active', b.dataset.view===view));
+  if(view==='reader') render();
+  window.scrollTo(0,0);
+}
+function goTab(tab){ // reader 内 tab 快捷跳转（原文/提问）
+  document.querySelectorAll('.view').forEach(el=>el.hidden=true);
+  document.getElementById('view-reader').hidden=false;
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active', b.dataset.view==='reader'));
+  state.tab=tab; renderTabs(); window.scrollTo(0,0);
+}
+
+function renderTabs(){
+  document.querySelectorAll('#view-reader .tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===state.tab));
+  ['map','source','chat','recall'].forEach(t=>{
+    document.getElementById('tab-'+t).hidden = (t!==state.tab); });
+  if(state.tab==='map') document.getElementById('tab-map').innerHTML = renderMap();
+  document.getElementById('float-ask').style.display = state.tab==='source' ? '' : 'none';
+}
+
+function render(){
+  renderTabs();
+  const v=getVariant();
+  document.getElementById('vname').innerHTML = `<b>${v}</b> ${VARIANTS[v].slice(1)}`;
+}
+
+document.querySelectorAll('.nav-btn').forEach(b=>b.onclick=()=>goView(b.dataset.view));
+document.querySelectorAll('#view-reader .tab').forEach(t=>t.onclick=()=>{ state.tab=t.dataset.tab; renderTabs(); });
+document.getElementById('pdf-toggle').onclick=()=>{
+  const p=document.getElementById('pdf-pane'); p.hidden=!p.hidden; };
+document.getElementById('trans-cb').onchange=e=>{
+  document.getElementById('trans-line').hidden=!e.target.checked; };
+
+/* 初始：阅读视图·地图 tab */
+document.getElementById('view-reader').hidden=false;
+document.getElementById('nav-reader').classList.add('active');
+render();
+</script>
+</body>
+</html>
