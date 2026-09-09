@@ -201,6 +201,29 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
 .switcher button:hover { background:var(--accent); }
 .switcher .vname { min-width:180px; text-align:center; }
 .switcher .vname b { color:#9fb0ff; }
+
+/* ===== soft-ui 美化皮肤（覆盖层，参考 stylekit soft-ui：浅底、大圆角、彩色柔影、上浮反馈） ===== */
+:root {
+  --bg:#f8fafc; --border:#e8ecf4; --text:#1e293b; --muted:#64748b;
+  --accent:#6366f1; --accent-soft:#eef2ff; --ok:#10b981; --warn:#f59e0b; --danger:#ef4444;
+  --radius:18px; --shadow:0 10px 30px -12px rgba(30,41,59,.12);
+}
+body { background:var(--bg); }
+.card { border-color:#edf0f7; border-radius:20px; transition:transform .25s ease, box-shadow .25s ease, border-color .25s ease; }
+.paper-card:hover, .sec-cell:hover { transform:translateY(-2px); box-shadow:0 16px 40px -12px rgba(99,102,241,.22); border-color:transparent; }
+.btn { border-radius:12px; border-color:#e6eaf3; transition:all .2s ease; }
+.btn:hover { transform:translateY(-1px); box-shadow:0 6px 16px -6px rgba(30,41,59,.15); }
+.btn.primary { box-shadow:0 8px 20px -8px rgba(99,102,241,.55); }
+.btn.primary:hover { filter:none; background:#4f46e5; }
+.btn:active { transform:scale(.96); box-shadow:inset 0 2px 6px rgba(30,41,59,.15); }
+.nav-btn, .tab, .sec-row, .tree-item { transition:all .2s ease; }
+.chip { background:var(--accent-soft); }
+.topbar { box-shadow:0 6px 20px -12px rgba(30,41,59,.12); border-bottom-color:transparent; }
+.map-tree { border-radius:20px; }
+.chat-input .box { background:#f1f5f9; border-color:transparent; border-radius:14px; transition:all .22s ease; }
+.chat-input .box:hover { background:#fff; box-shadow:0 0 0 3px rgba(99,102,241,.18); }
+.l2-card { border-left-color:var(--accent); }
+.badge.run { background:#eef2ff; color:var(--accent); }
 </style>
 </head>
 <body>
@@ -214,6 +237,7 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
     <button class="nav-btn" data-view="tasks">任务中心</button>
   </nav>
   <span class="spacer"></span>
+  <a href="login.html" style="font-size:13px;color:var(--muted);text-decoration:none">登录页原型 →</a>
   <span class="muted small">示例论文：Attention Is All You Need</span>
 </div>
 
