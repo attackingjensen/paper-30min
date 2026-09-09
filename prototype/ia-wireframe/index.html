@@ -91,10 +91,12 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
 .tab.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
 .reader-body { display:flex; align-items:flex-start; }
 .reader-main { flex:1; min-width:0; padding:18px 24px 60px; }
-.pdf-pane { width:340px; flex:none; border-left:1px solid var(--border); background:#eceef5;
-  padding:12px; position:sticky; top:53px; height:calc(100vh - 53px); overflow:auto; }
+.pdf-pane { width:46%; min-width:390px; max-width:75%; flex:none; border-left:1px solid var(--border);
+  background:#eceef5; padding:12px 12px 12px 15px; position:sticky; top:53px; height:calc(100vh - 53px); overflow:auto; }
+.pdf-resizer { position:absolute; left:0; top:0; bottom:0; width:7px; cursor:col-resize; z-index:5; }
+.pdf-resizer:hover, .pdf-resizer.on { background:var(--accent-soft); border-left:2px solid var(--accent); }
 .pdf-page { background:#fff; border:1px solid var(--border); border-radius:6px; margin-bottom:10px;
-  height:230px; display:flex; align-items:center; justify-content:center; color:#b3b9cc; font-size:13px; }
+  aspect-ratio:210/270; display:flex; align-items:center; justify-content:center; color:#b3b9cc; font-size:13px; }
 
 /* 地图页·变体 A（文档式） */
 .map-doc { max-width:780px; margin:0 auto; }
@@ -399,7 +401,8 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
 
     <!-- PDF 对照侧栏 -->
     <aside class="pdf-pane" id="pdf-pane">
-      <div class="small muted" style="margin-bottom:8px">PDF 对照 · 随节页定位到该节起始页</div>
+      <div class="pdf-resizer" id="pdf-resizer" title="拖拽调节宽度"></div>
+      <div class="small muted" style="margin-bottom:8px">PDF 对照 · 随节页定位到该节起始页 · ⇤ 拖拽左缘调宽</div>
       <div class="pdf-page">第 2 页</div>
       <div class="pdf-page">第 3 页</div>
       <div class="pdf-page">第 4 页</div>
@@ -666,6 +669,18 @@ document.querySelectorAll('.nav-btn').forEach(b=>b.onclick=()=>goView(b.dataset.
 document.querySelectorAll('#view-reader .tab').forEach(t=>t.onclick=()=>{ state.tab=t.dataset.tab; renderTabs(); });
 document.getElementById('pdf-toggle').onclick=()=>{
   const p=document.getElementById('pdf-pane'); p.hidden=!p.hidden; };
+
+/* PDF 栏宽度拖拽（现行实现=窗口宽 46% 比例 + 缩放按钮；此处验证"可拖拽"手感） */
+(()=>{ const res=document.getElementById('pdf-resizer'), pane=document.getElementById('pdf-pane');
+  let on=false;
+  res.addEventListener('mousedown', e=>{ on=true; res.classList.add('on'); e.preventDefault();
+    document.body.style.userSelect='none'; });
+  document.addEventListener('mousemove', e=>{ if(!on) return;
+    const w=Math.min(Math.max(window.innerWidth-e.clientX,390), window.innerWidth*0.75);
+    pane.style.width=w+'px'; });
+  document.addEventListener('mouseup', ()=>{ on=false; res.classList.remove('on');
+    document.body.style.userSelect=''; });
+})();
 document.getElementById('trans-cb').onchange=e=>{
   document.getElementById('trans-line').hidden=!e.target.checked; };
 
