@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a67ea"/>
+      <stop offset="1" stop-color="#4550d6"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#bg)"/>
+  <!-- 文档 -->
+  <rect x="252" y="192" width="430" height="560" rx="44" fill="#ffffff"/>
+  <!-- 标题行 -->
+  <rect x="316" y="280" width="220" height="36" rx="18" fill="#c9d0f2"/>
+  <!-- 正文行 -->
+  <rect x="316" y="372" width="302" height="26" rx="13" fill="#e3e7fa"/>
+  <rect x="316" y="442" width="302" height="26" rx="13" fill="#e3e7fa"/>
+  <rect x="316" y="512" width="302" height="26" rx="13" fill="#e3e7fa"/>
+  <rect x="316" y="582" width="200" height="26" rx="13" fill="#e3e7fa"/>
+  <!-- 进度环徽章 -->
+  <circle cx="712" cy="712" r="188" fill="#ffffff"/>
+  <circle cx="712" cy="712" r="120" fill="none" stroke="#e3e7fa" stroke-width="46"/>
+  <circle cx="712" cy="712" r="120" fill="none" stroke="#f2b63c" stroke-width="46"
+          stroke-dasharray="528 754" stroke-linecap="round"
+          transform="rotate(-90 712 712)"/>
+</svg>
