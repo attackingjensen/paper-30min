@@ -100,18 +100,32 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
 
 /* 地图页·变体 A（文档式） */
 .map-doc { max-width:780px; margin:0 auto; }
-.map-doc .map-sec { padding:16px 20px; margin-bottom:14px; }
-.map-doc .map-sec h3 { font-size:15px; color:var(--accent); }
+.map-sec { padding:16px 20px; margin-bottom:14px; }
+.map-sec h3 { font-size:15px; color:var(--accent); }
 .sec-row { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:9px; cursor:pointer; }
 .sec-row:hover { background:var(--accent-soft); }
 .sec-row .sec-name { font-weight:600; white-space:nowrap; }
 .sec-row .gist { color:var(--muted); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
 .sec-row .pages { font-size:12px; color:var(--muted); flex:none; }
 
-/* 地图页·变体 B（双栏代码库式） */
+/* 地图页·变体 B（双栏代码库式，VSCode 式侧栏：可拖拽 + 可收起） */
 .map-split { display:flex; gap:0; align-items:flex-start; }
-.map-tree { width:270px; flex:none; background:var(--card); border:1px solid var(--border);
+.map-tree { width:250px; flex:none; background:var(--card); border:1px solid var(--border);
   border-radius:var(--radius); padding:12px; position:sticky; top:70px; }
+.tree-head { display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.tree-fold { margin-left:auto; border:0; background:transparent; color:var(--muted);
+  border-radius:6px; width:24px; height:24px; cursor:pointer; font-size:13px; }
+.tree-fold:hover { background:var(--accent-soft); color:var(--accent); }
+.tree-foot { border-top:1px solid var(--border); margin-top:8px; padding-top:8px; }
+.tree-resizer { position:absolute; right:0; top:0; bottom:0; width:7px; cursor:col-resize; z-index:5; }
+.tree-resizer:hover { background:var(--accent-soft); border-right:2px solid var(--accent); }
+.map-tree .tree-open { display:none; }
+.map-tree.rail { width:42px !important; min-width:42px !important; padding:10px 5px; }
+.map-tree.rail .tree-inner, .map-tree.rail .tree-resizer { display:none; }
+.map-tree.rail .tree-open { display:block; width:100%; border:0; background:transparent;
+  color:var(--accent); font-size:15px; border-radius:7px; padding:6px 0; cursor:pointer; }
+.map-tree.rail .tree-open:hover { background:var(--accent-soft); }
+.map-content-inner { max-width:880px; margin:0 auto; }
 .tree-item { display:flex; align-items:center; gap:6px; width:100%; text-align:left; border:none;
   background:transparent; padding:6px 8px; border-radius:7px; font-size:13.5px; }
 .tree-item:hover { background:var(--accent-soft); }
@@ -425,8 +439,11 @@ body { background:var(--bg); }
 
     <!-- PDF 对照侧栏 -->
     <aside class="pdf-pane" id="pdf-pane">
-      <div class="pdf-resizer" id="pdf-resizer" title="拖拽调节宽度"></div>
-      <div class="small muted" style="margin-bottom:8px">PDF 对照 · 随节页定位到该节起始页 · ⇤ 拖拽左缘调宽</div>
+      <div class="pdf-resizer" onmousedown="startDrag(this.parentElement,'right',event)" title="拖拽调节宽度"></div>
+      <div class="small muted" style="margin-bottom:8px;display:flex;align-items:center">
+        PDF 对照 · 随节页定位到该节起始页 · ⇤ 拖拽左缘调宽
+        <button class="tree-fold" onclick="document.getElementById('pdf-pane').hidden=true" title="收起 PDF 对照（顶栏「PDF 对照」重新打开）">»</button>
+      </div>
       <div class="pdf-page">第 2 页</div>
       <div class="pdf-page">第 3 页</div>
       <div class="pdf-page">第 4 页</div>
@@ -603,16 +620,19 @@ function renderMap() {
     const right = sec ? `<div class="crumb"><b onclick="state.section=null;render()">地图</b> / ${sec.name}</div>${sectionPage(sec)}`
       : `<div class="crumb">地图</div>${l1Blocks()}${retellBlock()}`;
     return `<div class="map-split">
-      <div class="map-tree">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">${progressHtml()}</div>
-        <button class="tree-item ${!sec?'cur':''}" onclick="state.section=null;render()">🏠 阅读地图</button>
-        ${SECTIONS.map(s=>`<button class="tree-item ${s.state==='grey'?'grey':''} ${sec&&sec.id===s.id?'cur':''}" onclick="openSec('${s.id}')">
-          <span class="dot ${s.state==='grey'?'todo':dotCls(s.id)}"></span><span class="tname">${s.name}</span></button>`).join('')}
-        <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
-          <button class="btn small primary" style="width:100%">▶ 全部深挖</button>
+      <div class="map-tree" id="map-tree">
+        <div class="tree-resizer" onmousedown="startDrag(this.parentElement,'left',event)"></div>
+        <div class="tree-inner">
+          <div class="tree-head">${progressHtml()}
+            <button class="tree-fold" onclick="toggleTree()" title="收起节树">«</button></div>
+          <button class="tree-item ${!sec?'cur':''}" onclick="state.section=null;render()">🏠 阅读地图</button>
+          ${SECTIONS.map(s=>`<button class="tree-item ${s.state==='grey'?'grey':''} ${sec&&sec.id===s.id?'cur':''}" onclick="openSec('${s.id}')">
+            <span class="dot ${s.state==='grey'?'todo':dotCls(s.id)}"></span><span class="tname">${s.name}</span></button>`).join('')}
+          <div class="tree-foot"><button class="btn small primary" style="width:100%">▶ 全部深挖</button></div>
         </div>
+        <button class="tree-open" onclick="toggleTree()" title="展开节树">»</button>
       </div>
-      <div class="map-content">${right}</div>
+      <div class="map-content"><div class="map-content-inner">${right}</div></div>
     </div>`;
   }
 
@@ -694,17 +714,18 @@ document.querySelectorAll('#view-reader .tab').forEach(t=>t.onclick=()=>{ state.
 document.getElementById('pdf-toggle').onclick=()=>{
   const p=document.getElementById('pdf-pane'); p.hidden=!p.hidden; };
 
-/* PDF 栏宽度拖拽（现行实现=窗口宽 46% 比例 + 缩放按钮；此处验证"可拖拽"手感） */
-(()=>{ const res=document.getElementById('pdf-resizer'), pane=document.getElementById('pdf-pane');
-  let on=false;
-  res.addEventListener('mousedown', e=>{ on=true; res.classList.add('on'); e.preventDefault();
-    document.body.style.userSelect='none'; });
-  document.addEventListener('mousemove', e=>{ if(!on) return;
-    const w=Math.min(Math.max(window.innerWidth-e.clientX,390), window.innerWidth*0.75);
-    pane.style.width=w+'px'; });
-  document.addEventListener('mouseup', ()=>{ on=false; res.classList.remove('on');
-    document.body.style.userSelect=''; });
-})();
+/* VSCode 式侧栏：左节树 / 右 PDF 均可拖拽调宽；节树可收起为细轨 */
+const drag = { el:null, side:null };
+function startDrag(el, side, e){ drag.el=el; drag.side=side; e.preventDefault();
+  document.body.style.userSelect='none'; }
+document.addEventListener('mousemove', e=>{ if(!drag.el) return;
+  if(drag.side==='right'){ drag.el.style.width =
+    Math.min(Math.max(window.innerWidth-e.clientX,390), window.innerWidth*0.75)+'px'; }
+  else { const r=drag.el.getBoundingClientRect();
+    drag.el.style.width = Math.min(Math.max(e.clientX-r.left,200), 440)+'px'; }
+});
+document.addEventListener('mouseup', ()=>{ drag.el=null; document.body.style.userSelect=''; });
+function toggleTree(){ document.getElementById('map-tree').classList.toggle('rail'); }
 document.getElementById('trans-cb').onchange=e=>{
   document.getElementById('trans-line').hidden=!e.target.checked; };
 

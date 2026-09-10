@@ -166,7 +166,7 @@ const wave = (()=>{ const GX=72, GZ=44, pts=[];
 })();
 
 const VARIANTS = { '1':'粒子神经球', '2':'环面纽结流光', '3':'粒子浪潮' };
-function getV(){ const v=new URLSearchParams(location.search).get('v'); return VARIANTS[v]?v:'1'; }
+function getV(){ const v=new URLSearchParams(location.search).get('v'); return VARIANTS[v]?v:'3'; /* 2026-09-10 作者选定：粒子浪潮 */ }
 function cycle(d){ const ks=Object.keys(VARIANTS); const i=(ks.indexOf(getV())+d+ks.length)%ks.length;
   history.replaceState(null,'','?v='+ks[i]); label(); }
 function label(){ const v=getV(); document.getElementById('vname').innerHTML=`<b>${v}</b> ${VARIANTS[v]}`; }
