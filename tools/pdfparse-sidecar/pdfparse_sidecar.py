@@ -22,7 +22,9 @@
 """
 import argparse
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -322,6 +324,165 @@ def cmd_convert(args):
     return 0
 
 
+def cmd_render(args):
+    """页图与图表裁切预渲染（Issue #59，规格 #48 §双通道资产）。
+
+    job JSON（--job）：{"scale": 2, "quality": 86, "pages": [1, 2, ...],
+    "crops": [{"id": "fig_3", "page": 7, "bbox": [x, y, w, h]}]}；
+    bbox 为 pdf.js 视口坐标（左上原点，scale=2），与 pypdfium2 同 scale
+    渲染位图的像素坐标系一致，直接作裁切框。裁切框钳制到页边界；
+    完全落在页外（钳制后 < 2px）记 skippedCrops，不编造产物（#48 §诚实档 15）。
+
+    产物：<out-dir>/pages/page-{n}.webp、<out-dir>/crops/{id}.webp。
+    渲染只用 pypdfium2 + Pillow，不需要布局/OCR 模型；逐页渲染，
+    crops 按页分组与页图共享同一次渲染（内存峰值 = 一页位图）。
+    """
+    started = time.perf_counter()
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = Path(args.pdf)
+    if not pdf_path.is_file():
+        write_result(
+            out_dir,
+            error_payload("pdf_not_found", f"PDF 文件不存在: {pdf_path}", False),
+        )
+        return 0
+
+    try:
+        job = json.loads(Path(args.job).read_text(encoding="utf-8"))
+        scale = float(job.get("scale", 2.0))
+        quality = int(job.get("quality", 86))
+        pages = sorted({int(p) for p in job["pages"]})
+        crops = [
+            {
+                "id": str(crop["id"]),
+                "page": int(crop["page"]),
+                "bbox": [float(v) for v in crop["bbox"]],
+            }
+            for crop in job.get("crops", [])
+        ]
+        if not pages:
+            raise ValueError("pages 不能为空")
+        if not (0 < scale <= 8) or not (1 <= quality <= 100):
+            raise ValueError("scale/quality 超界")
+        for crop in crops:
+            if len(crop["bbox"]) != 4 or any(
+                not math.isfinite(v) or v < 0 for v in crop["bbox"]
+            ):
+                raise ValueError(f"裁切 bbox 非法: {crop['id']}")
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", crop["id"]) or ".." in crop["id"]:
+                raise ValueError(f"裁切 id 不是合法标识: {crop['id']}")
+    except (OSError, ValueError, KeyError, TypeError) as err:
+        write_result(out_dir, error_payload("job_invalid", f"渲染作业无效: {err}", False))
+        return 0
+
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as err:
+        write_result(
+            out_dir,
+            error_payload("deps_missing", f"侧车依赖不完整: {err}", False),
+        )
+        return 0
+
+    crops_by_page = {}
+    for crop in crops:
+        crops_by_page.setdefault(crop["page"], []).append(crop)
+    render_pages = sorted(set(pages) | set(crops_by_page))
+    pages_wanted = set(pages)
+
+    pages_dir = out_dir / "pages"
+    crops_dir = out_dir / "crops"
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    if crops:
+        crops_dir.mkdir(parents=True, exist_ok=True)
+    result_pages = []
+    result_crops = []
+    skipped = []
+    warnings = []
+    try:
+        with pdfium.PdfDocument(str(pdf_path)) as doc:
+            page_count = len(doc)
+            missing = [p for p in render_pages if p < 1 or p > page_count]
+            if missing:
+                write_result(
+                    out_dir,
+                    error_payload(
+                        "job_invalid",
+                        f"渲染页码越界（PDF 共 {page_count} 页）: {missing}",
+                        False,
+                    ),
+                )
+                return 0
+            total = len(render_pages)
+            for index, page_no in enumerate(render_pages):
+                page = doc[page_no - 1]
+                try:
+                    bitmap = page.render(scale=scale)
+                    img = bitmap.to_pil().convert("RGB")
+                    width, height = img.size
+                    if page_no in pages_wanted:
+                        target = pages_dir / f"page-{page_no}.webp"
+                        img.save(str(target), "WEBP", quality=quality)
+                        result_pages.append(
+                            {
+                                "page": page_no,
+                                "path": str(target),
+                                "width": width,
+                                "height": height,
+                                "bytes": target.stat().st_size,
+                            }
+                        )
+                    for crop in crops_by_page.get(page_no, []):
+                        x, y, crop_w, crop_h = crop["bbox"]
+                        left = max(0, min(width, round(x)))
+                        top = max(0, min(height, round(y)))
+                        right = max(0, min(width, round(x + crop_w)))
+                        bottom = max(0, min(height, round(y + crop_h)))
+                        if right - left < 2 or bottom - top < 2:
+                            skipped.append({"id": crop["id"], "reason": "bbox_outside_page"})
+                            warnings.append(f"crop_skipped:{crop['id']}")
+                            continue
+                        cropped = img.crop((left, top, right, bottom))
+                        target = crops_dir / f"{crop['id']}.webp"
+                        cropped.save(str(target), "WEBP", quality=quality)
+                        result_crops.append(
+                            {
+                                "id": crop["id"],
+                                "page": page_no,
+                                "path": str(target),
+                                "width": right - left,
+                                "height": bottom - top,
+                                "bytes": target.stat().st_size,
+                            }
+                        )
+                finally:
+                    page.close()
+                emit_progress("render", index + 1, total)
+    except Exception as err:  # noqa: BLE001 - pypdfium2 打开/渲染失败统一归类
+        detail = traceback.format_exc()[-1500:]
+        write_result(
+            out_dir,
+            error_payload("render_failed", f"页图渲染失败: {err}", True, detail=detail),
+        )
+        return 0
+
+    write_result(
+        out_dir,
+        {
+            "ok": True,
+            "scale": scale,
+            "quality": quality,
+            "pages": result_pages,
+            "crops": result_crops,
+            "skippedCrops": skipped,
+            "warnings": warnings,
+            "elapsedMs": int((time.perf_counter() - started) * 1000),
+        },
+    )
+    return 0
+
+
 def cmd_selfcheck(args):
     """自检：报告 python/docling 版本与各模型工件在位情况。"""
     models_dir = Path(args.models_dir) if args.models_dir else None
@@ -493,6 +654,11 @@ def main(argv=None):
     p_convert.add_argument("--out-dir", required=True)
     p_convert.add_argument("--formula-enrichment", action="store_true")
 
+    p_render = sub.add_parser("render", help="页图与图表裁切预渲染（scale=2 webp）")
+    p_render.add_argument("--pdf", required=True)
+    p_render.add_argument("--out-dir", required=True)
+    p_render.add_argument("--job", required=True, help="渲染作业 JSON 路径")
+
     sub.add_parser("selfcheck", help="自检侧车与模型在位情况")
 
     p_prefetch = sub.add_parser("prefetch-models", help="下载基础模型集")
@@ -508,12 +674,15 @@ def main(argv=None):
     p_boot.add_argument("--pip-index-url", default=os.environ.get("PIP_INDEX_URL") or None)
 
     args = parser.parse_args(argv)
-    if not args.models_dir:
+    # render/selfcheck 不触碰模型：render 只用 pypdfium2 + Pillow。
+    if not args.models_dir and args.command not in ("render", "selfcheck"):
         out_dir = getattr(args, "out_dir", None) or getattr(args, "manifest_dir", None) or "."
         write_result(out_dir, error_payload("model_missing", "未指定模型目录", False))
         return 0
     if args.command == "convert":
         return cmd_convert(args)
+    if args.command == "render":
+        return cmd_render(args)
     if args.command == "selfcheck":
         return cmd_selfcheck(args)
     if args.command == "prefetch-models":

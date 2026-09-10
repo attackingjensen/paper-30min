@@ -6,11 +6,12 @@ Issue [#57](https://github.com/attackingjensen/paper-30min/issues/57) /
 把 PDF 转成 DoclingDocument JSON 的 Windows 侧车：嵌入式 Python 3.11.9 +
 钉版依赖（Docling 2.126.0 基线）+ 布局/表格/OCR 模型。Rust 以子进程调用
 （`pdfparse.convert@1` / `pdfparse.bootstrap@1` 任务），导入走任务中心生命周期，
-取消 = 终止子进程。
+取消 = 终止子进程。`render` 子命令（Issue #59）另承担页图与图表裁切预渲染
+（scale=2 webp），由 `pdfassets.prerender@1` 任务驱动。
 
 ## 文件
 
-- `pdfparse_sidecar.py` — 侧车程序（convert / bootstrap / prefetch-models / selfcheck）。
+- `pdfparse_sidecar.py` — 侧车程序（convert / render / bootstrap / prefetch-models / selfcheck）。
 - `requirements-sidecar.txt` — 钉版依赖清单（与 #46 验证 venv 逐版一致；升级 Docling
   须回归夹具全绿，见 #60）。
 - `build_sidecar.py` — 构建脚本，产物落 `app/src-tauri/sidecar/pdfparse/`。
@@ -42,6 +43,16 @@ python tools/pdfparse-sidecar/build_sidecar.py --hf-endpoint https://hf-mirror.c
 `model_download_failed`、`bootstrap_failed`、`bootstrap_required`（Rust 预检）、
 `sidecar_missing`、`sidecar_crashed`（Rust 侧）。
 
+### render 子命令（#59）
+
+输入 = `--pdf` + `--out-dir` + `--job <job.json>`；job 形状
+`{"scale": 2, "quality": 86, "pages": [1, ...], "crops": [{"id", "page", "bbox": [x, y, w, h]}]}`
+（bbox 为 pdf.js 视口坐标 scale=2 左上原点，与渲染位图像素坐标系一致）。
+输出 = `<out-dir>/pages/page-{n}.webp` + `<out-dir>/crops/{id}.webp` +
+result.json（逐件 width/height/bytes + `skippedCrops`）。裁切框钳制到页边界，
+完全页外记 skippedCrops 不编造（#48 §诚实档）。渲染只用 pypdfium2 + Pillow，
+不要求模型权重，也不校验模型目录。错误码同上加 `job_invalid` / `render_failed`。
+
 ## 运行期语义
 
 - convert 全程 `HF_HUB_OFFLINE=1`，模型只从 artifacts 目录取；唯一在线例外是
@@ -63,6 +74,7 @@ python tools/pdfparse-sidecar/build_sidecar.py --hf-endpoint https://hf-mirror.c
 ```
 cd app/src-tauri
 cargo test --test pdfparse_contract            # 常规（状态/成功/错误/取消，约 1 分钟）
+cargo test --test pdfassets_contract           # 页图/裁切预渲染（#59，约 5 秒）
 PAPER30MIN_PDFPARSE_SLOW=1 cargo test --test pdfparse_contract   # 含 OCR 慢测试（约 4 分钟）
 ```
 

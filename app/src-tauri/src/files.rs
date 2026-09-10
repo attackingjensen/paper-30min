@@ -317,17 +317,31 @@ impl Library {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        let sha256 = sha256_hex(&bytes);
+            .unwrap_or("application/octet-stream");
+        self.put_attachment_bytes(paper_id, &write.id, name, content_type, &bytes)
+    }
+
+    /// 内部字节缝：Rust 侧产物（页图/裁切图/块模型 JSON）落附件与 JS 上行共用
+    /// 同一条"sha256 + 原子写 + 元数据事务 + 失败回滚"路径（Issue #59）。
+    pub(crate) fn put_attachment_bytes(
+        &self,
+        paper_id: &str,
+        id: &str,
+        name: &str,
+        content_type: &str,
+        bytes: &[u8],
+    ) -> Result<AttachmentDto, BridgeError> {
+        require_safe_segment(paper_id, "paperId")?;
+        require_safe_segment(id, "attachment.id")?;
+        let sha256 = sha256_hex(bytes);
         let size = bytes.len() as i64;
         let created_at = now_iso();
-        let dest = attachment_path(self.root(), paper_id, &write.id)?;
+        let dest = attachment_path(self.root(), paper_id, id)?;
         let dto = AttachmentDto {
             paper_id: paper_id.to_string(),
-            id: write.id,
+            id: id.to_string(),
             name: name.to_string(),
-            content_type,
+            content_type: content_type.to_string(),
             size,
             sha256,
             created_at,
@@ -337,7 +351,7 @@ impl Library {
         if !Self::paper_exists(&conn, paper_id)? {
             return Err(BridgeError::paper_not_found(paper_id));
         }
-        write_atomic(&dest, &bytes)?;
+        write_atomic(&dest, bytes)?;
         let tx = conn.transaction().map_err(sqlite_error)?;
         let sql_result = insert_attachment_row(&tx, &dto)
             .and_then(|_| tx.commit().map_err(sqlite_error));

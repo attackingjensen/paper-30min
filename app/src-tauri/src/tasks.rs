@@ -141,6 +141,11 @@ enum TaskPlan {
     PdfparseBootstrap {
         endpoint: Option<String>,
     },
+    PdfassetsPrerender {
+        paper_id: String,
+        docling_json_path: std::path::PathBuf,
+        pdf_path: Option<std::path::PathBuf>,
+    },
 }
 
 const DEFAULT_STREAM_TEXT: &str = "论文精读 Windows 正式客户端桥接演示任务：\
@@ -241,6 +246,23 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
             Ok(TaskPlan::PdfparseBootstrap { endpoint })
+        }
+        crate::pdfassets::TASK_PRERENDER => {
+            let paper_id = required_string(crate::pdfassets::TASK_PRERENDER, input, "paperId")?;
+            files::require_safe_segment(paper_id, "paperId")?;
+            let docling_json_path =
+                required_string(crate::pdfassets::TASK_PRERENDER, input, "doclingJsonPath")?;
+            let pdf_path = input
+                .get("pdfPath")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from);
+            Ok(TaskPlan::PdfassetsPrerender {
+                paper_id: paper_id.to_string(),
+                docling_json_path: std::path::PathBuf::from(docling_json_path),
+                pdf_path,
+            })
         }
         _ => Err(BridgeError::unknown_command(kind)),
     }
@@ -355,6 +377,7 @@ pub fn available_task_kinds() -> &'static [&'static str] {
         "files.download@1",
         crate::pdfparse::TASK_CONVERT,
         crate::pdfparse::TASK_BOOTSTRAP,
+        crate::pdfassets::TASK_PRERENDER,
     ]
 }
 
@@ -768,5 +791,10 @@ fn run_task(
         TaskPlan::PdfparseBootstrap { endpoint } => {
             crate::pdfparse::run_bootstrap(&ctx, endpoint.as_deref())
         }
+        TaskPlan::PdfassetsPrerender {
+            paper_id,
+            docling_json_path,
+            pdf_path,
+        } => crate::pdfassets::run_prerender(&ctx, &paper_id, &docling_json_path, pdf_path.as_deref()),
     }
 }

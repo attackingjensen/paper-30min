@@ -122,7 +122,7 @@ fn read_variant(sidecar_root: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-fn deps_ready(sidecar_root: &Path) -> bool {
+pub fn deps_ready(sidecar_root: &Path) -> bool {
     // deps.ok 只在依赖完整安装（构建或 bootstrap 成功）后写入；
     // 取消残留的半截 site-packages 不会误过门禁（评审发现）。
     sidecar_root.join("deps.ok").is_file()
@@ -186,25 +186,25 @@ pub fn status(library: &Library) -> Value {
 }
 
 #[derive(Debug, Deserialize)]
-struct SidecarError {
-    code: String,
-    message: String,
-    retryable: bool,
+pub(crate) struct SidecarError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
 }
 
 #[derive(Debug, Deserialize)]
-struct SidecarResult {
-    ok: bool,
+pub(crate) struct SidecarResult {
+    pub ok: bool,
     #[serde(default)]
-    error: Option<SidecarError>,
+    pub error: Option<SidecarError>,
     /// 成功载荷原样透传（doclingJsonPath/pages/elapsedMs/ocrPages/warnings/...）。
     #[serde(flatten)]
-    payload: Value,
+    pub payload: Value,
 }
 
 /// 子进程 + 输出读取线程的句柄集。stdout/stderr 各有独立读取线程，
 /// 防止管道缓冲写满导致子进程阻塞。
-struct ChildHarness {
+pub(crate) struct ChildHarness {
     child: Child,
     progress_rx: mpsc::Receiver<Progress>,
     stdout_lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -213,7 +213,7 @@ struct ChildHarness {
     stderr_thread: Option<std::thread::JoinHandle<()>>,
 }
 
-fn base_command(layout: &SidecarLayout, hf_endpoint: Option<&str>) -> Command {
+pub(crate) fn base_command(layout: &SidecarLayout, hf_endpoint: Option<&str>) -> Command {
     let mut command = Command::new(&layout.python_exe);
     command
         .arg(&layout.app_script)
@@ -231,7 +231,7 @@ fn base_command(layout: &SidecarLayout, hf_endpoint: Option<&str>) -> Command {
     command
 }
 
-fn spawn_child(mut command: Command) -> Result<ChildHarness, BridgeError> {
+pub(crate) fn spawn_child(mut command: Command) -> Result<ChildHarness, BridgeError> {
     let mut child = command
         .spawn()
         .map_err(|err| BridgeError::internal(format!("侧车进程启动失败: {err}")))?;
@@ -295,7 +295,7 @@ fn spawn_child(mut command: Command) -> Result<ChildHarness, BridgeError> {
 /// 等待子进程结束：轮询取消标志，取消即 kill 并返回哨兵错误。
 /// 进程退出后 join 两个读取线程（管道 EOF 后立即结束），
 /// 保证读结果时 stdout 行已全部入队（修复评审发现的竞态）。
-fn wait_child(ctx: &RunContext, harness: &mut ChildHarness) -> Result<i32, BridgeError> {
+pub(crate) fn wait_child(ctx: &RunContext, harness: &mut ChildHarness) -> Result<i32, BridgeError> {
     let mut cancelled = false;
     let exit_code = loop {
         while let Ok(progress) = harness.progress_rx.try_recv() {
@@ -347,7 +347,7 @@ fn result_line_of(harness: &ChildHarness) -> Option<String> {
 }
 
 /// 读取结构化结果：优先 result.json 文件，退回 stdout 的 PDFPARSE_RESULT 行。
-fn read_sidecar_result(result_dir: &Path, harness: &ChildHarness) -> Option<SidecarResult> {
+pub(crate) fn read_sidecar_result(result_dir: &Path, harness: &ChildHarness) -> Option<SidecarResult> {
     if let Ok(text) = std::fs::read_to_string(result_dir.join("result.json")) {
         if let Ok(parsed) = serde_json::from_str::<SidecarResult>(&text) {
             return Some(parsed);
@@ -356,7 +356,7 @@ fn read_sidecar_result(result_dir: &Path, harness: &ChildHarness) -> Option<Side
     result_line_of(harness).and_then(|line| serde_json::from_str(&line).ok())
 }
 
-fn map_failure(result: &SidecarResult, harness: &ChildHarness) -> BridgeError {
+pub(crate) fn map_failure(result: &SidecarResult, harness: &ChildHarness) -> BridgeError {
     if let Some(error) = &result.error {
         let mut mapped = BridgeError::new(&error.code, error.message.clone(), error.retryable);
         let tail = stderr_tail_of(harness);
@@ -369,7 +369,7 @@ fn map_failure(result: &SidecarResult, harness: &ChildHarness) -> BridgeError {
         .with_details(json!({ "stderrTail": stderr_tail_of(harness) }))
 }
 
-fn crashed_error(exit_code: i32, harness: &ChildHarness) -> BridgeError {
+pub(crate) fn crashed_error(exit_code: i32, harness: &ChildHarness) -> BridgeError {
     BridgeError::new(
         "sidecar_crashed",
         format!("侧车异常退出（exit={exit_code}），未产出结构化结果"),
@@ -387,7 +387,7 @@ fn configured_hf_endpoint(ctx: &RunContext) -> Option<String> {
 }
 
 /// 侧车解析的统一入口：缺失时报 sidecar_missing（两个任务共用）。
-fn require_sidecar(ctx: &RunContext) -> Result<SidecarLayout, BridgeError> {
+pub(crate) fn require_sidecar(ctx: &RunContext) -> Result<SidecarLayout, BridgeError> {
     resolve_sidecar(ctx.library.root()).ok_or_else(|| {
         BridgeError::new(
             "sidecar_missing",
