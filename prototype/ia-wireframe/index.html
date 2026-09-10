@@ -95,6 +95,13 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
   background:#eceef5; padding:12px 12px 12px 15px; position:sticky; top:53px; height:calc(100vh - 53px); overflow:auto; }
 .pdf-resizer { position:absolute; left:0; top:0; bottom:0; width:7px; cursor:col-resize; z-index:5; }
 .pdf-resizer:hover, .pdf-resizer.on { background:var(--accent-soft); border-left:2px solid var(--accent); }
+.pdf-rail { width:42px; flex:none; border-left:1px solid var(--border); background:var(--card);
+  position:sticky; top:53px; height:calc(100vh - 53px); display:flex; flex-direction:column;
+  align-items:center; padding:10px 0; gap:10px; }
+.pdf-rail button { border:0; background:transparent; color:var(--accent); font-size:15px;
+  border-radius:7px; width:30px; height:30px; cursor:pointer; }
+.pdf-rail button:hover { background:var(--accent-soft); }
+.pdf-rail .vlabel { writing-mode:vertical-rl; font-size:12px; color:var(--muted); letter-spacing:2px; }
 .pdf-page { background:#fff; border:1px solid var(--border); border-radius:6px; margin-bottom:10px;
   aspect-ratio:210/270; display:flex; align-items:center; justify-content:center; color:#b3b9cc; font-size:13px; }
 
@@ -442,12 +449,16 @@ body { background:var(--bg); }
       <div class="pdf-resizer" onmousedown="startDrag(this.parentElement,'right',event)" title="拖拽调节宽度"></div>
       <div class="small muted" style="margin-bottom:8px;display:flex;align-items:center">
         PDF 对照 · 随节页定位到该节起始页 · ⇤ 拖拽左缘调宽
-        <button class="tree-fold" onclick="document.getElementById('pdf-pane').hidden=true" title="收起 PDF 对照（顶栏「PDF 对照」重新打开）">»</button>
+        <button class="tree-fold" onclick="collapsePdf()" title="收起为细轨">»</button>
       </div>
       <div class="pdf-page">第 2 页</div>
       <div class="pdf-page">第 3 页</div>
       <div class="pdf-page">第 4 页</div>
     </aside>
+    <div class="pdf-rail" id="pdf-rail" hidden>
+      <button onclick="expandPdf()" title="展开 PDF 对照">«</button>
+      <span class="vlabel">PDF 对照</span>
+    </div>
   </div>
 </main>
 
@@ -711,8 +722,14 @@ function render(){
 
 document.querySelectorAll('.nav-btn').forEach(b=>b.onclick=()=>goView(b.dataset.view));
 document.querySelectorAll('#view-reader .tab').forEach(t=>t.onclick=()=>{ state.tab=t.dataset.tab; renderTabs(); });
+/* PDF 对照：栏内折钮收起为细轨（与左树对称）；顶栏开关全关/全开 */
+function collapsePdf(){ document.getElementById('pdf-pane').hidden=true;
+  document.getElementById('pdf-rail').hidden=false; }
+function expandPdf(){ document.getElementById('pdf-rail').hidden=true;
+  document.getElementById('pdf-pane').hidden=false; }
 document.getElementById('pdf-toggle').onclick=()=>{
-  const p=document.getElementById('pdf-pane'); p.hidden=!p.hidden; };
+  const p=document.getElementById('pdf-pane'), r=document.getElementById('pdf-rail');
+  if(p.hidden && r.hidden){ p.hidden=false; } else { p.hidden=true; r.hidden=true; } };
 
 /* VSCode 式侧栏：左节树 / 右 PDF 均可拖拽调宽；节树可收起为细轨 */
 const drag = { el:null, side:null };
