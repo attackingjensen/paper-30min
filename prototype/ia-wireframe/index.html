@@ -95,13 +95,6 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
   background:#eceef5; padding:12px 12px 12px 15px; position:sticky; top:53px; height:calc(100vh - 53px); overflow:auto; }
 .pdf-resizer { position:absolute; left:0; top:0; bottom:0; width:7px; cursor:col-resize; z-index:5; }
 .pdf-resizer:hover, .pdf-resizer.on { background:var(--accent-soft); border-left:2px solid var(--accent); }
-.pdf-rail { width:42px; flex:none; border-left:1px solid var(--border); background:var(--card);
-  position:sticky; top:53px; height:calc(100vh - 53px); display:flex; flex-direction:column;
-  align-items:center; padding:10px 0; gap:10px; }
-.pdf-rail button { border:0; background:transparent; color:var(--accent); font-size:15px;
-  border-radius:7px; width:30px; height:30px; cursor:pointer; }
-.pdf-rail button:hover { background:var(--accent-soft); }
-.pdf-rail .vlabel { writing-mode:vertical-rl; font-size:12px; color:var(--muted); letter-spacing:2px; }
 .pdf-page { background:#fff; border:1px solid var(--border); border-radius:6px; margin-bottom:10px;
   aspect-ratio:210/270; display:flex; align-items:center; justify-content:center; color:#b3b9cc; font-size:13px; }
 
@@ -126,15 +119,14 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
 .tree-foot { border-top:1px solid var(--border); margin-top:8px; padding-top:8px; }
 .tree-resizer { position:absolute; right:0; top:0; bottom:0; width:7px; cursor:col-resize; z-index:5; }
 .tree-resizer:hover { background:var(--accent-soft); border-right:2px solid var(--accent); }
-.map-tree .tree-open, .map-tree .rail-label { display:none; }
-.map-tree.rail { width:42px !important; min-width:42px !important; padding:10px 5px;
-  height:calc(100vh - 88px); display:flex; flex-direction:column; align-items:center; gap:10px; }
-.map-tree.rail .tree-inner, .map-tree.rail .tree-resizer { display:none; }
-.map-tree.rail .tree-open { display:block; width:30px; height:30px; border:0; background:transparent;
-  color:var(--accent); font-size:15px; border-radius:7px; padding:0; cursor:pointer; }
-.map-tree.rail .tree-open:hover { background:var(--accent-soft); }
-.map-tree.rail .rail-label { display:block; writing-mode:vertical-rl; font-size:12px;
-  color:var(--muted); letter-spacing:2px; }
+.map-tree.rail { display:none; }
+/* 收起态 = 视口边缘圆形浮钮（左右镜像对称） */
+.pane-fab { position:fixed; top:50%; transform:translateY(-50%); z-index:40;
+  width:38px; height:38px; border-radius:50%; background:var(--card); border:1px solid var(--border);
+  box-shadow:0 8px 20px -8px rgba(30,41,59,.25); color:var(--accent); font-size:16px;
+  display:grid; place-items:center; cursor:pointer; transition:all .2s ease; }
+.pane-fab:hover { background:var(--accent-soft); border-color:var(--accent); }
+.pane-fab.left { left:10px; } .pane-fab.right { right:10px; }
 .map-content-inner { max-width:880px; margin:0 auto; }
 .tree-item { display:flex; align-items:center; gap:6px; width:100%; text-align:left; border:none;
   background:transparent; padding:6px 8px; border-radius:7px; font-size:13.5px; }
@@ -452,17 +444,17 @@ body { background:var(--bg); }
       <div class="pdf-resizer" onmousedown="startDrag(this.parentElement,'right',event)" title="拖拽调节宽度"></div>
       <div class="small muted" style="margin-bottom:8px;display:flex;align-items:center">
         PDF 对照 · 随节页定位到该节起始页 · ⇤ 拖拽左缘调宽
-        <button class="tree-fold" onclick="collapsePdf()" title="收起为细轨">»</button>
+        <button class="tree-fold" onclick="collapsePdf()" title="收起（右缘留展开钮）">»</button>
       </div>
       <div class="pdf-page">第 2 页</div>
       <div class="pdf-page">第 3 页</div>
       <div class="pdf-page">第 4 页</div>
     </aside>
-    <div class="pdf-rail" id="pdf-rail" hidden>
-      <button onclick="expandPdf()" title="展开 PDF 对照">«</button>
-      <span class="vlabel">PDF 对照</span>
-    </div>
   </div>
+
+  <!-- 收起态浮钮（左右镜像对称） -->
+  <button class="pane-fab left" id="tree-fab" hidden onclick="toggleTree()" title="展开节树">»</button>
+  <button class="pane-fab right" id="pdf-fab" hidden onclick="expandPdf()" title="展开 PDF 对照">«</button>
 </main>
 
 <!-- 悬浮变体切换条 -->
@@ -644,8 +636,6 @@ function renderMap() {
             <span class="dot ${s.state==='grey'?'todo':dotCls(s.id)}"></span><span class="tname">${s.name}</span></button>`).join('')}
           <div class="tree-foot"><button class="btn small primary" style="width:100%">▶ 全部深挖</button></div>
         </div>
-        <button class="tree-open" onclick="toggleTree()" title="展开节树">»</button>
-        <span class="rail-label">节树</span>
       </div>
       <div class="map-content"><div class="map-content-inner">${right}</div></div>
     </div>`;
@@ -722,18 +712,23 @@ function render(){
   renderTabs();
   const v=getVariant();
   document.getElementById('vname').innerHTML = `<b>${v}</b> ${VARIANTS[v].slice(1)}`;
+  /* 节树浮钮只在 B（有左栏）时有意义；切走变体时强制展开 */
+  const tf=document.getElementById('tree-fab');
+  const mt=document.getElementById('map-tree');
+  if(v!=='B'){ tf.hidden=true; }
+  else { tf.hidden = !(mt && mt.classList.contains('rail')); }
 }
 
 document.querySelectorAll('.nav-btn').forEach(b=>b.onclick=()=>goView(b.dataset.view));
 document.querySelectorAll('#view-reader .tab').forEach(t=>t.onclick=()=>{ state.tab=t.dataset.tab; renderTabs(); });
-/* PDF 对照：栏内折钮收起为细轨（与左树对称）；顶栏开关全关/全开 */
+/* 收起态 = 视口边缘圆形浮钮（左右对称）；顶栏开关全关/全开 */
 function collapsePdf(){ document.getElementById('pdf-pane').hidden=true;
-  document.getElementById('pdf-rail').hidden=false; }
-function expandPdf(){ document.getElementById('pdf-rail').hidden=true;
+  document.getElementById('pdf-fab').hidden=false; }
+function expandPdf(){ document.getElementById('pdf-fab').hidden=true;
   document.getElementById('pdf-pane').hidden=false; }
 document.getElementById('pdf-toggle').onclick=()=>{
-  const p=document.getElementById('pdf-pane'), r=document.getElementById('pdf-rail');
-  if(p.hidden && r.hidden){ p.hidden=false; } else { p.hidden=true; r.hidden=true; } };
+  const p=document.getElementById('pdf-pane'), f=document.getElementById('pdf-fab');
+  if(p.hidden){ p.hidden=false; f.hidden=true; } else { p.hidden=true; f.hidden=true; } };
 
 /* VSCode 式侧栏：左节树 / 右 PDF 均可拖拽调宽；节树可收起为细轨 */
 const drag = { el:null, side:null };
@@ -746,7 +741,9 @@ document.addEventListener('mousemove', e=>{ if(!drag.el) return;
     drag.el.style.width = Math.min(Math.max(e.clientX-r.left,200), 440)+'px'; }
 });
 document.addEventListener('mouseup', ()=>{ drag.el=null; document.body.style.userSelect=''; });
-function toggleTree(){ document.getElementById('map-tree').classList.toggle('rail'); }
+function toggleTree(){ const t=document.getElementById('map-tree'), f=document.getElementById('tree-fab');
+  if(t.classList.contains('rail')){ t.classList.remove('rail'); f.hidden=true; }
+  else { t.classList.add('rail'); f.hidden=false; } }
 document.getElementById('trans-cb').onchange=e=>{
   document.getElementById('trans-line').hidden=!e.target.checked; };
 
