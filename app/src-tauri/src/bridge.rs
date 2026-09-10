@@ -37,6 +37,8 @@ pub fn available_commands() -> &'static [&'static str] {
         "settings.get@1",
         "settings.putModel@1",
         "settings.putSkillsOverrides@1",
+        "settings.putPdfparse@1",
+        "pdfparse.status@1",
         "skills.list@1",
         "exports.write@1",
         // dialog.*@1 的分发在 lib.rs 拦截（打开系统对话框需要窗口句柄），
@@ -212,6 +214,11 @@ pub fn invoke(
         "settings.get@1" => crate::settings::get(library),
         "settings.putModel@1" => crate::settings::put_model(library, input),
         "settings.putSkillsOverrides@1" => crate::settings::put_skills_overrides(library, input),
+        "settings.putPdfparse@1" => crate::settings::put_pdfparse(library, input),
+        "pdfparse.status@1" => Ok(json!({
+            "schemaVersion": BRIDGE_SCHEMA_VERSION,
+            "sidecar": crate::pdfparse::status(library),
+        })),
         "skills.list@1" => Ok(json!({
             "schemaVersion": BRIDGE_SCHEMA_VERSION,
             "skills": crate::skills::list_skills(),

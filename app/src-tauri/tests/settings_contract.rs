@@ -186,6 +186,42 @@ fn settings_survive_reopen() {
 }
 
 #[test]
+fn put_pdfparse_validates_hf_endpoint() {
+    let (registry, library, _dir) = common::env();
+    // 缺省为空字符串（官方源 + 镜像回退语义）。
+    let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(loaded["pdfparse"]["hfEndpoint"], json!(""));
+
+    for settings in [
+        json!({ "hfEndpoint": 42 }),
+        json!({ "hfEndpoint": "ftp://example.com" }),
+        json!({ "hfEndpoint": "hf-mirror.com" }),
+    ] {
+        let error = invoke_err(
+            &registry,
+            &library,
+            "settings.putPdfparse@1",
+            json!({ "settings": settings }),
+        );
+        assert_eq!(error.code, "invalid_input", "应拒绝非法设置: {settings}");
+    }
+    for input in [json!({}), json!({ "settings": "text" })] {
+        let error = invoke_err(&registry, &library, "settings.putPdfparse@1", input.clone());
+        assert_eq!(error.code, "invalid_input", "应拒绝非法输入: {input}");
+    }
+
+    let saved = invoke(
+        &registry,
+        &library,
+        "settings.putPdfparse@1",
+        json!({ "settings": { "hfEndpoint": "https://hf-mirror.com" } }),
+    );
+    assert_eq!(saved["settings"]["hfEndpoint"], json!("https://hf-mirror.com"));
+    let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(loaded["pdfparse"]["hfEndpoint"], json!("https://hf-mirror.com"));
+}
+
+#[test]
 fn app_info_lists_settings_commands() {
     let (registry, library, _dir) = common::env();
     let info = invoke(&registry, &library, "app.info@1", json!({}));
@@ -194,9 +230,15 @@ fn app_info_lists_settings_commands() {
         "settings.get@1",
         "settings.putModel@1",
         "settings.putSkillsOverrides@1",
+        "settings.putPdfparse@1",
+        "pdfparse.status@1",
         "dialog.pickFile@1",
         "dialog.saveFile@1",
     ] {
         assert!(commands.iter().any(|item| item == name), "app.info 未列出 {name}");
+    }
+    let kinds = info["taskKinds"].as_array().unwrap();
+    for kind in ["pdfparse.convert@1", "pdfparse.bootstrap@1"] {
+        assert!(kinds.iter().any(|item| item == kind), "app.info 未列出任务 {kind}");
     }
 }

@@ -133,6 +133,14 @@ enum TaskPlan {
         url: String,
         max_bytes: u64,
     },
+    PdfparseConvert {
+        pdf_path: std::path::PathBuf,
+        work_dir: Option<std::path::PathBuf>,
+        formula_enrichment: bool,
+    },
+    PdfparseBootstrap {
+        endpoint: Option<String>,
+    },
 }
 
 const DEFAULT_STREAM_TEXT: &str = "论文精读 Windows 正式客户端桥接演示任务：\
@@ -204,6 +212,35 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 url: url.to_string(),
                 max_bytes,
             })
+        }
+        crate::pdfparse::TASK_CONVERT => {
+            let pdf_path = required_string(crate::pdfparse::TASK_CONVERT, input, "pdfPath")?;
+            let work_dir = input
+                .get("workDir")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from);
+            let formula_enrichment = match input.get("formulaEnrichment") {
+                None | Some(Value::Null) => false,
+                Some(value) => value.as_bool().ok_or_else(|| {
+                    BridgeError::invalid_input("formulaEnrichment 必须是布尔值")
+                })?,
+            };
+            Ok(TaskPlan::PdfparseConvert {
+                pdf_path: std::path::PathBuf::from(pdf_path),
+                work_dir,
+                formula_enrichment,
+            })
+        }
+        crate::pdfparse::TASK_BOOTSTRAP => {
+            let endpoint = input
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            Ok(TaskPlan::PdfparseBootstrap { endpoint })
         }
         _ => Err(BridgeError::unknown_command(kind)),
     }
@@ -316,6 +353,8 @@ pub fn available_task_kinds() -> &'static [&'static str] {
         "model.test@1",
         "net.fetch-text@1",
         "files.download@1",
+        crate::pdfparse::TASK_CONVERT,
+        crate::pdfparse::TASK_BOOTSTRAP,
     ]
 }
 
@@ -460,7 +499,7 @@ impl TaskRegistry {
         count
     }
 
-    fn cancel_requested(&self, task_id: &str) -> bool {
+    pub(crate) fn cancel_requested(&self, task_id: &str) -> bool {
         self.entries.lock().map_or(false, |entries| {
             entries
                 .get(task_id)
@@ -721,5 +760,13 @@ fn run_task(
             &url,
             max_bytes,
         ),
+        TaskPlan::PdfparseConvert {
+            pdf_path,
+            work_dir,
+            formula_enrichment,
+        } => crate::pdfparse::run_convert(&ctx, &pdf_path, work_dir.as_deref(), formula_enrichment),
+        TaskPlan::PdfparseBootstrap { endpoint } => {
+            crate::pdfparse::run_bootstrap(&ctx, endpoint.as_deref())
+        }
     }
 }

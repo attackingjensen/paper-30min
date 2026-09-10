@@ -24,6 +24,7 @@
     "active": true,
     "targets": ["nsis"],
     "windows": { "nsis": { "installMode": "currentUser" } },
+    "resources": ["sidecar/pdfparse"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

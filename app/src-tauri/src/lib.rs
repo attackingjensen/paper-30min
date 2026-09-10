@@ -6,6 +6,7 @@ pub mod library;
 pub mod migration;
 pub mod model;
 pub mod net;
+pub mod pdfparse;
 pub mod settings;
 pub mod skills;
 pub mod smoke;

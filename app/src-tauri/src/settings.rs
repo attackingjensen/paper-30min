@@ -11,6 +11,8 @@ use crate::library::Library;
 /// settings 表中模型设置（JSON 对象）与技能覆盖（JSON 对象）的键名。
 const MODEL_KEY: &str = "model";
 const SKILLS_OVERRIDES_KEY: &str = "skills.overrides";
+/// Docling 侧车设置（JSON 对象）：hfEndpoint 为模型下载端点覆盖（规格 #48 决策 3）。
+const PDFPARSE_KEY: &str = "pdfparse";
 
 fn default_model() -> Map<String, Value> {
     json!({
@@ -23,6 +25,15 @@ fn default_model() -> Map<String, Value> {
     })
     .as_object()
     .expect("默认模型设置是对象")
+    .clone()
+}
+
+fn default_pdfparse() -> Map<String, Value> {
+    json!({
+        "hfEndpoint": "",
+    })
+    .as_object()
+    .expect("默认侧车设置是对象")
     .clone()
 }
 
@@ -47,11 +58,27 @@ fn load_skills_overrides(library: &Library) -> Result<Map<String, Value>, Bridge
     load_object(library, SKILLS_OVERRIDES_KEY, Map::new())
 }
 
+fn load_pdfparse(library: &Library) -> Result<Map<String, Value>, BridgeError> {
+    load_object(library, PDFPARSE_KEY, default_pdfparse())
+}
+
+/// pdfparse 任务的 HF 端点覆盖：空串/缺省/损坏都归为 None（默认官方源+镜像回退）。
+pub(crate) fn pdfparse_hf_endpoint(library: &Library) -> Option<String> {
+    let merged = load_pdfparse(library).ok()?;
+    merged
+        .get("hfEndpoint")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 pub fn get(library: &Library) -> Result<Value, BridgeError> {
     Ok(json!({
         "schemaVersion": BRIDGE_SCHEMA_VERSION,
         "model": Value::Object(load_model(library)?),
         "skillsOverrides": Value::Object(load_skills_overrides(library)?),
+        "pdfparse": Value::Object(load_pdfparse(library)?),
     }))
 }
 
@@ -111,5 +138,42 @@ pub fn put_skills_overrides(library: &Library, input: &Value) -> Result<Value, B
     Ok(json!({
         "schemaVersion": BRIDGE_SCHEMA_VERSION,
         "stored": true,
+    }))
+}
+
+/// 局部更新侧车设置：hfEndpoint 为空字符串（默认官方源+镜像回退）或 http(s) URL。
+pub fn put_pdfparse(library: &Library, input: &Value) -> Result<Value, BridgeError> {
+    let settings = input
+        .get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| BridgeError::invalid_input("settings.putPdfparse@1 需要对象参数 settings"))?;
+    let mut merged = load_pdfparse(library)?;
+    for (field, value) in settings {
+        match field.as_str() {
+            "hfEndpoint" => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| BridgeError::invalid_input("hfEndpoint 必须是字符串"))?;
+                let trimmed = text.trim();
+                if !trimmed.is_empty()
+                    && !trimmed.starts_with("http://")
+                    && !trimmed.starts_with("https://")
+                {
+                    return Err(BridgeError::invalid_input(
+                        "hfEndpoint 必须是 http/https 地址或空字符串",
+                    ));
+                }
+                merged.insert(field.clone(), Value::String(trimmed.to_string()));
+            }
+            // 未知字段忽略，不写入存储，避免污染设置对象。
+            _ => continue,
+        }
+    }
+    let text = serde_json::to_string(&Value::Object(merged.clone()))
+        .map_err(|err| BridgeError::internal(format!("设置 JSON 编码失败: {err}")))?;
+    library.put_setting(PDFPARSE_KEY, &text)?;
+    Ok(json!({
+        "schemaVersion": BRIDGE_SCHEMA_VERSION,
+        "settings": Value::Object(merged),
     }))
 }
