@@ -126,12 +126,15 @@ h1,h2,h3,h4 { margin: 0 0 .4em; line-height: 1.35; }
 .tree-foot { border-top:1px solid var(--border); margin-top:8px; padding-top:8px; }
 .tree-resizer { position:absolute; right:0; top:0; bottom:0; width:7px; cursor:col-resize; z-index:5; }
 .tree-resizer:hover { background:var(--accent-soft); border-right:2px solid var(--accent); }
-.map-tree .tree-open { display:none; }
-.map-tree.rail { width:42px !important; min-width:42px !important; padding:10px 5px; }
+.map-tree .tree-open, .map-tree .rail-label { display:none; }
+.map-tree.rail { width:42px !important; min-width:42px !important; padding:10px 5px;
+  height:calc(100vh - 88px); display:flex; flex-direction:column; align-items:center; gap:10px; }
 .map-tree.rail .tree-inner, .map-tree.rail .tree-resizer { display:none; }
-.map-tree.rail .tree-open { display:block; width:100%; border:0; background:transparent;
-  color:var(--accent); font-size:15px; border-radius:7px; padding:6px 0; cursor:pointer; }
+.map-tree.rail .tree-open { display:block; width:30px; height:30px; border:0; background:transparent;
+  color:var(--accent); font-size:15px; border-radius:7px; padding:0; cursor:pointer; }
 .map-tree.rail .tree-open:hover { background:var(--accent-soft); }
+.map-tree.rail .rail-label { display:block; writing-mode:vertical-rl; font-size:12px;
+  color:var(--muted); letter-spacing:2px; }
 .map-content-inner { max-width:880px; margin:0 auto; }
 .tree-item { display:flex; align-items:center; gap:6px; width:100%; text-align:left; border:none;
   background:transparent; padding:6px 8px; border-radius:7px; font-size:13.5px; }
@@ -642,6 +645,7 @@ function renderMap() {
           <div class="tree-foot"><button class="btn small primary" style="width:100%">▶ 全部深挖</button></div>
         </div>
         <button class="tree-open" onclick="toggleTree()" title="展开节树">»</button>
+        <span class="rail-label">节树</span>
       </div>
       <div class="map-content"><div class="map-content-inner">${right}</div></div>
     </div>`;
