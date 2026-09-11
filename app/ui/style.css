@@ -101,7 +101,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .library-head p { margin: 0; }
 .library-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .library-filters {
-  display: grid; grid-template-columns: minmax(220px, 1fr) 190px 150px 34px;
+  display: grid; grid-template-columns: minmax(220px, 1fr) 190px 150px 120px 34px;
   gap: 8px; margin-bottom: 14px;
 }
 .library-filters input, .library-filters select {
@@ -130,6 +130,8 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 }
 .metadata-chip.category { background: #e8f3ed; color: #236745; }
 .metadata-chip.tag { background: #edf0f5; color: #536070; }
+/* 书库卡片「已读完」徽章：全部精读部分均有已读完标记的派生态 */
+.metadata-chip.pc-done { background: var(--ok); color: #fff; font-weight: 600; }
 .progress-dots { display: inline-flex; gap: 4px; }
 .pdot { width: 9px; height: 9px; border-radius: 50%; background: #dcdfe8; }
 .pdot.done { background: var(--ok); }
@@ -223,6 +225,8 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .dc-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .dc-status.ok { color: var(--ok); }
 .dc-status.err { color: var(--danger); }
+/* 分节卡片的已读完标记态（过渡呈现，最终位置由 #56 节页票定） */
+.dc-mark { font-size: 12px; color: var(--ok); font-weight: 600; white-space: nowrap; }
 .dc-body { padding: 6px 18px 14px; }
 .dc-body.empty-hint { color: var(--muted); font-size: 13px; padding-top: 14px; }
 .dc-manual { padding: 12px 16px 0; }
@@ -461,7 +465,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 @media (max-width: 900px) {
   .reader-workspace { grid-template-columns: minmax(0, 1fr); }
   .pdf-sidebar { position: static; height: 72vh; min-height: 480px; }
-  .library-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; }
+  .library-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 34px; }
   .library-filters input { grid-column: 1 / -1; }
   .translate-grid { grid-template-columns: 1fr; }
   .translate-pane { min-height: 44vh; }

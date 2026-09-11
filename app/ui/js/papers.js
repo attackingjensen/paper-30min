@@ -46,6 +46,8 @@ function basePaper(title) {
     categories: [],
     tags: [],
     chat: [],
+    readMarks: {},
+    activityDays: [],
   };
 }
 
@@ -61,6 +63,7 @@ export async function createPdfPaper(parsed, pdfFile) {
     pdfBlob: pdfFile,
     pdfName: pdfFile.name,
   };
+  recordActivityDay(paper, 'import'); // 写入缝一：导入论文计入当日打卡
   await store.put(paper);
   return paper;
 }
@@ -78,6 +81,7 @@ export async function createArxivPaper(parsed, arxivId, pdfBlob) {
     pdfBlob,
     pdfName: pdfBlob ? `${arxivId}.pdf` : '',
   };
+  recordActivityDay(paper, 'import'); // 写入缝一：导入论文计入当日打卡
   await store.put(paper);
   return paper;
 }
@@ -103,12 +107,47 @@ export function paperTags(paper) {
 // ---------------- 写入规则 ----------------
 // 每个写入函数统一执行：变更 + 推进 updatedAt + 持久化（ADR-0004）。
 
-/** 精读结果写入。生成任务模块经此缝提交；部分结果由调用方在 text 中携带警示标记。 */
-export async function saveAnalysis(paper, sectionId, text) {
+/** 精读结果写入。生成任务模块经此缝提交；中断保留的部分结果由调用方在 text 中携带警示标记并传 { partial: true }。 */
+export async function saveAnalysis(paper, sectionId, text, { partial = false } = {}) {
   paper.analyses = paper.analyses || {};
   paper.analyses[sectionId] = { text, updatedAt: Date.now() };
+  // 写入缝二/三：产生精读结果（analysis）与中断保留部分结果（partial）各计入当日打卡。
+  recordActivityDay(paper, partial ? 'partial' : 'analysis');
   paper.updatedAt = Date.now();
   await store.put(paper);
+}
+
+/**
+ * 已读完标记写入缝（规格 #51）：设置标记即生成当日 mark 活动日；
+ * 撤销只移除标记，不写也不回收任何活动日（打卡是发生过的历史事实）。
+ * 重复设置幂等：保留首次 marked_at。
+ * 与其他写入缝不同，这里落库失败时回滚内存变更——标记是用户可见的开关，
+ * 失败已 toast 告知，不能让脏快照被后续无关 put 静默冲刷进库。
+ */
+export async function setReadMark(paper, partId, marked) {
+  paper.readMarks = paper.readMarks || {};
+  paper.activityDays = Array.isArray(paper.activityDays) ? paper.activityDays : [];
+  const prevMark = paper.readMarks[partId];
+  const prevDaysLength = paper.activityDays.length;
+  const prevUpdatedAt = paper.updatedAt;
+  if (marked) {
+    if (prevMark == null) {
+      paper.readMarks[partId] = Date.now();
+      recordActivityDay(paper, 'mark'); // 写入缝四
+    }
+  } else {
+    delete paper.readMarks[partId];
+  }
+  paper.updatedAt = Date.now();
+  try {
+    await store.put(paper);
+  } catch (err) {
+    if (prevMark == null) delete paper.readMarks[partId];
+    else paper.readMarks[partId] = prevMark;
+    paper.activityDays.length = prevDaysLength;
+    paper.updatedAt = prevUpdatedAt;
+    throw err;
+  }
 }
 
 /** 章节原文保存（手动粘贴）。 */
@@ -235,19 +274,30 @@ export async function applyResplit(paper, parseResult) {
 // ---------------- 书库与投影 ----------------
 
 // ---------------- 打卡 ----------------
+// 打卡数据源是落库的 append-only 活动日表（记录侧 activityDays 数组）：
+// 导入/结果写入/中断保留/设置标记四个写入缝各自在发生时写入当日行，撤销不回收、
+// 重读不改写历史。kind 取值与 Rust 端 ACTIVITY_DAY_KINDS 对齐：import/analysis/partial/mark。
 
-function dayKey(ts) {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+// 时间戳 → UTC 日历日（YYYY-MM-DD）。日界与 schema v4 迁移回填同一口径（#61 定：
+// 库内时间戳一律 RFC3339 UTC，活动日 = 事件时间戳的 UTC 日，全库一条规则）。
+export function activityDayOf(ts) {
+  return new Date(ts).toISOString().slice(0, 10);
 }
 
-/** 阅读活动日：导入论文与产生精读结果（语义见 CONTEXT.md「打卡」）。 */
-export function activityDays(paper) {
-  const days = [dayKey(paper.addedAt)];
-  for (const analysis of Object.values(paper.analyses || {})) {
-    if (analysis?.updatedAt) days.push(dayKey(analysis.updatedAt));
+// 写入缝共用：把当日活动日行并入记录，同日同 kind 幂等（库层另有主键去重兜底）。
+function recordActivityDay(paper, kind) {
+  const day = activityDayOf(Date.now());
+  paper.activityDays = Array.isArray(paper.activityDays) ? paper.activityDays : [];
+  if (!paper.activityDays.some(entry => entry?.day === day && entry?.kind === kind)) {
+    paper.activityDays.push({ day, kind });
   }
-  return days;
+}
+
+/** 阅读活动日列表：落库活动日的日期部分（语义见 CONTEXT.md「打卡」）。 */
+export function activityDays(paper) {
+  return (Array.isArray(paper?.activityDays) ? paper.activityDays : [])
+    .filter(entry => typeof entry?.day === 'string' && entry.day)
+    .map(entry => entry.day);
 }
 
 /** 连续阅读天数：从今天向前数连续天数；今天尚无活动时从昨天起算。 */
@@ -257,9 +307,10 @@ export function streakDays(allPapers) {
     for (const day of activityDays(paper)) days.add(day);
   }
   let streak = 0;
-  const cursor = new Date();
-  if (!days.has(dayKey(cursor.getTime()))) cursor.setDate(cursor.getDate() - 1);
-  while (days.has(dayKey(cursor.getTime()))) { streak++; cursor.setDate(cursor.getDate() - 1); }
+  // 按 UTC 日界回退：24h 步进恰好跨过一个 UTC 日，不涉本地夏令时。
+  let cursor = Date.now();
+  if (!days.has(activityDayOf(cursor))) cursor -= 86400000;
+  while (days.has(activityDayOf(cursor))) { streak++; cursor -= 86400000; }
   return streak;
 }
 
@@ -381,27 +432,42 @@ const FALLBACK_PARTS = [
 /** 精读部分投影：摘要 + 实际一级章节，按原文顺序。 */
 export function readingParts(paper) {
   if (!paper?.parts?.length) return FALLBACK_PARTS;
-  const parts = paper.parts.map((part, index) => ({
-    id: part.id,
-    skillId: part.semanticType === 'experiments'
-      ? 'experiments'
-      : part.semanticType === 'introduction'
-        ? 'introduction'
-        : part.semanticType === 'method'
-          ? 'method'
-          : 'part',
-    label: `第 ${index + 1} 部分 · ${part.title || part.heading || '未命名章节'}`,
-    pickerLabel: part.title || `第 ${index + 1} 部分`,
-    hint: part.semanticType === 'experiments'
-      ? '实验设置 / 主要结果 / 消融与洞察'
-      : `论文正文第 ${index + 1} 部分 · ${part.semanticType === 'method' ? '方法深度精读' : '通用章节精读'}`,
-  }));
+  // 精读部分身份唯一（abstract + part-N）：parts 里与摘要同 id 或彼此重复的条目只取首次出现，
+  // 防止投影重复计数（如手工构造的浏览器导出把 abstract 写进 parts）。
+  const seen = new Set(['abstract']);
+  const parts = [];
+  for (const part of paper.parts) {
+    if (!part?.id || seen.has(part.id)) continue;
+    seen.add(part.id);
+    parts.push({
+      id: part.id,
+      skillId: part.semanticType === 'experiments'
+        ? 'experiments'
+        : part.semanticType === 'introduction'
+          ? 'introduction'
+          : part.semanticType === 'method'
+            ? 'method'
+            : 'part',
+      label: `第 ${parts.length + 1} 部分 · ${part.title || part.heading || '未命名章节'}`,
+      pickerLabel: part.title || `第 ${parts.length + 1} 部分`,
+      hint: part.semanticType === 'experiments'
+        ? '实验设置 / 主要结果 / 消融与洞察'
+        : `论文正文第 ${parts.length + 1} 部分 · ${part.semanticType === 'method' ? '方法深度精读' : '通用章节精读'}`,
+    });
+  }
   return [FALLBACK_PARTS[0], ...parts];
 }
 
-/** 阅读进度：永远从精读结果派生、不落库；生成中断保留的部分结果计入。 */
+/** 阅读进度：已读完标记数 / 当前精读部分总数，前端派生不落库（规格 #51 决策 6）。 */
 export function readingProgress(paper) {
   const parts = readingParts(paper);
-  const done = parts.filter(part => paper?.analyses?.[part.id]?.text).length;
+  const marks = paper?.readMarks || {};
+  const done = parts.filter(part => marks[part.id] != null).length;
   return { done, total: parts.length };
+}
+
+/** 论文级已读完：全部精读部分均有标记的派生态（规格 #51 决策 7），不设论文级字段。 */
+export function isPaperRead(paper) {
+  const { done, total } = readingProgress(paper);
+  return total > 0 && done === total;
 }

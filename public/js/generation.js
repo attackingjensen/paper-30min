@@ -104,7 +104,8 @@ async function runTask(task, def, content, sinks) {
       if (partial.length > PARTIAL_MIN_CHARS) {
         const text = partial + PARTIAL_MARKER;
         try {
-          await papers.saveAnalysis(paper, sectionId, text);
+          // 中断保留是独立的 partial 写入缝：活动日按部分结果计入当日打卡。
+          await papers.saveAnalysis(paper, sectionId, text, { partial: true });
           saved = text;
         } catch (saveErr) {
           // 落库失败不改变任务已取消的终态；done 仍须 resolve。

@@ -48,6 +48,7 @@ let pdfSidebarOpen = true;
 let libraryQuery = '';
 let categoryFilter = '';
 let ratingFilter = 0;
+let doneFilter = ''; // '' | 'done' | 'undone'（书库「已读完」筛选，规格 #51 决策 16）
 let organizeDraft = { rating: 0, categories: [], tags: [] };
 let migrationToken = '';
 
@@ -194,7 +195,7 @@ function updateStreakBadge() {
     doneCount += progress.done;
     sectionCount += progress.total;
   }
-  $('#streak-badge').textContent = total ? `🔥 连续 ${papers.streakDays(library)} 天 · 已读 ${total} 篇 · 精读 ${doneCount}/${sectionCount}` : '';
+  $('#streak-badge').textContent = total ? `🔥 连续 ${papers.streakDays(library)} 天 · 已读 ${total} 篇 · 已读完 ${doneCount}/${sectionCount} 节` : '';
 }
 
 // ---------------- 书库视图 ----------------
@@ -222,7 +223,8 @@ async function refreshLibrary() {
     const haystack = [paper.title, ...metadataTokens(paper)].join(' ').toLocaleLowerCase();
     return (!query || haystack.includes(query)) &&
       (!categoryFilter || papers.paperCategories(paper).includes(categoryFilter)) &&
-      (!ratingFilter || (Number(paper.rating) || 0) >= ratingFilter);
+      (!ratingFilter || (Number(paper.rating) || 0) >= ratingFilter) &&
+      (!doneFilter || (doneFilter === 'done') === papers.isPaperRead(paper));
   });
 
   const empty = $('#empty-state');
@@ -258,18 +260,27 @@ async function refreshLibrary() {
     sub.className = 'pc-sub';
     const dots = document.createElement('span');
     dots.className = 'progress-dots';
-    dots.title = `精读进度 ${done}/${total}`;
+    dots.title = `已读完 ${done}/${total}`;
     for (const def of defs) {
       const dot = document.createElement('span');
-      dot.className = 'pdot' + (p.analyses?.[def.id]?.text ? ' done' : '');
+      dot.className = 'pdot' + (p.readMarks?.[def.id] != null ? ' done' : '');
       dots.appendChild(dot);
+    }
+    sub.appendChild(dots);
+    if (papers.isPaperRead(p)) {
+      const doneChip = document.createElement('span');
+      doneChip.className = 'metadata-chip pc-done';
+      doneChip.textContent = '已读完';
+      sub.appendChild(doneChip);
     }
     const added = document.createElement('span');
     added.textContent = `${p.numPages ? p.numPages + ' 页 · ' : ''}导入于 ${fmtDate(p.addedAt)}`;
-    sub.append(dots, added);
-    if (done) {
+    sub.appendChild(added);
+    // 「最近精读」只看精读结果时间，与已读完标记解耦——只标记未生成结果的论文没有该行。
+    const analysisTimes = Object.values(p.analyses || {}).map(a => a?.updatedAt || 0).filter(Boolean);
+    if (analysisTimes.length) {
       const recent = document.createElement('span');
-      recent.textContent = `最近精读 ${fmtDate(Math.max(...Object.values(p.analyses).map(a => a.updatedAt || 0)))}`;
+      recent.textContent = `最近精读 ${fmtDate(Math.max(...analysisTimes))}`;
       sub.appendChild(recent);
     }
 
@@ -419,7 +430,7 @@ function updateReaderMeta() {
   const details = [
     current.numPages ? `${current.numPages} 页` : '',
     `导入于 ${fmtDate(current.addedAt)}`,
-    `精读进度 ${done}/${total}`,
+    `已读完 ${done}/${total}`,
     ratingText(current.rating),
     categories.join(' · '),
     tags.length ? tags.map(tag => `#${tag}`).join(' ') : '',
@@ -467,7 +478,9 @@ function buildDigestCard(def) {
   card.innerHTML = `
       <div class="dc-head">
         <h4>${escapeTemplate(def.label)}<span class="dc-sub">${escapeTemplate(def.hint)}</span></h4>
+        <span class="dc-mark" data-role="mark-chip" hidden>✓ 已读完</span>
         <span class="dc-status" data-role="status"></span>
+        <button class="btn small" data-role="mark" type="button"></button>
         <button class="btn small primary" data-role="gen" type="button">${analysis?.text ? '重新生成' : '生成精读'}</button>
       </div>
       ${hasSource ? '' : `
@@ -496,6 +509,28 @@ function buildDigestCard(def) {
     setActiveDigestSection(def.id);
     generateSection(def.id);
   };
+  // 已读完标记入口（过渡位置：分节卡片头部；最终位置 = 节页尾部，由 #56 节页票承接）。
+  // 设置计入当日打卡，撤销不写不回收；只就地更新本卡片，避免重建卡片打断进行中的生成流。
+  const markBtn = card.querySelector('[data-role="mark"]');
+  const syncMarkUI = () => {
+    const marked = current.readMarks?.[def.id] != null;
+    card.querySelector('[data-role="mark-chip"]').hidden = !marked;
+    markBtn.textContent = marked ? '撤销已读完' : '标为已读完';
+    markBtn.classList.toggle('active', marked);
+  };
+  markBtn.onclick = async event => {
+    event.stopPropagation();
+    const marked = current.readMarks?.[def.id] != null;
+    try {
+      await papers.setReadMark(current, def.id, !marked);
+    } catch (err) {
+      toast(`已读完标记保存失败：${errorText(err)}`, true);
+      return;
+    }
+    syncMarkUI();
+    updateReaderMeta();
+  };
+  syncMarkUI();
   // 点击卡片头部（按钮以外）视为「精读节点击」：激活该节、联动 PDF、记录阅读位置。
   card.querySelector('.dc-head').onclick = () => setActiveDigestSection(def.id);
   const saveBtn = card.querySelector('[data-role="save-manual"]');
@@ -555,6 +590,8 @@ function settleDigestCard(sectionId, result, { body, btn }, { silent = false } =
     updateReaderMeta();
   } else if (result.status === 'cancelled' && result.saved) {
     setCardStatus(sectionId, '⚠ 已停止（保留部分）', 'err');
+    // 中断保留已计入当日打卡：刷新阅读头与连续天数徽章。
+    updateReaderMeta();
   } else {
     body.classList.add('empty-hint');
     body.textContent = result.status === 'cancelled' ? '已停止生成。' : `生成失败：${result.error.message}`;
@@ -1883,12 +1920,18 @@ function bindEvents() {
     ratingFilter = Number(e.target.value) || 0;
     refreshLibrary();
   };
+  $('#filter-done').onchange = e => {
+    doneFilter = e.target.value;
+    refreshLibrary();
+  };
   $('#btn-filter-reset').onclick = () => {
     libraryQuery = '';
     categoryFilter = '';
     ratingFilter = 0;
+    doneFilter = '';
     $('#library-search').value = '';
     $('#filter-rating').value = '0';
+    $('#filter-done').value = '';
     refreshLibrary();
   };
   $('#btn-settings').onclick = openSettingsModal;
