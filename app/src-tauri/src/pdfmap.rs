@@ -908,6 +908,8 @@ fn classify_headings(stream: &[StreamItem]) -> Vec<Option<HeadingVerdict>> {
     let mut in_appendix = false;
     let mut seen_references = false;
     let mut title_assigned = false;
+    // 编号附录的根编号（"10 APPENDIX" → Some("10")）；其下 "10.1" 延续正文层级。
+    let mut arabic_appendix_root: Option<String> = None;
     let mut deferred: Vec<usize> = Vec::new(); // 无编号候选，待字高回退
     let mut level1_heights: Vec<f64> = Vec::new();
 
@@ -940,6 +942,7 @@ fn classify_headings(stream: &[StreamItem]) -> Vec<Option<HeadingVerdict>> {
         // 附录关键词：任何位置都是附录节，并进入附录区。
         if let Some(letter) = parse_appendix_keyword(text) {
             in_appendix = true;
+            arabic_appendix_root = None;
             level1_heights.push(heading_height(item));
             verdicts[idx] = Some(HeadingVerdict::section(
                 letter.map(|c| c.to_string()),
@@ -955,6 +958,7 @@ fn classify_headings(stream: &[StreamItem]) -> Vec<Option<HeadingVerdict>> {
                 // References 之后字母模式标题按附录节处理（LoRA 式"A LARGE..."）。
                 in_appendix = true;
             }
+            arabic_appendix_root = None;
             level1_heights.push(heading_height(item));
             verdicts[idx] = Some(HeadingVerdict::section(None, role));
             continue;
@@ -976,6 +980,7 @@ fn classify_headings(stream: &[StreamItem]) -> Vec<Option<HeadingVerdict>> {
         if let Some(roman) = parse_roman_number(text) {
             if !in_appendix {
                 numbering.get_or_insert(Numbering::Roman);
+                arabic_appendix_root = None;
                 level1_heights.push(heading_height(item));
                 verdicts[idx] = Some(HeadingVerdict::section(Some(roman), SectionRole::Body));
                 continue;
@@ -985,6 +990,7 @@ fn classify_headings(stream: &[StreamItem]) -> Vec<Option<HeadingVerdict>> {
         // 单字母：附录区/References 后 → 附录节；正文区 → 二级小节（罗马体系 A.-H.）。
         if let Some(letter) = parse_letter_number(text) {
             if in_appendix || seen_references {
+                arabic_appendix_root = None;
                 level1_heights.push(heading_height(item));
                 verdicts[idx] = Some(HeadingVerdict::section(
                     Some(letter.to_string()),
@@ -1002,9 +1008,39 @@ fn classify_headings(stream: &[StreamItem]) -> Vec<Option<HeadingVerdict>> {
 
         // 阿拉伯编号。
         if let Some((number, parts)) = parse_arabic_number(text) {
+            let after_number = text[number.len()..]
+                .trim_start_matches(|c: char| c == '.' || c.is_whitespace());
+            // 编号白名单节（"8. REFERENCES" / "9 ACKNOWLEDGMENTS"）：编号是印刷
+            // 序号，角色仍按标题文本判定——References 角色是参考文献规则层的
+            // 定位依据（XGBoost 实测形态，决策 12 的节定位含编号情形）。
+            if parts == 1 && !in_appendix {
+                if let Some(role) = whitelist_role(&after_number.to_lowercase()) {
+                    if role == SectionRole::References {
+                        seen_references = true;
+                        in_appendix = true;
+                    }
+                    numbering.get_or_insert(Numbering::Arabic);
+                    level1_heights.push(heading_height(item));
+                    verdicts[idx] = Some(HeadingVerdict::section(Some(number), role));
+                    continue;
+                }
+            }
+            // 编号附录（"10 APPENDIX"）：关键词在编号之后，是附录节本身而非
+            // 附录内小节（Adam 式附录延续正文编号体系）。
+            if parts == 1 && parse_appendix_keyword(after_number).is_some() {
+                in_appendix = true;
+                arabic_appendix_root = Some(number.clone());
+                level1_heights.push(heading_height(item));
+                verdicts[idx] = Some(HeadingVerdict::section(Some(number), SectionRole::Appendix));
+                continue;
+            }
             let level = if in_appendix {
-                // 附录区阿拉伯编号 = 附录内小节（"1. Proof that..."）。
-                parts + 1
+                match &arabic_appendix_root {
+                    // 编号附录内延续同一根编号的小节（"10.1" 在 "10 APPENDIX"
+                    // 下）按正文层级；字母附录内阿拉伯编号才是子小节（+1）。
+                    Some(root) if number.starts_with(&format!("{root}.")) => parts,
+                    _ => parts + 1,
+                }
             } else {
                 match numbering {
                     // 罗马体系内阿拉伯数字降两级（"1. Continuous input..."）。
@@ -2230,6 +2266,71 @@ mod tests {
             .subsections
             .iter()
             .any(|s| s.number.as_deref() == Some("A.1")));
+    }
+
+    #[test]
+    fn numbered_appendix_section_after_references() {
+        // Adam 式编号附录："10 APPENDIX" 延续正文编号体系，关键词在编号之后；
+        // 附录是独立地址单元（User Story 3），不得降为 References 的小节。
+        let doc = make_doc(vec![
+            text_item("section_header", "Paper Title", 1, "body"),
+            text_item("section_header", "1 Introduction", 1, "body"),
+            text_item("text", "Body.", 1, "body"),
+            text_item("section_header", "9 Acknowledgments", 1, "body"),
+            text_item("text", "Thanks.", 1, "body"),
+            text_item("section_header", "References", 1, "body"),
+            text_item_with_orig("list_item", "[1] Some work.", "Some work.", 1),
+            text_item("section_header", "10 APPENDIX", 2, "body"),
+            text_item("text", "Appendix body.", 2, "body"),
+            text_item("section_header", "10.1 CONVERGENCE PROOF", 2, "body"),
+            text_item("text", "Proof body.", 2, "body"),
+        ]);
+        let paper = map_docling_document(&doc).expect("映射成功");
+        let appendix = paper
+            .sections
+            .iter()
+            .find(|s| s.title == "10 APPENDIX")
+            .expect("编号附录应成节");
+        assert_eq!(appendix.role, SectionRole::Appendix);
+        assert_eq!(appendix.number.as_deref(), Some("10"));
+        // "10.1" 延续同一编号体系，是附录节的二级小节（而非三级）。
+        let sub = appendix
+            .subsections
+            .iter()
+            .find(|s| s.number.as_deref() == Some("10.1"))
+            .expect("10.1 应为附录小节");
+        assert_eq!(sub.level, 2);
+        // References 节不被附录内容污染。
+        let refs = paper
+            .sections
+            .iter()
+            .find(|s| s.role == SectionRole::References)
+            .unwrap();
+        assert!(refs.subsections.is_empty(), "{:?}", refs.subsections);
+    }
+
+    #[test]
+    fn numbered_references_section_keeps_role() {
+        // XGBoost 式编号文献节："8. REFERENCES" 的编号是印刷序号，角色仍是
+        // References——它是参考文献规则层的定位依据（决策 12 含编号情形）。
+        let doc = make_doc(vec![
+            text_item("section_header", "Paper Title", 1, "body"),
+            text_item("section_header", "1. INTRODUCTION", 1, "body"),
+            text_item("text", "Citing [1] here.", 1, "body"),
+            text_item("section_header", "8. REFERENCES", 2, "body"),
+            text_item_with_orig("list_item", "[1] Some work.", "Some work.", 2),
+            text_item_with_orig("list_item", "[2] Other work.", "Other work.", 2),
+        ]);
+        let paper = map_docling_document(&doc).expect("映射成功");
+        let refs = paper
+            .sections
+            .iter()
+            .find(|s| s.role == SectionRole::References)
+            .expect("编号文献节应为 References 角色");
+        assert_eq!(refs.number.as_deref(), Some("8"));
+        assert_eq!(paper.references.len(), 2);
+        assert!(paper.references[0].text.starts_with("[1] "));
+        assert!(!paper.references[0].cited_at.is_empty());
     }
 
     #[test]

@@ -1,0 +1,201 @@
+{
+  "doclingVersion": "2.126.0",
+  "perfFactor": 1.5,
+  "perfBaseline": "#46 实测 convert_seconds（i5-13500H，2026-09-09，纯转换耗时）；侧车 elapsedMs 含进程与模型加载固定开销，门禁另有机器系数 PAPER30MIN_PDFPARSE_PERF_FACTOR",
+  "formulaSamples": {
+    "text": "1412.6980",
+    "twoColumn": "1603.02754",
+    "graphics": "pdfparse_formula_graphics.pdf"
+  },
+  "papers": [
+    {
+      "id": "1412.6980",
+      "pdf": "corpus/1412.6980.pdf",
+      "pages": 15,
+      "baselineSeconds": 109.36,
+      "expect": {
+        "title": "ADAM: A METHOD FOR STOCHASTIC OPTIMIZATION",
+        "sectionsContain": ["ABSTRACT", "1 INTRODUCTION", "8 CONCLUSION", "9 ACKNOWLEDGMENTS", "REFERENCES", "10 APPENDIX"],
+        "sectionsNotContain": [],
+        "appendixNumbers": ["10"],
+        "minSubsections": 8,
+        "minFormulas": 30,
+        "minFootnotes": 1,
+        "minFigures": 4,
+        "minTables": 0,
+        "minFurniture": 25,
+        "references": { "count": 0, "warning": "references_unnumbered" }
+      }
+    },
+    {
+      "id": "1503.02531",
+      "pdf": "corpus/1503.02531.pdf",
+      "pages": 9,
+      "baselineSeconds": 51.68,
+      "expect": {
+        "title": "Distilling the Knowledge in a Neural Network",
+        "sectionsContain": ["Abstract", "1 Introduction", "5 Training ensembles of specialists on very big datasets", "8 Discussion", "Acknowledgments", "References"],
+        "sectionsNotContain": [],
+        "appendixNumbers": [],
+        "minSubsections": 8,
+        "minFormulas": 5,
+        "minFootnotes": 1,
+        "minFigures": 0,
+        "minTables": 4,
+        "minFurniture": 8,
+        "references": { "count": 9, "minCited": 8 }
+      }
+    },
+    {
+      "id": "1512.03385",
+      "pdf": "corpus/1512.03385.pdf",
+      "pages": 12,
+      "baselineSeconds": 88.85,
+      "expect": {
+        "title": "Deep Residual Learning for Image Recognition",
+        "sectionsContain": ["Abstract", "1. Introduction", "4. Experiments", "References", "A. Object Detection Baselines", "C. ImageNet Localization"],
+        "sectionsNotContain": [],
+        "appendixNumbers": ["A", "B", "C"],
+        "minSubsections": 12,
+        "minFormulas": 1,
+        "minFootnotes": 5,
+        "minFigures": 5,
+        "minTables": 10,
+        "minFurniture": 10,
+        "references": { "count": 50, "minCited": 40 }
+      }
+    },
+    {
+      "id": "1603.02754",
+      "pdf": "corpus/1603.02754.pdf",
+      "pages": 13,
+      "baselineSeconds": 131.76,
+      "expect": {
+        "sectionsContain": ["ABSTRACT", "1. INTRODUCTION", "7. CONCLUSION", "8. REFERENCES", "APPENDIX", "A. WEIGHTED QUANTILE SKETCH"],
+        "sectionsNotContain": [],
+        "appendixNumbers": [null, "A"],
+        "minSubsections": 20,
+        "minFormulas": 40,
+        "minFootnotes": 10,
+        "minFigures": 10,
+        "minTables": 4,
+        "minFurniture": 1,
+        "references": { "count": 26, "minCited": 20 }
+      }
+    },
+    {
+      "id": "1608.08225",
+      "pdf": "corpus/1608.08225.pdf",
+      "pages": 16,
+      "baselineSeconds": 80.37,
+      "expect": {
+        "title": "Why does deep and cheap learning work so well? ∗",
+        "sectionsContain": ["I. INTRODUCTION", "III. WHY DEEP?", "IV. CONCLUSIONS", "Appendix A: The polynomial no-flattening theorem"],
+        "sectionsNotContain": ["A. The swindle"],
+        "appendixNumbers": ["A"],
+        "minSubsections": 20,
+        "minFormulas": 30,
+        "minFootnotes": 5,
+        "minFigures": 1,
+        "minTables": 0,
+        "minFurniture": 15,
+        "references": { "count": 0, "warning": "references_section_missing" }
+      }
+    },
+    {
+      "id": "1610.00633",
+      "pdf": "corpus/1610.00633.pdf",
+      "pages": 9,
+      "baselineSeconds": 35.83,
+      "expect": {
+        "title": "Deep Reinforcement Learning for Robotic Manipulation with Asynchronous Off-Policy Updates",
+        "sectionsContain": ["I. INTRODUCTION", "IV. ASYNCHRONOUS TRAINING OF NORMALIZED ADVANTAGE FUNCTIONS", "VII. DISCUSSION AND FUTURE WORK", "ACKNOWLEDGEMENTS", "REFERENCES"],
+        "sectionsNotContain": [],
+        "appendixNumbers": [],
+        "minSubsections": 8,
+        "minFormulas": 5,
+        "minFootnotes": 1,
+        "minFigures": 5,
+        "minTables": 0,
+        "minFurniture": 1,
+        "references": { "count": 43, "minCited": 35 }
+      }
+    },
+    {
+      "id": "1706.03762",
+      "pdf": "corpus/1706.03762.pdf",
+      "pages": 15,
+      "baselineSeconds": 70.42,
+      "expect": {
+        "title": "Attention Is All You Need",
+        "sectionsContain": ["Abstract", "1 Introduction", "3 Model Architecture", "5 Training", "7 Conclusion", "References"],
+        "sectionsNotContain": ["Attention Visualizations", "Layer5"],
+        "appendixNumbers": [],
+        "minSubsections": 16,
+        "minFormulas": 5,
+        "minFootnotes": 5,
+        "minFigures": 5,
+        "minTables": 4,
+        "minFurniture": 15,
+        "references": { "count": 40, "minCited": 30 }
+      }
+    },
+    {
+      "id": "1712.01815",
+      "pdf": "corpus/1712.01815.pdf",
+      "pages": 19,
+      "baselineSeconds": 57.46,
+      "expect": {
+        "title": "Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm",
+        "sectionsContain": ["Abstract", "References", "Methods"],
+        "sectionsNotContain": ["Anatomy of a Computer Chess Program"],
+        "appendixNumbers": [],
+        "minSubsections": 8,
+        "minFormulas": 1,
+        "minFootnotes": 3,
+        "minFigures": 2,
+        "minTables": 5,
+        "minFurniture": 18,
+        "references": { "count": 32, "minCited": 0 }
+      }
+    },
+    {
+      "id": "1810.04805",
+      "pdf": "corpus/1810.04805.pdf",
+      "pages": 16,
+      "baselineSeconds": 66.29,
+      "expect": {
+        "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+        "sectionsContain": ["1 Introduction", "6 Conclusion", "References", "A Additional Details for BERT", "B Detailed Experimental Setup", "C Additional Ablation Studies"],
+        "sectionsNotContain": ["Batch size"],
+        "appendixNumbers": [null, "A", "B", "C"],
+        "minSubsections": 20,
+        "minFormulas": 0,
+        "minFootnotes": 10,
+        "minFigures": 3,
+        "minTables": 8,
+        "minFurniture": 1,
+        "references": { "count": 0, "warning": "references_unnumbered" }
+      }
+    },
+    {
+      "id": "2106.09685",
+      "pdf": "corpus/2106.09685.pdf",
+      "pages": 26,
+      "baselineSeconds": 176.29,
+      "expect": {
+        "title": "LORA: LOW-RANK ADAPTATION OF LARGE LANGUAGE MODELS",
+        "sectionsContain": ["ABSTRACT", "1 INTRODUCTION", "8 CONCLUSION AND FUTURE WORK", "REFERENCES", "A LARGE LANGUAGE MODELS STILL NEED PARAMETER UPDATES", "H ADDITIONAL EXPERIMENTS ON LOW-RANK MATRICES"],
+        "sectionsNotContain": [],
+        "appendixNumbers": ["A", "B", "C", "D", "E", "F", "G", "H"],
+        "minSubsections": 21,
+        "minFormulas": 5,
+        "minFootnotes": 5,
+        "minFigures": 5,
+        "minTables": 10,
+        "minFurniture": 25,
+        "references": { "count": 0, "warning": "references_unnumbered" }
+      }
+    }
+  ]
+}

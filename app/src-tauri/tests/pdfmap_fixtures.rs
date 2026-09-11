@@ -6,6 +6,9 @@
 //! - 1608.08225 PhysRev：罗马编号 + 附录 + 无 References 节（脚注文献制）
 //! - 1712.01815 AlphaZero：Science 无编号 + 字高分层 + "1." 编号文献表
 //! - 1810.04805 BERT："1." 带句点编号 + 附录 A-C + "· Batch size" 误判
+//! - formula_graphics（#60）：合成「矢量+位图公式」页（真实侧车输出固化）
+
+mod fixture_texts;
 
 use flate2::read::GzDecoder;
 use paper30min_lib::pdfmap::{map_docling_document, BlockKind, MappedPaper, SectionRole};
@@ -452,4 +455,49 @@ fn fixture_1810_bert_dotted_numbering_and_appendix_filter() {
     assert!(paper
         .warnings
         .contains(&"references_unnumbered".to_string()));
+}
+
+/// 矢量与图片公式样例（Issue #60 公式密集三类之「矢量与图片公式」）：
+/// 合成单页 = 真实文本层 + 纯路径矢量公式 + 嵌入位图公式
+/// （生成器 tests/fixtures/make_pdfparse_fixtures.py，fixture 为真实侧车输出固化）。
+/// 断言：图形内容零泄漏为文本块；检出的图形区域是占位块 + 可裁切 bbox；
+/// 无图注 → 不进图表清单（决策 15），块保留 `[图]`。
+#[test]
+fn fixture_formula_graphics_no_garbled_text() {
+    let paper = load_fixture("formula_graphics.json.gz");
+    assert_eq!(paper.title.as_deref(), Some("Formula Graphics Fixture"));
+    assert_eq!(paper.page_count, 1);
+
+    let titles = section_titles(&paper);
+    for expected in ["1. Introduction", "2. Conclusion"] {
+        assert!(titles.contains(&expected), "缺节 {expected}: {titles:?}");
+    }
+
+    // 已知文本全集：任何多出来的文本块都是图形内容的失真泄漏。
+    for block in all_blocks(&paper) {
+        match block.kind {
+            BlockKind::Paragraph | BlockKind::Heading | BlockKind::Footnote => {
+                assert!(
+                    fixture_texts::FORMULA_GRAPHICS_TEXTS.contains(&block.text.as_str()),
+                    "图形内容泄漏为文本块: {:?}",
+                    block.text
+                );
+            }
+            BlockKind::Figure | BlockKind::Formula => {
+                assert!(block.text.starts_with('['), "图形块应为占位行: {:?}", block.text);
+                let bbox = block.bbox.expect("图形块应有可裁切 bbox");
+                assert!(bbox[2] > 0.0 && bbox[3] > 0.0, "bbox 应有正宽高: {bbox:?}");
+            }
+            BlockKind::Table => {
+                assert!(block.text.contains('|'), "表块应为 MD: {:?}", block.text);
+            }
+        }
+    }
+
+    // 两个图形区域（矢量 + 位图）均被检出为图占位块；无图注不进清单。
+    let figures = all_blocks(&paper)
+        .filter(|b| b.kind == BlockKind::Figure)
+        .count();
+    assert!(figures >= 1, "图形区域应检出占位块（开发实测 2 个）");
+    assert!(paper.figures.is_empty(), "无编号图不进清单: {:?}", paper.figures);
 }

@@ -76,6 +76,35 @@ cd app/src-tauri
 cargo test --test pdfparse_contract            # 常规（状态/成功/错误/取消，约 1 分钟）
 cargo test --test pdfassets_contract           # 页图/裁切预渲染（#59，约 5 秒）
 PAPER30MIN_PDFPARSE_SLOW=1 cargo test --test pdfparse_contract   # 含 OCR 慢测试（约 4 分钟）
+# 踩坑论文集回归夹具（#60）：版本锁定 + 基线断言 + 性能门禁，约 15–25 分钟
+PAPER30MIN_PDFPARSE_FIXTURES=1 cargo test --test pdfparse_regression -- --nocapture
 ```
 
 干净克隆未构建侧车时测试跳过；打包验证设 `PAPER30MIN_PDFPARSE_REQUIRE=1` 强制在场。
+
+## 升级 Docling（版本锁定与回归门禁，Issue #60）
+
+Docling 版本锁定：侧车钉版 `requirements-sidecar.txt`（`docling==X.Y.Z` 等
+逐版钉死）+ 侧车程序 `pdfparse_sidecar.py` 的 `DOCLING_VERSION` + 回归基线
+`app/src-tauri/tests/fixtures/regression/manifest.json` 的 `doclingVersion`
+三处一致，测试交叉校验（不一致即失败）。升级流程：
+
+1. 改钉：`requirements-sidecar.txt` 目标版本 + `pdfparse_sidecar.py`
+   `DOCLING_VERSION`，重新构建侧车（`build_sidecar.py`）。
+2. 同机对照（升级前）：在旧版本跑一次 dump，留存 `measuredSeconds`：
+   `PAPER30MIN_PDFPARSE_FIXTURES=dump cargo test --test pdfparse_regression`。
+3. 升级后 dump：同机对新版本再跑一次 dump。逐篇对比
+   `manifest.dump.json` 的 `facts`（节清单、计数、warning）与
+   `measuredSeconds`：差异可接受才进入下一步；不可接受即升级失败回退。
+4. 重建基线：按新 dump 策展更新 `manifest.json`（含 `doclingVersion` 与
+   必要的 `baselineSeconds` 重测值），删除 `manifest.dump.json`。
+5. 门禁全绿：
+   `PAPER30MIN_PDFPARSE_FIXTURES=1 cargo test --test pdfparse_regression`，
+   附升级报告（dump 前后对照、性能比值、断言变化说明）随升级提交。
+6. 公式图形合成夹具的固化 fixture 若受影响，重建
+   `tests/fixtures/docling/formula_graphics.json.gz`（生成方式见
+   `tests/fixtures/regression/README.md`）并核对
+   `pdfmap_fixtures.rs` 的公式图形断言。
+
+性能门禁的机器状态容差（`PAPER30MIN_PDFPARSE_PERF_FACTOR`）与断言基线判读，
+见 `app/src-tauri/tests/fixtures/regression/README.md`。

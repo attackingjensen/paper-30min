@@ -16,3 +16,6 @@ paper-list/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 回归夹具 dump 临时产物（#60）
+app/src-tauri/tests/fixtures/regression/manifest.dump.json
