@@ -19,8 +19,8 @@ use crate::files::{
 };
 use crate::library::{
     normalize_paper, upsert_paper, ActivityDayDto, AnalysisDto, ChatMessageDto, Library, PartDto,
-    PaperDto, ReadMarkDto, RecallCardDto, SectionDto, TranslationDto, ACTIVITY_DAY_KINDS,
-    LIBRARY_SCHEMA_VERSION,
+    PaperDto, ProductDto, ReadMarkDto, RecallCardDto, SectionDto, TranslationDto,
+    ACTIVITY_DAY_KINDS, LIBRARY_SCHEMA_VERSION, PRODUCT_KINDS,
 };
 
 pub const SUPPORTED_EXPORT_VERSION: i64 = 1;
@@ -572,6 +572,77 @@ fn convert_activity_days(raw: Option<&Value>) -> Vec<ActivityDayDto> {
         .collect()
 }
 
+/// 提取一条产物条目：kind 必须是四值之一；part_id 空值约定（map/retell 必空、l2/dig 必非空）；
+/// body 缺失或为 null 的条目丢弃；updatedAt 缺失回退 epoch，存在但无法解析则丢弃
+/// （convert_* 惯例是清洗条目而非让整篇论文在 normalize 阶段被判无效）。
+fn product_entry(item: &Value) -> Option<ProductDto> {
+    let kind = item.get("kind").and_then(Value::as_str)?.trim();
+    if !PRODUCT_KINDS.contains(&kind) {
+        return None;
+    }
+    let part_id = item
+        .get("partId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if crate::library::is_paper_level_product(kind) != part_id.is_empty() {
+        return None;
+    }
+    let body = item.get("body")?.clone();
+    if body.is_null() {
+        return None;
+    }
+    let updated_at = match item.get("updatedAt") {
+        None | Some(Value::Null) => epoch_iso(),
+        Some(value) => {
+            let converted = timestamp_to_iso(value);
+            if converted.is_empty() || OffsetDateTime::parse(&converted, &Rfc3339).is_err() {
+                return None;
+            }
+            converted
+        }
+    };
+    Some(ProductDto {
+        kind: kind.to_string(),
+        part_id: part_id.to_string(),
+        body,
+        updated_at,
+    })
+}
+
+/// 候选 updatedAt 是否比既有值更新；任一无法解析时保留既有值（先到者）。
+fn later_updated_at(candidate: &str, current: &str) -> bool {
+    match (
+        OffsetDateTime::parse(candidate, &Rfc3339),
+        OffsetDateTime::parse(current, &Rfc3339),
+    ) {
+        (Ok(candidate), Ok(current)) => candidate > current,
+        _ => false,
+    }
+}
+
+/// products：DTO 数组 [{kind, partId, body, updatedAt}]（协议产物只存在于 Windows 端，
+/// 浏览器导出没有该字段）。按主键 (kind, partId) 去重，冲突保留 updatedAt 较新者
+/// （重跑覆盖语义，规格 #55 决策 21）。
+fn convert_products(raw: Option<&Value>) -> Vec<ProductDto> {
+    let Some(Value::Array(items)) = raw else {
+        return Vec::new();
+    };
+    let mut merged: HashMap<(String, String), ProductDto> = HashMap::new();
+    for entry in items.iter().filter_map(product_entry) {
+        let key = (entry.kind.clone(), entry.part_id.clone());
+        match merged.get(&key) {
+            Some(existing) if !later_updated_at(&entry.updated_at, &existing.updated_at) => {}
+            _ => {
+                merged.insert(key, entry);
+            }
+        }
+    }
+    let mut products: Vec<ProductDto> = merged.into_values().collect();
+    products.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.part_id.cmp(&b.part_id)));
+    products
+}
+
 fn convert_attachment(raw: &Value, paper_id: &str) -> Result<Option<PendingAttachment>, String> {
     let Some(blob) = raw.get("pdfBlob") else {
         return Ok(None);
@@ -694,6 +765,7 @@ fn convert_paper(raw: &Value) -> PreparedPaper {
         chat: convert_chat(raw.get("chat")),
         read_marks: convert_read_marks(raw.get("readMarks")),
         activity_days: convert_activity_days(raw.get("activityDays")),
+        products: convert_products(raw.get("products")),
     };
     if let Err(error) = normalize_paper(&mut paper) {
         return PreparedPaper::Invalid {

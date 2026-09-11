@@ -47,6 +47,10 @@ function sampleRecord() {
     ],
     readMarks: { 'part-1': 1700000090000 },
     activityDays: [{ day: '2026-09-01', kind: 'import' }],
+    products: [
+      { kind: 'map', partId: '', body: { problem: { text: 'P', refs: ['(p1)'] }, glossary: [] }, updatedAt: 1700000095000 },
+      { kind: 'dig', partId: 'part-1', body: '## 核心论点', updatedAt: 1700000096000 },
+    ],
     pdfBlob: null,
     pdfName: 'paper.pdf',
   };
@@ -91,6 +95,11 @@ test('put：记录 → DTO（ISO 日期、sections 数组、parts sortOrder、tr
     // readMarks 记录侧 partId → 毫秒映射转 DTO 数组；activityDays 两侧同形透传
     readMarks: [{ partId: 'part-1', markedAt: iso(1700000090000) }],
     activityDays: [{ day: '2026-09-01', kind: 'import' }],
+    // products 两侧同为数组：body 原样透传，updatedAt 毫秒 → ISO
+    products: [
+      { kind: 'map', partId: '', body: { problem: { text: 'P', refs: ['(p1)'] }, glossary: [] }, updatedAt: iso(1700000095000) },
+      { kind: 'dig', partId: 'part-1', body: '## 核心论点', updatedAt: iso(1700000096000) },
+    ],
   });
   // 运行时字段不进 DTO
   assert.ok(!('pdfBlob' in dto));
@@ -150,6 +159,10 @@ function migrationShapeDto() {
     chat: [{ role: 'user', content: 'q', createdAt: '' }],
     readMarks: [{ partId: 'part-1', markedAt: '2024-01-04T00:00:00Z' }],
     activityDays: [{ day: '2024-01-01', kind: 'import' }, { day: '2024-01-04', kind: 'mark' }],
+    products: [
+      { kind: 'l2', partId: 'part-1', body: { gist: '主旨', points: [], keyAssets: [], pages: { start: 2, end: 4 } }, updatedAt: '2024-01-05T00:00:00Z' },
+      { kind: 'retell', partId: '', body: '# 复述稿', updatedAt: '2024-01-06T00:00:00Z' },
+    ],
   };
 }
 
@@ -186,6 +199,11 @@ test('get：DTO → 记录（迁移形状），parts 的 text/pageRange 重建�
   // readMarks DTO 数组转回 partId → 毫秒映射；activityDays 原样透传
   assert.deepEqual(paper.readMarks, { 'part-1': Date.parse('2024-01-04T00:00:00Z') });
   assert.deepEqual(paper.activityDays, [{ day: '2024-01-01', kind: 'import' }, { day: '2024-01-04', kind: 'mark' }]);
+  // products DTO 数组原样保留，仅 updatedAt ISO → 毫秒
+  assert.deepEqual(paper.products, [
+    { kind: 'l2', partId: 'part-1', body: { gist: '主旨', points: [], keyAssets: [], pages: { start: 2, end: 4 } }, updatedAt: Date.parse('2024-01-05T00:00:00Z') },
+    { kind: 'retell', partId: '', body: '# 复述稿', updatedAt: Date.parse('2024-01-06T00:00:00Z') },
+  ]);
   // PDF 附件句柄挂上，pdfBlob 置空
   assert.deepEqual(paper.pdfAttachment, attachment);
   assert.equal(paper.pdfBlob, null);

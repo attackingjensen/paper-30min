@@ -48,6 +48,7 @@ function basePaper(title) {
     chat: [],
     readMarks: {},
     activityDays: [],
+    products: [],
   };
 }
 
@@ -265,6 +266,14 @@ export async function applyResplit(paper, parseResult) {
     if (partId === 'abstract' && abstractUnchanged) keptMarks[partId] = markedAt;
   }
   paper.readMarks = keptMarks;
+
+  // 消失部分的 l2/dig 产物随结果一并作废（规格 #55 决策 22，与分析同一保留规则）；
+  // map/retell 是论文级产物，不随重新切分作废——重建图/重新综合是显式覆盖动作。
+  paper.products = (Array.isArray(paper.products) ? paper.products : [])
+    .filter(product => {
+      if (product?.kind !== 'l2' && product?.kind !== 'dig') return true;
+      return product.partId === 'abstract' && abstractUnchanged;
+    });
 
   paper.updatedAt = Date.now();
   await store.put(paper);

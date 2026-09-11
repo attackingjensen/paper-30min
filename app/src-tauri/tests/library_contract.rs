@@ -73,7 +73,7 @@ fn first_launch_creates_versioned_database_and_partitions() {
     let (registry, library, dir) = common::env();
     let info = invoke(&registry, &library, "library.info@1", json!({}));
     assert_eq!(info["schemaVersion"], json!(1));
-    assert_eq!(info["databaseVersion"], json!(4));
+    assert_eq!(info["databaseVersion"], json!(5));
     let root = info["dataRoot"].as_str().expect("dataRoot");
     assert_eq!(root, dir.path().to_string_lossy().as_ref());
     let partitions = info["partitions"].as_array().expect("partitions");
@@ -489,6 +489,192 @@ fn invalid_read_marks_and_activity_days_are_rejected() {
     let error = invoke_err(&registry, &library, "library.putPaper@1", bad_kind);
     assert_eq!(error.code, "invalid_input");
     assert!(error.message.contains("activityDays.kind"));
+}
+
+// ---------------- 协议产物（规格 #55 决策 21） ----------------
+
+fn sample_products() -> Value {
+    json!([
+        {
+            "kind": "map",
+            "partId": "",
+            "body": { "problem": { "text": "要解决的问题", "refs": ["(p1)"] }, "glossary": [] },
+            "updatedAt": "2026-09-10T08:00:00Z"
+        },
+        {
+            "kind": "l2",
+            "partId": "part-1",
+            "body": { "gist": "主旨", "points": [{ "text": "要点", "refs": ["(sec_1:L3-5)"] }], "keyAssets": ["fig_1"], "pages": { "start": 2, "end": 4 } },
+            "updatedAt": "2026-09-10T08:10:00Z"
+        },
+        {
+            "kind": "dig",
+            "partId": "part-1",
+            "body": "## 核心论点\n\n方法有效 (fig_1)。",
+            "updatedAt": "2026-09-10T09:00:00Z"
+        },
+        {
+            "kind": "retell",
+            "partId": "",
+            "body": "# 复述稿\n\n问题 → 方法 → 证据 → 边界。",
+            "updatedAt": "2026-09-11T08:00:00Z"
+        }
+    ])
+}
+
+#[test]
+fn products_round_trip_through_put_paper() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-products", "产物论文");
+    input["paper"]["products"] = sample_products();
+    let saved = invoke(&registry, &library, "library.putPaper@1", input);
+
+    // 结构对象与 Markdown 字符串两种 body 原样往返；读回按 (kind, partId) 排序。
+    assert_eq!(
+        saved["paper"]["products"],
+        json!([
+            {
+                "kind": "dig",
+                "partId": "part-1",
+                "body": "## 核心论点\n\n方法有效 (fig_1)。",
+                "updatedAt": "2026-09-10T09:00:00Z"
+            },
+            {
+                "kind": "l2",
+                "partId": "part-1",
+                "body": { "gist": "主旨", "points": [{ "text": "要点", "refs": ["(sec_1:L3-5)"] }], "keyAssets": ["fig_1"], "pages": { "start": 2, "end": 4 } },
+                "updatedAt": "2026-09-10T08:10:00Z"
+            },
+            {
+                "kind": "map",
+                "partId": "",
+                "body": { "problem": { "text": "要解决的问题", "refs": ["(p1)"] }, "glossary": [] },
+                "updatedAt": "2026-09-10T08:00:00Z"
+            },
+            {
+                "kind": "retell",
+                "partId": "",
+                "body": "# 复述稿\n\n问题 → 方法 → 证据 → 边界。",
+                "updatedAt": "2026-09-11T08:00:00Z"
+            }
+        ])
+    );
+
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-products" }));
+    assert_eq!(loaded["paper"], saved["paper"]);
+}
+
+#[test]
+fn products_snapshot_rewrite_overwrites_without_history() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-products", "产物论文");
+    input["paper"]["products"] = sample_products();
+    invoke(&registry, &library, "library.putPaper@1", input);
+
+    // 重跑覆盖 = 快照换一行：map 换新内容，dig 不再携带即消失，不留版本历史。
+    let mut rerun = sample_paper("paper-products", "产物论文");
+    rerun["paper"]["products"] = json!([
+        {
+            "kind": "map",
+            "partId": "",
+            "body": { "problem": { "text": "新的问题陈述", "refs": ["(p1)"] }, "glossary": [] },
+            "updatedAt": "2026-09-12T08:00:00Z"
+        },
+        {
+            "kind": "l2",
+            "partId": "part-1",
+            "body": { "gist": "主旨", "points": [], "keyAssets": [], "pages": { "start": 2, "end": 4 } },
+            "updatedAt": "2026-09-10T08:10:00Z"
+        }
+    ]);
+    invoke(&registry, &library, "library.putPaper@1", rerun);
+
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-products" }));
+    assert_eq!(
+        loaded["paper"]["products"],
+        json!([
+            {
+                "kind": "l2",
+                "partId": "part-1",
+                "body": { "gist": "主旨", "points": [], "keyAssets": [], "pages": { "start": 2, "end": 4 } },
+                "updatedAt": "2026-09-10T08:10:00Z"
+            },
+            {
+                "kind": "map",
+                "partId": "",
+                "body": { "problem": { "text": "新的问题陈述", "refs": ["(p1)"] }, "glossary": [] },
+                "updatedAt": "2026-09-12T08:00:00Z"
+            }
+        ])
+    );
+}
+
+#[test]
+fn delete_paper_cascades_protocol_products() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-cascade", "级联论文");
+    input["paper"]["products"] = sample_products();
+    invoke(&registry, &library, "library.putPaper@1", input);
+    invoke(&registry, &library, "library.deletePaper@1", json!({ "paperId": "paper-cascade" }));
+
+    // 同 id 重建一篇无产物论文：若旧行未随论文级联删除，这里会读出残留行。
+    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-cascade", "级联论文"));
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-cascade" }));
+    assert_eq!(loaded["paper"]["products"], json!([]));
+}
+
+#[test]
+fn invalid_products_are_rejected() {
+    let (registry, library, _dir) = common::env();
+
+    let mut unknown_kind = sample_paper("p-kind", "未知产物");
+    unknown_kind["paper"]["products"] = json!([
+        { "kind": "summary", "partId": "part-1", "body": "x", "updatedAt": "2026-09-10T08:00:00Z" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", unknown_kind);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("products.kind"));
+
+    let mut l2_without_part = sample_paper("p-nopart", "节级产物缺部分");
+    l2_without_part["paper"]["products"] = json!([
+        { "kind": "l2", "partId": "", "body": { "gist": "x" }, "updatedAt": "2026-09-10T08:00:00Z" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", l2_without_part);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("products.partId"));
+
+    let mut map_with_part = sample_paper("p-withpart", "论文级产物带部分");
+    map_with_part["paper"]["products"] = json!([
+        { "kind": "map", "partId": "part-1", "body": { "problem": {} }, "updatedAt": "2026-09-10T08:00:00Z" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", map_with_part);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("products.partId"));
+
+    let mut duplicate = sample_paper("p-dup", "重复产物");
+    duplicate["paper"]["products"] = json!([
+        { "kind": "dig", "partId": "part-1", "body": "旧", "updatedAt": "2026-09-10T08:00:00Z" },
+        { "kind": "dig", "partId": "part-1", "body": "新", "updatedAt": "2026-09-11T08:00:00Z" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", duplicate);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("products.kind+partId"));
+
+    let mut bad_date = sample_paper("p-date", "产物时间无效");
+    bad_date["paper"]["products"] = json!([
+        { "kind": "dig", "partId": "part-1", "body": "x", "updatedAt": "昨天" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", bad_date);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("products.updatedAt"));
+
+    let mut null_body = sample_paper("p-nullbody", "空产物");
+    null_body["paper"]["products"] = json!([
+        { "kind": "retell", "partId": "", "body": null, "updatedAt": "2026-09-10T08:00:00Z" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", null_body);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("products.body"));
 }
 
 #[test]

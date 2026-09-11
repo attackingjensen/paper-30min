@@ -8,6 +8,8 @@
 // - translations 记录侧键为 `sectionId:language`，DTO 拆成独立字段；
 // - readMarks 记录侧是 partId → 毫秒映射，DTO 是 [{partId, markedAt}] 数组；activityDays
 //   两侧同形 [{day, kind}]（day 为 YYYY-MM-DD 日历日，不做时区转换）；
+// - products 两侧同为 [{kind, partId, body, updatedAt}] 数组：body 是自由 JSON 值
+//   （map/l2 结构对象、dig/retell Markdown 字符串）原样透传，updatedAt 毫秒 ↔ ISO；
 // - PDF 字节不进 DTO：写入时先落论文记录，再经 files.putAttachment@1 落附件（id 固定 'pdf'）。
 
 // PDF 附件 id 与 migration.rs 的 convert_attachment 保持一致。
@@ -155,6 +157,25 @@ function normalizeActivityDays(activityDays) {
     .map(entry => ({ day: entry.day, kind: entry.kind }));
 }
 
+// products 两侧同为 [{kind, partId, body, updatedAt}] 数组（规格 #55 决策 21）：
+// partId 空值约定 = 论文级产物（map/retell）为空串；body 是自由 JSON 值原样透传；
+// 进出共用一份形状过滤，仅 updatedAt 的毫秒 ↔ ISO 转换分方向。
+// 合法性校验（kind 四值、partId 空值约定、body 非空）由 Rust normalize 兜底，映射层不另立。
+function mapProducts(products, toTime) {
+  return (Array.isArray(products) ? products : [])
+    .filter(product => typeof product?.kind === 'string' && product.kind)
+    .map(product => ({
+      kind: product.kind,
+      partId: product.partId ?? '',
+      body: product.body ?? null,
+      updatedAt: toTime(product.updatedAt),
+    }));
+}
+
+function productsToDto(products) {
+  return mapProducts(products, toIso);
+}
+
 // 论文记录 → PaperDto。pdfBlob/pdfAttachment/sectionPages 是运行时字段，不进 DTO。
 function recordToDto(paper) {
   const now = new Date().toISOString();
@@ -179,6 +200,7 @@ function recordToDto(paper) {
     chat: chatToDto(paper),
     readMarks: readMarksToDto(paper.readMarks),
     activityDays: normalizeActivityDays(paper.activityDays),
+    products: productsToDto(paper.products),
   };
 }
 
@@ -284,6 +306,11 @@ function readMarksFromDto(readMarks) {
   return out;
 }
 
+// products：DTO 数组原样保留为记录侧数组，仅 updatedAt ISO → 毫秒（与保存方向互逆）。
+function productsFromDto(products) {
+  return mapProducts(products, toMillis);
+}
+
 // PaperDto → 论文记录：日期 ISO → 毫秒，数组 → 映射，parts 冗余字段重建。
 function dtoToRecord(dto) {
   const { sections, sectionPages } = sectionsFromDto(dto);
@@ -306,6 +333,7 @@ function dtoToRecord(dto) {
     chat: chatFromDto(dto),
     readMarks: readMarksFromDto(dto.readMarks),
     activityDays: normalizeActivityDays(dto.activityDays),
+    products: productsFromDto(dto.products),
     pdfName: dto.pdfName ?? '',
     pdfBlob: null,
   };

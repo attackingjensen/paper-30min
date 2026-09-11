@@ -33,6 +33,13 @@ function resplitFixture() {
     translations: {},
     readMarks: { abstract: 1700000010000, 'part-1': 1700000020000 },
     activityDays: [{ day: '2023-11-14', kind: 'import' }],
+    products: [
+      { kind: 'map', partId: '', body: { problem: { text: 'P', refs: [] } }, updatedAt: 1700000030000 },
+      { kind: 'l2', partId: 'abstract', body: { gist: '摘要薄摘要' }, updatedAt: 1700000031000 },
+      { kind: 'l2', partId: 'part-1', body: { gist: '章节薄摘要' }, updatedAt: 1700000032000 },
+      { kind: 'dig', partId: 'part-1', body: '## 核心论点', updatedAt: 1700000033000 },
+      { kind: 'retell', partId: '', body: '# 复述稿', updatedAt: 1700000034000 },
+    ],
   };
 }
 
@@ -58,16 +65,32 @@ test('applyResplit：摘要原文未变时保留摘要标记，其余标记随�
   assert.deepEqual(paper.activityDays, [{ day: '2023-11-14', kind: 'import' }]);
 });
 
-test('applyResplit：摘要原文变化时全部标记随结果作废', async () => {
+test('applyResplit：摘要原文未变时保留摘要的 l2 产物，消失部分的 l2/dig 随结果作废', async () => {
+  papers.init(memoryStore());
+  const paper = resplitFixture();
+  await papers.applyResplit(paper, newSplit('ABS'));
+
+  // map/retell 是论文级产物，不随重新切分作废；part-1 的 l2/dig 随结果一并作废（规格 #55 决策 22）
+  assert.deepEqual(
+    paper.products.map(product => [product.kind, product.partId]),
+    [['map', ''], ['l2', 'abstract'], ['retell', '']],
+  );
+});
+
+test('applyResplit：摘要原文变化时全部节级产物随结果作废，论文级产物保留', async () => {
   papers.init(memoryStore());
   const paper = resplitFixture();
   await papers.applyResplit(paper, newSplit('ABS-REWRITTEN'));
 
   assert.deepEqual(paper.analyses, {});
   assert.deepEqual(paper.readMarks, {});
+  assert.deepEqual(
+    paper.products.map(product => [product.kind, product.partId]),
+    [['map', ''], ['retell', '']],
+  );
 });
 
-test('整库导出信封携带 readMarks 与 activityDays（规格 #51 决策 14）', async () => {
+test('整库导出信封携带 readMarks、activityDays 与 products（规格 #51 决策 14、#55 决策 21）', async () => {
   const store = memoryStore();
   papers.init(store);
   const paper = resplitFixture();
@@ -77,6 +100,13 @@ test('整库导出信封携带 readMarks 与 activityDays（规格 #51 决策 14
   const exported = payload.papers.find(item => item.id === 'p1');
   assert.deepEqual(exported.readMarks, { abstract: 1700000010000, 'part-1': 1700000020000 });
   assert.deepEqual(exported.activityDays, [{ day: '2023-11-14', kind: 'import' }]);
+  assert.deepEqual(exported.products, [
+    { kind: 'map', partId: '', body: { problem: { text: 'P', refs: [] } }, updatedAt: 1700000030000 },
+    { kind: 'l2', partId: 'abstract', body: { gist: '摘要薄摘要' }, updatedAt: 1700000031000 },
+    { kind: 'l2', partId: 'part-1', body: { gist: '章节薄摘要' }, updatedAt: 1700000032000 },
+    { kind: 'dig', partId: 'part-1', body: '## 核心论点', updatedAt: 1700000033000 },
+    { kind: 'retell', partId: '', body: '# 复述稿', updatedAt: 1700000034000 },
+  ]);
 });
 
 // ---------------- 进度派生（规格 #51 决策 6/7） ----------------

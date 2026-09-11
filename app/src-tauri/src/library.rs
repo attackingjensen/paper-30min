@@ -13,12 +13,21 @@ use time::OffsetDateTime;
 
 use crate::error::BridgeError;
 
-pub const DATABASE_VERSION: i32 = 4;
+pub const DATABASE_VERSION: i32 = 5;
 pub const LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 /// activity_days.kind 的合法取值：导入论文 / 精读结果 / 中断保留的部分结果 / 设置已读完标记。
 /// 建图产物、论文问答、翻译与回想卡片编辑不算阅读活动，不进表。
 pub(crate) const ACTIVITY_DAY_KINDS: &[&str] = &["import", "analysis", "partial", "mark"];
+
+/// protocol_products.kind 的合法取值：阅读地图 / 节薄摘要 / 深挖结果 / 复述稿（规格 #55 决策 21）。
+pub(crate) const PRODUCT_KINDS: &[&str] = &["map", "l2", "dig", "retell"];
+
+/// 该 kind 是否为论文级产物（map/retell）。论文级产物 part_id 用空串约定；
+/// 节级产物（l2/dig）的 part_id 必须是精读部分 id。
+pub(crate) fn is_paper_level_product(kind: &str) -> bool {
+    matches!(kind, "map" | "retell")
+}
 
 const PARTITIONS: &[&str] = &["database", "attachments", "operations", "exports"];
 
@@ -136,6 +145,20 @@ pub struct ActivityDayDto {
     pub kind: String,
 }
 
+/// 协议产物：建图/深挖/综合三阶段协议的持久化成果（规格 #55 决策 21）。
+/// part_id 为精读部分 id；论文级产物（map/retell）用空串约定。body 是 JSON 值：
+/// map/l2 为结构对象（字段级契约见规格 #55 决策 16-17），dig/retell 为 Markdown 字符串。
+/// 撤销/重做不留版本——重跑覆盖即快照重写后少一行或换一行。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductDto {
+    pub kind: String,
+    #[serde(default)]
+    pub part_id: String,
+    pub body: Value,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PaperDto {
@@ -177,6 +200,8 @@ pub struct PaperDto {
     pub read_marks: Vec<ReadMarkDto>,
     #[serde(default)]
     pub activity_days: Vec<ActivityDayDto>,
+    #[serde(default)]
+    pub products: Vec<ProductDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -578,6 +603,7 @@ fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     migrate_attachments(conn)?;
     migrate_settings(conn)?;
     migrate_read_marks(conn)?;
+    migrate_protocol_products(conn)?;
     Ok(())
 }
 
@@ -741,6 +767,35 @@ fn migrate_read_marks(conn: &mut Connection) -> Result<(), BridgeError> {
     Ok(())
 }
 
+/// v5：协议产物表（规格 #55 决策 21）。新表无历史数据回填——三阶段协议的产物由后续
+/// 任务产生。part_id 空串约定：论文级产物（map/retell）的 part_id 为 ''，使其能参与
+/// 主键。建表在单事务内完成，失败整体回滚并拒绝启动（沿用 v1–v4 纪律）。
+fn migrate_protocol_products(conn: &mut Connection) -> Result<(), BridgeError> {
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(sqlite_error)?;
+    if version >= 5 {
+        return Ok(());
+    }
+    let tx = conn.transaction().map_err(sqlite_error)?;
+    tx.execute_batch(
+        "
+        CREATE TABLE protocol_products (
+          paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL,
+          part_id TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (paper_id, kind, part_id)
+        );
+        ",
+    )
+    .map_err(sqlite_error)?;
+    tx.pragma_update(None, "user_version", 5).map_err(sqlite_error)?;
+    tx.commit().map_err(sqlite_error)?;
+    Ok(())
+}
+
 pub(crate) fn normalize_paper(paper: &mut PaperDto) -> Result<(), BridgeError> {
     paper.id = paper.id.trim().to_string();
     paper.title = paper.title.trim().to_string();
@@ -839,6 +894,37 @@ pub(crate) fn normalize_paper(paper: &mut PaperDto) -> Result<(), BridgeError> {
             )));
         }
     }
+    require_unique_ids(
+        paper
+            .products
+            .iter()
+            .map(|item| format!("{}:{}", item.kind, item.part_id)),
+        "products.kind+partId",
+    )?;
+    for product in &paper.products {
+        if !PRODUCT_KINDS.contains(&product.kind.as_str()) {
+            return Err(BridgeError::invalid_input(format!(
+                "products.kind 未知: {}",
+                product.kind
+            )));
+        }
+        if is_paper_level_product(&product.kind) {
+            if !product.part_id.is_empty() {
+                return Err(BridgeError::invalid_input(
+                    "products.partId 空值约定：map/retell 是论文级产物，partId 必须为空",
+                ));
+            }
+        } else if product.part_id.trim().is_empty() {
+            return Err(BridgeError::invalid_input(format!(
+                "products.partId：{} 产物需要精读部分 id",
+                product.kind
+            )));
+        }
+        if product.body.is_null() {
+            return Err(BridgeError::invalid_input("products.body 不能为空值"));
+        }
+        require_iso("products.updatedAt", &product.updated_at)?;
+    }
     Ok(())
 }
 
@@ -908,6 +994,9 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
     tx.execute("DELETE FROM read_marks WHERE paper_id = ?1", params![paper.id])
         .map_err(sqlite_error)?;
     // activity_days 是 append-only：不按快照重写、不删除，DTO 未携带的历史行不受影响。
+    // protocol_products 按 DTO 快照整组重写：重跑覆盖 = 快照换一行，撤销/重做不留版本。
+    tx.execute("DELETE FROM protocol_products WHERE paper_id = ?1", params![paper.id])
+        .map_err(sqlite_error)?;
 
     for (position, section) in paper.sections.iter().enumerate() {
         tx.execute(
@@ -991,6 +1080,20 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
     }
     for entry in &paper.activity_days {
         insert_activity_day(tx, &entry.day, &paper.id, &entry.kind)?;
+    }
+    for product in &paper.products {
+        tx.execute(
+            "INSERT INTO protocol_products(paper_id, kind, part_id, body, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![
+                paper.id,
+                product.kind,
+                product.part_id,
+                json_text(&product.body)?,
+                product.updated_at
+            ],
+        )
+        .map_err(sqlite_error)?;
     }
     Ok(())
 }
@@ -1171,6 +1274,36 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
         .collect::<Result<Vec<_>, _>>()
         .map_err(sqlite_error)?;
 
+    let mut products_stmt = conn
+        .prepare(
+            "SELECT kind, part_id, body, updated_at
+             FROM protocol_products WHERE paper_id = ?1 ORDER BY kind, part_id",
+        )
+        .map_err(sqlite_error)?;
+    let products = products_stmt
+        .query_map(params![paper_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(sqlite_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?
+        .into_iter()
+        .map(|(kind, part_id, body, updated_at)| {
+            Ok(ProductDto {
+                kind,
+                part_id,
+                body: serde_json::from_str(&body)
+                    .map_err(|err| BridgeError::internal(format!("JSON 解码失败: {err}")))?,
+                updated_at,
+            })
+        })
+        .collect::<Result<Vec<_>, BridgeError>>()?;
+
     Ok(PaperDto {
         id: paper.0,
         title: paper.1,
@@ -1192,6 +1325,7 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
         chat,
         read_marks,
         activity_days,
+        products,
     })
 }
 

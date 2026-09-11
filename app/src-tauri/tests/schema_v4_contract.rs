@@ -144,7 +144,7 @@ fn create_v3_fixture(dir: &Path) {
 }
 
 fn open_migrated(dir: &Path) -> (Arc<TaskRegistry>, Arc<Library>) {
-    let library = Arc::new(Library::open(dir).expect("v3 快照应成功迁移到 v4"));
+    let library = Arc::new(Library::open(dir).expect("v3 快照应成功迁移到最新版本"));
     (TaskRegistry::new(Arc::clone(&library)), library)
 }
 
@@ -165,7 +165,8 @@ fn v3_snapshot_migrates_read_marks_by_snapshot_criterion() {
     let (registry, library) = open_migrated(dir.path());
 
     let info = bridge::invoke(&registry, &library, "library.info@1", &json!({})).unwrap();
-    assert_eq!(info["databaseVersion"], json!(4));
+    // v3 快照经 v4 回填后继续顺延到最新版本（当前 v5：协议产物表）。
+    assert_eq!(info["databaseVersion"], json!(5));
 
     // 正常结果：每个 analyses 行各产生一条标记，marked_at 取该结果 updated_at。
     let normal = get_paper(&registry, &library, "paper-normal");
@@ -283,7 +284,7 @@ fn failed_migration_rolls_back_and_refuses_startup() {
 }
 
 #[test]
-fn empty_v3_library_migrates_to_v4() {
+fn empty_v3_library_migrates_to_latest_version() {
     let dir = tempfile::tempdir().unwrap();
     {
         let db_dir = dir.path().join("database");
@@ -292,5 +293,5 @@ fn empty_v3_library_migrates_to_v4() {
         conn.execute_batch(V3_SCHEMA).unwrap();
     }
     let library = Library::open(dir.path()).expect("空 v3 库应成功迁移");
-    assert_eq!(library.info().database_version, 4);
+    assert_eq!(library.info().database_version, 5);
 }

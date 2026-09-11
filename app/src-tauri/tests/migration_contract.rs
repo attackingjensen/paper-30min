@@ -466,6 +466,97 @@ fn import_merges_duplicate_read_marks_keeping_earlier_marked_at() {
 }
 
 #[test]
+fn commit_carries_products_and_dedup_keeps_newer_updated_at() {
+    let (registry, library, dir) = common::env();
+    // Windows 导出形状：products 是 [{kind, partId, body, updatedAt}] 数组，
+    // updatedAt 容忍毫秒数字与 ISO 字符串两种来源。
+    let mut paper = sample_browser_paper("paper-new", "新论文");
+    paper["products"] = json!([
+        {
+            "kind": "map",
+            "partId": "",
+            "body": { "problem": { "text": "旧地图", "refs": [] } },
+            "updatedAt": "2026-09-01T08:00:00Z"
+        },
+        {
+            "kind": "map",
+            "partId": "",
+            "body": { "problem": { "text": "新地图", "refs": ["(p1)"] } },
+            "updatedAt": ADDED_AT_MS + 86_400_000
+        },
+        {
+            "kind": "dig",
+            "partId": "part-1",
+            "body": "## 核心论点",
+            "updatedAt": "2026-09-10T09:00:00Z"
+        }
+    ]);
+    let path = write_export(dir.path(), "library.json", &envelope(vec![paper]));
+
+    let token = inspect(&registry, &library, &path)["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let result = commit(&registry, &library, &token);
+    assert_eq!(result["added"], json!(1));
+
+    let imported = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-new" }),
+    );
+    // 同主键 (kind, partId) 冲突保留 updatedAt 较新者（重跑覆盖语义）；读回按 (kind, partId) 排序。
+    assert_eq!(
+        imported["paper"]["products"],
+        json!([
+            { "kind": "dig", "partId": "part-1", "body": "## 核心论点", "updatedAt": "2026-09-10T09:00:00Z" },
+            {
+                "kind": "map",
+                "partId": "",
+                "body": { "problem": { "text": "新地图", "refs": ["(p1)"] } },
+                "updatedAt": "2026-09-02T08:00:00Z"
+            }
+        ])
+    );
+}
+
+#[test]
+fn import_drops_malformed_product_entries() {
+    let (registry, library, dir) = common::env();
+    let mut paper = sample_browser_paper("paper-new", "新论文");
+    paper["products"] = json!([
+        // 合法条目：缺 updatedAt 回退 epoch。
+        { "kind": "retell", "partId": "", "body": "# 复述稿" },
+        // 以下逐条丢弃：未知 kind；l2 缺 partId；map 带 partId（空值约定不符）；body 缺失；body 为 null；updatedAt 无法解析。
+        { "kind": "summary", "partId": "part-1", "body": "x", "updatedAt": "2026-09-10T08:00:00Z" },
+        { "kind": "l2", "partId": "", "body": { "gist": "x" }, "updatedAt": "2026-09-10T08:00:00Z" },
+        { "kind": "map", "partId": "part-1", "body": {}, "updatedAt": "2026-09-10T08:00:00Z" },
+        { "kind": "dig", "partId": "part-1", "updatedAt": "2026-09-10T08:00:00Z" },
+        { "kind": "dig", "partId": "part-1", "body": null, "updatedAt": "2026-09-10T08:00:00Z" },
+        { "kind": "dig", "partId": "part-1", "body": "x", "updatedAt": "昨天" }
+    ]);
+    let path = write_export(dir.path(), "library.json", &envelope(vec![paper]));
+
+    let token = inspect(&registry, &library, &path)["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    commit(&registry, &library, &token);
+
+    let imported = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-new" }),
+    );
+    assert_eq!(
+        imported["paper"]["products"],
+        json!([{ "kind": "retell", "partId": "", "body": "# 复述稿", "updatedAt": "1970-01-01T00:00:00Z" }])
+    );
+}
+
+#[test]
 fn app_info_lists_migration_commands() {
     let (registry, library, _dir) = common::env();
     let info = invoke(&registry, &library, "app.info@1", json!({}));
