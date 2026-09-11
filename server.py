@@ -18,7 +18,8 @@ import webbrowser
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(BASE_DIR, 'public')
-SKILLS_DIR = os.path.join(BASE_DIR, 'skills')
+# 浏览器阅读器是旧精读面：技能正式来源为留档的 skills/legacy/（#64 起仓库根 skills/ 改放新协议提示词）。
+SKILLS_DIR = os.path.join(BASE_DIR, 'skills', 'legacy')
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -65,7 +66,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(502, 'Failed to fetch arXiv HTML')
 
     def _serve_skills(self):
-        """列出 skills/ 下的 .md 文件与原文；frontmatter 解析由前端 parseSkillFile 完成。"""
+        """列出 skills/legacy/ 下的 .md 文件与原文；frontmatter 解析由前端 parseSkillFile 完成。"""
         try:
             entries = []
             for name in sorted(os.listdir(SKILLS_DIR)):

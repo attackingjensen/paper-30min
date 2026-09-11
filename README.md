@@ -54,7 +54,8 @@
 
 每个章节对应一个技能（提示词模板），占位符：`{title}` = 论文标题、`{section}` = 章节名、`{content}` = 章节原文。
 
-- **`skills/` 目录是运行时技能的正式来源**：内置 5 个技能（`.md` + YAML frontmatter），启动时由 `server.py` 的 `/api/skills` 提供给前端，改完文件刷新页面即生效；
+- **`skills/legacy/` 目录是浏览器阅读器运行时技能的正式来源**：内置 5 个技能（`.md` + YAML frontmatter），启动时由 `server.py` 的 `/api/skills` 提供给前端，改完文件刷新页面即生效；
+- `skills/` 顶层是 Windows 客户端新阅读协议的技能库（四段协议提示词 `map-l2` / `map-l1` / `deep-dive` / `synthesize` + 章节关注点数据 `section-focus.json`），浏览器阅读器不使用；
 - 在 App 内「技能库」面板中编辑、保存、恢复默认（按浏览器保存自定义覆盖）；
 - 接口失败时前端自动回退到 `public/js/skills.js` 的内置副本，测试会强制两者保持一致（改文件需同步内置副本）；
 - 找到优秀的开源技能后，把文件放进任意目录，在技能库中「导入 .md」即可覆盖对应技能。frontmatter 格式：
@@ -86,7 +87,7 @@
 │   ├── js/api.js        #   OpenAI 兼容 API 客户端（流式）
 │   ├── js/db.js         #   IndexedDB 本地存储
 │   └── js/app.js        #   主界面逻辑
-├── skills/              # 运行时技能的正式来源（可改造、可新增）
+├── skills/              # 技能库：顶层为新协议提示词与关注点数据，legacy/ 为旧五技能留档（浏览器端正式来源）
 ├── app/                 # Windows 正式客户端（Tauri 外壳 + Rust/JavaScript 桥接，实施中）
 ├── docs/
 │   ├── background/      #   原始需求、调研和可行性分析

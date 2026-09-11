@@ -211,13 +211,36 @@ pub fn run() -> i32 {
         &mut report,
     );
 
+    // #64：技能库 = 四段协议提示词 + 关注点数据文件 + 留档旧五技能。
     check(
-        "skills.list@1 返回五条技能",
+        "skills.list@1 返回四段协议提示词、关注点数据与五条留档技能",
         || match bridge::invoke(&registry, &library, "skills.list@1", &json!({})) {
-            Ok(value) if value["skills"].as_array().map(|items| items.len()) == Some(5) => {
-                Ok("5 条技能".to_string())
+            Ok(value) => {
+                let Some(files) = value["skills"].as_array() else {
+                    return Err(format!("技能清单不是数组: {value}"));
+                };
+                let names: Vec<&str> = files.iter().filter_map(|f| f["file"].as_str()).collect();
+                for expected in [
+                    "map-l2.md",
+                    "map-l1.md",
+                    "deep-dive.md",
+                    "synthesize.md",
+                    "section-focus.json",
+                    "legacy/abstract-translation.md",
+                    "legacy/experiment-analysis.md",
+                    "legacy/introduction-analysis.md",
+                    "legacy/method-deep-dive.md",
+                    "legacy/part-analysis.md",
+                ] {
+                    if !names.contains(&expected) {
+                        return Err(format!("技能清单缺 {expected}: {names:?}"));
+                    }
+                }
+                if names.len() != 10 {
+                    return Err(format!("技能数量不符: {names:?}"));
+                }
+                Ok("4 段协议提示词 + 关注点数据 + 5 条留档技能".to_string())
             }
-            Ok(value) => Err(format!("技能数量不符: {value}")),
             Err(error) => Err(format!("调用失败: {error}")),
         },
         &mut report,

@@ -8,9 +8,10 @@ import {
   BUILTIN_SKILLS, buildPrompt, skillFromFile, fileSkillsFrom, importCustomSkills,
 } from '../public/js/skills.js';
 
-const skillsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills');
+// #64 起浏览器阅读器的技能正式来源是留档目录 skills/legacy/（顶层 skills/ 改放 Windows 客户端新协议提示词）。
+const skillsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'legacy');
 
-/** 读取 skills/ 目录，模拟 /api/skills 返回的文件清单（按文件名排序）。 */
+/** 读取 skills/legacy/ 目录，模拟 /api/skills 返回的文件清单（按文件名排序）。 */
 function loadSkillFiles() {
   return readdirSync(skillsDir)
     .filter(f => f.toLowerCase().endsWith('.md'))
