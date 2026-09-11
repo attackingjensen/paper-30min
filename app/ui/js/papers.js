@@ -191,7 +191,7 @@ export async function removeRecallImage(paper, imageId) {
   await store.put(paper);
 }
 
-/** 追加一条问答消息，只保留最近 40 条。 */
+/** 追加一条问答消息，只保留最近 40 条；绑定字段随被淘汰的消息一并删除。 */
 export async function appendChatMessage(paper, message) {
   paper.chat = paper.chat || [];
   paper.chat.push(message);

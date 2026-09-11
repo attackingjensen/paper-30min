@@ -1,8 +1,7 @@
-//! schema v5 迁移契约：预置 v4 库快照（冻结 DDL + 一篇带 read_marks/activity_days 的论文
-//! 夹具），打开即迁移，断言 protocol_products 建表后可经 `library.*@1` DTO 读写、
-//! v4 既有数据原样保留、失败整体回滚并拒绝启动（规格 #55 决策 21）。
-//! v5 无历史数据回填——协议产物由后续任务产生，迁移只负责建表。
-//! 回填结果一律经 `library.*@1` DTO 黑盒观察；仅回滚断言用只读连接核对 user_version。
+//! schema v6 迁移契约：预置 v5 库快照（冻结 DDL + 一篇带旧 chat_messages 行的论文
+//! 夹具），打开即迁移，断言增列后旧行经 `library.*@1` DTO 读出 bindingKind=none、
+//! 绑定字段可经整记录写入缝往返、失败整体回滚并拒绝启动（规格 #52 决策 1–2）。
+//! 回填结果一律经 DTO 黑盒观察；仅回滚断言用只读连接核对 user_version。
 
 use paper30min_lib::bridge;
 use paper30min_lib::error::BridgeError;
@@ -13,9 +12,9 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
 
-/// 冻结的 v4 快照 DDL：刻意不复用 library.rs 的迁移 SQL——快照必须钉住迁移发生前的
-/// 表结构，library.rs 的 DDL 日后演进不影响本夹具。v4 = v3 全部表 + read_marks + activity_days。
-const V4_SCHEMA: &str = "
+/// 冻结的 v5 快照 DDL：刻意不复用 library.rs 的迁移 SQL——快照必须钉住迁移发生前的
+/// 表结构。v5 = v4 全部表 + protocol_products；chat_messages 尚无绑定列。
+const V5_SCHEMA: &str = "
 CREATE TABLE papers (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -113,34 +112,42 @@ CREATE TABLE activity_days (
   kind TEXT NOT NULL,
   PRIMARY KEY (day, paper_id, kind)
 );
-PRAGMA user_version = 4;
+CREATE TABLE protocol_products (
+  paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  part_id TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (paper_id, kind, part_id)
+);
+PRAGMA user_version = 5;
 ";
 
-/// 在 dir 下预置 v4 快照库：一篇带标记与活动日的论文，验证迁移后 v4 数据原样保留。
-fn create_v4_fixture(dir: &Path) {
+/// 在 dir 下预置 v5 快照库：一篇带两条旧问答（无绑定列）的论文。
+fn create_v5_fixture(dir: &Path) {
     let db_dir = dir.join("database");
     std::fs::create_dir_all(&db_dir).expect("创建 database 分区");
     let conn = Connection::open(db_dir.join("library.sqlite")).expect("打开夹具库");
-    conn.execute_batch(V4_SCHEMA).expect("写入 v4 快照结构");
+    conn.execute_batch(V5_SCHEMA).expect("写入 v5 快照结构");
     conn.execute(
-        "INSERT INTO papers(id, title, added_at, updated_at) VALUES('paper-a', 'v4 论文', '2026-09-01T08:00:00Z', '2026-09-01T08:00:00Z')",
+        "INSERT INTO papers(id, title, added_at, updated_at) VALUES('paper-a', 'v5 论文', '2026-09-01T08:00:00Z', '2026-09-01T08:00:00Z')",
         [],
     )
     .expect("插入夹具论文");
     conn.execute(
-        "INSERT INTO read_marks(paper_id, part_id, marked_at) VALUES('paper-a', 'abstract', '2026-09-02T10:00:00Z')",
+        "INSERT INTO chat_messages(paper_id, seq, role, content, created_at) VALUES('paper-a', 0, 'user', '核心贡献是什么？', '2026-09-01T10:00:00Z')",
         [],
     )
-    .expect("插入夹具标记");
+    .expect("插入夹具用户消息");
     conn.execute(
-        "INSERT INTO activity_days(day, paper_id, kind) VALUES('2026-09-01', 'paper-a', 'import')",
+        "INSERT INTO chat_messages(paper_id, seq, role, content, created_at) VALUES('paper-a', 1, 'assistant', '提出了一种注意力机制。', '2026-09-01T10:00:05Z')",
         [],
     )
-    .expect("插入夹具活动日");
+    .expect("插入夹具助手消息");
 }
 
 fn open_migrated(dir: &Path) -> (Arc<TaskRegistry>, Arc<Library>) {
-    let library = Arc::new(Library::open(dir).expect("v4 快照应成功迁移到当前版本"));
+    let library = Arc::new(Library::open(dir).expect("v5 快照应成功迁移到 v6"));
     (TaskRegistry::new(Arc::clone(&library)), library)
 }
 
@@ -155,85 +162,109 @@ fn get_paper(registry: &Arc<TaskRegistry>, library: &Arc<Library>, paper_id: &st
 }
 
 #[test]
-fn v4_snapshot_migrates_to_v5_and_products_round_trip() {
+fn v5_snapshot_migrates_to_v6_and_old_chat_rows_backfill_none() {
     let dir = tempfile::tempdir().unwrap();
-    create_v4_fixture(dir.path());
+    create_v5_fixture(dir.path());
     let (registry, library) = open_migrated(dir.path());
 
     let info = bridge::invoke(&registry, &library, "library.info@1", &json!({})).unwrap();
     assert_eq!(info["databaseVersion"], json!(6));
 
-    // v4 既有数据原样保留：标记与活动日不受影响。
     let paper = get_paper(&registry, &library, "paper-a");
     assert_eq!(
-        paper["paper"]["readMarks"],
-        json!([{ "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" }])
+        paper["paper"]["chat"],
+        json!([
+            {
+                "role": "user",
+                "content": "核心贡献是什么？",
+                "createdAt": "2026-09-01T10:00:00Z",
+                "bindingKind": "none",
+                "secId": null,
+                "fragmentText": null,
+                "cite": null,
+                "assetIds": []
+            },
+            {
+                "role": "assistant",
+                "content": "提出了一种注意力机制。",
+                "createdAt": "2026-09-01T10:00:05Z",
+                "bindingKind": "none",
+                "secId": null,
+                "fragmentText": null,
+                "cite": null,
+                "assetIds": []
+            }
+        ])
     );
-    assert_eq!(
-        paper["paper"]["activityDays"],
-        json!([{ "day": "2026-09-01", "kind": "import" }])
-    );
-    assert_eq!(paper["paper"]["products"], json!([]));
-
-    // 迁移后的库可经整记录写入缝落产物并读回（结构对象与 Markdown 字符串两种 body）。
-    let mut updated = paper["paper"].clone();
-    updated["products"] = json!([
-        {
-            "kind": "map",
-            "partId": "",
-            "body": { "problem": { "text": "要解决的问题", "refs": ["(p1)"] } },
-            "updatedAt": "2026-09-10T08:00:00Z"
-        },
-        {
-            "kind": "dig",
-            "partId": "part-1",
-            "body": "## 核心论点\n\n……(sec_1:L30-34)",
-            "updatedAt": "2026-09-10T09:00:00Z"
-        }
-    ]);
-    let saved = bridge::invoke(&registry, &library, "library.putPaper@1", &json!({ "paper": updated }))
-        .expect("library.putPaper@1");
-    assert_eq!(saved["paper"]["products"].as_array().unwrap().len(), 2);
-
-    let loaded = get_paper(&registry, &library, "paper-a");
-    assert_eq!(loaded["paper"], saved["paper"]);
 }
 
 #[test]
-fn migrated_v5_library_reopens_without_remigrating() {
+fn migrated_v6_library_round_trips_bindings_and_reopens() {
     let dir = tempfile::tempdir().unwrap();
-    create_v4_fixture(dir.path());
+    create_v5_fixture(dir.path());
     {
         let (registry, library) = open_migrated(dir.path());
         let paper = get_paper(&registry, &library, "paper-a");
         let mut updated = paper["paper"].clone();
-        updated["products"] = json!([
-            { "kind": "retell", "partId": "", "body": "# 复述稿", "updatedAt": "2026-09-10T08:00:00Z" }
+        updated["chat"] = json!([
+            {
+                "role": "user",
+                "content": "这节在说什么？",
+                "createdAt": "2026-09-11T08:00:00Z",
+                "bindingKind": "section",
+                "secId": "sec_3_method",
+                "fragmentText": null,
+                "cite": {
+                    "startSecId": "sec_3_method",
+                    "startBlock": 1,
+                    "endSecId": "sec_3_method",
+                    "endBlock": 20,
+                    "startPage": 4,
+                    "endPage": 6
+                },
+                "assetIds": []
+            },
+            {
+                "role": "assistant",
+                "content": "方法节给出了注意力机制。",
+                "createdAt": "2026-09-11T08:00:05Z",
+                "bindingKind": "none",
+                "secId": null,
+                "fragmentText": null,
+                "cite": null,
+                "assetIds": []
+            }
         ]);
-        bridge::invoke(&registry, &library, "library.putPaper@1", &json!({ "paper": updated }))
-            .expect("library.putPaper@1");
+        bridge::invoke(
+            &registry,
+            &library,
+            "library.putPaper@1",
+            &json!({ "paper": updated }),
+        )
+        .expect("library.putPaper@1");
     }
 
-    // 再次打开：version == DATABASE_VERSION 短路，不重复迁移；已落库产物原样读回。
     let (registry, library) = open_migrated(dir.path());
     let info = bridge::invoke(&registry, &library, "library.info@1", &json!({})).unwrap();
     assert_eq!(info["databaseVersion"], json!(6));
     let paper = get_paper(&registry, &library, "paper-a");
-    assert_eq!(
-        paper["paper"]["products"],
-        json!([{ "kind": "retell", "partId": "", "body": "# 复述稿", "updatedAt": "2026-09-10T08:00:00Z" }])
-    );
+    assert_eq!(paper["paper"]["chat"][0]["bindingKind"], json!("section"));
+    assert_eq!(paper["paper"]["chat"][0]["secId"], json!("sec_3_method"));
+    assert_eq!(paper["paper"]["chat"][0]["cite"]["startBlock"], json!(1));
+    assert_eq!(paper["paper"]["chat"][1]["bindingKind"], json!("none"));
 }
 
 #[test]
-fn failed_v5_migration_rolls_back_and_refuses_startup() {
+fn failed_v6_migration_rolls_back_and_refuses_startup() {
     let dir = tempfile::tempdir().unwrap();
-    create_v4_fixture(dir.path());
-    // 预置一张同名冲突表：CREATE TABLE 必失败，迁移必须整体回滚而非带病启动。
+    create_v5_fixture(dir.path());
+    // 预置同名列：ALTER TABLE ADD COLUMN 必失败，迁移必须整体回滚而非带病启动。
     {
         let conn = Connection::open(dir.path().join("database").join("library.sqlite")).unwrap();
-        conn.execute_batch("CREATE TABLE protocol_products(stub TEXT);")
-            .unwrap();
+        conn.execute_batch(
+            "ALTER TABLE chat_messages ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'none';",
+        )
+        .unwrap();
     }
 
     let error = match Library::open(dir.path()) {
@@ -241,33 +272,33 @@ fn failed_v5_migration_rolls_back_and_refuses_startup() {
         Err(error) => error,
     };
     assert!(
-        error.message.contains("protocol_products"),
+        error.message.contains("binding_kind") || error.message.contains("duplicate column"),
         "错误应指认失败原因: {}",
         error.message
     );
 
-    // 整体回滚：user_version 仍为 4（预置的冲突表在夹具侧，不属于迁移产物）。
+    // 整体回滚：user_version 仍为 5。预置的冲突列在夹具侧，不属于迁移产物；
+    // 回滚断言只核对 user_version，不把表结构当契约。
     let conn = Connection::open(dir.path().join("database").join("library.sqlite")).unwrap();
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4, "失败迁移不得推进 user_version");
+    assert_eq!(version, 5, "失败迁移不得推进 user_version");
     drop(conn);
 
-    // 拒绝启动是稳定的：重试仍然失败，不出现半迁移状态被误认为成功。
     let again: Result<Library, BridgeError> = Library::open(dir.path());
     assert!(again.is_err());
 }
 
 #[test]
-fn empty_v4_library_migrates_to_v5() {
+fn empty_v5_library_migrates_to_v6() {
     let dir = tempfile::tempdir().unwrap();
     {
         let db_dir = dir.path().join("database");
         std::fs::create_dir_all(&db_dir).unwrap();
         let conn = Connection::open(db_dir.join("library.sqlite")).unwrap();
-        conn.execute_batch(V4_SCHEMA).unwrap();
+        conn.execute_batch(V5_SCHEMA).unwrap();
     }
-    let library = Library::open(dir.path()).expect("空 v4 库应成功迁移");
+    let library = Library::open(dir.path()).expect("空 v5 库应成功迁移");
     assert_eq!(library.info().database_version, 6);
 }

@@ -18,9 +18,9 @@ use crate::files::{
     AttachmentDto,
 };
 use crate::library::{
-    normalize_paper, upsert_paper, ActivityDayDto, AnalysisDto, ChatMessageDto, Library, PartDto,
-    PaperDto, ProductDto, ReadMarkDto, RecallCardDto, SectionDto, TranslationDto,
-    ACTIVITY_DAY_KINDS, LIBRARY_SCHEMA_VERSION, PRODUCT_KINDS,
+    normalize_paper, upsert_paper, ActivityDayDto, AnalysisDto, ChatCiteDto, ChatMessageDto,
+    Library, PartDto, PaperDto, ProductDto, ReadMarkDto, RecallCardDto, SectionDto, TranslationDto,
+    ACTIVITY_DAY_KINDS, BINDING_KINDS, LIBRARY_SCHEMA_VERSION, PRODUCT_KINDS,
 };
 
 pub const SUPPORTED_EXPORT_VERSION: i64 = 1;
@@ -440,6 +440,68 @@ fn convert_translations(raw: Option<&Value>) -> Vec<TranslationDto> {
     }
 }
 
+fn convert_cite(raw: Option<&Value>) -> Option<ChatCiteDto> {
+    let value = raw?;
+    if value.is_null() {
+        return None;
+    }
+    let start_sec_id = value
+        .get("startSecId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let end_sec_id = value
+        .get("endSecId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if start_sec_id.is_empty() || end_sec_id.is_empty() {
+        return None;
+    }
+    let start_block = value.get("startBlock").and_then(Value::as_i64)?;
+    let end_block = value.get("endBlock").and_then(Value::as_i64)?;
+    Some(ChatCiteDto {
+        start_sec_id: start_sec_id.to_string(),
+        start_block,
+        end_sec_id: end_sec_id.to_string(),
+        end_block,
+        start_page: value.get("startPage").and_then(Value::as_i64),
+        end_page: value.get("endPage").and_then(Value::as_i64),
+    })
+}
+
+fn convert_binding_kind(raw: Option<&Value>, role: &str) -> String {
+    if role == "assistant" {
+        return "none".to_string();
+    }
+    let kind = raw.and_then(Value::as_str).unwrap_or("none").trim();
+    if BINDING_KINDS.contains(&kind) {
+        kind.to_string()
+    } else {
+        "none".to_string()
+    }
+}
+
+fn convert_optional_text(raw: Option<&Value>) -> Option<String> {
+    raw.and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.to_string())
+}
+
+fn convert_asset_ids(raw: Option<&Value>) -> Vec<String> {
+    match raw {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| id.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
     let Some(Value::Array(items)) = raw else {
         return Vec::new();
@@ -451,7 +513,7 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
             if role.is_empty() {
                 return None;
             }
-            Some(ChatMessageDto {
+            let mut message = ChatMessageDto {
                 role: role.to_string(),
                 content: item
                     .get("content")
@@ -462,7 +524,26 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
                     .get("createdAt")
                     .map(timestamp_to_iso)
                     .unwrap_or_default(),
-            })
+                binding_kind: convert_binding_kind(item.get("bindingKind"), role),
+                sec_id: convert_optional_text(item.get("secId")),
+                fragment_text: convert_optional_text(item.get("fragmentText")),
+                cite: convert_cite(item.get("cite")),
+                asset_ids: convert_asset_ids(item.get("assetIds")),
+            };
+            // 清洗而非拒绝整篇：缺必备字段的绑定降为 none，旧导出无绑定列也走这条。
+            if message.binding_kind == "section" && message.sec_id.is_none() {
+                message.binding_kind = "none".to_string();
+            }
+            if message.binding_kind == "fragment" && message.fragment_text.is_none() {
+                message.binding_kind = "none".to_string();
+            }
+            if message.binding_kind == "none" {
+                message.sec_id = None;
+                message.fragment_text = None;
+                message.cite = None;
+                message.asset_ids.clear();
+            }
+            Some(message)
         })
         .collect()
 }

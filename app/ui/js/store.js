@@ -8,6 +8,9 @@
 // - translations 记录侧键为 `sectionId:language`，DTO 拆成独立字段；
 // - readMarks 记录侧是 partId → 毫秒映射，DTO 是 [{partId, markedAt}] 数组；activityDays
 //   两侧同形 [{day, kind}]（day 为 YYYY-MM-DD 日历日，不做时区转换）；
+// - chat 两侧同为 [{role, content, createdAt, bindingKind, secId, fragmentText, cite, assetIds}]：
+//   缺 bindingKind 回填 none；cite 是块区间出处对象或 null；assetIds 为附图 id 列表；
+//   合法性（kind 三值、@节需 secId、片段需原文、assistant 恒 none）由 Rust normalize 兜底；
 // - products 两侧同为 [{kind, partId, body, updatedAt}] 数组：body 是自由 JSON 值
 //   （map/l2 结构对象、dig/retell Markdown 字符串）原样透传，updatedAt 毫秒 ↔ ISO；
 // - PDF 字节不进 DTO：写入时先落论文记录，再经 files.putAttachment@1 落附件（id 固定 'pdf'）。
@@ -134,12 +137,52 @@ function recallCardToDto(recallCard) {
 }
 
 // chat 消息缺 createdAt 时用论文 updatedAt 补齐（DTO 要求每条都有时间戳）。
-function chatToDto(paper) {
-  return (Array.isArray(paper.chat) ? paper.chat : []).map(message => ({
+// 绑定字段缺 bindingKind 回填 none（旧记录/浏览器导出没有这些键）；kind 三值合法性
+// 由 Rust normalize 兜底，映射层不另立允许列表（与 mapProducts 同口径）。
+function mapCite(cite) {
+  if (!cite || typeof cite !== 'object') return null;
+  const startSecId = typeof cite.startSecId === 'string' ? cite.startSecId.trim() : '';
+  const endSecId = typeof cite.endSecId === 'string' ? cite.endSecId.trim() : '';
+  if (!startSecId || !endSecId) return null;
+  const startBlock = Number(cite.startBlock);
+  const endBlock = Number(cite.endBlock);
+  if (!Number.isFinite(startBlock) || !Number.isFinite(endBlock)) return null;
+  return {
+    startSecId,
+    startBlock,
+    endSecId,
+    endBlock,
+    startPage: Number.isFinite(cite.startPage) ? cite.startPage : null,
+    endPage: Number.isFinite(cite.endPage) ? cite.endPage : null,
+  };
+}
+
+function mapChatMessage(message, createdAt) {
+  const bindingKind = typeof message?.bindingKind === 'string' && message.bindingKind
+    ? message.bindingKind
+    : 'none';
+  const assetIds = Array.isArray(message?.assetIds)
+    ? message.assetIds.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim())
+    : [];
+  return {
     role: message?.role ?? '',
     content: message?.content ?? '',
-    createdAt: message?.createdAt ? toIso(message.createdAt) : toIso(paper.updatedAt),
-  }));
+    createdAt,
+    bindingKind,
+    secId: typeof message?.secId === 'string' && message.secId.trim() ? message.secId.trim() : null,
+    fragmentText: typeof message?.fragmentText === 'string' && message.fragmentText
+      ? message.fragmentText
+      : null,
+    cite: mapCite(message?.cite),
+    assetIds,
+  };
+}
+
+function chatToDto(paper) {
+  return (Array.isArray(paper.chat) ? paper.chat : []).map(message => mapChatMessage(
+    message,
+    message?.createdAt ? toIso(message.createdAt) : toIso(paper.updatedAt),
+  ));
 }
 
 // readMarks 记录侧是 partId → 毫秒映射；DTO 侧是 [{partId, markedAt ISO}] 数组。
@@ -285,14 +328,13 @@ function recallCardFromDto(recallCard) {
   };
 }
 
-// chat 消息缺 createdAt 时用论文 updatedAt 补齐（与保存方向同一规则）。
+// chat 消息缺 createdAt 时用论文 updatedAt 补齐（与保存方向同一规则）；绑定字段缺省回填 none。
 function chatFromDto(dto) {
   const fallback = toMillis(dto?.updatedAt);
-  return (Array.isArray(dto?.chat) ? dto.chat : []).map(message => ({
-    role: message?.role ?? '',
-    content: message?.content ?? '',
-    createdAt: message?.createdAt ? toMillis(message.createdAt) : fallback,
-  }));
+  return (Array.isArray(dto?.chat) ? dto.chat : []).map(message => mapChatMessage(
+    message,
+    message?.createdAt ? toMillis(message.createdAt) : fallback,
+  ));
 }
 
 // readMarks：DTO 数组 [{partId, markedAt ISO}] → 记录映射 partId → 毫秒。

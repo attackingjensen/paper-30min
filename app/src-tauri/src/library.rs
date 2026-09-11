@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 
 use crate::error::BridgeError;
 
-pub const DATABASE_VERSION: i32 = 5;
+pub const DATABASE_VERSION: i32 = 6;
 pub const LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 /// activity_days.kind 的合法取值：导入论文 / 精读结果 / 中断保留的部分结果 / 设置已读完标记。
@@ -22,6 +22,13 @@ pub(crate) const ACTIVITY_DAY_KINDS: &[&str] = &["import", "analysis", "partial"
 
 /// protocol_products.kind 的合法取值：阅读地图 / 节薄摘要 / 深挖结果 / 复述稿（规格 #55 决策 21）。
 pub(crate) const PRODUCT_KINDS: &[&str] = &["map", "l2", "dig", "retell"];
+
+/// chat_messages.binding_kind 的合法取值：无绑定（全文提问）/ @节 / 选中片段（规格 #52 决策 1）。
+pub(crate) const BINDING_KINDS: &[&str] = &["none", "section", "fragment"];
+
+fn default_binding_kind() -> String {
+    "none".to_string()
+}
 
 /// 该 kind 是否为论文级产物（map/retell）。论文级产物 part_id 用空串约定；
 /// 节级产物（l2/dig）的 part_id 必须是精读部分 id。
@@ -118,6 +125,20 @@ impl Default for RecallCardDto {
     }
 }
 
+/// 绑定提问的块区间出处：起止节与块号，可选页码（规格 #52 决策 1；跨节记起止两段）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatCiteDto {
+    pub start_sec_id: String,
+    pub start_block: i64,
+    pub end_sec_id: String,
+    pub end_block: i64,
+    #[serde(default)]
+    pub start_page: Option<i64>,
+    #[serde(default)]
+    pub end_page: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessageDto {
@@ -125,6 +146,16 @@ pub struct ChatMessageDto {
     pub content: String,
     #[serde(default)]
     pub created_at: String,
+    #[serde(default = "default_binding_kind")]
+    pub binding_kind: String,
+    #[serde(default)]
+    pub sec_id: Option<String>,
+    #[serde(default)]
+    pub fragment_text: Option<String>,
+    #[serde(default)]
+    pub cite: Option<ChatCiteDto>,
+    #[serde(default)]
+    pub asset_ids: Vec<String>,
 }
 
 /// 已读完标记：用户对单个精读部分的手动完成记录，可撤销（撤销 = 快照少一行）。
@@ -278,6 +309,15 @@ fn json_text(value: &impl Serialize) -> Result<String, BridgeError> {
 
 fn parse_string_list(text: &str) -> Result<Vec<String>, BridgeError> {
     serde_json::from_str(text).map_err(|err| BridgeError::internal(format!("JSON 解码失败: {err}")))
+}
+
+fn parse_cite_json(text: Option<String>) -> Result<Option<ChatCiteDto>, BridgeError> {
+    let Some(text) = text.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|err| BridgeError::internal(format!("chat.cite JSON 解码失败: {err}")))
 }
 
 fn parse_images(text: &str) -> Result<Vec<Value>, BridgeError> {
@@ -604,6 +644,7 @@ fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     migrate_settings(conn)?;
     migrate_read_marks(conn)?;
     migrate_protocol_products(conn)?;
+    migrate_chat_bindings(conn)?;
     Ok(())
 }
 
@@ -796,6 +837,32 @@ fn migrate_protocol_products(conn: &mut Connection) -> Result<(), BridgeError> {
     Ok(())
 }
 
+/// v6：chat_messages 增绑定列（规格 #52 决策 1–2）。ALTER 带 DEFAULT 使旧行回填
+/// binding_kind=none、asset_ids 空列表；sec_id/fragment_text/cite 可空。一次版本跃迁，
+/// 单事务失败整体回滚并拒绝启动。v4/v5 已合入主线，本票不再合并进既有迁移。
+fn migrate_chat_bindings(conn: &mut Connection) -> Result<(), BridgeError> {
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(sqlite_error)?;
+    if version >= 6 {
+        return Ok(());
+    }
+    let tx = conn.transaction().map_err(sqlite_error)?;
+    tx.execute_batch(
+        "
+        ALTER TABLE chat_messages ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'none';
+        ALTER TABLE chat_messages ADD COLUMN sec_id TEXT;
+        ALTER TABLE chat_messages ADD COLUMN fragment_text TEXT;
+        ALTER TABLE chat_messages ADD COLUMN cite_json TEXT;
+        ALTER TABLE chat_messages ADD COLUMN asset_ids_json TEXT NOT NULL DEFAULT '[]';
+        ",
+    )
+    .map_err(sqlite_error)?;
+    tx.pragma_update(None, "user_version", 6).map_err(sqlite_error)?;
+    tx.commit().map_err(sqlite_error)?;
+    Ok(())
+}
+
 pub(crate) fn normalize_paper(paper: &mut PaperDto) -> Result<(), BridgeError> {
     paper.id = paper.id.trim().to_string();
     paper.title = paper.title.trim().to_string();
@@ -867,6 +934,7 @@ pub(crate) fn normalize_paper(paper: &mut PaperDto) -> Result<(), BridgeError> {
         } else {
             require_iso("chat.createdAt", &message.created_at)?;
         }
+        normalize_chat_binding(message)?;
     }
     require_unique_ids(
         paper.read_marks.iter().map(|item| item.part_id.as_str()),
@@ -924,6 +992,70 @@ pub(crate) fn normalize_paper(paper: &mut PaperDto) -> Result<(), BridgeError> {
             return Err(BridgeError::invalid_input("products.body 不能为空值"));
         }
         require_iso("products.updatedAt", &product.updated_at)?;
+    }
+    Ok(())
+}
+
+fn blank_to_none(value: &mut Option<String>) {
+    if let Some(text) = value {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            *value = None;
+        } else if trimmed != text.as_str() {
+            *value = Some(trimmed.to_string());
+        }
+    }
+}
+
+fn clear_chat_binding(message: &mut ChatMessageDto) {
+    message.binding_kind = default_binding_kind();
+    message.sec_id = None;
+    message.fragment_text = None;
+    message.cite = None;
+    message.asset_ids.clear();
+}
+
+fn normalize_chat_binding(message: &mut ChatMessageDto) -> Result<(), BridgeError> {
+    message.binding_kind = message.binding_kind.trim().to_string();
+    if message.binding_kind.is_empty() {
+        message.binding_kind = default_binding_kind();
+    }
+    blank_to_none(&mut message.sec_id);
+    blank_to_none(&mut message.fragment_text);
+    message.asset_ids.retain(|id| !id.trim().is_empty());
+    for id in &mut message.asset_ids {
+        *id = id.trim().to_string();
+    }
+    if message.role == "assistant" {
+        // assistant 消息恒 none（规格 #52 决策 1）：多带的绑定字段清掉，不拒绝整篇写入。
+        clear_chat_binding(message);
+        return Ok(());
+    }
+    if !BINDING_KINDS.contains(&message.binding_kind.as_str()) {
+        return Err(BridgeError::invalid_input(format!(
+            "chat.bindingKind 未知: {}",
+            message.binding_kind
+        )));
+    }
+    if message.binding_kind == "none" {
+        message.sec_id = None;
+        message.fragment_text = None;
+        message.cite = None;
+        message.asset_ids.clear();
+    } else if message.binding_kind == "section" {
+        if message.sec_id.is_none() {
+            return Err(BridgeError::invalid_input("chat.secId：@节绑定需要节 id"));
+        }
+        message.fragment_text = None;
+    } else if message.fragment_text.is_none() {
+        return Err(BridgeError::invalid_input(
+            "chat.fragmentText：片段绑定需要选中原文",
+        ));
+    }
+    if let Some(cite) = &message.cite {
+        if cite.start_sec_id.trim().is_empty() || cite.end_sec_id.trim().is_empty() {
+            return Err(BridgeError::invalid_input("chat.cite 需要起止节 id"));
+        }
     }
     Ok(())
 }
@@ -1064,10 +1196,27 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
     )
     .map_err(sqlite_error)?;
     for (seq, message) in paper.chat.iter().enumerate() {
+        let cite_json = match &message.cite {
+            Some(cite) => Some(json_text(cite)?),
+            None => None,
+        };
         tx.execute(
-            "INSERT INTO chat_messages(paper_id, seq, role, content, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![paper.id, seq as i64, message.role, message.content, message.created_at],
+            "INSERT INTO chat_messages(
+                paper_id, seq, role, content, created_at,
+                binding_kind, sec_id, fragment_text, cite_json, asset_ids_json
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                paper.id,
+                seq as i64,
+                message.role,
+                message.content,
+                message.created_at,
+                message.binding_kind,
+                message.sec_id,
+                message.fragment_text,
+                cite_json,
+                json_text(&message.asset_ids)?
+            ],
         )
         .map_err(sqlite_error)?;
     }
@@ -1231,20 +1380,42 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
 
     let mut chat_stmt = conn
         .prepare(
-            "SELECT role, content, created_at FROM chat_messages WHERE paper_id = ?1 ORDER BY seq",
+            "SELECT role, content, created_at, binding_kind, sec_id, fragment_text, cite_json, asset_ids_json
+             FROM chat_messages WHERE paper_id = ?1 ORDER BY seq",
         )
         .map_err(sqlite_error)?;
     let chat = chat_stmt
         .query_map(params![paper_id], |row| {
-            Ok(ChatMessageDto {
-                role: row.get(0)?,
-                content: row.get(1)?,
-                created_at: row.get(2)?,
-            })
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+            ))
         })
         .map_err(sqlite_error)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(sqlite_error)?;
+        .map_err(sqlite_error)?
+        .into_iter()
+        .map(
+            |(role, content, created_at, binding_kind, sec_id, fragment_text, cite_json, asset_ids_json)| {
+                Ok(ChatMessageDto {
+                    role,
+                    content,
+                    created_at,
+                    binding_kind,
+                    sec_id,
+                    fragment_text,
+                    cite: parse_cite_json(cite_json)?,
+                    asset_ids: parse_string_list(&asset_ids_json)?,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, BridgeError>>()?;
 
     let mut marks_stmt = conn
         .prepare("SELECT part_id, marked_at FROM read_marks WHERE paper_id = ?1 ORDER BY part_id")

@@ -557,6 +557,117 @@ fn import_drops_malformed_product_entries() {
 }
 
 #[test]
+fn commit_carries_chat_bindings() {
+    let (registry, library, dir) = common::env();
+    let mut paper = sample_browser_paper("paper-new", "新论文");
+    paper["chat"] = json!([
+        {
+            "role": "user",
+            "content": "这节在说什么？",
+            "createdAt": ADDED_AT_MS,
+            "bindingKind": "section",
+            "secId": "sec_3_method",
+            "cite": {
+                "startSecId": "sec_3_method",
+                "startBlock": 1,
+                "endSecId": "sec_3_method",
+                "endBlock": 20,
+                "startPage": 4,
+                "endPage": 6
+            },
+            "assetIds": []
+        },
+        {
+            "role": "assistant",
+            "content": "方法节给出了注意力机制。",
+            "createdAt": ADDED_AT_MS + 5_000,
+            "bindingKind": "section",
+            "secId": "sec_3_method"
+        },
+        {
+            "role": "user",
+            "content": "这张图什么意思？",
+            "createdAt": ADDED_AT_MS + 60_000,
+            "bindingKind": "fragment",
+            "fragmentText": "Figure 1 shows the architecture.",
+            "cite": {
+                "startSecId": "sec_2_intro",
+                "startBlock": 12,
+                "endSecId": "sec_3_method",
+                "endBlock": 2,
+                "startPage": 2,
+                "endPage": 4
+            },
+            "assetIds": ["crop-fig_1"]
+        }
+    ]);
+    let path = write_export(dir.path(), "library.json", &envelope(vec![paper]));
+    let token = inspect(&registry, &library, &path)["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    commit(&registry, &library, &token);
+
+    let imported = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-new" }),
+    );
+    assert_eq!(imported["paper"]["chat"][0]["bindingKind"], json!("section"));
+    assert_eq!(imported["paper"]["chat"][0]["secId"], json!("sec_3_method"));
+    assert_eq!(imported["paper"]["chat"][0]["cite"]["startBlock"], json!(1));
+    // assistant 入参即便带绑定也落库为 none。
+    assert_eq!(imported["paper"]["chat"][1]["bindingKind"], json!("none"));
+    assert_eq!(imported["paper"]["chat"][1]["secId"], json!(null));
+    assert_eq!(imported["paper"]["chat"][2]["bindingKind"], json!("fragment"));
+    assert_eq!(imported["paper"]["chat"][2]["assetIds"], json!(["crop-fig_1"]));
+}
+
+#[test]
+fn import_defaults_missing_chat_bindings_and_drops_malformed() {
+    let (registry, library, dir) = common::env();
+    let mut paper = sample_browser_paper("paper-new", "新论文");
+    paper["chat"] = json!([
+        { "role": "user", "content": "旧消息没有绑定列" },
+        { "role": "user", "content": "未知 kind 降为 none", "bindingKind": "quote", "secId": "sec_1" },
+        { "role": "user", "content": "@节缺节 id 降为 none", "bindingKind": "section" },
+        { "role": "user", "content": "片段缺原文降为 none", "bindingKind": "fragment", "cite": { "startSecId": "s", "startBlock": 1, "endSecId": "s", "endBlock": 2 } },
+        {
+            "role": "user",
+            "content": "合法片段",
+            "bindingKind": "fragment",
+            "fragmentText": "选中原文",
+            "cite": { "startSecId": "sec_1", "startBlock": 3, "endSecId": "sec_1", "endBlock": 5, "startPage": 1, "endPage": 1 },
+            "assetIds": ["crop-tbl_1"]
+        }
+    ]);
+    let path = write_export(dir.path(), "library.json", &envelope(vec![paper]));
+    let token = inspect(&registry, &library, &path)["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    commit(&registry, &library, &token);
+
+    let imported = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-new" }),
+    );
+    let chat = imported["paper"]["chat"].as_array().unwrap();
+    assert_eq!(chat.len(), 5, "畸形绑定清洗后消息仍保留");
+    assert_eq!(chat[0]["bindingKind"], json!("none"));
+    assert_eq!(chat[1]["bindingKind"], json!("none"));
+    assert_eq!(chat[1]["secId"], json!(null));
+    assert_eq!(chat[2]["bindingKind"], json!("none"));
+    assert_eq!(chat[3]["bindingKind"], json!("none"));
+    assert_eq!(chat[4]["bindingKind"], json!("fragment"));
+    assert_eq!(chat[4]["fragmentText"], json!("选中原文"));
+    assert_eq!(chat[4]["assetIds"], json!(["crop-tbl_1"]));
+}
+
+#[test]
 fn app_info_lists_migration_commands() {
     let (registry, library, _dir) = common::env();
     let info = invoke(&registry, &library, "app.info@1", json!({}));

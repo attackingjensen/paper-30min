@@ -89,8 +89,8 @@ test('put：记录 → DTO（ISO 日期、sections 数组、parts sortOrder、tr
     translations: [{ sectionId: 'abstract', language: 'zh', text: '译文', source: 'model', updatedAt: iso(1700000060000) }],
     recallCard: { markdown: '# 卡片', images: [{ id: 'img1', data: 'free-json' }], updatedAt: iso(1700000070000) },
     chat: [
-      { role: 'user', content: '问题', createdAt: iso(1700000080000) },
-      { role: 'assistant', content: '回答', createdAt: iso(1700000100000) },
+      { role: 'user', content: '问题', createdAt: iso(1700000080000), bindingKind: 'none', secId: null, fragmentText: null, cite: null, assetIds: [] },
+      { role: 'assistant', content: '回答', createdAt: iso(1700000100000), bindingKind: 'none', secId: null, fragmentText: null, cite: null, assetIds: [] },
     ],
     // readMarks 记录侧 partId → 毫秒映射转 DTO 数组；activityDays 两侧同形透传
     readMarks: [{ partId: 'part-1', markedAt: iso(1700000090000) }],
@@ -194,8 +194,11 @@ test('get：DTO → 记录（迁移形状），parts 的 text/pageRange 重建�
   // 数字时间戳原样保留
   assert.deepEqual(paper.translations, { 'abstract:zh': { text: '译', source: null, updatedAt: 1700000060000 } });
   assert.deepEqual(paper.recallCard, { markdown: '', images: [], updatedAt: 0 });
-  // chat 缺 createdAt 时用论文 updatedAt 补齐
-  assert.deepEqual(paper.chat, [{ role: 'user', content: 'q', createdAt: Date.parse('2024-01-02T03:04:05Z') }]);
+  // chat 缺 createdAt 时用论文 updatedAt 补齐；缺绑定字段回填 none
+  assert.deepEqual(paper.chat, [{
+    role: 'user', content: 'q', createdAt: Date.parse('2024-01-02T03:04:05Z'),
+    bindingKind: 'none', secId: null, fragmentText: null, cite: null, assetIds: [],
+  }]);
   // readMarks DTO 数组转回 partId → 毫秒映射；activityDays 原样透传
   assert.deepEqual(paper.readMarks, { 'part-1': Date.parse('2024-01-04T00:00:00Z') });
   assert.deepEqual(paper.activityDays, [{ day: '2024-01-01', kind: 'import' }, { day: '2024-01-04', kind: 'mark' }]);
@@ -319,4 +322,84 @@ test('pdf.attach：即 putAttachment（id 固定 pdf）', async () => {
   assert.equal(call.input.attachment.id, 'pdf');
   assert.equal(call.input.attachment.contentType, 'application/pdf');
   assert.deepEqual([...base64ToBytes(call.input.attachment.contentBase64)], [1]);
+});
+
+test('put/get：问答绑定字段往返（@节 / 片段 / 缺省 none）', async () => {
+  const bound = {
+    role: 'user',
+    content: '这节在说什么？',
+    createdAt: 1700000080000,
+    bindingKind: 'section',
+    secId: 'sec_3_method',
+    fragmentText: null,
+    cite: {
+      startSecId: 'sec_3_method', startBlock: 1,
+      endSecId: 'sec_3_method', endBlock: 20,
+      startPage: 4, endPage: 6,
+    },
+    assetIds: [],
+  };
+  const fragment = {
+    role: 'user',
+    content: '这张图什么意思？',
+    createdAt: 1700000085000,
+    bindingKind: 'fragment',
+    secId: null,
+    fragmentText: 'Figure 1 shows the architecture.',
+    cite: {
+      startSecId: 'sec_2_intro', startBlock: 12,
+      endSecId: 'sec_3_method', endBlock: 2,
+      startPage: 2, endPage: 4,
+    },
+    assetIds: ['crop-fig_1'],
+  };
+  let stored;
+  const bridge = createFakeBridge({
+    'library.putPaper@1': ({ paper }) => {
+      stored = paper;
+      return { schemaVersion: 1 };
+    },
+    'library.getPaper@1': () => ({ schemaVersion: 1, paper: stored }),
+    'files.listAttachments@1': () => ({ schemaVersion: 1, attachments: [] }),
+  });
+  const store = createTauriStore(bridge);
+  const paper = { ...sampleRecord(), chat: [bound, fragment] };
+  await store.put(paper);
+
+  assert.deepEqual(stored.chat, [
+    {
+      role: 'user',
+      content: '这节在说什么？',
+      createdAt: iso(1700000080000),
+      bindingKind: 'section',
+      secId: 'sec_3_method',
+      fragmentText: null,
+      cite: {
+        startSecId: 'sec_3_method', startBlock: 1,
+        endSecId: 'sec_3_method', endBlock: 20,
+        startPage: 4, endPage: 6,
+      },
+      assetIds: [],
+    },
+    {
+      role: 'user',
+      content: '这张图什么意思？',
+      createdAt: iso(1700000085000),
+      bindingKind: 'fragment',
+      secId: null,
+      fragmentText: 'Figure 1 shows the architecture.',
+      cite: {
+        startSecId: 'sec_2_intro', startBlock: 12,
+        endSecId: 'sec_3_method', endBlock: 2,
+        startPage: 2, endPage: 4,
+      },
+      assetIds: ['crop-fig_1'],
+    },
+  ]);
+
+  const loaded = await store.get('p1');
+  assert.deepEqual(loaded.chat, [
+    { ...bound, createdAt: 1700000080000 },
+    { ...fragment, createdAt: 1700000085000 },
+  ]);
 });

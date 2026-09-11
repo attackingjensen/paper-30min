@@ -68,12 +68,61 @@ fn sample_paper(id: &str, title: &str) -> Value {
     })
 }
 
+fn sample_chat_bindings() -> Value {
+    json!([
+        {
+            "role": "user",
+            "content": "这节在说什么？",
+            "createdAt": "2026-09-11T08:00:00Z",
+            "bindingKind": "section",
+            "secId": "sec_3_method",
+            "fragmentText": null,
+            "cite": {
+                "startSecId": "sec_3_method",
+                "startBlock": 1,
+                "endSecId": "sec_3_method",
+                "endBlock": 20,
+                "startPage": 4,
+                "endPage": 6
+            },
+            "assetIds": []
+        },
+        {
+            "role": "assistant",
+            "content": "方法节给出了注意力机制。",
+            "createdAt": "2026-09-11T08:00:05Z",
+            "bindingKind": "section",
+            "secId": "sec_3_method",
+            "fragmentText": "应被清掉",
+            "cite": { "startSecId": "sec_3_method", "startBlock": 1, "endSecId": "sec_3_method", "endBlock": 2 },
+            "assetIds": ["crop-fig_1"]
+        },
+        {
+            "role": "user",
+            "content": "这张图什么意思？",
+            "createdAt": "2026-09-11T08:01:00Z",
+            "bindingKind": "fragment",
+            "secId": null,
+            "fragmentText": "Figure 1 shows the architecture.",
+            "cite": {
+                "startSecId": "sec_2_intro",
+                "startBlock": 12,
+                "endSecId": "sec_3_method",
+                "endBlock": 2,
+                "startPage": 2,
+                "endPage": 4
+            },
+            "assetIds": ["crop-fig_1"]
+        }
+    ])
+}
+
 #[test]
 fn first_launch_creates_versioned_database_and_partitions() {
     let (registry, library, dir) = common::env();
     let info = invoke(&registry, &library, "library.info@1", json!({}));
     assert_eq!(info["schemaVersion"], json!(1));
-    assert_eq!(info["databaseVersion"], json!(5));
+    assert_eq!(info["databaseVersion"], json!(6));
     let root = info["dataRoot"].as_str().expect("dataRoot");
     assert_eq!(root, dir.path().to_string_lossy().as_ref());
     let partitions = info["partitions"].as_array().expect("partitions");
@@ -675,6 +724,149 @@ fn invalid_products_are_rejected() {
     let error = invoke_err(&registry, &library, "library.putPaper@1", null_body);
     assert_eq!(error.code, "invalid_input");
     assert!(error.message.contains("products.body"));
+}
+
+#[test]
+fn chat_bindings_round_trip_through_put_paper() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-chat", "绑定论文");
+    input["paper"]["chat"] = sample_chat_bindings();
+    let saved = invoke(&registry, &library, "library.putPaper@1", input);
+
+    // @节与片段原样往返；assistant 即便入参带绑定也恒回填 none。
+    assert_eq!(
+        saved["paper"]["chat"],
+        json!([
+            {
+                "role": "user",
+                "content": "这节在说什么？",
+                "createdAt": "2026-09-11T08:00:00Z",
+                "bindingKind": "section",
+                "secId": "sec_3_method",
+                "fragmentText": null,
+                "cite": {
+                    "startSecId": "sec_3_method",
+                    "startBlock": 1,
+                    "endSecId": "sec_3_method",
+                    "endBlock": 20,
+                    "startPage": 4,
+                    "endPage": 6
+                },
+                "assetIds": []
+            },
+            {
+                "role": "assistant",
+                "content": "方法节给出了注意力机制。",
+                "createdAt": "2026-09-11T08:00:05Z",
+                "bindingKind": "none",
+                "secId": null,
+                "fragmentText": null,
+                "cite": null,
+                "assetIds": []
+            },
+            {
+                "role": "user",
+                "content": "这张图什么意思？",
+                "createdAt": "2026-09-11T08:01:00Z",
+                "bindingKind": "fragment",
+                "secId": null,
+                "fragmentText": "Figure 1 shows the architecture.",
+                "cite": {
+                    "startSecId": "sec_2_intro",
+                    "startBlock": 12,
+                    "endSecId": "sec_3_method",
+                    "endBlock": 2,
+                    "startPage": 2,
+                    "endPage": 4
+                },
+                "assetIds": ["crop-fig_1"]
+            }
+        ])
+    );
+
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-chat" }));
+    assert_eq!(loaded["paper"], saved["paper"]);
+}
+
+#[test]
+fn chat_snapshot_rewrite_drops_bindings_with_messages() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-chat", "绑定论文");
+    input["paper"]["chat"] = sample_chat_bindings();
+    invoke(&registry, &library, "library.putPaper@1", input);
+
+    // 淘汰最旧消息时绑定一并删除：第二次 put 只保留最后一条用户消息。
+    let mut trimmed = sample_paper("paper-chat", "绑定论文");
+    trimmed["paper"]["chat"] = json!([
+        {
+            "role": "user",
+            "content": "这张图什么意思？",
+            "createdAt": "2026-09-11T08:01:00Z",
+            "bindingKind": "fragment",
+            "secId": null,
+            "fragmentText": "Figure 1 shows the architecture.",
+            "cite": {
+                "startSecId": "sec_2_intro",
+                "startBlock": 12,
+                "endSecId": "sec_3_method",
+                "endBlock": 2,
+                "startPage": 2,
+                "endPage": 4
+            },
+            "assetIds": ["crop-fig_1"]
+        }
+    ]);
+    invoke(&registry, &library, "library.putPaper@1", trimmed);
+
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-chat" }));
+    assert_eq!(loaded["paper"]["chat"].as_array().unwrap().len(), 1);
+    assert_eq!(loaded["paper"]["chat"][0]["bindingKind"], json!("fragment"));
+    assert_eq!(loaded["paper"]["chat"][0]["assetIds"], json!(["crop-fig_1"]));
+}
+
+#[test]
+fn delete_paper_cascades_chat_bindings() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-cascade", "级联论文");
+    input["paper"]["chat"] = sample_chat_bindings();
+    invoke(&registry, &library, "library.putPaper@1", input);
+    invoke(&registry, &library, "library.deletePaper@1", json!({ "paperId": "paper-cascade" }));
+
+    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-cascade", "级联论文"));
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-cascade" }));
+    // 同 id 重建后只有 sample_paper 的两条无绑定消息，不得读出旧绑定行。
+    assert_eq!(loaded["paper"]["chat"].as_array().unwrap().len(), 2);
+    assert_eq!(loaded["paper"]["chat"][0]["bindingKind"], json!("none"));
+    assert_eq!(loaded["paper"]["chat"][1]["bindingKind"], json!("none"));
+}
+
+#[test]
+fn invalid_chat_bindings_are_rejected() {
+    let (registry, library, _dir) = common::env();
+
+    let mut unknown_kind = sample_paper("p-kind", "未知绑定");
+    unknown_kind["paper"]["chat"] = json!([
+        { "role": "user", "content": "q", "createdAt": "2026-09-11T08:00:00Z", "bindingKind": "quote" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", unknown_kind);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("chat.bindingKind"));
+
+    let mut section_without_id = sample_paper("p-sec", "@节缺节 id");
+    section_without_id["paper"]["chat"] = json!([
+        { "role": "user", "content": "q", "createdAt": "2026-09-11T08:00:00Z", "bindingKind": "section" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", section_without_id);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("chat.secId"));
+
+    let mut fragment_without_text = sample_paper("p-frag", "片段缺原文");
+    fragment_without_text["paper"]["chat"] = json!([
+        { "role": "user", "content": "q", "createdAt": "2026-09-11T08:00:00Z", "bindingKind": "fragment" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", fragment_without_text);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("chat.fragmentText"));
 }
 
 #[test]
