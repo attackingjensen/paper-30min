@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "title": "Fixture 论文：小样例方法",
+  "sourceName": "fixture-basic.pdf",
+  "pageCount": 3,
+  "sections": [
+    {
+      "id": "sec_1_abstract",
+      "ordinal": 1,
+      "title": "Abstract",
+      "role": "abstract",
+      "pageStart": 1,
+      "pageEnd": 1,
+      "blocks": [
+        { "id": 1, "kind": "paragraph", "text": "本文研究小样例问题，提出样例方法。", "page": 1, "y": 100.0 },
+        { "id": 2, "kind": "paragraph", "text": "实验证明方法有效。", "page": 1, "y": 200.0 }
+      ],
+      "subsections": []
+    },
+    {
+      "id": "sec_2_introduction",
+      "ordinal": 2,
+      "title": "Introduction",
+      "number": "1",
+      "role": "body",
+      "pageStart": 1,
+      "pageEnd": 2,
+      "blocks": [
+        { "id": 1, "kind": "paragraph", "text": "研究背景：小样例问题长期存在。", "page": 1, "y": 100.0 },
+        { "id": 2, "kind": "figure", "text": "[图 fig_1]", "page": 2, "y": 150.0, "bbox": [100.0, 150.0, 400.0, 300.0], "assetId": "fig_1", "caption": "图 1：样例架构图。" },
+        { "id": 3, "kind": "paragraph", "text": "本文贡献有三点。", "page": 2, "y": 500.0 }
+      ],
+      "subsections": []
+    },
+    {
+      "id": "sec_3_method",
+      "ordinal": 3,
+      "title": "Method",
+      "number": "2",
+      "role": "body",
+      "pageStart": 2,
+      "pageEnd": 3,
+      "blocks": [
+        { "id": 1, "kind": "paragraph", "text": "方法第一步：读取输入。", "page": 2, "y": 100.0 },
+        { "id": 2, "kind": "table", "text": "| 指标 | 值 |\n| --- | --- |\n| 准确率 | 0.9 |", "page": 3, "y": 120.0, "bbox": [80.0, 120.0, 500.0, 200.0], "assetId": "tbl_1", "caption": "表 1：样例结果。" },
+        { "id": 3, "kind": "paragraph", "text": "方法第二步：输出结论。", "page": 3, "y": 400.0 }
+      ],
+      "subsections": [
+        { "number": "2.1", "title": "方法细节", "level": 2, "blockStart": 1, "blockEnd": 3, "pageStart": 2, "pageEnd": 3 }
+      ]
+    },
+    {
+      "id": "sec_4_references",
+      "ordinal": 4,
+      "title": "References",
+      "role": "references",
+      "pageStart": 3,
+      "pageEnd": 3,
+      "blocks": [
+        { "id": 1, "kind": "paragraph", "text": "[1] 样例文献。", "page": 3, "y": 600.0 }
+      ],
+      "subsections": []
+    }
+  ],
+  "frontmatter": [
+    { "id": 1, "kind": "paragraph", "text": "作者甲 作者乙", "page": 1, "y": 50.0 }
+  ],
+  "furniture": [],
+  "figures": [
+    {
+      "id": "fig_1",
+      "number": "1",
+      "caption": "图 1：样例架构图。",
+      "page": 2,
+      "bbox": [100.0, 150.0, 400.0, 300.0],
+      "section": "sec_2_introduction",
+      "references": [{ "secId": "sec_2_introduction", "blockId": 2, "page": 2 }]
+    }
+  ],
+  "tables": [
+    {
+      "id": "tbl_1",
+      "number": "1",
+      "caption": "表 1：样例结果。",
+      "page": 3,
+      "bbox": [80.0, 120.0, 500.0, 200.0],
+      "section": "sec_3_method",
+      "references": []
+    }
+  ],
+  "references": [
+    { "id": "ref_1", "number": 1, "text": "[1] 样例文献。", "citedAt": [{ "secId": "sec_2_introduction", "blockId": 1, "page": 1 }] }
+  ],
+  "warnings": []
+}

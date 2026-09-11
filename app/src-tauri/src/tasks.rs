@@ -18,6 +18,10 @@ pub(crate) const MAX_ATTEMPTS: u32 = 3;
 /// cancelled 终态；它不会作为任务错误暴露给前端。
 pub(crate) const CANCEL_SENTINEL: &str = "__cancelled__";
 
+/// 模型调用缺省采样参数：settings 与任务输入均未给出时使用（protocol 任务同源复用）。
+pub(crate) const DEFAULT_TEMPERATURE: f64 = 0.3;
+pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
+
 /// net.fetch-text@1 的默认响应上限。
 const DEFAULT_FETCH_TEXT_MAX_BYTES: u64 = 30 * 1024 * 1024;
 /// files.download@1 的默认下载上限。
@@ -53,6 +57,7 @@ pub struct Progress {
 
 /// 任务事件流中的单条事件，经 `subscribe(taskId)` 通道发给 JavaScript。
 /// `result` 只在 succeeded 终态携带结果载荷，缺省不序列化（向后兼容）。
+/// `detail` 承载领域任务的扩展载荷（阶段事件、工具轨迹等，#65），缺省不序列化。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskEvent {
@@ -69,6 +74,8 @@ pub struct TaskEvent {
     pub error: Option<BridgeError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
     pub at: String,
 }
 
@@ -97,7 +104,7 @@ pub trait EventSink: Send + Sync {
     fn emit(&self, event: TaskEvent);
 }
 
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
@@ -145,6 +152,18 @@ enum TaskPlan {
         paper_id: String,
         docling_json_path: std::path::PathBuf,
         pdf_path: Option<std::path::PathBuf>,
+    },
+    PaperBuildMap {
+        paper_id: String,
+        overwrite_confirmed: bool,
+    },
+    PaperDeepDive {
+        paper_id: String,
+        part_ids: Vec<String>,
+    },
+    PaperSynthesize {
+        paper_id: String,
+        overwrite_confirmed: bool,
     },
 }
 
@@ -264,7 +283,59 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 pdf_path,
             })
         }
+        crate::protocol::TASK_BUILD_MAP => {
+            let paper_id = required_string(crate::protocol::TASK_BUILD_MAP, input, "paperId")?;
+            files::require_safe_segment(paper_id, "paperId")?;
+            Ok(TaskPlan::PaperBuildMap {
+                paper_id: paper_id.to_string(),
+                overwrite_confirmed: optional_bool(crate::protocol::TASK_BUILD_MAP, input, "overwriteConfirmed")?,
+            })
+        }
+        crate::protocol::TASK_DEEP_DIVE => {
+            let paper_id = required_string(crate::protocol::TASK_DEEP_DIVE, input, "paperId")?;
+            files::require_safe_segment(paper_id, "paperId")?;
+            let part_ids = input
+                .get("partIds")
+                .and_then(Value::as_array)
+                .ok_or_else(|| BridgeError::invalid_input("paper.deep-dive@1 需要数组参数 partIds"))?;
+            let mut ids: Vec<String> = Vec::with_capacity(part_ids.len());
+            for value in part_ids {
+                let id = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| BridgeError::invalid_input("partIds 元素必须是非空字符串"))?;
+                if !ids.iter().any(|seen| seen == id) {
+                    ids.push(id.to_string());
+                }
+            }
+            if ids.is_empty() {
+                return Err(BridgeError::invalid_input("paper.deep-dive@1 的 partIds 不能为空数组"));
+            }
+            Ok(TaskPlan::PaperDeepDive {
+                paper_id: paper_id.to_string(),
+                part_ids: ids,
+            })
+        }
+        crate::protocol::TASK_SYNTHESIZE => {
+            let paper_id = required_string(crate::protocol::TASK_SYNTHESIZE, input, "paperId")?;
+            files::require_safe_segment(paper_id, "paperId")?;
+            Ok(TaskPlan::PaperSynthesize {
+                paper_id: paper_id.to_string(),
+                overwrite_confirmed: optional_bool(crate::protocol::TASK_SYNTHESIZE, input, "overwriteConfirmed")?,
+            })
+        }
         _ => Err(BridgeError::unknown_command(kind)),
+    }
+}
+
+/// 可选布尔参数：缺省/null → false；显式给出必须是布尔。
+fn optional_bool(kind: &str, input: &Value, field: &str) -> Result<bool, BridgeError> {
+    match input.get(field) {
+        None | Some(Value::Null) => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| BridgeError::invalid_input(format!("{kind} 的 {field} 必须是布尔值"))),
     }
 }
 
@@ -301,13 +372,13 @@ fn plan_model_chat(input: &Value, library: &Library) -> Result<TaskPlan, BridgeE
         .and_then(|value| value.get("maxTokens"))
         .and_then(Value::as_u64);
     let temperature = match input.get("temperature") {
-        None | Some(Value::Null) => stored_temperature.unwrap_or(0.3),
+        None | Some(Value::Null) => stored_temperature.unwrap_or(DEFAULT_TEMPERATURE),
         Some(value) => value
             .as_f64()
             .ok_or_else(|| BridgeError::invalid_input("temperature 必须是数值"))?,
     };
     let max_tokens = match input.get("maxTokens") {
-        None | Some(Value::Null) => stored_max_tokens.unwrap_or(4096),
+        None | Some(Value::Null) => stored_max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         Some(value) => value
             .as_u64()
             .ok_or_else(|| BridgeError::invalid_input("maxTokens 必须是正整数"))?,
@@ -378,6 +449,9 @@ pub fn available_task_kinds() -> &'static [&'static str] {
         crate::pdfparse::TASK_CONVERT,
         crate::pdfparse::TASK_BOOTSTRAP,
         crate::pdfassets::TASK_PRERENDER,
+        crate::protocol::TASK_BUILD_MAP,
+        crate::protocol::TASK_DEEP_DIVE,
+        crate::protocol::TASK_SYNTHESIZE,
     ]
 }
 
@@ -500,6 +574,7 @@ impl TaskRegistry {
             chunk: None,
             error: None,
             result: None,
+            detail: None,
             at: snapshot.updated_at.clone(),
         });
         Ok(snapshot)
@@ -550,6 +625,34 @@ impl TaskRegistry {
         self.publish(task_id, sink, None, Some(progress), None, None, None);
     }
 
+    /// 领域事件：不改变状态/进度，携带 detail 载荷发自定义事件（阶段、工具轨迹等）。
+    /// 事件名是事件流契约的一部分（规格 #55 决策 28）。
+    fn push_detail(&self, task_id: &str, sink: &Arc<dyn EventSink>, event: &'static str, detail: Value) {
+        let snapshot = {
+            let Ok(mut entries) = self.entries.lock() else {
+                return;
+            };
+            let Some(entry) = entries.get_mut(task_id) else {
+                return;
+            };
+            entry.snapshot.updated_at = now_iso();
+            entry.snapshot.clone()
+        };
+        sink.emit(TaskEvent {
+            schema_version: TASK_SCHEMA_VERSION,
+            task_id: snapshot.task_id,
+            kind: snapshot.kind,
+            event,
+            status: snapshot.status,
+            progress: None,
+            chunk: None,
+            error: None,
+            result: None,
+            detail: Some(detail),
+            at: snapshot.updated_at,
+        });
+    }
+
     /// 更新快照并向订阅者发一条事件。有 chunk 为 chunk 事件，否则为 status 事件。
     fn publish(
         &self,
@@ -593,6 +696,7 @@ impl TaskRegistry {
             chunk,
             error,
             result,
+            detail: None,
             at: snapshot.updated_at,
         });
     }
@@ -646,6 +750,12 @@ impl RunContext {
     pub(crate) fn push_progress(&self, progress: Progress) {
         self.registry
             .push_progress(&self.task_id, &self.sink, progress);
+    }
+
+    /// 领域事件出口：阶段进度、工具轨迹等携带 detail 的自定义事件（不改变任务状态）。
+    pub(crate) fn emit_detail(&self, event: &'static str, detail: Value) {
+        self.registry
+            .push_detail(&self.task_id, &self.sink, event, detail);
     }
 
     /// 直接置 failed 终态（不可重试的错误或未配置等情况）。
@@ -796,5 +906,16 @@ fn run_task(
             docling_json_path,
             pdf_path,
         } => crate::pdfassets::run_prerender(&ctx, &paper_id, &docling_json_path, pdf_path.as_deref()),
+        TaskPlan::PaperBuildMap {
+            paper_id,
+            overwrite_confirmed,
+        } => crate::protocol::run_build_map(&ctx, &paper_id, overwrite_confirmed),
+        TaskPlan::PaperDeepDive { paper_id, part_ids } => {
+            crate::protocol::run_deep_dive(&ctx, &paper_id, &part_ids)
+        }
+        TaskPlan::PaperSynthesize {
+            paper_id,
+            overwrite_confirmed,
+        } => crate::protocol::run_synthesize(&ctx, &paper_id, overwrite_confirmed),
     }
 }

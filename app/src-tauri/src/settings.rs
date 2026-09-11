@@ -14,6 +14,10 @@ const SKILLS_OVERRIDES_KEY: &str = "skills.overrides";
 /// Docling 侧车设置（JSON 对象）：hfEndpoint 为模型下载端点覆盖（规格 #48 决策 3）。
 const PDFPARSE_KEY: &str = "pdfparse";
 
+/// maxTokens 设置上限：settings 校验与协议任务的 stage 下限提升共用同一上限
+/// （协议任务把配置值抬到阶段下限时也不越过此上限）。
+pub(crate) const MAX_TOKENS_LIMIT: u64 = 200_000;
+
 fn default_model() -> Map<String, Value> {
     json!({
         "baseUrl": "",
@@ -108,7 +112,7 @@ pub fn put_model(library: &Library, input: &Value) -> Result<Value, BridgeError>
                 let number = value.as_u64().ok_or_else(|| {
                     BridgeError::invalid_input(format!("{field} 必须是正整数"))
                 })?;
-                let (min, max) = if field == "maxTokens" { (1, 200_000) } else { (1_000, 200_000) };
+                let (min, max) = if field == "maxTokens" { (1, MAX_TOKENS_LIMIT) } else { (1_000, MAX_TOKENS_LIMIT) };
                 if number < min || number > max {
                     return Err(BridgeError::invalid_input(format!("{field} 必须在 {min}..={max} 之间")));
                 }

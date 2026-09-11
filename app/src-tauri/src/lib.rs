@@ -9,6 +9,7 @@ pub mod net;
 pub mod pdfassets;
 pub mod pdfmap;
 pub mod pdfparse;
+pub mod protocol;
 pub mod settings;
 pub mod skills;
 pub mod smoke;

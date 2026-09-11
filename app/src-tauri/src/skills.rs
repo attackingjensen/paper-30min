@@ -32,3 +32,11 @@ pub fn list_skills() -> Vec<Value> {
     entries.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
     entries
 }
+
+/// 取单个内嵌技能文件的原文（协议任务运行时在 Rust 侧组装提示词用，#65）。
+pub(crate) fn skill_text(file: &str) -> Option<&'static str> {
+    SKILLS
+        .iter()
+        .find(|(name, _)| *name == file)
+        .map(|(_, text)| *text)
+}
