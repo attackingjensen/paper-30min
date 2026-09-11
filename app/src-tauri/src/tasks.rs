@@ -339,8 +339,63 @@ fn optional_bool(kind: &str, input: &Value, field: &str) -> Result<bool, BridgeE
     }
 }
 
-/// model.chat@1 计划校验：messages 非空且 role/content 都是字符串；
-/// temperature/maxTokens/stream 缺省取 settings 值，输入显式给出时覆盖。
+/// OpenAI 兼容的 message.content：纯文本，或 text / image_url parts 数组
+///（片段提问附裁切图，规格 #52 决策 5）。
+fn validate_chat_content(index: usize, content: &Value) -> Result<Value, BridgeError> {
+    match content {
+        Value::String(_) => Ok(content.clone()),
+        Value::Array(parts) => {
+            if parts.is_empty() {
+                return Err(BridgeError::invalid_input(format!(
+                    "messages[{index}].content 多模态数组不能为空"
+                )));
+            }
+            for (part_index, part) in parts.iter().enumerate() {
+                let kind = part
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        BridgeError::invalid_input(format!(
+                            "messages[{index}].content[{part_index}].type 必须是字符串"
+                        ))
+                    })?;
+                match kind {
+                    "text" => {
+                        if part.get("text").and_then(Value::as_str).is_none() {
+                            return Err(BridgeError::invalid_input(format!(
+                                "messages[{index}].content[{part_index}] text 段需要字符串 text"
+                            )));
+                        }
+                    }
+                    "image_url" => {
+                        let url = part
+                            .get("image_url")
+                            .and_then(|value| value.get("url"))
+                            .and_then(Value::as_str);
+                        if url.filter(|value| !value.is_empty()).is_none() {
+                            return Err(BridgeError::invalid_input(format!(
+                                "messages[{index}].content[{part_index}] image_url 段需要非空 url"
+                            )));
+                        }
+                    }
+                    other => {
+                        return Err(BridgeError::invalid_input(format!(
+                            "messages[{index}].content[{part_index}].type 未知: {other}"
+                        )));
+                    }
+                }
+            }
+            Ok(content.clone())
+        }
+        _ => Err(BridgeError::invalid_input(format!(
+            "messages[{index}].content 必须是字符串或多模态 parts 数组"
+        ))),
+    }
+}
+
+/// model.chat@1 计划校验：messages 非空；role 为字符串；content 为字符串或
+/// OpenAI 兼容多模态 parts（text / image_url）。temperature/maxTokens/stream
+/// 缺省取 settings 值，输入显式给出时覆盖。
 fn plan_model_chat(input: &Value, library: &Library) -> Result<TaskPlan, BridgeError> {
     let messages = input
         .get("messages")
@@ -353,10 +408,10 @@ fn plan_model_chat(input: &Value, library: &Library) -> Result<TaskPlan, BridgeE
             .get("role")
             .and_then(Value::as_str)
             .ok_or_else(|| BridgeError::invalid_input(format!("messages[{index}].role 必须是字符串")))?;
-        let content = message
-            .get("content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| BridgeError::invalid_input(format!("messages[{index}].content 必须是字符串")))?;
+        let content = message.get("content").ok_or_else(|| {
+            BridgeError::invalid_input(format!("messages[{index}] 缺少 content"))
+        })?;
+        let content = validate_chat_content(index, content)?;
         checked.push(json!({ "role": role, "content": content }));
     }
     // 设置内容损坏时按内建缺省处理，与 settings.get@1 的合并语义一致。

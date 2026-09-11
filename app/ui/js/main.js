@@ -14,8 +14,9 @@ import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
 import {
   initSkills, effectiveSkills, getSkill, saveCustomSkill, resetSkill,
-  parseSkillFile, loadCustomSkills, loadSkills, CHAT_SYSTEM_TEMPLATE,
+  parseSkillFile, loadCustomSkills, loadSkills,
 } from './skills.js';
+import { assembleQaContext, BLOCKMODEL_ATTACHMENT_ID } from './qa.js';
 
 const bridge = createBridge(window.__TAURI__);
 let store = null; // createTauriStore(bridge)，启动序列中创建
@@ -980,22 +981,84 @@ async function translateCurrentText() {
 }
 
 // ---------------- 问答视图 ----------------
-function truncate(text, max) {
-  if (text.length <= max) return text;
-  return text.slice(0, max) + '\n\n[……原文过长，已截断……]';
+async function loadBlockModel(paper) {
+  let attachment;
+  try {
+    const meta = await bridge.invoke('files.getAttachment@1', {
+      paperId: paper.id,
+      attachmentId: BLOCKMODEL_ATTACHMENT_ID,
+    });
+    attachment = meta?.attachment;
+  } catch (err) {
+    const error = new Error('未建图：提问须先完成建图。阅读地图与块模型就位后才能装配上下文。');
+    error.code = 'map_required';
+    error.cause = err;
+    throw error;
+  }
+  if (!attachment) {
+    const error = new Error('未建图：提问须先完成建图。阅读地图与块模型就位后才能装配上下文。');
+    error.code = 'map_required';
+    throw error;
+  }
+  const range = await bridge.invoke('files.readRange@1', {
+    paperId: paper.id,
+    attachmentId: BLOCKMODEL_ATTACHMENT_ID,
+    offset: 0,
+    length: attachment.size,
+  });
+  try {
+    return JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
+  } catch (err) {
+    const error = new Error('块模型无法解析，请重新建图后再提问。');
+    error.code = 'invalid_blockmodel';
+    error.cause = err;
+    throw error;
+  }
 }
 
-function buildChatContext(p) {
-  const cap = 5000;
-  const parts = [`论文标题：${p.title}`];
-  for (const def of papers.readingParts(p)) {
-    const t = p.sections?.[def.id]?.trim();
-    if (t) parts.push(`\n===== ${def.label} =====\n${truncate(t, cap)}`);
+async function loadCropDataUrls(paper, cropAssetIds) {
+  const crops = {};
+  for (const id of cropAssetIds) {
+    try {
+      const meta = await bridge.invoke('files.getAttachment@1', { paperId: paper.id, attachmentId: id });
+      const attachment = meta?.attachment;
+      if (!attachment) continue;
+      const range = await bridge.invoke('files.readRange@1', {
+        paperId: paper.id,
+        attachmentId: id,
+        offset: 0,
+        length: attachment.size,
+      });
+      const mime = attachment.contentType || 'image/webp';
+      crops[id] = `data:${mime};base64,${range.contentBase64}`;
+    } catch (err) {
+      console.warn(`裁切图 ${id} 读取失败：`, err);
+    }
   }
-  // 函数形式替换：标题与上下文按字面注入，避免 $ 模式被替换值解释。
-  return CHAT_SYSTEM_TEMPLATE
-    .replaceAll('{title}', () => p.title)
-    .replaceAll('{content}', () => parts.join('\n').slice(0, 24000));
+  return crops;
+}
+
+async function assembleCurrentQa(paper, question, binding) {
+  const mapped = await loadBlockModel(paper);
+  const history = (paper.chat || []).slice(0, -1);
+  const input = {
+    title: paper.title,
+    mapped,
+    products: paper.products,
+    history,
+    question,
+    binding,
+  };
+  const assembled = assembleQaContext(input);
+  if (!assembled.cropAssetIds.length) return assembled.messages;
+  const crops = await loadCropDataUrls(paper, assembled.cropAssetIds);
+  const missing = assembled.cropAssetIds.filter(id => !crops[id]);
+  if (missing.length) {
+    const error = new Error(`片段覆盖的裁切图缺失：${missing.join('、')}。请先完成建图预渲染。`);
+    error.code = 'preflight_missing';
+    throw error;
+  }
+  return assembleQaContext({ ...input, crops }).messages;
 }
 
 function renderChat() {
@@ -1036,16 +1099,13 @@ async function sendChat() {
   await papers.appendChatMessage(paper, { role: 'user', content: q });
   appendChatBubble('user', q);
   const bubble = appendChatBubble('assistant', '…');
+  const binding = paper.chat.at(-1) ?? { bindingKind: 'none' };
 
-  const history = paper.chat.slice(-12).map(m => ({ role: m.role, content: m.content }));
-  const messages = [
-    { role: 'system', content: buildChatContext(paper) },
-    ...history,
-  ];
   // 模型补全段提成本地函数：任务中心「重试」重跑补全；用户消息已落库，不重复追加。
   const askOnce = async () => {
     chatAborter = new AbortController();
     try {
+      const messages = await assembleCurrentQa(paper, q, binding);
       const text = await model.chat(messages, {
         stream: true,
         signal: chatAborter.signal,

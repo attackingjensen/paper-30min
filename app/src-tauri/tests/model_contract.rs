@@ -145,6 +145,10 @@ fn chat_plan_validation_rejects_bad_input_at_start() {
         json!({ "messages": [] }),
         json!({ "messages": [{ "role": "user" }] }),
         json!({ "messages": [{ "role": 1, "content": "x" }] }),
+        json!({ "messages": [{ "role": "user", "content": 1 }] }),
+        json!({ "messages": [{ "role": "user", "content": [] }] }),
+        json!({ "messages": [{ "role": "user", "content": [{ "type": "file" }] }] }),
+        json!({ "messages": [{ "role": "user", "content": [{ "type": "image_url", "image_url": { "url": "" } }] }] }),
         json!({ "messages": [{ "role": "user", "content": "x" }], "stream": "yes" }),
         json!({ "messages": [{ "role": "user", "content": "x" }], "temperature": "high" }),
     ] {
@@ -152,6 +156,38 @@ fn chat_plan_validation_rejects_bad_input_at_start() {
         assert_eq!(error.code, "invalid_input", "应拒绝非法输入: {input}");
         assert!(!error.retryable);
     }
+}
+
+#[test]
+fn chat_forwards_multimodal_image_url_parts() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|request, _hit| {
+        if request.path == "/v1/chat/completions" {
+            sse_chat(vec![
+                json!({"choices": [{"delta": {"content": "见图"}}]}).to_string(),
+                json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}).to_string(),
+            ])
+        } else {
+            MockResponse::json(404, json!({"error": {"message": "no such route"}}))
+        }
+    });
+    configure_model(&registry, &library, &mock.url("/v1"));
+    let parts = json!([
+        { "type": "text", "text": "这张图什么意思？" },
+        { "type": "image_url", "image_url": { "url": "data:image/webp;base64,Zmln" } }
+    ]);
+    let sink = Collector::new();
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": parts }] }),
+            sink,
+        )
+        .unwrap();
+
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let body: Value = serde_json::from_slice(&mock.requests()[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"], parts);
 }
 
 #[test]

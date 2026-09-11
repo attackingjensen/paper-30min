@@ -440,6 +440,7 @@ Experiment 原文：
   },
 ];
 
+// 浏览器阅读器仍用此模板做截断注入；Tauri 问答已改走 qa.js 三形态装配（#67）。
 export const CHAT_SYSTEM_TEMPLATE = `你是「论文精读助手」，正在帮助用户深入理解论文《{title}》。以下是论文的主要内容（可能被截断）：
 
 {content}
