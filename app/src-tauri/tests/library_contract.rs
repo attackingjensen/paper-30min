@@ -73,7 +73,7 @@ fn first_launch_creates_versioned_database_and_partitions() {
     let (registry, library, dir) = common::env();
     let info = invoke(&registry, &library, "library.info@1", json!({}));
     assert_eq!(info["schemaVersion"], json!(1));
-    assert_eq!(info["databaseVersion"], json!(3));
+    assert_eq!(info["databaseVersion"], json!(4));
     let root = info["dataRoot"].as_str().expect("dataRoot");
     assert_eq!(root, dir.path().to_string_lossy().as_ref());
     let partitions = info["partitions"].as_array().expect("partitions");
@@ -354,6 +354,141 @@ fn concurrent_puts_of_same_paper_do_not_tear_nested_records() {
     let analysis = loaded["paper"]["analyses"][0]["text"].as_str().unwrap();
     assert_eq!(title, analysis, "同一论文的标题与精读结果应来自同一次完整写入");
     assert!(title == "A" || title == "B");
+}
+
+#[test]
+fn read_marks_and_activity_days_round_trip_through_put_paper() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-marks", "标记论文");
+    input["paper"]["readMarks"] = json!([
+        { "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" },
+        { "partId": "part-1", "markedAt": "2026-09-03T10:00:00Z" }
+    ]);
+    input["paper"]["activityDays"] = json!([
+        { "day": "2026-09-01", "kind": "import" },
+        { "day": "2026-09-02", "kind": "mark" }
+    ]);
+    let saved = invoke(&registry, &library, "library.putPaper@1", input);
+    assert_eq!(
+        saved["paper"]["readMarks"],
+        json!([
+            { "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" },
+            { "partId": "part-1", "markedAt": "2026-09-03T10:00:00Z" }
+        ])
+    );
+    assert_eq!(
+        saved["paper"]["activityDays"],
+        json!([
+            { "day": "2026-09-01", "kind": "import" },
+            { "day": "2026-09-02", "kind": "mark" }
+        ])
+    );
+
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-marks" }));
+    assert_eq!(loaded["paper"], saved["paper"]);
+}
+
+#[test]
+fn read_marks_snapshot_rewrite_revokes_missing_rows() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-marks", "标记论文");
+    input["paper"]["readMarks"] = json!([
+        { "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" },
+        { "partId": "part-1", "markedAt": "2026-09-03T10:00:00Z" }
+    ]);
+    invoke(&registry, &library, "library.putPaper@1", input);
+
+    // 撤销 = 快照少一行：第二次 put 不再携带 part-1 标记。
+    let mut revoked = sample_paper("paper-marks", "标记论文");
+    revoked["paper"]["readMarks"] = json!([
+        { "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" }
+    ]);
+    invoke(&registry, &library, "library.putPaper@1", revoked);
+
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-marks" }));
+    assert_eq!(
+        loaded["paper"]["readMarks"],
+        json!([{ "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" }])
+    );
+}
+
+#[test]
+fn activity_days_are_append_only_and_idempotent() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-days", "打卡论文");
+    input["paper"]["activityDays"] = json!([
+        { "day": "2026-09-01", "kind": "import" },
+        { "day": "2026-09-02", "kind": "mark" }
+    ]);
+    invoke(&registry, &library, "library.putPaper@1", input.clone());
+    // 同日同篇同类重复写入幂等。
+    invoke(&registry, &library, "library.putPaper@1", input);
+
+    // DTO 未携带的历史行不受影响：第二次 put 只携带 import 日。
+    let mut subset = sample_paper("paper-days", "打卡论文");
+    subset["paper"]["activityDays"] = json!([{ "day": "2026-09-01", "kind": "import" }]);
+    invoke(&registry, &library, "library.putPaper@1", subset);
+
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-days" }));
+    assert_eq!(
+        loaded["paper"]["activityDays"],
+        json!([
+            { "day": "2026-09-01", "kind": "import" },
+            { "day": "2026-09-02", "kind": "mark" }
+        ])
+    );
+}
+
+#[test]
+fn delete_paper_cascades_read_marks_and_activity_days() {
+    let (registry, library, _dir) = common::env();
+    let mut input = sample_paper("paper-cascade", "级联论文");
+    input["paper"]["readMarks"] = json!([
+        { "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" }
+    ]);
+    input["paper"]["activityDays"] = json!([{ "day": "2026-09-01", "kind": "import" }]);
+    invoke(&registry, &library, "library.putPaper@1", input);
+    invoke(&registry, &library, "library.deletePaper@1", json!({ "paperId": "paper-cascade" }));
+
+    // 同 id 重建一篇无标记论文：若旧行未随论文级联删除，这里会读出残留行。
+    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-cascade", "级联论文"));
+    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-cascade" }));
+    assert_eq!(loaded["paper"]["readMarks"], json!([]));
+    assert_eq!(loaded["paper"]["activityDays"], json!([]));
+}
+
+#[test]
+fn invalid_read_marks_and_activity_days_are_rejected() {
+    let (registry, library, _dir) = common::env();
+
+    let mut duplicate = sample_paper("p-dup", "重复标记");
+    duplicate["paper"]["readMarks"] = json!([
+        { "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" },
+        { "partId": "abstract", "markedAt": "2026-09-03T10:00:00Z" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", duplicate);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("readMarks.partId"));
+
+    let mut bad_marked_at = sample_paper("p-date", "标记时间无效");
+    bad_marked_at["paper"]["readMarks"] = json!([
+        { "partId": "abstract", "markedAt": "昨天" }
+    ]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", bad_marked_at);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("readMarks.markedAt"));
+
+    let mut bad_day = sample_paper("p-day", "活动日无效");
+    bad_day["paper"]["activityDays"] = json!([{ "day": "2026-9-1", "kind": "import" }]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", bad_day);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("activityDays.day"));
+
+    let mut bad_kind = sample_paper("p-kind", "活动类型未知");
+    bad_kind["paper"]["activityDays"] = json!([{ "day": "2026-09-01", "kind": "reread" }]);
+    let error = invoke_err(&registry, &library, "library.putPaper@1", bad_kind);
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("activityDays.kind"));
 }
 
 #[test]

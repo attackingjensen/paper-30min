@@ -220,6 +220,13 @@ export async function applyResplit(paper, parseResult) {
   }
   paper.translations = keptTranslations;
 
+  // 已读完标记随其结果一并作废、不留孤儿（规格 #51 决策 9，与分析同一保留规则）。
+  const keptMarks = {};
+  for (const [partId, markedAt] of Object.entries(paper.readMarks || {})) {
+    if (partId === 'abstract' && abstractUnchanged) keptMarks[partId] = markedAt;
+  }
+  paper.readMarks = keptMarks;
+
   paper.updatedAt = Date.now();
   await store.put(paper);
   return { discarded };

@@ -8,12 +8,17 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::format_description::well_known::{Iso8601, Rfc3339};
+use time::OffsetDateTime;
 
 use crate::error::BridgeError;
 
-pub const DATABASE_VERSION: i32 = 3;
+pub const DATABASE_VERSION: i32 = 4;
 pub const LIBRARY_SCHEMA_VERSION: u32 = 1;
+
+/// activity_days.kind 的合法取值：导入论文 / 精读结果 / 中断保留的部分结果 / 设置已读完标记。
+/// 建图产物、论文问答、翻译与回想卡片编辑不算阅读活动，不进表。
+pub(crate) const ACTIVITY_DAY_KINDS: &[&str] = &["import", "analysis", "partial", "mark"];
 
 const PARTITIONS: &[&str] = &["database", "attachments", "operations", "exports"];
 
@@ -113,6 +118,24 @@ pub struct ChatMessageDto {
     pub created_at: String,
 }
 
+/// 已读完标记：用户对单个精读部分的手动完成记录，可撤销（撤销 = 快照少一行）。
+/// part_id 沿用精读部分身份（abstract + part-N），不依赖 reading_parts 行存在。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadMarkDto {
+    pub part_id: String,
+    pub marked_at: String,
+}
+
+/// 活动日：某个 UTC 日历日（YYYY-MM-DD）在某篇论文上发生过一类阅读活动。
+/// append-only：只插入、不更新，除随论文级联删除外不删除。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityDayDto {
+    pub day: String,
+    pub kind: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PaperDto {
@@ -150,6 +173,10 @@ pub struct PaperDto {
     pub recall_card: RecallCardDto,
     #[serde(default)]
     pub chat: Vec<ChatMessageDto>,
+    #[serde(default)]
+    pub read_marks: Vec<ReadMarkDto>,
+    #[serde(default)]
+    pub activity_days: Vec<ActivityDayDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -198,6 +225,20 @@ fn require_iso(field: &str, value: &str) -> Result<(), BridgeError> {
     Ok(())
 }
 
+/// activity_days.day 是否合法的 YYYY-MM-DD 日历日。
+pub(crate) fn is_valid_day(value: &str) -> bool {
+    time::Date::parse(value, &Iso8601::DATE).is_ok()
+}
+
+fn require_day(field: &str, value: &str) -> Result<(), BridgeError> {
+    if !is_valid_day(value) {
+        return Err(BridgeError::invalid_input(format!(
+            "{field} 必须是 YYYY-MM-DD 日历日"
+        )));
+    }
+    Ok(())
+}
+
 fn sqlite_error(err: rusqlite::Error) -> BridgeError {
     BridgeError::internal(format!("书库数据库错误: {err}"))
 }
@@ -226,12 +267,12 @@ impl Library {
             fs::create_dir_all(root.join(partition)).map_err(io_error)?;
         }
         let db_path = root.join("database").join("library.sqlite");
-        let conn = Connection::open(&db_path).map_err(sqlite_error)?;
+        let mut conn = Connection::open(&db_path).map_err(sqlite_error)?;
         conn.busy_timeout(std::time::Duration::from_millis(5_000))
             .map_err(sqlite_error)?;
         conn.pragma_update(None, "foreign_keys", true).map_err(sqlite_error)?;
         conn.pragma_update(None, "journal_mode", "WAL").map_err(sqlite_error)?;
-        migrate(&conn)?;
+        migrate(&mut conn)?;
         let library = Self {
             root,
             conn: Mutex::new(conn),
@@ -443,7 +484,7 @@ impl Library {
     }
 }
 
-fn migrate(conn: &Connection) -> Result<(), BridgeError> {
+fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sqlite_error)?;
@@ -536,6 +577,7 @@ fn migrate(conn: &Connection) -> Result<(), BridgeError> {
     }
     migrate_attachments(conn)?;
     migrate_settings(conn)?;
+    migrate_read_marks(conn)?;
     Ok(())
 }
 
@@ -587,6 +629,115 @@ fn migrate_settings(conn: &Connection) -> Result<(), BridgeError> {
         ",
     )
     .map_err(sqlite_error)?;
+    Ok(())
+}
+
+/// v4 迁移的回填判据常量：中断保留的部分结果在正文末尾追加的警示后缀。
+/// 这是运行时 JS 常量（ui/js/generation.js PARTIAL_MARKER）的历史快照，按规格 #51 决策 12
+/// 写死于此——运行时常量日后改动不影响本迁移对历史数据的判据。
+const V4_PARTIAL_MARKER_SNAPSHOT: &str = "\n\n> ⚠️ 生成被中断，内容为部分结果。";
+
+/// 取 RFC3339 时间戳的 UTC 日历日（YYYY-MM-DD）。库内时间戳必须可解析；
+/// 无法解析即迁移失败（全有或全无，不引入降级路径）。
+fn iso_day(value: &str) -> Result<String, BridgeError> {
+    let parsed = OffsetDateTime::parse(value, &Rfc3339).map_err(|_| {
+        BridgeError::internal(format!("schema v4 迁移遇到无法解析的时间戳: {value}"))
+    })?;
+    Ok(parsed.to_offset(time::UtcOffset::UTC).date().to_string())
+}
+
+fn insert_activity_day(tx: &Transaction, day: &str, paper_id: &str, kind: &str) -> Result<(), BridgeError> {
+    tx.execute(
+        "INSERT OR IGNORE INTO activity_days(day, paper_id, kind) VALUES(?1, ?2, ?3)",
+        params![day, paper_id, kind],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
+/// v4：已读完标记与 append-only 活动日表，并按快照判据从既有数据回填（规格 #51 §迁移）：
+/// - analyses 行存在且正文不以警示后缀结尾 → 回填 read_marks，marked_at 取该结果 updated_at；
+///   中断保留的部分结果不迁移为已读完；
+/// - 活动日回填：论文 added_at → import 日；各 analyses.updated_at → analysis/partial 日
+///  （同一判据）；迁移新建标记的 marked_at → mark 日；
+/// - day 取事件时间戳的 UTC 日历日；整个迁移在单事务内完成，失败整体回滚并拒绝启动。
+fn migrate_read_marks(conn: &mut Connection) -> Result<(), BridgeError> {
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(sqlite_error)?;
+    if version >= 4 {
+        return Ok(());
+    }
+    let tx = conn.transaction().map_err(sqlite_error)?;
+    tx.execute_batch(
+        "
+        CREATE TABLE read_marks (
+          paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+          part_id TEXT NOT NULL,
+          marked_at TEXT NOT NULL,
+          PRIMARY KEY (paper_id, part_id)
+        );
+        CREATE TABLE activity_days (
+          day TEXT NOT NULL,
+          paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL,
+          PRIMARY KEY (day, paper_id, kind)
+        );
+        ",
+    )
+    .map_err(sqlite_error)?;
+
+    // import 日：论文 added_at。查询先整体收进 Vec 再写入，避免语句借用与写入冲突。
+    let papers = {
+        let mut stmt = tx
+            .prepare("SELECT id, added_at FROM papers")
+            .map_err(sqlite_error)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        rows
+    };
+    for (paper_id, added_at) in &papers {
+        insert_activity_day(&tx, &iso_day(added_at)?, paper_id, "import")?;
+    }
+
+    // analysis/partial 日 + read_marks 回填 + 迁移新建标记的 mark 日。
+    let analyses = {
+        let mut stmt = tx
+            .prepare("SELECT paper_id, section_id, body, updated_at FROM analyses")
+            .map_err(sqlite_error)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        rows
+    };
+    for (paper_id, section_id, body, updated_at) in &analyses {
+        let partial = body.ends_with(V4_PARTIAL_MARKER_SNAPSHOT);
+        let day = iso_day(updated_at)?;
+        insert_activity_day(&tx, &day, paper_id, if partial { "partial" } else { "analysis" })?;
+        if !partial {
+            tx.execute(
+                "INSERT INTO read_marks(paper_id, part_id, marked_at) VALUES(?1, ?2, ?3)",
+                params![paper_id, section_id, updated_at],
+            )
+            .map_err(sqlite_error)?;
+            insert_activity_day(&tx, &day, paper_id, "mark")?;
+        }
+    }
+
+    tx.pragma_update(None, "user_version", 4).map_err(sqlite_error)?;
+    tx.commit().map_err(sqlite_error)?;
     Ok(())
 }
 
@@ -662,6 +813,32 @@ pub(crate) fn normalize_paper(paper: &mut PaperDto) -> Result<(), BridgeError> {
             require_iso("chat.createdAt", &message.created_at)?;
         }
     }
+    require_unique_ids(
+        paper.read_marks.iter().map(|item| item.part_id.as_str()),
+        "readMarks.partId",
+    )?;
+    require_unique_ids(
+        paper
+            .activity_days
+            .iter()
+            .map(|item| format!("{}:{}", item.day, item.kind)),
+        "activityDays.day+kind",
+    )?;
+    for mark in &paper.read_marks {
+        if mark.part_id.trim().is_empty() {
+            return Err(BridgeError::invalid_input("已读完标记需要 partId"));
+        }
+        require_iso("readMarks.markedAt", &mark.marked_at)?;
+    }
+    for entry in &paper.activity_days {
+        require_day("activityDays.day", &entry.day)?;
+        if !ACTIVITY_DAY_KINDS.contains(&entry.kind.as_str()) {
+            return Err(BridgeError::invalid_input(format!(
+                "activityDays.kind 未知: {}",
+                entry.kind
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -727,6 +904,10 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
         .map_err(sqlite_error)?;
     tx.execute("DELETE FROM chat_messages WHERE paper_id = ?1", params![paper.id])
         .map_err(sqlite_error)?;
+    // read_marks 按 DTO 快照整组重写：撤销 = 快照少一行。
+    tx.execute("DELETE FROM read_marks WHERE paper_id = ?1", params![paper.id])
+        .map_err(sqlite_error)?;
+    // activity_days 是 append-only：不按快照重写、不删除，DTO 未携带的历史行不受影响。
 
     for (position, section) in paper.sections.iter().enumerate() {
         tx.execute(
@@ -800,6 +981,16 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
             params![paper.id, seq as i64, message.role, message.content, message.created_at],
         )
         .map_err(sqlite_error)?;
+    }
+    for mark in &paper.read_marks {
+        tx.execute(
+            "INSERT INTO read_marks(paper_id, part_id, marked_at) VALUES(?1, ?2, ?3)",
+            params![paper.id, mark.part_id, mark.marked_at],
+        )
+        .map_err(sqlite_error)?;
+    }
+    for entry in &paper.activity_days {
+        insert_activity_day(tx, &entry.day, &paper.id, &entry.kind)?;
     }
     Ok(())
 }
@@ -952,6 +1143,34 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
         .collect::<Result<Vec<_>, _>>()
         .map_err(sqlite_error)?;
 
+    let mut marks_stmt = conn
+        .prepare("SELECT part_id, marked_at FROM read_marks WHERE paper_id = ?1 ORDER BY part_id")
+        .map_err(sqlite_error)?;
+    let read_marks = marks_stmt
+        .query_map(params![paper_id], |row| {
+            Ok(ReadMarkDto {
+                part_id: row.get(0)?,
+                marked_at: row.get(1)?,
+            })
+        })
+        .map_err(sqlite_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+
+    let mut days_stmt = conn
+        .prepare("SELECT day, kind FROM activity_days WHERE paper_id = ?1 ORDER BY day, kind")
+        .map_err(sqlite_error)?;
+    let activity_days = days_stmt
+        .query_map(params![paper_id], |row| {
+            Ok(ActivityDayDto {
+                day: row.get(0)?,
+                kind: row.get(1)?,
+            })
+        })
+        .map_err(sqlite_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+
     Ok(PaperDto {
         id: paper.0,
         title: paper.1,
@@ -971,6 +1190,8 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
         translations,
         recall_card,
         chat,
+        read_marks,
+        activity_days,
     })
 }
 

@@ -45,6 +45,8 @@ function sampleRecord() {
       { role: 'user', content: '问题', createdAt: 1700000080000 },
       { role: 'assistant', content: '回答' }, // 缺 createdAt，保存时用论文 updatedAt 补齐
     ],
+    readMarks: { 'part-1': 1700000090000 },
+    activityDays: [{ day: '2026-09-01', kind: 'import' }],
     pdfBlob: null,
     pdfName: 'paper.pdf',
   };
@@ -86,6 +88,9 @@ test('put：记录 → DTO（ISO 日期、sections 数组、parts sortOrder、tr
       { role: 'user', content: '问题', createdAt: iso(1700000080000) },
       { role: 'assistant', content: '回答', createdAt: iso(1700000100000) },
     ],
+    // readMarks 记录侧 partId → 毫秒映射转 DTO 数组；activityDays 两侧同形透传
+    readMarks: [{ partId: 'part-1', markedAt: iso(1700000090000) }],
+    activityDays: [{ day: '2026-09-01', kind: 'import' }],
   });
   // 运行时字段不进 DTO
   assert.ok(!('pdfBlob' in dto));
@@ -143,6 +148,8 @@ function migrationShapeDto() {
     translations: [{ sectionId: 'abstract', language: 'zh', text: '译', source: null, updatedAt: 1700000060000 }],
     recallCard: { markdown: '', images: [], updatedAt: '1970-01-01T00:00:00Z' },
     chat: [{ role: 'user', content: 'q', createdAt: '' }],
+    readMarks: [{ partId: 'part-1', markedAt: '2024-01-04T00:00:00Z' }],
+    activityDays: [{ day: '2024-01-01', kind: 'import' }, { day: '2024-01-04', kind: 'mark' }],
   };
 }
 
@@ -176,6 +183,9 @@ test('get：DTO → 记录（迁移形状），parts 的 text/pageRange 重建�
   assert.deepEqual(paper.recallCard, { markdown: '', images: [], updatedAt: 0 });
   // chat 缺 createdAt 时用论文 updatedAt 补齐
   assert.deepEqual(paper.chat, [{ role: 'user', content: 'q', createdAt: Date.parse('2024-01-02T03:04:05Z') }]);
+  // readMarks DTO 数组转回 partId → 毫秒映射；activityDays 原样透传
+  assert.deepEqual(paper.readMarks, { 'part-1': Date.parse('2024-01-04T00:00:00Z') });
+  assert.deepEqual(paper.activityDays, [{ day: '2024-01-01', kind: 'import' }, { day: '2024-01-04', kind: 'mark' }]);
   // PDF 附件句柄挂上，pdfBlob 置空
   assert.deepEqual(paper.pdfAttachment, attachment);
   assert.equal(paper.pdfBlob, null);

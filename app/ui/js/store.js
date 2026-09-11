@@ -6,6 +6,8 @@
 // - parts 在 DTO 只存元数据（id/title/heading/semanticType/sortOrder），记录侧的
 //   text/pageRange 冗余字段在载入时从 sections/sectionPages 重建，sourceRange 丢弃；
 // - translations 记录侧键为 `sectionId:language`，DTO 拆成独立字段；
+// - readMarks 记录侧是 partId → 毫秒映射，DTO 是 [{partId, markedAt}] 数组；activityDays
+//   两侧同形 [{day, kind}]（day 为 YYYY-MM-DD 日历日，不做时区转换）；
 // - PDF 字节不进 DTO：写入时先落论文记录，再经 files.putAttachment@1 落附件（id 固定 'pdf'）。
 
 // PDF 附件 id 与 migration.rs 的 convert_attachment 保持一致。
@@ -138,6 +140,21 @@ function chatToDto(paper) {
   }));
 }
 
+// readMarks 记录侧是 partId → 毫秒映射；DTO 侧是 [{partId, markedAt ISO}] 数组。
+function readMarksToDto(readMarks) {
+  return Object.entries(readMarks || {})
+    .filter(([partId]) => partId.trim())
+    .map(([partId, markedAt]) => ({ partId, markedAt: toIso(markedAt) }));
+}
+
+// activityDays 两侧同形 [{day, kind}]（day 是 YYYY-MM-DD 日历日字符串，不做时区转换），
+// 双向转换只做形状过滤，进出共用一份。
+function normalizeActivityDays(activityDays) {
+  return (Array.isArray(activityDays) ? activityDays : [])
+    .filter(entry => typeof entry?.day === 'string' && entry.day && typeof entry?.kind === 'string' && entry.kind)
+    .map(entry => ({ day: entry.day, kind: entry.kind }));
+}
+
 // 论文记录 → PaperDto。pdfBlob/pdfAttachment/sectionPages 是运行时字段，不进 DTO。
 function recordToDto(paper) {
   const now = new Date().toISOString();
@@ -160,6 +177,8 @@ function recordToDto(paper) {
     translations: translationsToDto(paper.translations),
     recallCard: recallCardToDto(paper.recallCard),
     chat: chatToDto(paper),
+    readMarks: readMarksToDto(paper.readMarks),
+    activityDays: normalizeActivityDays(paper.activityDays),
   };
 }
 
@@ -254,6 +273,17 @@ function chatFromDto(dto) {
   }));
 }
 
+// readMarks：DTO 数组 [{partId, markedAt ISO}] → 记录映射 partId → 毫秒。
+function readMarksFromDto(readMarks) {
+  const out = {};
+  for (const item of Array.isArray(readMarks) ? readMarks : []) {
+    const partId = typeof item?.partId === 'string' ? item.partId.trim() : '';
+    if (!partId) continue;
+    out[partId] = toMillis(item.markedAt);
+  }
+  return out;
+}
+
 // PaperDto → 论文记录：日期 ISO → 毫秒，数组 → 映射，parts 冗余字段重建。
 function dtoToRecord(dto) {
   const { sections, sectionPages } = sectionsFromDto(dto);
@@ -274,6 +304,8 @@ function dtoToRecord(dto) {
     translations: translationsFromDto(dto.translations),
     recallCard: recallCardFromDto(dto.recallCard),
     chat: chatFromDto(dto),
+    readMarks: readMarksFromDto(dto.readMarks),
+    activityDays: normalizeActivityDays(dto.activityDays),
     pdfName: dto.pdfName ?? '',
     pdfBlob: null,
   };

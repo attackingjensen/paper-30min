@@ -5,7 +5,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,8 +18,9 @@ use crate::files::{
     AttachmentDto,
 };
 use crate::library::{
-    normalize_paper, upsert_paper, AnalysisDto, ChatMessageDto, Library, PartDto, PaperDto,
-    RecallCardDto, SectionDto, TranslationDto, LIBRARY_SCHEMA_VERSION,
+    normalize_paper, upsert_paper, ActivityDayDto, AnalysisDto, ChatMessageDto, Library, PartDto,
+    PaperDto, ReadMarkDto, RecallCardDto, SectionDto, TranslationDto, ACTIVITY_DAY_KINDS,
+    LIBRARY_SCHEMA_VERSION,
 };
 
 pub const SUPPORTED_EXPORT_VERSION: i64 = 1;
@@ -484,6 +485,93 @@ fn convert_recall_card(raw: Option<&Value>) -> RecallCardDto {
     }
 }
 
+/// 候选 markedAt 是否比既有值更早；任一无法解析时保留既有值（先到者）。
+fn earlier_marked_at(candidate: &str, current: &str) -> bool {
+    match (
+        OffsetDateTime::parse(candidate, &Rfc3339),
+        OffsetDateTime::parse(current, &Rfc3339),
+    ) {
+        (Ok(candidate), Ok(current)) => candidate < current,
+        _ => false,
+    }
+}
+
+/// 提取一条标记条目：partId 去空白、markedAt 转 ISO；缺 markedAt 或无法解析的条目丢弃
+/// （convert_* 惯例是清洗条目而非让整篇论文在 normalize 阶段被判无效）。
+fn read_mark_entry(part_id: &str, marked_at: Option<&Value>) -> Option<(String, String)> {
+    let part_id = part_id.trim();
+    if part_id.is_empty() {
+        return None;
+    }
+    let marked_at = timestamp_to_iso(marked_at?);
+    if marked_at.is_empty() || OffsetDateTime::parse(&marked_at, &Rfc3339).is_err() {
+        return None;
+    }
+    Some((part_id.to_string(), marked_at))
+}
+
+/// readMarks 接受两种形状：DTO 数组 [{partId, markedAt}] 与记录映射 {partId: ms|ISO}。
+/// 按主键 (partId) 合并，冲突保留较早 marked_at（规格 #51 决策 14）。
+fn convert_read_marks(raw: Option<&Value>) -> Vec<ReadMarkDto> {
+    let entries: Vec<(String, String)> = match raw {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| {
+                read_mark_entry(
+                    item.get("partId").and_then(Value::as_str).unwrap_or(""),
+                    item.get("markedAt"),
+                )
+            })
+            .collect(),
+        Some(Value::Object(map)) => map
+            .iter()
+            .filter_map(|(part_id, value)| read_mark_entry(part_id, Some(value)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut merged: HashMap<String, String> = HashMap::new();
+    for (part_id, marked_at) in entries {
+        match merged.get(&part_id) {
+            Some(existing) if !earlier_marked_at(&marked_at, existing) => {}
+            _ => {
+                merged.insert(part_id, marked_at);
+            }
+        }
+    }
+    let mut marks: Vec<ReadMarkDto> = merged
+        .into_iter()
+        .map(|(part_id, marked_at)| ReadMarkDto { part_id, marked_at })
+        .collect();
+    marks.sort_by(|a, b| a.part_id.cmp(&b.part_id));
+    marks
+}
+
+/// activityDays：数组 [{day, kind}]；day 畸形或 kind 未知的条目丢弃，
+/// 按主键 (day, kind) 去重（幂等并集，规格 #51 决策 14）。
+fn convert_activity_days(raw: Option<&Value>) -> Vec<ActivityDayDto> {
+    let Some(Value::Array(items)) = raw else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    items
+        .iter()
+        .filter_map(|item| {
+            let day = item.get("day").and_then(Value::as_str).unwrap_or("").trim();
+            let kind = item.get("kind").and_then(Value::as_str).unwrap_or("").trim();
+            if !crate::library::is_valid_day(day) || !ACTIVITY_DAY_KINDS.contains(&kind) {
+                return None;
+            }
+            if !seen.insert((day.to_string(), kind.to_string())) {
+                return None;
+            }
+            Some(ActivityDayDto {
+                day: day.to_string(),
+                kind: kind.to_string(),
+            })
+        })
+        .collect()
+}
+
 fn convert_attachment(raw: &Value, paper_id: &str) -> Result<Option<PendingAttachment>, String> {
     let Some(blob) = raw.get("pdfBlob") else {
         return Ok(None);
@@ -604,6 +692,8 @@ fn convert_paper(raw: &Value) -> PreparedPaper {
         translations: convert_translations(raw.get("translations")),
         recall_card: convert_recall_card(raw.get("recallCard")),
         chat: convert_chat(raw.get("chat")),
+        read_marks: convert_read_marks(raw.get("readMarks")),
+        activity_days: convert_activity_days(raw.get("activityDays")),
     };
     if let Err(error) = normalize_paper(&mut paper) {
         return PreparedPaper::Invalid {

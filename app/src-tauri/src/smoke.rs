@@ -8,7 +8,7 @@ use std::time::Duration;
 use base64::Engine;
 
 use crate::bridge;
-use crate::library::Library;
+use crate::library::{Library, DATABASE_VERSION};
 use crate::tasks::{TaskRegistry, TaskStatus};
 use crate::testkit::{wait_terminal, Collector, MockHttp, MockResponse};
 
@@ -174,13 +174,13 @@ pub fn run() -> i32 {
         "library.info@1 创建版本化书库目录",
         || match bridge::invoke(&registry, &library, "library.info@1", &json!({})) {
             Ok(value)
-                if value["databaseVersion"] == json!(3)
+                if value["databaseVersion"] == json!(DATABASE_VERSION)
                     && value["partitions"]
                         .as_array()
                         .map(|items| items.iter().any(|item| item == "database"))
                         .unwrap_or(false) =>
             {
-                Ok("databaseVersion=3".to_string())
+                Ok(format!("databaseVersion={DATABASE_VERSION}"))
             }
             Ok(value) => Err(format!("书库信息不符: {value}")),
             Err(error) => Err(format!("调用失败: {error}")),

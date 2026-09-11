@@ -385,6 +385,87 @@ fn failed_commit_leaves_source_file_reusable() {
 }
 
 #[test]
+fn commit_carries_read_marks_and_activity_days_with_idempotent_merge() {
+    let (registry, library, dir) = common::env();
+    // Windows 导出形状：readMarks 是 partId → 毫秒映射，activityDays 是 [{day, kind}] 数组。
+    let mut paper = sample_browser_paper("paper-new", "新论文");
+    paper["readMarks"] = json!({
+        "abstract": ADDED_AT_MS,
+        "part-1": ADDED_AT_MS + 86_400_000
+    });
+    paper["activityDays"] = json!([
+        { "day": "2026-09-01", "kind": "import" },
+        { "day": "2026-09-01", "kind": "import" },
+        { "day": "2026-09-02", "kind": "mark" },
+        { "day": "", "kind": "import" },
+        { "day": "2026-9-1", "kind": "analysis" },
+        { "day": "2026-09-03", "kind": "reread" }
+    ]);
+    let path = write_export(dir.path(), "library.json", &envelope(vec![paper]));
+
+    let token = inspect(&registry, &library, &path)["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let result = commit(&registry, &library, &token);
+    assert_eq!(result["added"], json!(1));
+
+    let imported = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-new" }),
+    );
+    let paper = &imported["paper"];
+    assert_eq!(
+        paper["readMarks"],
+        json!([
+            { "partId": "abstract", "markedAt": ADDED_AT_ISO },
+            { "partId": "part-1", "markedAt": "2026-09-02T08:00:00Z" }
+        ])
+    );
+    // 重复行按主键去重；空 day、畸形 day 与未知 kind 的条目被丢弃。
+    assert_eq!(
+        paper["activityDays"],
+        json!([
+            { "day": "2026-09-01", "kind": "import" },
+            { "day": "2026-09-02", "kind": "mark" }
+        ])
+    );
+}
+
+#[test]
+fn import_merges_duplicate_read_marks_keeping_earlier_marked_at() {
+    let (registry, library, dir) = common::env();
+    // DTO 数组形状：同一 partId 出现两次时保留较早 markedAt（规格 #51 决策 14）。
+    let mut paper = sample_browser_paper("paper-new", "新论文");
+    paper["readMarks"] = json!([
+        { "partId": "abstract", "markedAt": "2026-09-03T10:00:00Z" },
+        { "partId": "abstract", "markedAt": "2026-09-01T08:00:00Z" },
+        { "partId": "part-1" }
+    ]);
+    let path = write_export(dir.path(), "library.json", &envelope(vec![paper]));
+
+    let token = inspect(&registry, &library, &path)["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    commit(&registry, &library, &token);
+
+    let imported = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-new" }),
+    );
+    // 缺 markedAt 的 part-1 条目丢弃；abstract 冲突保留较早值。
+    assert_eq!(
+        imported["paper"]["readMarks"],
+        json!([{ "partId": "abstract", "markedAt": "2026-09-01T08:00:00Z" }])
+    );
+}
+
+#[test]
 fn app_info_lists_migration_commands() {
     let (registry, library, _dir) = common::env();
     let info = invoke(&registry, &library, "app.info@1", json!({}));
