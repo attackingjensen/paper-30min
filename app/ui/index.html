@@ -141,7 +141,11 @@
     <!-- 原文 -->
     <section id="tab-source" class="tab-panel" hidden>
       <div class="source-chips" id="source-chips"></div>
-      <pre id="source-text" class="source-text"></pre>
+      <div class="source-wrap" id="source-wrap">
+        <pre id="source-text" class="source-text"></pre>
+        <div id="source-doc" class="source-doc" hidden></div>
+        <button id="source-ask-float" class="float-ask" type="button" hidden>提问</button>
+      </div>
       <div id="source-empty" class="empty" hidden>
         <p>未能从 PDF 中自动识别出章节结构。</p>
         <p>你可以把论文全文粘贴到下方，系统会重新尝试切分：</p>
@@ -181,8 +185,13 @@
     <!-- 提问 -->
     <section id="tab-chat" class="tab-panel" hidden>
       <div id="chat-log" class="chat-log"></div>
+      <p id="chat-gate" class="chat-gate" hidden></p>
       <div class="chat-input-row">
-        <textarea id="chat-input" rows="2" placeholder="基于这篇论文向 AI 提问，例如：这个方法的消融实验说明了什么？"></textarea>
+        <div class="chat-box" id="chat-box">
+          <div id="chat-binding-slot" class="chat-binding-slot" hidden></div>
+          <textarea id="chat-input" rows="2" placeholder="基于这篇论文向 AI 提问，例如：这个方法的消融实验说明了什么？"></textarea>
+          <ul id="chat-mention" class="chat-mention" hidden role="listbox" aria-label="原文章节补全"></ul>
+        </div>
         <button class="btn primary" id="btn-chat-send" type="button">发送</button>
       </div>
     </section>

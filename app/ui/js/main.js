@@ -12,11 +12,25 @@ import * as generation from './generation.js';
 import * as parser from './parser.js';
 import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
+import { sectionForPart } from './protocol.js';
 import {
   initSkills, effectiveSkills, getSkill, saveCustomSkill, resetSkill,
   parseSkillFile, loadCustomSkills, loadSkills,
 } from './skills.js';
-import { assembleQaContext, BLOCKMODEL_ATTACHMENT_ID } from './qa.js';
+import {
+  QA_GATE_MESSAGE,
+  BLOCKMODEL_ATTACHMENT_ID,
+  applyMention,
+  assembleQaContext,
+  composerMessage,
+  emptyBinding,
+  fragmentBinding,
+  hasMapProduct,
+  mentionCandidates,
+  parseMentionTrigger,
+  sectionBinding,
+  userBindingView,
+} from './qa.js';
 
 const bridge = createBridge(window.__TAURI__);
 let store = null; // createTauriStore(bridge)，启动序列中创建
@@ -38,6 +52,14 @@ let activeBatch = null;      // 进行中的批量生成句柄，停止按钮经
 let editingSkillId = null;
 let digestSection = 'abstract';
 let sourceTab = 'abstract';
+let currentMapped = null;    // 当前论文块模型；未建图或加载失败为 null
+let chatComposer = emptyBinding();
+let mentionItems = [];
+let mentionActive = 0;
+let mentionOpen = false;
+let pendingSourceHits = [];
+let chatQuoteExpanded = new Set();
+let composerQuoteExpanded = false;
 let translateSection = 'abstract';
 let translateAborter = null;
 let recallAborter = null;
@@ -365,6 +387,13 @@ async function flushPositionSave(paper) {
 async function openPaper(p) {
   revokeRecallBlobUrls();
   current = p;
+  currentMapped = null;
+  chatComposer = emptyBinding();
+  composerQuoteExpanded = false;
+  mentionItems = [];
+  mentionOpen = false;
+  pendingSourceHits = [];
+  chatQuoteExpanded = new Set();
   digestSection = papers.readingParts(p)[0]?.id || 'abstract';
   sourceTab = 'abstract';
   translateSection = digestSection;
@@ -374,6 +403,9 @@ async function openPaper(p) {
   $('#paste-area').value = '';
   $('#reader-title').textContent = p.title;
   showView('reader');
+  await refreshMapped(p);
+  if (current !== p) return;
+  if (currentMapped) sourceTab = '__full';
   switchTab('digest', { restore: true });
   renderDigest();
   renderRecall();
@@ -407,6 +439,10 @@ async function closePaper() {
   translateAborter?.abort();
   recallAborter?.abort();
   current = null;
+  currentMapped = null;
+  chatComposer = emptyBinding();
+  hideSourceAskFloat();
+  hideMentionMenu();
   revokeRecallBlobUrls();
   showView('library');
   // 等待生成任务收尾（中断保存完成）再刷新书库，避免读到落库前的旧快照。
@@ -420,6 +456,7 @@ function switchTab(name, { restore = false } = {}) {
   for (const id of READER_TABS) {
     $(`#tab-${id}`).hidden = id !== name;
   }
+  if (name !== 'source') hideSourceAskFloat();
   if (!restore) schedulePositionSave();
 }
 
@@ -482,6 +519,7 @@ function buildDigestCard(def) {
         <span class="dc-mark" data-role="mark-chip" hidden>✓ 已读完</span>
         <span class="dc-status" data-role="status"></span>
         <button class="btn small" data-role="mark" type="button"></button>
+        <button class="btn small" data-role="ask" type="button">提问</button>
         <button class="btn small primary" data-role="gen" type="button">${analysis?.text ? '重新生成' : '生成精读'}</button>
       </div>
       ${hasSource ? '' : `
@@ -509,6 +547,15 @@ function buildDigestCard(def) {
     event.stopPropagation();
     setActiveDigestSection(def.id);
     generateSection(def.id);
+  };
+  const askBtn = card.querySelector('[data-role="ask"]');
+  const mappedSection = currentMapped ? sectionForPart(currentMapped, def.id) : null;
+  askBtn.disabled = !qaReady() || !mappedSection;
+  askBtn.title = qaReady() ? '就本节提问' : QA_GATE_MESSAGE;
+  askBtn.onclick = event => {
+    event.stopPropagation();
+    if (!mappedSection) return;
+    startSectionAsk(mappedSection);
   };
   // 已读完标记入口（过渡位置：分节卡片头部；最终位置 = 节页尾部，由 #56 节页票承接）。
   // 设置计入当日打卡，撤销不写不回收；只就地更新本卡片，避免重建卡片打断进行中的生成流。
@@ -858,7 +905,252 @@ async function addRecallImages(files) {
 }
 
 // ---------------- 原文视图 ----------------
-function renderSource() {
+function qaReady() {
+  return !!(current && hasMapProduct(current.products) && currentMapped);
+}
+
+async function refreshMapped(paper) {
+  if (!paper || !hasMapProduct(paper.products)) {
+    currentMapped = null;
+    return;
+  }
+  try {
+    currentMapped = await loadBlockModel(paper);
+  } catch {
+    currentMapped = null;
+  }
+}
+
+function clearComposerBinding() {
+  chatComposer = emptyBinding();
+  composerQuoteExpanded = false;
+  hideMentionMenu();
+  renderChatComposer();
+}
+
+function hideSourceAskFloat() {
+  const btn = $('#source-ask-float');
+  if (btn) btn.hidden = true;
+  pendingSourceHits = [];
+}
+
+function startSectionAsk(section) {
+  if (!qaReady()) {
+    toast(QA_GATE_MESSAGE, true);
+    return;
+  }
+  chatComposer = sectionBinding(section);
+  composerQuoteExpanded = false;
+  hideMentionMenu();
+  renderChatComposer();
+  switchTab('chat');
+  const input = $('#chat-input');
+  input.focus();
+}
+
+function startFragmentAsk(hits) {
+  if (!qaReady()) {
+    toast(QA_GATE_MESSAGE, true);
+    return;
+  }
+  try {
+    chatComposer = fragmentBinding(currentMapped, hits);
+  } catch (err) {
+    toast(err.message, true);
+    return;
+  }
+  composerQuoteExpanded = false;
+  hideMentionMenu();
+  hideSourceAskFloat();
+  renderChatComposer();
+  switchTab('chat');
+  $('#chat-input').focus();
+}
+
+function locateBinding(locate) {
+  if (!locate) return;
+  if (!currentMapped) {
+    toast('无法定位：块模型未加载', true);
+    return;
+  }
+  switchTab('source');
+  if (locate.type === 'section') {
+    sourceTab = locate.secId || '__full';
+    renderSource();
+    highlightLocate({ secId: locate.secId });
+    return;
+  }
+  const cite = locate.cite;
+  if (!cite) return;
+  sourceTab = cite.startSecId === cite.endSecId ? cite.startSecId : '__full';
+  renderSource();
+  highlightLocate({ cite });
+}
+
+function highlightLocate({ secId, cite }) {
+  const nodes = $$('#source-doc [data-sec-id][data-block-id]');
+  nodes.forEach(el => el.classList.remove('is-locate'));
+  let first = null;
+  if (cite) {
+    let marking = false;
+    for (const node of nodes) {
+      const isStart = node.dataset.secId === cite.startSecId && Number(node.dataset.blockId) === Number(cite.startBlock);
+      const isEnd = node.dataset.secId === cite.endSecId && Number(node.dataset.blockId) === Number(cite.endBlock);
+      if (isStart) marking = true;
+      if (marking) {
+        node.classList.add('is-locate');
+        if (!first) first = node;
+      }
+      if (isEnd) break;
+    }
+  } else if (secId) {
+    for (const node of nodes) {
+      if (node.dataset.secId !== secId) continue;
+      node.classList.add('is-locate');
+      if (!first) first = node;
+    }
+    const head = $(`#source-doc [data-sec-head="${secId}"]`);
+    if (head) first = head;
+  }
+  first?.scrollIntoView({ block: 'center' });
+}
+
+function hitsFromSelection(root) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return [];
+  const range = sel.getRangeAt(0);
+  if (!root.contains(range.commonAncestorContainer)) return [];
+  const hits = [];
+  for (const el of root.querySelectorAll('[data-sec-id][data-block-id]')) {
+    const blockRange = document.createRange();
+    blockRange.selectNodeContents(el);
+    if (
+      range.compareBoundaryPoints(Range.START_TO_END, blockRange) < 0
+      && range.compareBoundaryPoints(Range.END_TO_START, blockRange) > 0
+    ) {
+      hits.push({ secId: el.dataset.secId, blockId: Number(el.dataset.blockId) });
+    }
+  }
+  return hits;
+}
+
+function positionSourceAskFloat() {
+  const sel = window.getSelection();
+  const btn = $('#source-ask-float');
+  if (!sel || sel.rangeCount === 0 || !btn) return;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  btn.hidden = false;
+  btn.style.top = `${Math.round(rect.bottom + 8)}px`;
+  btn.style.left = `${Math.round(Math.max(12, Math.min(rect.left, window.innerWidth - 88)))}px`;
+}
+
+function onSourceMouseUp() {
+  hideSourceAskFloat();
+  const doc = $('#source-doc');
+  if (!doc || doc.hidden || !qaReady()) return;
+  const hits = hitsFromSelection(doc);
+  if (!hits.length) return;
+  pendingSourceHits = hits;
+  positionSourceAskFloat();
+}
+
+function mappedSourceTab() {
+  const sections = currentMapped?.sections ?? [];
+  if (sourceTab === '__full') return '__full';
+  if (sections.some(section => section.id === sourceTab)) return sourceTab;
+  const byRole = sections.find(section => section.role === sourceTab);
+  if (byRole) return byRole.id;
+  const fromPart = sectionForPart(currentMapped, sourceTab);
+  return fromPart?.id || '__full';
+}
+
+function appendSourceAskChip(wrap, section) {
+  const group = document.createElement('span');
+  group.className = 'source-chip-wrap';
+  const chip = document.createElement('button');
+  chip.className = 'chip' + (mappedSourceTab() === section.id ? ' active' : '');
+  chip.type = 'button';
+  chip.textContent = section.title || section.id;
+  chip.onclick = () => { sourceTab = section.id; renderSource(); };
+  const ask = document.createElement('button');
+  ask.className = 'chip-ask';
+  ask.type = 'button';
+  ask.textContent = '提问';
+  ask.disabled = !qaReady();
+  ask.title = qaReady() ? `就「${section.title || section.id}」提问` : QA_GATE_MESSAGE;
+  ask.onclick = event => {
+    event.stopPropagation();
+    startSectionAsk(section);
+  };
+  group.append(chip, ask);
+  wrap.appendChild(group);
+}
+
+function renderMappedSource() {
+  const chips = $('#source-chips');
+  chips.innerHTML = '';
+  const tab = mappedSourceTab();
+  sourceTab = tab;
+  const full = document.createElement('button');
+  full.className = 'chip' + (tab === '__full' ? ' active' : '');
+  full.type = 'button';
+  full.textContent = '全文';
+  full.onclick = () => { sourceTab = '__full'; renderSource(); };
+  chips.appendChild(full);
+  for (const section of currentMapped.sections ?? []) {
+    appendSourceAskChip(chips, section);
+  }
+  const hint = document.createElement('span');
+  hint.className = 'muted';
+  hint.textContent = '选中文本可浮动「提问」（含跨节选择）';
+  chips.appendChild(hint);
+
+  $('#source-text').hidden = true;
+  $('#source-empty').hidden = true;
+  const doc = $('#source-doc');
+  doc.hidden = false;
+  doc.innerHTML = '';
+  const visible = tab === '__full'
+    ? (currentMapped.sections ?? [])
+    : (currentMapped.sections ?? []).filter(section => section.id === tab);
+  for (const section of visible) {
+    const head = document.createElement('div');
+    head.className = 'src-sec-head';
+    head.dataset.secHead = section.id;
+    const title = document.createElement('h3');
+    title.textContent = section.title || section.id;
+    const meta = document.createElement('span');
+    meta.className = 'muted';
+    meta.textContent = `${section.id} · p${section.pageStart}–p${section.pageEnd}`;
+    const ask = document.createElement('button');
+    ask.className = 'btn small';
+    ask.type = 'button';
+    ask.textContent = '提问';
+    ask.disabled = !qaReady();
+    ask.title = qaReady() ? '就本节提问' : QA_GATE_MESSAGE;
+    ask.onclick = () => startSectionAsk(section);
+    head.append(title, meta, ask);
+    doc.appendChild(head);
+    for (const block of section.blocks ?? []) {
+      const el = document.createElement('p');
+      el.className = 'src-block';
+      el.dataset.secId = section.id;
+      el.dataset.blockId = String(block.id);
+      el.append(document.createTextNode(String(block.text ?? '')));
+      if (block.page) {
+        const pg = document.createElement('span');
+        pg.className = 'src-pg';
+        pg.textContent = `p${block.page}`;
+        el.appendChild(pg);
+      }
+      doc.appendChild(el);
+    }
+  }
+}
+
+function renderLegacySource() {
+  $('#source-text').hidden = false;
+  $('#source-doc').hidden = true;
   const chips = $('#source-chips');
   chips.innerHTML = '';
   const paperDefs = papers.readingParts(current);
@@ -876,6 +1168,13 @@ function renderSource() {
   const anySection = paperDefs.some(s => current.sections?.[s.id]?.trim());
   $('#source-empty').hidden = anySection;
   $('#source-text').textContent = text || (anySection ? '（本节未提取到内容）' : '');
+}
+
+function renderSource() {
+  hideSourceAskFloat();
+  if (!current) return;
+  if (currentMapped) renderMappedSource();
+  else renderLegacySource();
 }
 
 // ---------------- 独立翻译 ----------------
@@ -1062,50 +1361,226 @@ async function assembleCurrentQa(paper, question, binding) {
 }
 
 function renderChat() {
+  if (!current) return;
   const log = $('#chat-log');
   log.innerHTML = '';
   const msgs = current.chat || [];
-  if (!msgs.length) {
+  if (!msgs.length && qaReady()) {
     const hint = document.createElement('div');
     hint.className = 'empty';
     hint.style.padding = '24px';
-    hint.textContent = '基于这篇论文向 AI 提问，例如：「这个方法相比 Transformer 的核心区别是什么？」「消融实验说明了什么？」';
+    hint.textContent = '基于这篇论文作绑定提问或全文提问。输入 @ 绑定原文章节，或从原文选中片段。';
     log.appendChild(hint);
-    return;
+  } else if (msgs.length) {
+    msgs.forEach((message, index) => appendChatBubble(message, '', index));
+    log.scrollTop = log.scrollHeight;
   }
-  for (const m of msgs) appendChatBubble(m.role, m.content);
-  log.scrollTop = log.scrollHeight;
+  renderChatComposer();
 }
 
-function appendChatBubble(role, content, extraClass = '') {
+function renderBindingView(view, { composer = false, messageIndex = -1 } = {}) {
+  if (view.kind === 'chip') {
+    const wrap = document.createElement(composer ? 'span' : 'button');
+    wrap.className = 'chat-bind-chip' + (composer ? ' in-composer' : '');
+    if (!composer) wrap.type = 'button';
+    const label = document.createElement('span');
+    label.textContent = view.label;
+    const cite = document.createElement('span');
+    cite.className = 'chat-bind-cite';
+    cite.textContent = view.cite;
+    wrap.append(label, cite);
+    if (composer) {
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'chat-bind-clear';
+      clear.setAttribute('aria-label', '删除绑定');
+      clear.textContent = '×';
+      clear.onclick = clearComposerBinding;
+      wrap.append(clear);
+    } else {
+      wrap.onclick = () => locateBinding(view.locate);
+    }
+    return wrap;
+  }
+
+  const quote = document.createElement('div');
+  quote.className = 'chat-quote' + (composer ? ' in-composer' : '');
+  const body = document.createElement('button');
+  body.type = 'button';
+  body.className = 'chat-quote-body';
+  const first = document.createElement('span');
+  first.className = 'chat-quote-first';
+  const expanded = composer
+    ? composerQuoteExpanded
+    : chatQuoteExpanded.has(messageIndex);
+  first.textContent = expanded ? view.fullText : view.firstLine;
+  if (expanded) first.classList.add('chat-quote-full');
+  const cite = document.createElement('span');
+  cite.className = 'chat-quote-cite';
+  cite.textContent = view.cite;
+  body.append(first, cite);
+  if (!composer) body.onclick = () => locateBinding(view.locate);
+  quote.append(body);
+  const clearBinding = clearComposerBinding;
+  if (composer) {
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'chat-bind-clear';
+    clear.setAttribute('aria-label', '删除绑定');
+    clear.textContent = '×';
+    clear.onclick = clearBinding;
+    quote.append(clear);
+  }
+  if (view.fullText && view.fullText !== view.firstLine) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'chat-quote-toggle';
+    toggle.textContent = expanded ? '收起' : '展开';
+    toggle.onclick = event => {
+      event.stopPropagation();
+      if (composer) {
+        composerQuoteExpanded = !composerQuoteExpanded;
+        renderChatComposer();
+        return;
+      }
+      if (chatQuoteExpanded.has(messageIndex)) chatQuoteExpanded.delete(messageIndex);
+      else chatQuoteExpanded.add(messageIndex);
+      renderChat();
+    };
+    quote.append(toggle);
+  }
+  return quote;
+}
+
+function appendChatBubble(message, extraClass = '', messageIndex = -1) {
   const log = $('#chat-log');
   if (log.querySelector('.empty')) log.innerHTML = '';
+  const role = message?.role || 'assistant';
   const div = document.createElement('div');
   div.className = `chat-msg ${role} ${role === 'assistant' ? 'md' : ''} ${extraClass}`;
-  if (role === 'user') div.textContent = content;
-  else renderMarkdownInto(div, content);
+  if (role === 'user') {
+    const view = userBindingView(message, currentMapped);
+    if (view) div.appendChild(renderBindingView(view, { messageIndex }));
+    const text = document.createElement('div');
+    text.className = 'chat-user-text';
+    text.textContent = message.content;
+    div.appendChild(text);
+  } else {
+    renderMarkdownInto(div, message.content);
+  }
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
   return div;
 }
 
+function renderChatComposer() {
+  const ready = qaReady();
+  const gate = $('#chat-gate');
+  const input = $('#chat-input');
+  const send = $('#btn-chat-send');
+  gate.hidden = ready;
+  gate.textContent = ready ? '' : QA_GATE_MESSAGE;
+  input.disabled = !ready;
+  send.disabled = !ready;
+  input.placeholder = ready
+    ? '输入 @ 作绑定提问，或不绑定即全文提问；Enter 发送'
+    : QA_GATE_MESSAGE;
+
+  const slot = $('#chat-binding-slot');
+  slot.innerHTML = '';
+  const view = userBindingView(chatComposer, currentMapped);
+  slot.hidden = !view;
+  if (view) slot.appendChild(renderBindingView(view, { composer: true }));
+  if (!ready) hideMentionMenu();
+}
+
+function hideMentionMenu() {
+  mentionOpen = false;
+  mentionItems = [];
+  const menu = $('#chat-mention');
+  if (menu) {
+    menu.hidden = true;
+    menu.innerHTML = '';
+  }
+}
+
+function renderMentionMenu() {
+  const menu = $('#chat-mention');
+  menu.innerHTML = '';
+  if (!mentionItems.length) {
+    const empty = document.createElement('li');
+    empty.className = 'muted';
+    empty.textContent = '无匹配的原文章节';
+    menu.appendChild(empty);
+  } else {
+    mentionItems.forEach((section, index) => {
+      const item = document.createElement('li');
+      item.role = 'option';
+      item.className = index === mentionActive ? 'active' : '';
+      item.textContent = section.number
+        ? `${section.number} ${section.title}`
+        : (section.title || section.id);
+      item.onmousedown = event => event.preventDefault();
+      item.onclick = () => chooseMention(section);
+      menu.appendChild(item);
+    });
+  }
+  menu.hidden = false;
+  mentionOpen = true;
+}
+
+function syncMentionMenu() {
+  if (!qaReady() || !currentMapped) {
+    hideMentionMenu();
+    return;
+  }
+  const input = $('#chat-input');
+  const trigger = parseMentionTrigger(input.value, input.selectionStart);
+  if (!trigger) {
+    hideMentionMenu();
+    return;
+  }
+  mentionItems = mentionCandidates(currentMapped, trigger.query);
+  if (mentionActive >= mentionItems.length) mentionActive = 0;
+  renderMentionMenu();
+}
+
+function chooseMention(section) {
+  const input = $('#chat-input');
+  const applied = applyMention(input.value, input.selectionStart, section);
+  input.value = applied.text;
+  chatComposer = applied.binding;
+  composerQuoteExpanded = false;
+  hideMentionMenu();
+  renderChatComposer();
+  input.focus();
+  input.setSelectionRange(applied.cursor, applied.cursor);
+}
+
 async function sendChat() {
+  hideMentionMenu();
   const input = $('#chat-input');
   const q = input.value.trim();
   if (!q || activeBatch) return;
-  // 捕获当前论文引用：问答期间用户可能返回书库（current 置 null）。
+  if (!qaReady()) {
+    toast(QA_GATE_MESSAGE, true);
+    return;
+  }
   const paper = current;
+  const userMsg = composerMessage(q, chatComposer);
   input.value = '';
-  await papers.appendChatMessage(paper, { role: 'user', content: q });
-  appendChatBubble('user', q);
-  const bubble = appendChatBubble('assistant', '…');
-  const binding = paper.chat.at(-1) ?? { bindingKind: 'none' };
+  chatComposer = emptyBinding();
+  composerQuoteExpanded = false;
+  hideMentionMenu();
+  renderChatComposer();
+  await papers.appendChatMessage(paper, userMsg);
+  appendChatBubble(userMsg, '', (paper.chat || []).length - 1);
+  const bubble = appendChatBubble({ role: 'assistant', content: '…' });
 
-  // 模型补全段提成本地函数：任务中心「重试」重跑补全；用户消息已落库，不重复追加。
   const askOnce = async () => {
     chatAborter = new AbortController();
     try {
-      const messages = await assembleCurrentQa(paper, q, binding);
+      const messages = await assembleCurrentQa(paper, q, userMsg);
       const text = await model.chat(messages, {
         stream: true,
         signal: chatAborter.signal,
@@ -1113,15 +1588,14 @@ async function sendChat() {
         retry: () => { void askOnce(); },
       });
       renderMarkdownInto(bubble, text || '（无回复）');
-      // assistant 完成才落库；中断（AbortError）不落库。
-      await papers.appendChatMessage(paper, { role: 'assistant', content: text });
+      await papers.appendChatMessage(paper, { role: 'assistant', content: text, bindingKind: 'none' });
     } catch (err) {
       bubble.classList.add('err');
       if (err.name === 'AbortError') {
         bubble.textContent = '已停止。';
       } else {
         bubble.textContent = `出错了：${err.message}`;
-        await papers.appendChatMessage(paper, { role: 'assistant', content: `（出错：${err.message}）` });
+        await papers.appendChatMessage(paper, { role: 'assistant', content: `（出错：${err.message}）`, bindingKind: 'none' });
       }
     } finally {
       chatAborter = null;
@@ -2097,7 +2571,50 @@ function bindEvents() {
 
   $('#btn-chat-send').onclick = sendChat;
   $('#chat-input').addEventListener('keydown', e => {
+    if (mentionOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        mentionActive = mentionItems.length ? (mentionActive + 1) % mentionItems.length : 0;
+        renderMentionMenu();
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        mentionActive = mentionItems.length
+          ? (mentionActive - 1 + mentionItems.length) % mentionItems.length
+          : 0;
+        renderMentionMenu();
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (mentionItems[mentionActive]) chooseMention(mentionItems[mentionActive]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideMentionMenu();
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  });
+  $('#chat-input').addEventListener('input', syncMentionMenu);
+  $('#chat-input').addEventListener('click', syncMentionMenu);
+  $('#chat-input').addEventListener('keyup', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') syncMentionMenu();
+  });
+  $('#source-doc').addEventListener('mouseup', onSourceMouseUp);
+  $('#source-doc').addEventListener('scroll', hideSourceAskFloat);
+  $('#source-ask-float').addEventListener('mousedown', e => e.preventDefault());
+  $('#source-ask-float').onclick = () => {
+    if (pendingSourceHits.length) startFragmentAsk(pendingSourceHits);
+  };
+  document.addEventListener('mousedown', e => {
+    const float = $('#source-ask-float');
+    if (float && !float.hidden && !float.contains(e.target) && !$('#source-doc')?.contains(e.target)) {
+      hideSourceAskFloat();
+    }
   });
 
   $('#btn-skills').onclick = openSkillsModal;

@@ -1,10 +1,8 @@
-// 提问三形态上下文组装纯函数（#67 / 规格 #52 决策 4–8）：
-// 输入 = 论文产物（L1 阅读地图 / L2 节薄摘要 / 块模型）+ 会话历史 + 当轮绑定，
-// 输出 = messages 数组。历史重放只含用户原文与引用标注文本形态，绑定注入不重放；
-// 装配超 INPUT_TOKEN_HARD_TOP 硬顶报错拒绝（不截断）。页图不进问答；图表裁切图是
-// 问答唯一图像通道（仅片段形态覆盖图表占位时附上）。
+// 提问三形态上下文组装（#67 / 规格 #52 决策 4–8）与提问 UI 绑定纯函数（#68 / 决策 9–13）：
+// 组装缝输入 = 论文产物 + 会话历史 + 当轮绑定，输出 messages；UI 缝覆盖 @ 补全、
+// 单绑定互斥、选区扩块、气泡呈现与建图门禁。页图不进问答；图表裁切图是问答唯一图像通道。
 //
-// 消费方：本模块测试 + 问答发送路径（#68 绑定 UI 把当轮绑定写入消息后即走此缝）。
+// 消费方：本模块测试 + 问答发送 / 绑定 UI 路径。
 
 import {
   INPUT_TOKEN_HARD_TOP,
@@ -19,6 +17,7 @@ import {
 export const CHAT_HISTORY_WINDOW = 12;
 export const BLOCKMODEL_ATTACHMENT_ID = 'blockmodel.json';
 export const CROP_ID_PREFIX = 'crop-';
+export const QA_GATE_MESSAGE = '未建图：提问须先完成建图。';
 
 /** 裁切图附件 ID：`crop-fig_3` / `crop-tbl_1`（与 Rust pdfassets::crop_attachment_id 同约定）。 */
 export function cropAttachmentId(assetId) {
@@ -144,6 +143,202 @@ function cropAssetIdsForBlocks(items, mapped) {
     for (const match of text.matchAll(/\[(?:图|表) ((?:fig|tbl)_[\w-]+)\]/g)) add(match[1]);
   }
   return ids;
+}
+
+/** 建图门禁：阅读地图产物就位才允许提问。 */
+export function hasMapProduct(products) {
+  return mapBodyFrom(products) != null;
+}
+
+/** @ 补全候选：块模型全部原文章节（含 References / Acknowledgments），按阅读序。 */
+export function mentionCandidates(mapped, query = '') {
+  const q = String(query ?? '').trim().toLowerCase();
+  const sections = mapped?.sections ?? [];
+  if (!q) return sections.slice();
+  return sections.filter(section => {
+    const hay = [section.title, section.id, section.number, section.role]
+      .filter(Boolean)
+      .join('\n')
+      .toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+/**
+ * 解析输入框光标处的 @ 触发。须在行首或空白之后；查询可含空格，遇换行则关闭。
+ * 返回 { start, end, query }（start 指向 @），未触发返回 null。
+ */
+export function parseMentionTrigger(text, cursor) {
+  const value = String(text ?? '');
+  const pos = Math.max(0, Math.min(Number(cursor) || 0, value.length));
+  const before = value.slice(0, pos);
+  const at = before.lastIndexOf('@');
+  if (at < 0) return null;
+  if (at > 0 && !/\s/.test(before[at - 1])) return null;
+  const query = before.slice(at + 1);
+  if (query.includes('\n')) return null;
+  return { start: at, end: pos, query };
+}
+
+export function emptyBinding() {
+  return { bindingKind: 'none', secId: null, fragmentText: null, cite: null, assetIds: [] };
+}
+
+/** @节绑定：一条消息一个绑定，写入即替换。 */
+export function sectionBinding(section) {
+  if (!section?.id) return emptyBinding();
+  const blocks = section.blocks ?? [];
+  const first = blocks[0];
+  const last = blocks.at(-1);
+  return {
+    bindingKind: 'section',
+    secId: section.id,
+    fragmentText: null,
+    cite: first && last
+      ? {
+          startSecId: section.id,
+          startBlock: first.id,
+          endSecId: section.id,
+          endBlock: last.id,
+          startPage: first.page ?? section.pageStart ?? null,
+          endPage: last.page ?? section.pageEnd ?? null,
+        }
+      : null,
+    assetIds: [],
+  };
+}
+
+/**
+ * 选区覆盖的块扩成完整块区间（起止按阅读序归一，含跨节）。
+ * hits = [{ secId, blockId }, ...]
+ */
+export function expandSelectionToCite(mapped, hits) {
+  let lo = null;
+  let hi = null;
+  let loHit = null;
+  let hiHit = null;
+  for (const hit of hits ?? []) {
+    const blockId = Number(hit?.blockId);
+    const secId = typeof hit?.secId === 'string' ? hit.secId : '';
+    if (!secId || !Number.isFinite(blockId)) continue;
+    const pos = blockPosition(mapped, secId, blockId);
+    if (pos == null) continue;
+    if (lo == null || pos < lo) {
+      lo = pos;
+      loHit = { secId, blockId };
+    }
+    if (hi == null || pos > hi) {
+      hi = pos;
+      hiHit = { secId, blockId };
+    }
+  }
+  if (!loHit || !hiHit) {
+    throw qaError('invalid_binding', '选区没有覆盖任何文本块。');
+  }
+  const startSection = sectionById(mapped, loHit.secId);
+  const endSection = sectionById(mapped, hiHit.secId);
+  const startBlock = (startSection?.blocks ?? []).find(block => Number(block.id) === loHit.blockId);
+  const endBlock = (endSection?.blocks ?? []).find(block => Number(block.id) === hiHit.blockId);
+  return {
+    startSecId: loHit.secId,
+    startBlock: loHit.blockId,
+    endSecId: hiHit.secId,
+    endBlock: hiHit.blockId,
+    startPage: startBlock?.page ?? startSection?.pageStart ?? null,
+    endPage: endBlock?.page ?? endSection?.pageEnd ?? null,
+  };
+}
+
+/** 片段绑定：扩块后的原文并集 + 覆盖图表裁切图 id。 */
+export function fragmentBinding(mapped, hits) {
+  const cite = expandSelectionToCite(mapped, hits);
+  const items = coveredBlockItems(mapped, cite);
+  const fragmentText = items
+    .map(({ block }) => String(block.text ?? '').trim())
+    .filter(Boolean)
+    .join('\n');
+  return {
+    bindingKind: 'fragment',
+    secId: null,
+    fragmentText,
+    cite,
+    assetIds: cropAssetIdsForBlocks(items, mapped),
+  };
+}
+
+/** 选中 @ 候选：清掉 @查询，写入节绑定（替换已有绑定）。 */
+export function applyMention(text, cursor, section) {
+  const value = String(text ?? '');
+  const pos = Math.max(0, Math.min(Number(cursor) || 0, value.length));
+  const trigger = parseMentionTrigger(value, pos);
+  const nextText = trigger ? value.slice(0, trigger.start) + value.slice(trigger.end) : value;
+  const nextCursor = trigger ? trigger.start : pos;
+  return { text: nextText, cursor: nextCursor, binding: sectionBinding(section) };
+}
+
+export function fragmentCiteLabel(cite) {
+  if (!cite || typeof cite !== 'object') return '';
+  const { startSecId, startBlock, endSecId, endBlock } = cite;
+  if (!startSecId || !endSecId || !Number.isFinite(Number(startBlock)) || !Number.isFinite(Number(endBlock))) {
+    return '';
+  }
+  if (startSecId === endSecId) {
+    if (startBlock === endBlock) return `(${startSecId}:L${startBlock})`;
+    return `(${startSecId}:L${startBlock}-${endBlock})`;
+  }
+  return `(${startSecId}:L${startBlock}–${endSecId}:L${endBlock})`;
+}
+
+function sectionCiteLabel(section, secId) {
+  const id = section?.id || secId || '';
+  if (!id) return '';
+  const start = section?.pageStart;
+  const end = section?.pageEnd;
+  if (Number.isFinite(start) && Number.isFinite(end) && start !== end) return `(${id} · p${start}–p${end})`;
+  if (Number.isFinite(start)) return `(${id} · p${start})`;
+  return `(${id})`;
+}
+
+/** 用户气泡绑定呈现：chip 或折叠引用块；无绑定返回 null。 */
+export function userBindingView(message, mapped) {
+  const kind = message?.bindingKind || 'none';
+  if (kind === 'section') {
+    const section = sectionById(mapped, message?.secId);
+    const title = section?.title || message?.secId || '';
+    return {
+      kind: 'chip',
+      label: title ? `@${title}` : '@',
+      cite: sectionCiteLabel(section, message?.secId),
+      locate: { type: 'section', secId: message?.secId || null },
+    };
+  }
+  if (kind === 'fragment') {
+    const text = typeof message?.fragmentText === 'string' ? message.fragmentText : '';
+    const firstLine = text.split('\n')[0] || '';
+    return {
+      kind: 'quote',
+      firstLine,
+      fullText: text,
+      cite: fragmentCiteLabel(message?.cite),
+      locate: { type: 'fragment', cite: message?.cite || null },
+    };
+  }
+  return null;
+}
+
+/** 发送快照：当前输入 + 绑定写入用户消息字段。 */
+export function composerMessage(question, binding = emptyBinding(), now = Date.now()) {
+  const kind = binding?.bindingKind || 'none';
+  return {
+    role: 'user',
+    content: String(question ?? ''),
+    createdAt: now,
+    bindingKind: kind,
+    secId: kind === 'section' ? (binding.secId ?? null) : null,
+    fragmentText: kind === 'fragment' ? (binding.fragmentText ?? null) : null,
+    cite: kind === 'none' ? null : (binding.cite ?? null),
+    assetIds: Array.isArray(binding?.assetIds) ? [...binding.assetIds] : [],
+  };
 }
 
 function renderJson(value) {

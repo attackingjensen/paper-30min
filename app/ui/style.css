@@ -216,7 +216,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 }
 .digest-card.active { border-color: var(--accent); }
 .dc-head {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 11px 16px; background: #fafbfe; border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
@@ -297,6 +297,40 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   padding: 16px; white-space: pre-wrap; word-break: break-word;
   font-size: 13.5px; line-height: 1.7; max-height: 65vh; overflow-y: auto;
 }
+.source-chip-wrap { display: inline-flex; align-items: stretch; gap: 0; }
+.source-chip-wrap .chip { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.chip-ask {
+  border: 1px solid var(--border); border-left: 0; background: var(--card); color: var(--accent);
+  border-radius: 0 999px 999px 0; padding: 4px 10px; font-size: 12px; cursor: pointer;
+}
+.chip-ask:hover { background: var(--accent-soft); }
+.chip-ask:disabled { opacity: .45; cursor: not-allowed; }
+.source-wrap { position: relative; }
+.source-doc {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 16px 16px; max-height: 65vh; overflow-y: auto;
+  font-size: 13.5px; line-height: 1.7;
+}
+.src-sec-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 16px 0 8px; padding-top: 8px; border-top: 1px solid var(--border);
+}
+.src-sec-head:first-child { border-top: 0; margin-top: 4px; padding-top: 0; }
+.src-sec-head h3 { margin: 0; font-size: 15px; }
+.src-block {
+  margin: 0 0 10px; padding: 6px 8px; border-radius: 6px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.src-block.is-locate { background: #eef2ff; outline: 1px solid #c7d2fe; }
+.src-pg {
+  float: right; margin-left: 8px; color: var(--muted); font-size: 11px;
+  user-select: none;
+}
+.float-ask {
+  position: fixed; z-index: 20; padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  font-size: 13px; box-shadow: var(--shadow); cursor: pointer;
+}
 
 /* ---------- PDF 对照栏 ---------- */
 .pdf-sidebar {
@@ -362,16 +396,57 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 /* ---------- 提问 ---------- */
 .chat-log { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; min-height: 40vh; }
 .chat-msg { max-width: 85%; padding: 9px 13px; border-radius: 12px; font-size: 14px; }
-.chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 3px; white-space: pre-wrap; }
+.chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
 .chat-msg.assistant { align-self: flex-start; background: var(--card); border: 1px solid var(--border); border-bottom-left-radius: 3px; box-shadow: var(--shadow); }
 .chat-msg .md p:first-child { margin-top: 0; }
 .chat-msg .md p:last-child { margin-bottom: 0; }
 .chat-msg.err { border-color: var(--danger); color: var(--danger); }
+.chat-user-text { white-space: pre-wrap; }
+.chat-bind-chip, .chat-quote {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 6px; padding: 3px 8px; border: 0; border-radius: 8px;
+  background: rgba(255, 255, 255, .18); color: inherit; font: inherit; font-size: 12.5px;
+  text-align: left; cursor: pointer;
+}
+.chat-bind-chip.in-composer, .chat-quote.in-composer {
+  background: var(--accent-soft); color: var(--text); cursor: default;
+}
+.chat-bind-cite, .chat-quote-cite { opacity: .8; font-size: 12px; }
+.chat-bind-clear, .chat-quote-toggle {
+  margin-left: auto; border: 0; background: transparent; color: inherit;
+  font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px;
+}
+.chat-quote { flex-direction: column; align-items: stretch; }
+.chat-quote-body {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline;
+  border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 0;
+}
+.chat-quote-first { flex: 1; min-width: 0; }
+.chat-quote-full { white-space: pre-wrap; margin-top: 4px; }
+.chat-gate {
+  margin: 0 0 8px; padding: 8px 12px; border-radius: 8px;
+  background: #fff7e6; color: #8a6116; font-size: 13px;
+}
 .chat-input-row { display: flex; gap: 8px; align-items: flex-end; position: sticky; bottom: 8px; }
-#chat-input {
-  flex: 1; resize: none; padding: 9px 12px; font-size: 14px; font-family: inherit;
+.chat-box {
+  position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column;
   border: 1px solid var(--border); border-radius: 10px; background: var(--card);
 }
+.chat-binding-slot { padding: 8px 10px 0; }
+#chat-input {
+  flex: 1; resize: none; padding: 9px 12px; font-size: 14px; font-family: inherit;
+  border: 0; border-radius: 10px; background: transparent; outline: none;
+}
+#chat-input:disabled { color: var(--muted); }
+.chat-mention {
+  position: absolute; left: 0; right: 0; bottom: 100%;
+  margin: 0 0 4px; padding: 4px; max-height: 240px; overflow-y: auto;
+  list-style: none; background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow); z-index: 6;
+}
+.chat-mention li { padding: 6px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; }
+.chat-mention li.active, .chat-mention li:hover { background: var(--accent-soft); }
+.chat-mention .muted { padding: 8px 10px; }
 
 /* ---------- 弹窗 ---------- */
 .modal-mask {
