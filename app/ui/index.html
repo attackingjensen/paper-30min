@@ -15,6 +15,7 @@
   <span class="streak-badge" id="streak-badge" title="连续阅读天数与总篇数"></span>
   <nav class="main-nav" aria-label="主导航">
     <button class="nav-btn active" id="nav-library" type="button">书库</button>
+    <button class="nav-btn" id="nav-reader" type="button" hidden>阅读</button>
     <button class="nav-btn" id="nav-tasks" type="button">任务<span class="nav-badge" id="nav-tasks-badge" hidden></span></button>
   </nav>
   <div class="topbar-right">
@@ -89,27 +90,59 @@
     </div>
     <button class="btn ghost" id="btn-organize" type="button" title="评分、分类与标签">整理</button>
     <button class="btn ghost" id="btn-export" type="button" title="导出精读笔记 Markdown">⬇ 导出笔记</button>
-    <button class="btn small pdf-toggle" id="btn-pdf-toggle" type="button" aria-expanded="true" title="显示或隐藏 PDF 对照栏">PDF 对照</button>
+    <button class="btn small pdf-toggle" id="btn-pdf-toggle" type="button" aria-expanded="true" aria-pressed="true" title="全开或全关 PDF 对照">PDF 对照</button>
   </div>
 
-  <nav class="tabs" aria-label="阅读面板">
-    <button class="tab active" data-tab="digest" type="button">✨ AI 精读</button>
-    <button class="tab" data-tab="recall" type="button">▣ 回想卡片</button>
-    <button class="tab" data-tab="source" type="button">📄 原文</button>
-    <button class="tab" data-tab="translate" type="button">译 翻译</button>
-    <button class="tab" data-tab="chat" type="button">💬 提问</button>
+  <nav class="tabs" id="reader-tabs" aria-label="阅读面板">
+    <button class="tab active" data-tab="map" type="button">地图</button>
+    <button class="tab" data-tab="source" type="button">原文</button>
+    <button class="tab" data-tab="chat" type="button">提问</button>
+    <button class="tab" data-tab="recall" type="button">回想卡片</button>
   </nav>
 
   <div class="reader-workspace" id="reader-workspace">
   <div class="reader-primary">
-    <!-- AI 精读：分节卡片流 -->
-    <section id="tab-digest" class="tab-panel">
-      <div class="digest-toolbar">
-        <button class="btn primary" id="btn-gen-all" type="button">▶ 一键生成全部精读</button>
-        <button class="btn danger" id="btn-stop" type="button" hidden>■ 停止</button>
-        <span class="muted" id="digest-hint"></span>
+    <!-- 地图 tab：落地页 / 地图页 / 节页（B 双栏骨架；内容区由后续票填充） -->
+    <section id="tab-map" class="tab-panel">
+      <div id="map-landing" class="map-landing" hidden>
+        <div class="card build-landing">
+          <h2 id="map-landing-title">这篇论文还未建图</h2>
+          <p class="muted" id="map-landing-copy">建图将生成：L1 阅读地图、全部节薄摘要（L2），并备妥页图与图表裁切图。<br>建图完成后可进行深挖、复述稿与提问。</p>
+          <button class="btn primary" id="btn-build-map" type="button" disabled>▶ 开始建图</button>
+          <p class="muted" id="map-landing-progress" hidden>建图进行中：进度与任务中心联动。</p>
+        </div>
       </div>
-      <div id="digest-cards"></div>
+      <div id="map-split" class="map-split" hidden>
+        <aside class="map-tree" id="map-tree" aria-label="节树">
+          <div class="tree-head">
+            <span class="chip" id="map-progress-chip"></span>
+            <button class="tree-fold" id="btn-tree-fold" type="button" title="收起节树">«</button>
+          </div>
+          <button class="tree-item" id="btn-tree-map" type="button">阅读地图</button>
+          <div id="map-tree-items"></div>
+          <div class="tree-foot">
+            <button class="btn small primary" id="btn-deep-all" type="button" disabled>▶ 全部深挖</button>
+          </div>
+        </aside>
+        <div class="map-content">
+          <div id="map-page">
+            <div class="crumb">地图</div>
+            <div class="card map-sec"><h3>要解决的问题</h3></div>
+            <div class="card map-sec"><h3>方法概述</h3></div>
+            <div class="card map-sec"><h3>贡献声明</h3></div>
+            <div class="card map-sec"><h3>关键证据</h3></div>
+            <div class="card map-sec"><h3>术语表</h3></div>
+            <div class="card map-sec"><h3>复述稿（综合）</h3></div>
+          </div>
+          <div id="section-page" hidden>
+            <div class="sec-back">
+              <button class="btn ghost" id="btn-back-map" type="button">← 地图</button>
+            </div>
+            <h3 id="section-page-title"></h3>
+            <p class="muted" id="section-page-body">本节的薄摘要、深挖与图表将显示在这里。</p>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- 回忆卡 -->
@@ -138,12 +171,30 @@
       <div id="recall-image-gallery" class="recall-image-gallery"></div>
     </section>
 
-    <!-- 原文 -->
+    <!-- 原文：整篇连续滚动；翻译降为节级对照开关 -->
     <section id="tab-source" class="tab-panel" hidden>
-      <div class="source-chips" id="source-chips"></div>
+      <div class="source-toolbar">
+        <div class="source-chips" id="source-chips"></div>
+        <label class="trans-toggle">
+          <input type="checkbox" id="source-translate-toggle">
+          对照显示当前节译文
+        </label>
+        <label class="trans-lang">目标语言
+          <select id="translate-language">
+            <option value="zh-CN">简体中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <button class="btn small" id="btn-translate" type="button">翻译本节</button>
+        <button class="btn small danger" id="btn-translate-stop" type="button" hidden>停止</button>
+        <span class="muted" id="translate-status"></span>
+      </div>
       <div class="source-wrap" id="source-wrap">
         <pre id="source-text" class="source-text"></pre>
         <div id="source-doc" class="source-doc" hidden></div>
+        <div id="source-translate-pane" class="source-translate-pane" hidden>
+          <div id="translate-output" class="translate-output md"></div>
+        </div>
         <button id="source-ask-float" class="float-ask" type="button" hidden>提问</button>
       </div>
       <div id="source-empty" class="empty" hidden>
@@ -151,34 +202,6 @@
         <p>你可以把论文全文粘贴到下方，系统会重新尝试切分：</p>
         <textarea id="paste-area" rows="8" placeholder="在此粘贴论文全文……"></textarea>
         <button class="btn primary" id="btn-paste-split" type="button">重新切分</button>
-      </div>
-    </section>
-
-    <!-- 翻译 -->
-    <section id="tab-translate" class="tab-panel" hidden>
-      <div class="translate-toolbar">
-        <label>原文范围
-          <select id="translate-section"></select>
-        </label>
-        <label>目标语言
-          <select id="translate-language">
-            <option value="zh-CN">简体中文</option>
-            <option value="en">English</option>
-          </select>
-        </label>
-        <button class="btn primary" id="btn-translate" type="button">开始翻译</button>
-        <button class="btn danger" id="btn-translate-stop" type="button" hidden>停止</button>
-        <span class="muted" id="translate-status"></span>
-      </div>
-      <div class="translate-grid">
-        <label class="translate-pane">
-          <span>待翻译原文</span>
-          <textarea id="translate-source" spellcheck="false" placeholder="选择章节后会自动填入原文，也可以只粘贴需要翻译的段落。"></textarea>
-        </label>
-        <div class="translate-pane">
-          <span>翻译结果</span>
-          <div id="translate-output" class="translate-output md"></div>
-        </div>
       </div>
     </section>
 
@@ -201,7 +224,7 @@
   <aside class="pdf-sidebar" id="pdf-sidebar" aria-label="PDF 对照阅读器">
     <div class="pdf-sidebar-head">
       <strong>PDF 原文</strong>
-      <button class="pdf-icon-btn" id="btn-pdf-close" type="button" title="关闭 PDF 对照栏" aria-label="关闭 PDF 对照栏">×</button>
+      <button class="pdf-icon-btn" id="btn-pdf-close" type="button" title="收起 PDF 对照栏" aria-label="收起 PDF 对照栏">×</button>
     </div>
     <div id="pdf-tasks" class="pdf-tasks" hidden></div>
     <div id="pdf-empty" class="pdf-empty" hidden>
@@ -230,6 +253,8 @@
     </div>
   </aside>
   </div>
+  <button class="pane-fab left" id="tree-fab" type="button" hidden title="展开节树">»</button>
+  <button class="pane-fab right" id="pdf-fab" type="button" hidden title="展开 PDF 对照">«</button>
 </main>
 
 <!-- ============ arXiv 导入弹窗 ============ -->

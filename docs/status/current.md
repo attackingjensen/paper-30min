@@ -1,10 +1,10 @@
 # 项目当前状态
 
-> 更新时间：2026-09-11（#68 提问 UI 行为契约完成）
+> 更新时间：2026-09-12（#69 视图状态机与四 tab 骨架完成）
 
 ## 当前阶段
 
-项目定性为"论文精读"专精 agent harness（帮助用户高效阅读一篇完整论文）。Windows 端首轮工程化闭环已完成；当前处于 Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 收敛后的实施链推进期：定稿规格群 [#48](https://github.com/attackingjensen/paper-30min/issues/48)（PDF 块模型生产管线）/ [#51](https://github.com/attackingjensen/paper-30min/issues/51)（进度与已读完数据模型）/ [#52](https://github.com/attackingjensen/paper-30min/issues/52)（提问双形态契约）/ [#55](https://github.com/attackingjensen/paper-30min/issues/55)（建图协议与 L1/L2/L3 产物契约）/ [#56](https://github.com/attackingjensen/paper-30min/issues/56)（应用组织与导航结构）均 ready-for-agent，实施票 #57–#72 已拆出并接好 blocked-by 依赖；#57–#68 已完成关闭，实施前沿为 [#69](https://github.com/attackingjensen/paper-30min/issues/69)（视图状态机模块与四 tab 骨架）。各票的实现细节、验收证据与走查留档以对应 GitHub Issue 的完成说明为准。
+项目定性为"论文精读"专精 agent harness（帮助用户高效阅读一篇完整论文）。Windows 端首轮工程化闭环已完成；当前处于 Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 收敛后的实施链推进期：定稿规格群 [#48](https://github.com/attackingjensen/paper-30min/issues/48)（PDF 块模型生产管线）/ [#51](https://github.com/attackingjensen/paper-30min/issues/51)（进度与已读完数据模型）/ [#52](https://github.com/attackingjensen/paper-30min/issues/52)（提问双形态契约）/ [#55](https://github.com/attackingjensen/paper-30min/issues/55)（建图协议与 L1/L2/L3 产物契约）/ [#56](https://github.com/attackingjensen/paper-30min/issues/56)（应用组织与导航结构）均 ready-for-agent，实施票 #57–#72 已拆出并接好 blocked-by 依赖；#57–#69 已完成关闭，实施前沿为 [#70](https://github.com/attackingjensen/paper-30min/issues/70)（双侧栏交互与 PDF 对照接入）。各票的实现细节、验收证据与走查留档以对应 GitHub Issue 的完成说明为准。
 
 打磨批整改草稿已形成：[2026-09-07 打磨批整改草稿](../draft/2026-09-07-polish-batch-draft.md)，覆盖 UI 层静默行为、阅读流、任务中心与导航、Paper30Min 改名与新图标（已选定 B「30 分钟进度环」）、视觉系统重整；因分析架构调整暂缓转正式规格与票据，重估随地图收敛解禁，时点另定。
 
@@ -24,7 +24,7 @@
 
 - 采用 Tauri + Rust + 原生 JavaScript，SQLite 保存本地书库。
 - 支持本地 PDF、arXiv 和示例论文导入，浏览器整库可预检后迁移。
-- 支持论文、精读、PDF、翻译、问答和回想卡片的完整阅读流程。提问支持 @节 chip、原文选中片段引用块与建图门禁。
+- 支持论文、精读、PDF、翻译、问答和回想卡片的完整阅读流程。提问支持 @节 chip、原文选中片段引用块与建图门禁。阅读视图为四 tab（地图 / 原文 / 提问 / 回想卡片）与地图页 ⇄ 节页两层导航；翻译是原文 tab 的节级对照。任务运行期间书库 / 任务中心 / 阅读页往返不取消任务。
 - 模型调用由 Rust 发起，API Key 只保存在本机设置表；流式输出通过任务事件传给界面。
 - 任务中心支持排队、进行中、成功、失败、已取消、待重试等状态，以及取消、重试和关闭窗口时的等待/停止选择。
 - 论文成果、附件、设置和阅读位置在关闭并重新打开后可恢复。
@@ -32,11 +32,11 @@
 
 ## 工程验证
 
-- 根目录 `npm test`：197 项通过（递归含 `app/tests/`）。
-- `cd app && node --test`：114 项通过。
+- 根目录 `npm test`：209 项通过（递归含 `app/tests/`）。
+- `cd app && node --test`：126 项通过。
 - `cd app/src-tauri && cargo test`：218 项通过（`pdfparse_regression` 默认跑清单良构，全链 assert 模式本机实测 13/13 全绿）。
 - `cd app && npm run smoke`：14/14 通过。
-- 真实 Tauri 窗口走查：设置、导入、精读、批量取消、翻译、问答、回想卡片、PDF 操作、任务中心、阅读位置恢复、关闭流程和重启恢复共 12 项通过。
+- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#69 四 tab / 落地分流 / #33 导航走查清单见 [Issue #69 走查](../draft/2026-09-12-issue69-walkthrough.md)，窗口点验待做。
 - 详细走查记录见 [Issue #31 真实窗口走查清单](../draft/2026-09-06-issue31-walkthrough.md)；各票新增测试的分布见对应 Issue 的完成说明。
 
 ## 实施状态
@@ -68,7 +68,7 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 | [#66](https://github.com/attackingjensen/paper-30min/issues/66) | chat_messages 绑定列与迁移 | 已完成 |
 | [#67](https://github.com/attackingjensen/paper-30min/issues/67) | 三形态上下文组装纯函数 | 已完成 |
 | [#68](https://github.com/attackingjensen/paper-30min/issues/68) | 提问 UI 行为契约 | 已完成 |
-| [#69](https://github.com/attackingjensen/paper-30min/issues/69) | 视图状态机模块与四 tab 骨架 | 未开始 |
+| [#69](https://github.com/attackingjensen/paper-30min/issues/69) | 视图状态机模块与四 tab 骨架 | 已完成 |
 | [#70](https://github.com/attackingjensen/paper-30min/issues/70) | 双侧栏交互与 PDF 对照接入 | 未开始 |
 | [#71](https://github.com/attackingjensen/paper-30min/issues/71) | 地图页与节页内容区 | 未开始 |
 | [#72](https://github.com/attackingjensen/paper-30min/issues/72) | 书库与任务中心呈现、导出切换与走查 | 未开始 |
@@ -83,7 +83,7 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 - 阅读位置尚未携带 `contentVersion`，也未接入云端同步。
 - 本机 PDF 打开时暂时一次性读取文件，尚未实现按页懒加载传输。
 - 移除回想卡片图片后，附件文件暂时没有清理命令。
-- 精读节卡片联动 PDF 页码的代码已接入，但还缺一次人工点击确认。
+- PDF 对照随节页定位该节起始页留给 [#70](https://github.com/attackingjensen/paper-30min/issues/70)，尚未接线。
 - 安装包、覆盖升级、干净账户安装和卸载验收尚未完成，属于 #32 范围。
 - #33（任务中心导航误取消任务）与 #34（公式密集论文 PDF 保真）已随 #35 地图收敛移交关闭：#33 语义经 #56 规格修订评论落 #69/#72 验收；#34 由 #48 管线的公式占位+裁切图策略覆盖，公式密集回归样例移交 #60，「编辑原文」入口暂不携带、实际使用仍痛再立票。
 

@@ -1,9 +1,6 @@
-// 界面壳与编排（Issue #31）：书库 / 阅读 / 任务中心三个视图与全部弹窗。
-// 业务行为移植自 public/js/app.js；领域规则全部在 js/ 下的模块里，本文件只做 DOM 与流程编排。
-// 与浏览器版的差异：
-// - 模型、网络、下载、迁移、导出等能力全部走 bridge（Rust 侧实现），不再有 fetch/localStorage；
-// - 精读 tab 由「选择器 + 单卡片」改为「分节卡片流」（渐进式重设计，生成/取消/落库语义不变）；
-// - 新增任务中心视图、阅读位置保存与恢复、PDF 附件 SHA-256 校验、回忆卡图片走附件存储。
+// 界面壳与编排：书库 / 阅读 / 任务中心三个视图与全部弹窗。
+// 领域规则在 js/ 模块里；本文件只做 DOM 与流程编排。阅读视图状态（四 tab、节页、
+// 落地分流、侧栏折叠）走 view.js 纯函数，壳只负责渲染（#69 / 规格 #56）。
 
 import { createBridge, trackTask, taskStatusLabel, isTerminalStatus, activeTasks } from '../bridge.js';
 import * as papers from './papers.js';
@@ -12,7 +9,8 @@ import * as generation from './generation.js';
 import * as parser from './parser.js';
 import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
-import { sectionForPart } from './protocol.js';
+import { PROTOCOL_TASKS, partIdForSection, sectionForPart } from './protocol.js';
+import * as view from './view.js';
 import {
   initSkills, effectiveSkills, getSkill, saveCustomSkill, resetSkill,
   parseSkillFile, loadCustomSkills, loadSkills,
@@ -44,13 +42,12 @@ function escapeTemplate(value) {
 
 // ---------------- 全局状态 ----------------
 let library = [];
-let current = null;          // 当前打开的论文
+let current = null;          // 当前打开的论文（切到书库/任务中心不清除）
 let currentView = 'library'; // library | tasks | reader
-let currentTab = 'digest';   // digest | recall | source | translate | chat
+let currentTab = 'map';      // map | source | chat | recall
+let reader = view.initialState();
 let chatAborter = null;      // 问答中断控制器（独立于精读生成任务）
-let activeBatch = null;      // 进行中的批量生成句柄，停止按钮经它取消
 let editingSkillId = null;
-let digestSection = 'abstract';
 let sourceTab = 'abstract';
 let currentMapped = null;    // 当前论文块模型；未建图或加载失败为 null
 let chatComposer = emptyBinding();
@@ -60,7 +57,6 @@ let mentionOpen = false;
 let pendingSourceHits = [];
 let chatQuoteExpanded = new Set();
 let composerQuoteExpanded = false;
-let translateSection = 'abstract';
 let translateAborter = null;
 let recallAborter = null;
 let pdfDocument = null;
@@ -94,8 +90,6 @@ function registerSessionTask(taskId, entry) {
 let lastActiveTasks = [];    // 最近一次 activeOnly 轮询结果（供顶栏角标与 PDF 栏）
 let positionTimer = null;    // 阅读位置 500ms 防抖
 const recallBlobUrls = new Map(); // 回忆卡图片 imageId -> Blob URL，离开论文时统一 revoke
-
-const READER_TABS = ['digest', 'recall', 'source', 'translate', 'chat'];
 
 // 任务 kind -> 中文名（kind 带 @1 后缀，先剥掉版本再匹配）。
 const TASK_KIND_LABELS = {
@@ -144,15 +138,71 @@ function metadataTokens(paper) {
   return [...papers.paperCategories(paper), ...papers.paperTags(paper)];
 }
 
-// ---------------- 视图切换与主导航 ----------------
+function isMappingPaper(paperId) {
+  if (!paperId) return false;
+  const kind = PROTOCOL_TASKS.buildMap;
+  for (const task of lastActiveTasks) {
+    if (task.kind !== kind) continue;
+    const meta = sessionTasks.get(task.taskId);
+    if ((meta?.input?.paperId || task.input?.paperId) === paperId) return true;
+  }
+  return false;
+}
+
+function syncReaderLocals() {
+  currentView = reader.appView;
+  currentTab = reader.tab;
+  if (reader.sourceSectionId) sourceTab = reader.sourceSectionId;
+  if (Number.isFinite(reader.pdfPage)) pdfPage = reader.pdfPage;
+  pdfSidebarOpen = reader.pdfOpen && !reader.pdfCollapsed;
+}
+
+function renderReaderChrome({ restore = false } = {}) {
+  syncReaderLocals();
+  $('#view-library').hidden = reader.appView !== 'library';
+  $('#view-tasks').hidden = reader.appView !== 'tasks';
+  $('#view-reader').hidden = reader.appView !== 'reader';
+  $('#nav-library').classList.toggle('active', reader.appView === 'library');
+  $('#nav-reader').classList.toggle('active', reader.appView === 'reader');
+  $('#nav-reader').hidden = !reader.paperOpen;
+  $('#nav-tasks').classList.toggle('active', reader.appView === 'tasks');
+  setTasksPolling(reader.appView === 'tasks');
+  if (reader.appView === 'reader') {
+    renderReaderTabs();
+    renderMapTab();
+    updatePdfSidebar();
+    updatePaneFabs();
+  } else {
+    updatePaneFabs();
+  }
+  if (!restore && reader.appView === 'reader' && current) schedulePositionSave();
+}
+
+function commitReader(next, options) {
+  reader = next;
+  renderReaderChrome(options);
+}
+
+function renderReaderTabs() {
+  $$('#reader-tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === reader.tab));
+  for (const id of view.READER_TABS) {
+    const panel = $(`#tab-${id}`);
+    if (panel) panel.hidden = id !== reader.tab;
+  }
+  if (reader.tab !== 'source') hideSourceAskFloat();
+}
+
+function updatePaneFabs() {
+  const onReader = reader.paperOpen && reader.appView === 'reader';
+  const surface = view.mapSurface(reader);
+  const treeOn = onReader && reader.tab === 'map' && (surface === 'map' || surface === 'section');
+  $('#tree-fab').hidden = !(treeOn && reader.treeCollapsed);
+  $('#pdf-fab').hidden = !(onReader && reader.pdfOpen && reader.pdfCollapsed);
+}
+
 function showView(name) {
-  currentView = name;
-  $('#view-library').hidden = name !== 'library';
-  $('#view-tasks').hidden = name !== 'tasks';
-  $('#view-reader').hidden = name !== 'reader';
-  $('#nav-library').classList.toggle('active', name === 'library' || name === 'reader');
-  $('#nav-tasks').classList.toggle('active', name === 'tasks');
-  setTasksPolling(name === 'tasks');
+  if (current && name !== 'reader') void flushPositionSave(current);
+  commitReader(view.switchAppView(reader, name), { restore: true });
 }
 
 // ---------------- 桥接长任务辅助 ----------------
@@ -340,8 +390,10 @@ async function refreshLibrary() {
     delBtn.onclick = async event => {
       event.stopPropagation();
       if (!confirm(`确定删除「${p.title.slice(0, 40)}…」及其精读记录？`)) return;
+      const deletingCurrent = current?.id === p.id;
       await papers.removeRecord(p.id);
-      refreshLibrary();
+      if (deletingCurrent) await abandonPaper();
+      else refreshLibrary();
     };
     actions.append(openBtn, delBtn);
 
@@ -354,24 +406,22 @@ async function refreshLibrary() {
 // ---------------- 阅读位置 ----------------
 // tab 切换、精读节点击、PDF 翻页、离开论文时保存；500ms 防抖；写入失败静默。
 
-function positionSnapshot(paper, viewOverride) {
-  const view = viewOverride || currentTab;
-  return {
-    paperId: paper.id,
-    view,
-    sectionId: view === 'digest' ? digestSection : null,
-    pdfPage: pdfDocument ? pdfPage : null,
-  };
+function positionSnapshot(paper) {
+  return view.snapshotPosition({
+    ...reader,
+    sourceSectionId: sourceTab || reader.sourceSectionId,
+    pdfPage: pdfDocument ? pdfPage : reader.pdfPage,
+  }, paper.id);
 }
 
-function schedulePositionSave(viewOverride) {
+function schedulePositionSave() {
   if (!current) return;
   const paper = current;
   clearTimeout(positionTimer);
   positionTimer = setTimeout(async () => {
     positionTimer = null;
     if (current !== paper) return;
-    try { await store.positions.put(positionSnapshot(paper, viewOverride)); } catch { /* 失败静默 */ }
+    try { await store.positions.put(positionSnapshot(paper)); } catch { /* 失败静默 */ }
   }, 500);
 }
 
@@ -385,6 +435,17 @@ async function flushPositionSave(paper) {
 
 // ---------------- 阅读视图 ----------------
 async function openPaper(p) {
+  if (current?.id === p.id) {
+    showView('reader');
+    return;
+  }
+  if (view.shouldCancelTasks(
+    { type: 'open-paper', paperId: p.id },
+    { paperOpen: !!current, currentPaperId: current?.id },
+  )) {
+    await abandonPaper({ keepView: true });
+  }
+
   revokeRecallBlobUrls();
   current = p;
   currentMapped = null;
@@ -394,46 +455,43 @@ async function openPaper(p) {
   mentionOpen = false;
   pendingSourceHits = [];
   chatQuoteExpanded = new Set();
-  digestSection = papers.readingParts(p)[0]?.id || 'abstract';
   sourceTab = 'abstract';
-  translateSection = digestSection;
   pdfPage = 1;
   pdfScale = 1;
-  pdfSidebarOpen = true;
   $('#paste-area').value = '';
   $('#reader-title').textContent = p.title;
-  showView('reader');
+  reader = view.openPaper(reader, {
+    hasMap: hasMapProduct(p.products),
+    mapping: isMappingPaper(p.id),
+  });
+  renderReaderChrome({ restore: true });
   await refreshMapped(p);
   if (current !== p) return;
+  reader = view.setHasMap(reader, hasMapProduct(p.products));
   if (currentMapped) sourceTab = '__full';
-  switchTab('digest', { restore: true });
-  renderDigest();
+  reader = view.setSourceSection(reader, sourceTab);
   renderRecall();
   renderSource();
-  renderTranslate();
   renderChat();
-  updatePdfSidebar();
-  // 恢复阅读位置：tab 与 PDF 页码；读取失败静默。
   let restored = null;
   try { restored = await store.positions.get(p.id); } catch { restored = null; }
   if (restored && current === p) {
-    if (restored.view && restored.view !== 'pdf' && READER_TABS.includes(restored.view)) {
-      switchTab(restored.view, { restore: true });
-    }
-    if (restored.view === 'digest' && restored.sectionId &&
-        papers.readingParts(p).some(def => def.id === restored.sectionId)) {
-      setActiveDigestSection(restored.sectionId, { silent: true });
-    }
+    const validPartIds = papers.readingParts(p).map(def => def.id);
+    reader = view.applyPosition(reader, restored, { validPartIds });
+    if (reader.tab === 'source' && restored.sectionId) sourceTab = restored.sectionId;
     if (Number.isFinite(restored.pdfPage)) pdfPage = restored.pdfPage;
   }
+  renderReaderChrome({ restore: true });
+  if (reader.tab === 'source') renderSource();
+  if (reader.tab === 'chat') renderChat();
+  if (reader.tab === 'recall') renderRecall();
   initPdfViewer();
 }
 
-async function closePaper() {
+async function abandonPaper({ keepView = false } = {}) {
   const paper = current;
   if (paper) await flushPositionSave(paper);
   destroyPdfViewer();
-  // 离开即取消进行中的生成：生成任务经 cancelForPaper 中断，问答/翻译/回忆卡各自中断。
   const settling = paper ? generation.cancelForPaper(paper) : null;
   chatAborter?.abort();
   translateAborter?.abort();
@@ -444,261 +502,114 @@ async function closePaper() {
   hideSourceAskFloat();
   hideMentionMenu();
   revokeRecallBlobUrls();
-  showView('library');
-  // 等待生成任务收尾（中断保存完成）再刷新书库，避免读到落库前的旧快照。
+  reader = view.closePaper(reader);
+  if (!keepView) renderReaderChrome({ restore: true });
   if (settling) await settling.catch(() => {});
-  refreshLibrary();
+  if (!keepView) refreshLibrary();
 }
 
 function switchTab(name, { restore = false } = {}) {
-  currentTab = name;
-  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  for (const id of READER_TABS) {
-    $(`#tab-${id}`).hidden = id !== name;
-  }
-  if (name !== 'source') hideSourceAskFloat();
-  if (!restore) schedulePositionSave();
+  commitReader(view.switchTab(reader, name), { restore });
+  if (name === 'source') renderSource();
+  if (name === 'chat') renderChat();
+  if (name === 'recall') renderRecall();
 }
 
 function updateReaderMeta() {
   if (!current) return;
-  const { done, total } = papers.readingProgress(current);
   const categories = papers.paperCategories(current);
   const tags = papers.paperTags(current);
   const details = [
     current.numPages ? `${current.numPages} 页` : '',
     `导入于 ${fmtDate(current.addedAt)}`,
-    `已读完 ${done}/${total}`,
     ratingText(current.rating),
     categories.join(' · '),
     tags.length ? tags.map(tag => `#${tag}`).join(' ') : '',
   ].filter(Boolean);
   $('#reader-meta').textContent = details.join(' · ');
   updateStreakBadge();
-}
-
-// ---------------- AI 精读（分节卡片流） ----------------
-function setActiveDigestSection(sectionId, { silent = false } = {}) {
-  digestSection = sectionId;
-  $$('#digest-cards .digest-card').forEach(card => {
-    card.classList.toggle('active', card.id === `card-${sectionId}`);
-  });
-  if (!silent) {
-    syncPdfToSection(sectionId);
-    schedulePositionSave('digest');
+  const chip = $('#map-progress-chip');
+  if (chip) {
+    const { done, total } = papers.readingProgress(current);
+    chip.textContent = `${done}/${total} 已读完`;
   }
 }
 
-function renderDigest() {
-  const defs = papers.readingParts(current);
-  const wrap = $('#digest-cards');
-  wrap.innerHTML = '';
-  const anyMissing = defs.some(s => !current.sections?.[s.id]);
-  $('#digest-hint').textContent = anyMissing
-    ? '部分章节未能自动识别，可在卡片内手动粘贴该节原文。'
-    : '每个章节使用对应「技能」生成精读，可在技能库中自定义提示词。';
-  for (const def of defs) {
-    wrap.appendChild(buildDigestCard(def));
+// ---------------- 地图 tab 骨架（落地 / 地图页 / 节页） ----------------
+function mapNavItems() {
+  if (currentMapped?.sections?.length) {
+    return currentMapped.sections.map(section => ({
+      id: partIdForSection(currentMapped, section.id) || section.id,
+      title: section.title || section.id,
+      grey: section.role === 'references' || section.role === 'acknowledgments',
+    }));
   }
-  setActiveDigestSection(
-    defs.some(def => def.id === digestSection) ? digestSection : defs[0]?.id,
-    { silent: true },
-  );
+  return papers.readingParts(current).map(part => ({
+    id: part.id,
+    title: part.pickerLabel || part.label,
+    grey: false,
+  }));
+}
+
+function sectionDot(partId) {
+  if (current.readMarks?.[partId] != null) return 'marked';
+  if ((current.products ?? []).some(item => item.kind === 'dig' && item.partId === partId)) return 'dug';
+  return 'todo';
+}
+
+function navTitleById(id) {
+  return mapNavItems().find(item => item.id === id)?.title || id;
+}
+
+function renderMapTab() {
+  if (!current) return;
+  const surface = view.mapSurface(reader);
+  const landing = $('#map-landing');
+  const split = $('#map-split');
+  landing.hidden = surface !== 'landing-idle' && surface !== 'landing-running';
+  split.hidden = surface === 'landing-idle' || surface === 'landing-running';
+  $('#map-landing-progress').hidden = surface !== 'landing-running';
+  $('#btn-build-map').hidden = surface === 'landing-running';
+  if (surface === 'landing-running') {
+    $('#map-landing-title').textContent = '正在建图';
+  } else {
+    $('#map-landing-title').textContent = '这篇论文还未建图';
+  }
+
+  const tree = $('#map-tree');
+  tree.classList.toggle('rail', reader.treeCollapsed);
+  tree.style.width = `${reader.treeWidth}px`;
+
+  $('#map-page').hidden = surface !== 'map';
+  $('#section-page').hidden = surface !== 'section';
+  $('#btn-tree-map').classList.toggle('cur', surface === 'map');
+  if (surface === 'section') {
+    const title = navTitleById(reader.sectionId);
+    $('#section-page-title').textContent = title;
+    $('#btn-back-map').textContent = `← 地图 / ${title}`;
+  }
+
+  const items = $('#map-tree-items');
+  items.innerHTML = '';
+  for (const item of mapNavItems()) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tree-item' + (item.grey ? ' grey' : '') + (reader.sectionId === item.id ? ' cur' : '');
+    const note = item.grey ? '<span class="muted tree-l2-note">不参与 L2</span>' : '';
+    button.innerHTML = `<span class="dot ${item.grey ? 'todo' : sectionDot(item.id)}"></span><span class="tname">${escapeTemplate(item.title)}</span>${note}`;
+    button.onclick = () => drillSection(item.id);
+    items.appendChild(button);
+  }
   updateReaderMeta();
+  updatePaneFabs();
 }
 
-function buildDigestCard(def) {
-  const analysis = current.analyses?.[def.id];
-  const hasSource = !!(current.sections?.[def.id]?.trim());
-  const card = document.createElement('article');
-  card.className = 'digest-card';
-  card.id = `card-${def.id}`;
-  card.innerHTML = `
-      <div class="dc-head">
-        <h4>${escapeTemplate(def.label)}<span class="dc-sub">${escapeTemplate(def.hint)}</span></h4>
-        <span class="dc-mark" data-role="mark-chip" hidden>✓ 已读完</span>
-        <span class="dc-status" data-role="status"></span>
-        <button class="btn small" data-role="mark" type="button"></button>
-        <button class="btn small" data-role="ask" type="button">提问</button>
-        <button class="btn small primary" data-role="gen" type="button">${analysis?.text ? '重新生成' : '生成精读'}</button>
-      </div>
-      ${hasSource ? '' : `
-        <div class="dc-body dc-manual">
-          <p class="muted">未能从 PDF 自动提取本节原文，可手动粘贴（不影响其它章节）：</p>
-          <textarea rows="4" data-role="manual" placeholder="粘贴本节英文原文……"></textarea>
-          <button class="btn small" data-role="save-manual" type="button">保存原文</button>
-        </div>`}
-      <div class="dc-body md" data-role="body"></div>`;
-  const body = card.querySelector('[data-role="body"]');
-  const status = card.querySelector('[data-role="status"]');
-  if (analysis?.text) {
-    renderMarkdownInto(body, analysis.text);
-    status.textContent = `✓ ${fmtDate(analysis.updatedAt)}`;
-    status.className = 'dc-status ok';
-  } else if (!hasSource) {
-    body.classList.add('empty-hint');
-    body.textContent = '';
-  } else {
-    body.classList.add('empty-hint');
-    body.textContent = '尚未生成。点击右上「生成精读」开始。';
-  }
-  const genBtn = card.querySelector('[data-role="gen"]');
-  genBtn.onclick = event => {
-    event.stopPropagation();
-    setActiveDigestSection(def.id);
-    generateSection(def.id);
-  };
-  const askBtn = card.querySelector('[data-role="ask"]');
-  const mappedSection = currentMapped ? sectionForPart(currentMapped, def.id) : null;
-  askBtn.disabled = !qaReady() || !mappedSection;
-  askBtn.title = qaReady() ? '就本节提问' : QA_GATE_MESSAGE;
-  askBtn.onclick = event => {
-    event.stopPropagation();
-    if (!mappedSection) return;
-    startSectionAsk(mappedSection);
-  };
-  // 已读完标记入口（过渡位置：分节卡片头部；最终位置 = 节页尾部，由 #56 节页票承接）。
-  // 设置计入当日打卡，撤销不写不回收；只就地更新本卡片，避免重建卡片打断进行中的生成流。
-  const markBtn = card.querySelector('[data-role="mark"]');
-  const syncMarkUI = () => {
-    const marked = current.readMarks?.[def.id] != null;
-    card.querySelector('[data-role="mark-chip"]').hidden = !marked;
-    markBtn.textContent = marked ? '撤销已读完' : '标为已读完';
-    markBtn.classList.toggle('active', marked);
-  };
-  markBtn.onclick = async event => {
-    event.stopPropagation();
-    const marked = current.readMarks?.[def.id] != null;
-    try {
-      await papers.setReadMark(current, def.id, !marked);
-    } catch (err) {
-      toast(`已读完标记保存失败：${errorText(err)}`, true);
-      return;
-    }
-    syncMarkUI();
-    updateReaderMeta();
-  };
-  syncMarkUI();
-  // 点击卡片头部（按钮以外）视为「精读节点击」：激活该节、联动 PDF、记录阅读位置。
-  card.querySelector('.dc-head').onclick = () => setActiveDigestSection(def.id);
-  const saveBtn = card.querySelector('[data-role="save-manual"]');
-  if (saveBtn) {
-    saveBtn.onclick = async () => {
-      const txt = card.querySelector('[data-role="manual"]').value.trim();
-      if (!txt) return toast('请先粘贴原文', true);
-      await papers.saveSectionSource(current, def.id, txt);
-      toast('已保存本节原文，现在可以生成精读了');
-      renderDigest();
-    };
-  }
-  return card;
+function drillSection(sectionId) {
+  commitReader(view.openSection(reader, sectionId));
 }
 
-function setCardStatus(sectionId, text, cls) {
-  const el = $(`#card-${sectionId} [data-role="status"]`);
-  if (el) { el.textContent = text; el.className = 'dc-status ' + (cls || ''); }
-}
-
-// 卡片可能被 renderDigest 重建（手动粘贴保存后等），返回的渲染目标可能已脱离 DOM。
-function digestCardRefs(sectionId) {
-  const card = $(`#card-${sectionId}`);
-  if (!card) return null;
-  return {
-    body: card.querySelector('[data-role="body"]'),
-    btn: card.querySelector('[data-role="gen"]'),
-  };
-}
-
-function generateSection(sectionId) {
-  const refs = digestCardRefs(sectionId);
-  if (!refs) return;
-  const started = generation.startSection(current, sectionId, {
-    onStart: () => markCardGenerating(sectionId, refs.body, refs.btn),
-    onUpdate: full => renderMarkdownInto(refs.body, full),
-    onSettled: result => settleDigestCard(sectionId, result, refs),
-  });
-  if (!started.accepted) {
-    toast(started.reason === 'no-source' ? '该章节没有原文，请先在卡片中粘贴原文' : '已有生成任务进行中', true);
-  }
-}
-
-function markCardGenerating(sectionId, body, btn) {
-  btn.disabled = true;
-  body.classList.remove('empty-hint');
-  body.classList.add('cursor');
-  setCardStatus(sectionId, '生成中…', '');
-}
-
-function settleDigestCard(sectionId, result, { body, btn }, { silent = false } = {}) {
-  body.classList.remove('cursor');
-  if (result.status === 'completed') {
-    renderMarkdownInto(body, result.text);
-    setCardStatus(sectionId, `✓ ${fmtDate(Date.now())}`, 'ok');
-    btn.textContent = '重新生成';
-    updateReaderMeta();
-  } else if (result.status === 'cancelled' && result.saved) {
-    setCardStatus(sectionId, '⚠ 已停止（保留部分）', 'err');
-    // 中断保留已计入当日打卡：刷新阅读头与连续天数徽章。
-    updateReaderMeta();
-  } else {
-    body.classList.add('empty-hint');
-    body.textContent = result.status === 'cancelled' ? '已停止生成。' : `生成失败：${result.error.message}`;
-    setCardStatus(sectionId, result.status === 'cancelled' ? '已停止' : '失败', 'err');
-    if (!silent) toast(result.error.message, true);
-  }
-  btn.disabled = false;
-}
-
-async function generateAll() {
-  if (!model.settingsReady()) {
-    toast('请先在「设置」中配置 API', true);
-    openSettingsModal();
-    return;
-  }
-  const paper = current;
-  const initialSection = digestSection;
-  const started = generation.startBatch(paper, {
-    onSectionStart(def) {
-      setActiveDigestSection(def.id, { silent: true });
-      $(`#card-${def.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      const refs = digestCardRefs(def.id);
-      return {
-        onStart: () => markCardGenerating(def.id, refs.body, refs.btn),
-        onUpdate: full => renderMarkdownInto(refs.body, full),
-      };
-    },
-    onSectionSettled(def, result) {
-      if (result.status === 'skipped') return;
-      const refs = digestCardRefs(def.id);
-      if (!refs) return;
-      settleDigestCard(def.id, result, refs, { silent: true });
-    },
-  });
-  if (!started.accepted) {
-    toast('已有生成任务进行中', true);
-    return;
-  }
-  activeBatch = started.batch;
-  $('#btn-gen-all').disabled = true;
-  $('#btn-stop').hidden = false;
-  // 任何异常都不能跳过按钮与章节的恢复，否则按钮永久卡死。
-  let result = null;
-  try {
-    result = await started.done;
-  } finally {
-    activeBatch = null;
-    $('#btn-gen-all').disabled = false;
-    $('#btn-stop').hidden = true;
-    digestSection = initialSection;
-  }
-  if (current === paper) {
-    renderDigest();
-    toast(result.status === 'completed' ? '全部精读生成完毕' : '已停止');
-  }
-}
-
-function stopGeneration() {
-  activeBatch?.cancel();
+function backToMap() {
+  commitReader(view.backToMap(reader));
 }
 
 // ---------------- 回忆卡 ----------------
@@ -976,6 +887,7 @@ function locateBinding(locate) {
   switchTab('source');
   if (locate.type === 'section') {
     sourceTab = locate.secId || '__full';
+    reader = view.setSourceSection(reader, sourceTab);
     renderSource();
     highlightLocate({ secId: locate.secId });
     return;
@@ -983,6 +895,7 @@ function locateBinding(locate) {
   const cite = locate.cite;
   if (!cite) return;
   sourceTab = cite.startSecId === cite.endSecId ? cite.startSecId : '__full';
+  reader = view.setSourceSection(reader, sourceTab);
   renderSource();
   highlightLocate({ cite });
 }
@@ -1071,7 +984,7 @@ function appendSourceAskChip(wrap, section) {
   chip.className = 'chip' + (mappedSourceTab() === section.id ? ' active' : '');
   chip.type = 'button';
   chip.textContent = section.title || section.id;
-  chip.onclick = () => { sourceTab = section.id; renderSource(); };
+  chip.onclick = () => { sourceTab = section.id; reader = view.setSourceSection(reader, section.id); renderSource(); };
   const ask = document.createElement('button');
   ask.className = 'chip-ask';
   ask.type = 'button';
@@ -1095,7 +1008,7 @@ function renderMappedSource() {
   full.className = 'chip' + (tab === '__full' ? ' active' : '');
   full.type = 'button';
   full.textContent = '全文';
-  full.onclick = () => { sourceTab = '__full'; renderSource(); };
+  full.onclick = () => { sourceTab = '__full'; reader = view.setSourceSection(reader, '__full'); renderSource(); };
   chips.appendChild(full);
   for (const section of currentMapped.sections ?? []) {
     appendSourceAskChip(chips, section);
@@ -1161,7 +1074,7 @@ function renderLegacySource() {
     chip.className = 'chip' + (def.id === sourceTab ? ' active' : '');
     chip.type = 'button';
     chip.textContent = def.label + (has ? '' : '（缺）');
-    chip.onclick = () => { sourceTab = def.id; renderSource(); };
+    chip.onclick = () => { sourceTab = def.id; reader = view.setSourceSection(reader, def.id); renderSource(); };
     chips.appendChild(chip);
   }
   const text = sourceTab === '__full' ? current.fullText : current.sections?.[sourceTab];
@@ -1175,31 +1088,39 @@ function renderSource() {
   if (!current) return;
   if (currentMapped) renderMappedSource();
   else renderLegacySource();
+  syncTranslatePane();
 }
 
-// ---------------- 独立翻译 ----------------
-function renderTranslate() {
-  if (!current) return;
-  const select = $('#translate-section');
-  const defs = [...papers.readingParts(current), { id: '__full', label: '全文' }];
-  if (!defs.some(def => def.id === translateSection)) translateSection = defs[0]?.id || '__full';
-  select.innerHTML = '';
-  for (const def of defs) {
-    const option = document.createElement('option');
-    option.value = def.id;
-    option.textContent = def.label;
-    option.disabled = !(def.id === '__full' ? current.fullText : current.sections?.[def.id]?.trim());
-    option.selected = def.id === translateSection;
-    select.appendChild(option);
+function translationPartId() {
+  if (sourceTab === '__full') return '__full';
+  if (currentMapped) return partIdForSection(currentMapped, sourceTab) || sourceTab;
+  return sourceTab;
+}
+
+function currentSectionSourceText() {
+  if (!current) return '';
+  if (sourceTab === '__full') return current.fullText || '';
+  if (currentMapped) {
+    const section = (currentMapped.sections ?? []).find(item => item.id === sourceTab);
+    if (section) return (section.blocks ?? []).map(block => String(block.text ?? '')).join('\n\n');
   }
-  loadTranslationSection();
+  return current.sections?.[sourceTab] || '';
+}
+
+function syncTranslatePane() {
+  const pane = $('#source-translate-pane');
+  const toggle = $('#source-translate-toggle');
+  if (!pane || !toggle) return;
+  toggle.checked = !!reader.translateCompare;
+  pane.hidden = !reader.translateCompare;
+  if (reader.translateCompare) loadTranslationSection();
 }
 
 function loadTranslationSection() {
   if (!current) return;
-  const source = translateSection === '__full' ? current.fullText : current.sections?.[translateSection];
-  $('#translate-source').value = source || '';
-  const saved = current.translations?.[papers.translationKey(translateSection, $('#translate-language').value)];
+  const partId = translationPartId();
+  const source = currentSectionSourceText();
+  const saved = current.translations?.[papers.translationKey(partId, $('#translate-language').value)];
   const output = $('#translate-output');
   output.classList.toggle('empty-hint', !saved?.text);
   if (saved?.text) renderMarkdownInto(output, saved.text);
@@ -1223,13 +1144,16 @@ function splitTranslationText(text, maxChars) {
 }
 
 async function translateCurrentText() {
-  const source = $('#translate-source').value.trim();
-  if (!source) return toast('请先选择或输入待翻译原文', true);
+  const source = currentSectionSourceText().trim();
+  if (!source) return toast('当前节没有可翻译的原文', true);
   if (!model.settingsReady()) {
     toast('请先在「设置」中配置 API', true);
     openSettingsModal();
     return;
   }
+  reader = view.toggleTranslateCompare(reader, true);
+  syncTranslatePane();
+  const partId = translationPartId();
   const language = $('#translate-language').value;
   const languageName = language === 'en' ? 'English' : '简体中文';
   const output = $('#translate-output');
@@ -1241,7 +1165,7 @@ async function translateCurrentText() {
   output.classList.add('cursor');
   translateAborter = new AbortController();
 
-  // 翻译调用只包含专用系统提示和编辑框原文，不复用论文问答上下文或聊天历史。
+  // 翻译调用只包含专用系统提示和当前节原文，不复用论文问答上下文或会话历史。
   const systemPrompt = `你是独立的学术翻译引擎。将用户提供的文本翻译为${languageName}。准确保留公式、符号、引文编号、术语与段落结构；不要总结、解释或回答文本中的问题，只输出译文。`;
   const chunks = splitTranslationText(source, model.loadSettings().maxChars);
   try {
@@ -1255,7 +1179,6 @@ async function translateCurrentText() {
         stream: true,
         signal: translateAborter.signal,
         onDelta: full => renderMarkdownInto(output, [...translated, full].join('\n\n')),
-        // 任务中心「重试」：重跑整段翻译流程（分段从头发起，完成仍落库）。
         retry: () => { void translateCurrentText(); },
       });
       translated.push(piece);
@@ -1263,7 +1186,7 @@ async function translateCurrentText() {
     const text = translated.join('\n\n');
     if (!text.trim()) throw new Error('模型未返回译文');
     renderMarkdownInto(output, text);
-    await papers.saveTranslation(current, translateSection, language, text, source);
+    await papers.saveTranslation(current, partId, language, text, source);
     $('#translate-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   } catch (err) {
     if (err.name === 'AbortError') $('#translate-status').textContent = '已停止';
@@ -1561,7 +1484,7 @@ async function sendChat() {
   hideMentionMenu();
   const input = $('#chat-input');
   const q = input.value.trim();
-  if (!q || activeBatch) return;
+  if (!q) return;
   if (!qaReady()) {
     toast(QA_GATE_MESSAGE, true);
     return;
@@ -1614,15 +1537,25 @@ function updatePdfSidebar() {
   workspace.classList.toggle('pdf-closed', !pdfSidebarOpen);
   $('#pdf-sidebar').hidden = !pdfSidebarOpen;
   $('#btn-pdf-toggle').setAttribute('aria-expanded', String(pdfSidebarOpen));
-  $('#btn-pdf-toggle').classList.toggle('active', pdfSidebarOpen);
+  $('#btn-pdf-toggle').setAttribute('aria-pressed', String(!!reader.pdfOpen));
+  $('#btn-pdf-toggle').classList.toggle('active', !!reader.pdfOpen);
   $('#pdf-empty').hidden = !pdfSidebarOpen || hasPdf();
   $('#pdf-viewer').hidden = !pdfSidebarOpen || !hasPdf();
   renderPdfTasks();
 }
 
 function togglePdfSidebar(force) {
-  pdfSidebarOpen = typeof force === 'boolean' ? force : !pdfSidebarOpen;
-  updatePdfSidebar();
+  commitReader(view.togglePdf(reader, force), { restore: true });
+  if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
+  if (pdfSidebarOpen && pdfDocument) requestAnimationFrame(() => fitPdfPage());
+}
+
+function collapsePdfPane() {
+  commitReader(view.collapsePdf(reader), { restore: true });
+}
+
+function expandPdfPane() {
+  commitReader(view.expandPdf(reader), { restore: true });
   if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
   if (pdfSidebarOpen && pdfDocument) requestAnimationFrame(() => fitPdfPage());
 }
@@ -1738,11 +1671,11 @@ async function renderPdfPage() {
   $('#pdf-canvas-wrap').scrollTo({ top: 0, left: 0 });
 }
 
-// 用户主动翻页后保存阅读位置（500ms 防抖），view 记为 'pdf'；
-// 不在 renderPdfPage 内保存，避免打开论文时的首次渲染覆盖刚恢复的 tab 位置。
+// 用户主动翻页后保存阅读位置（500ms 防抖）；不覆盖当前 tab。
 function savePdfPagePosition() {
   if (!current || !pdfDocument) return;
-  schedulePositionSave('pdf');
+  reader = view.setPdfPage(reader, pdfPage);
+  schedulePositionSave();
 }
 
 async function fitPdfPage() {
@@ -1765,14 +1698,6 @@ function changePdfZoom(factor) {
   if (!pdfDocument) return;
   pdfScale = Math.min(Math.max(pdfScale * factor, 0.4), 3);
   renderPdfPage();
-}
-
-function syncPdfToSection(sectionId) {
-  const start = current?.sectionPages?.[sectionId]?.start;
-  if (!pdfDocument || !Number.isFinite(start)) return;
-  pdfPage = start;
-  renderPdfPage();
-  savePdfPagePosition();
 }
 
 // put 会把瞬时 pdfBlob 上传为附件并清空句柄；随后从附件清单补回 pdfAttachment。
@@ -2351,6 +2276,26 @@ async function pollActiveTasks() {
     badge.hidden = lastActiveTasks.length === 0;
     badge.textContent = String(lastActiveTasks.length);
     renderPdfTasks();
+    if (current) {
+      const mapping = isMappingPaper(current.id);
+      if (mapping !== reader.mapping) {
+        const wasMapping = reader.mapping;
+        reader = view.setMapping(reader, mapping);
+        if (wasMapping && !mapping) {
+          try {
+            const fresh = await store.get(current.id);
+            if (fresh) {
+              current = fresh;
+              const idx = library.findIndex(item => item.id === fresh.id);
+              if (idx >= 0) library[idx] = fresh;
+              await refreshMapped(current);
+              reader = view.setHasMap(reader, hasMapProduct(current.products));
+            }
+          } catch { /* 刷新失败时仍按当前记录渲染 */ }
+        }
+        if (reader.appView === 'reader') renderMapTab();
+      }
+    }
   } catch (err) {
     console.warn('活动任务轮询失败：', err);
   }
@@ -2421,10 +2366,11 @@ function bindCloseFlow() {
 
 // ---------------- 事件绑定 ----------------
 function bindEvents() {
-  $('#brand-home').onclick = () => { if (current) closePaper(); else showView('library'); };
-  $('#nav-library').onclick = () => { if (current) closePaper(); else showView('library'); };
+  $('#brand-home').onclick = () => showView('library');
+  $('#nav-library').onclick = () => showView('library');
+  $('#nav-reader').onclick = () => { if (current) showView('reader'); };
   $('#nav-tasks').onclick = () => showView('tasks');
-  $('#btn-back').onclick = closePaper;
+  $('#btn-back').onclick = () => showView('library');
   $('#btn-organize').onclick = openOrganizeModal;
   $('#btn-import').onclick = () => $('#file-input').click();
   $('#btn-arxiv').onclick = () => {
@@ -2484,7 +2430,7 @@ function bindEvents() {
     }
   };
 
-  $$('.tab').forEach(t => t.onclick = () => switchTab(t.dataset.tab));
+  $$('#reader-tabs .tab').forEach(t => t.onclick = () => switchTab(t.dataset.tab));
   $('#recall-editor').oninput = () => {
     updateRecallPreview();
     $('#recall-status').textContent = '有未保存的修改';
@@ -2504,7 +2450,12 @@ function bindEvents() {
     e.target.value = '';
   };
   $('#btn-pdf-toggle').onclick = () => togglePdfSidebar();
-  $('#btn-pdf-close').onclick = () => togglePdfSidebar(false);
+  $('#btn-pdf-close').onclick = collapsePdfPane;
+  $('#pdf-fab').onclick = expandPdfPane;
+  $('#tree-fab').onclick = () => commitReader(view.expandTree(reader), { restore: true });
+  $('#btn-tree-fold').onclick = () => commitReader(view.collapseTree(reader), { restore: true });
+  $('#btn-tree-map').onclick = backToMap;
+  $('#btn-back-map').onclick = backToMap;
   $('#btn-pdf-attach').onclick = () => $('#pdf-attach-input').click();
   $('#pdf-attach-input').onchange = e => {
     if (e.target.files[0]) attachPdf(e.target.files[0]).catch(err => toast('关联 PDF 失败：' + err.message, true));
@@ -2522,9 +2473,9 @@ function bindEvents() {
   $('#btn-pdf-zoom-in').onclick = () => changePdfZoom(1.18);
   $('#btn-pdf-fit').onclick = () => fitPdfPage();
 
-  $('#translate-section').onchange = e => {
-    translateSection = e.target.value;
-    loadTranslationSection();
+  $('#source-translate-toggle').onchange = e => {
+    reader = view.toggleTranslateCompare(reader, e.target.checked);
+    syncTranslatePane();
   };
   $('#translate-language').onchange = loadTranslationSection;
   $('#btn-translate').onclick = translateCurrentText;
@@ -2550,8 +2501,6 @@ function bindEvents() {
   });
   $('#btn-organize-save').onclick = () => saveOrganizeMetadata().catch(err => toast('整理保存失败：' + errorText(err), true));
 
-  $('#btn-gen-all').onclick = generateAll;
-  $('#btn-stop').onclick = stopGeneration;
   $('#btn-export').onclick = exportNotes;
 
   $('#btn-paste-split').onclick = async () => {
@@ -2561,7 +2510,7 @@ function bindEvents() {
     const { discarded } = await papers.applyResplit(current, parsed);
     $('#paste-area').value = '';
     renderSource();
-    renderDigest();
+    renderMapTab();
     $('#source-empty').hidden = true;
     const found = papers.readingParts(current).filter(s => current.sections?.[s.id]?.trim()).length;
     toast(discarded
