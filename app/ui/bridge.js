@@ -31,7 +31,7 @@ export function createBridge(tauri) {
 // 只在终态 resolve { status, error?, result? }；终态语义（resolve 全文 / reject Error /
 // reject AbortError）由调用方在 promise 结果上实现。signal abort 时调 tasks.cancel@1
 //（幂等，重复调用安全）。
-export function trackTask(bridge, taskId, { signal, onChunk, onStatus } = {}) {
+export function trackTask(bridge, taskId, { signal, onChunk, onStatus, onEvent } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let unlisten = null;
@@ -63,6 +63,7 @@ export function trackTask(bridge, taskId, { signal, onChunk, onStatus } = {}) {
 
     const subscribed = bridge.subscribe(taskId, event => {
       if (settled || !event) return;
+      onEvent?.(event);
       if (event.event === 'chunk' && typeof event.chunk === 'string') onChunk?.(event.chunk);
       if (event.event === 'status') handleStatus(event.status, event.error, event.result);
     });

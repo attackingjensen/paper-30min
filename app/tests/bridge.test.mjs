@@ -165,6 +165,20 @@ test('trackTask：chunk 转发 onChunk，终态 status 解出 { status, result }
   assert.ok(!statuses.includes('chunk'), 'onStatus 只收 status 事件');
 });
 
+test('trackTask：onEvent 转发阶段/工具等全部事件', async () => {
+  const bridge = createTaskBridge();
+  const events = [];
+  const promise = trackTask(bridge, 'task-1', { onEvent: event => events.push(event.event) });
+  await tick();
+
+  bridge.emit('task-1', { event: 'stage', detail: { stage: 'map-l2' } });
+  bridge.emit('task-1', { event: 'tool', detail: { name: 'read_section' } });
+  bridge.emit('task-1', { event: 'status', status: 'succeeded' });
+
+  assert.equal((await promise).status, 'succeeded');
+  assert.deepEqual(events, ['stage', 'tool', 'status']);
+});
+
 test('trackTask：订阅前已终态时由 tasks.get@1 快照复核收尾（事件不重放）', async () => {
   const bridge = createTaskBridge({
     snapshot: { taskId: 'task-1', status: 'failed', error: { code: 'boom', message: '坏了', retryable: true } },

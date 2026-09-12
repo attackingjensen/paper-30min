@@ -102,13 +102,14 @@
 
   <div class="reader-workspace" id="reader-workspace">
   <div class="reader-primary">
-    <!-- 地图 tab：落地页 / 地图页 / 节页（B 双栏骨架；内容区由后续票填充） -->
+    <!-- 地图 tab：落地页 / 地图页 / 节页（B 双栏；内容区见 #71） -->
     <section id="tab-map" class="tab-panel">
       <div id="map-landing" class="map-landing" hidden>
         <div class="card build-landing">
           <h2 id="map-landing-title">这篇论文还未建图</h2>
-          <p class="muted" id="map-landing-copy">建图将生成：L1 阅读地图、全部节薄摘要（L2），并备妥页图与图表裁切图。<br>建图完成后可进行深挖、复述稿与提问。</p>
-          <button class="btn primary" id="btn-build-map" type="button" disabled>▶ 开始建图</button>
+          <p class="muted" id="map-landing-paper"></p>
+          <p class="muted" id="map-landing-copy">建图将生成：L1 阅读地图、全部节薄摘要（L2），并备妥页图与图表裁切图。建图完成后可进行深挖、复述稿与提问。</p>
+          <button class="btn primary" id="btn-build-map" type="button">▶ 开始建图</button>
           <p class="muted" id="map-landing-progress" hidden>建图进行中：进度与任务中心联动。</p>
         </div>
       </div>
@@ -128,19 +129,14 @@
         <div class="map-content">
           <div id="map-page">
             <div class="crumb">地图</div>
-            <div class="card map-sec"><h3>要解决的问题</h3></div>
-            <div class="card map-sec"><h3>方法概述</h3></div>
-            <div class="card map-sec"><h3>贡献声明</h3></div>
-            <div class="card map-sec"><h3>关键证据</h3></div>
-            <div class="card map-sec"><h3>术语表</h3></div>
-            <div class="card map-sec"><h3>复述稿（综合）</h3></div>
+            <div id="map-page-body"></div>
           </div>
           <div id="section-page" hidden>
             <div class="sec-back">
               <button class="btn ghost" id="btn-back-map" type="button">← 地图</button>
             </div>
             <h3 id="section-page-title"></h3>
-            <p class="muted" id="section-page-body">本节的薄摘要、深挖与图表将显示在这里。</p>
+            <div id="section-page-body"></div>
           </div>
         </div>
       </div>

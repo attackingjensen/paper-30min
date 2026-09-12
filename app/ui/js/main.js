@@ -1,7 +1,7 @@
 // 界面壳与编排：书库 / 阅读 / 任务中心三个视图与全部弹窗。
 // 领域规则在 js/ 模块里；本文件只做 DOM 与流程编排。阅读视图状态（四 tab、节页、
-// 落地分流、侧栏折叠/拖拽、浮钮、节树状态）走 view.js 纯函数，壳只负责渲染
-//（#69/#70 / 规格 #56）。
+// 落地分流、侧栏折叠/拖拽、浮钮、节树状态）走 view.js；地图页 / 节页内容走 content.js。
+// 壳只负责渲染（#69/#70/#71 / 规格 #56）。
 
 import { createBridge, trackTask, taskStatusLabel, isTerminalStatus, activeTasks } from '../bridge.js';
 import * as papers from './papers.js';
@@ -10,8 +10,19 @@ import * as generation from './generation.js';
 import * as parser from './parser.js';
 import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
-import { PROTOCOL_TASKS, partIdForSection, sectionForPart } from './protocol.js';
+import { PROTOCOL_TASKS, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
 import * as view from './view.js';
+import {
+  COPY,
+  citeSegments,
+  landingModel,
+  linkifyCiteHtml,
+  mapPageModel,
+  runningDeepDivePartIds,
+  sectionPageModel,
+  traceTaskId,
+  recallDraftMaterial,
+} from './content.js';
 import {
   initSkills, effectiveSkills, getSkill, saveCustomSkill, resetSkill,
   parseSkillFile, loadCustomSkills, loadSkills,
@@ -99,7 +110,9 @@ const TASK_KIND_LABELS = {
   'model.test': '连接测试',
   'net.fetch-text': '网页抓取',
   'files.download': '文件下载',
+  'paper.build-map': '建图',
   'paper.deep-dive': '深挖',
+  'paper.synthesize': '综合',
 };
 
 function taskKindLabel(kind) {
@@ -132,6 +145,13 @@ function toast(msg, isError = false) {
   setTimeout(() => el.remove(), 3200);
 }
 
+function ensureSettings() {
+  if (model.settingsReady()) return true;
+  toast('请先在「设置」中配置 API', true);
+  openSettingsModal();
+  return false;
+}
+
 function ratingText(value) {
   const rating = Math.min(Math.max(Number(value) || 0, 0), 5);
   return rating ? `${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}` : '未评分';
@@ -147,6 +167,10 @@ function isMappingPaper(paperId) {
 
 function isDeepDivingPaper(paperId) {
   return hasOpenProtocolTask(paperId, PROTOCOL_TASKS.deepDive);
+}
+
+function isSynthesizingPaper(paperId) {
+  return hasOpenProtocolTask(paperId, PROTOCOL_TASKS.synthesize);
 }
 
 function hasOpenProtocolTask(paperId, kind) {
@@ -548,7 +572,7 @@ function updateReaderMeta() {
   }
 }
 
-// ---------------- 地图 tab 骨架（落地 / 地图页 / 节页） ----------------
+// ---------------- 地图 tab（落地 / 地图页 / 节页内容） ----------------
 function mapNavItems() {
   if (currentMapped?.sections?.length) return view.treeItems(currentMapped);
   return papers.readingParts(current).map(part => ({
@@ -562,20 +586,299 @@ function navTitleById(id) {
   return mapNavItems().find(item => item.id === id)?.title || id;
 }
 
+function sessionTaskList() {
+  return [...sessionTasks.entries()].map(([taskId, meta]) => ({
+    taskId,
+    kind: meta.kind,
+    input: meta.input,
+    status: meta.status,
+  }));
+}
+
+function openProtocolTaskMeta(paperId, kind) {
+  for (const [taskId, meta] of sessionTasks) {
+    if (meta.kind !== kind || meta.input?.paperId !== paperId) continue;
+    if (meta.status && isTerminalStatus(meta.status)) continue;
+    return { taskId, meta };
+  }
+  return null;
+}
+
+function mappingStageOf(paperId) {
+  return openProtocolTaskMeta(paperId, PROTOCOL_TASKS.buildMap)?.meta.lastStage || null;
+}
+
+function diveRunningDetail(paperId) {
+  return openProtocolTaskMeta(paperId, PROTOCOL_TASKS.deepDive)?.meta.lastDetail || null;
+}
+
+function citeChipHtml(raw) {
+  const safe = escapeTemplate(raw);
+  return `<button type="button" class="cite-chip" data-cite="${safe}">${safe}</button>`;
+}
+
+function citedHtml(text) {
+  return citeSegments(text).map(part => (
+    part.type === 'text' ? escapeTemplate(part.text) : citeChipHtml(part.raw)
+  )).join('');
+}
+
+function refsHtml(refs) {
+  return (refs || []).map(citeChipHtml).join(' ');
+}
+
+function renderCitedMarkdownInto(element, text) {
+  element.innerHTML = linkifyCiteHtml(renderMarkdown(text));
+  typesetMath(element);
+}
+
+function renderLanding(surface) {
+  const model = landingModel({
+    paper: current,
+    hasMap: surface === 'map' || surface === 'section',
+    mapping: surface === 'landing-running',
+    mappingStage: mappingStageOf(current.id),
+  });
+  const landing = $('#map-landing');
+  const split = $('#map-split');
+  landing.hidden = model.surface !== 'landing-idle' && model.surface !== 'landing-running';
+  split.hidden = model.surface === 'landing-idle' || model.surface === 'landing-running';
+  $('#map-landing-title').textContent = model.heading || COPY.landingIdle;
+  const paperLine = $('#map-landing-paper');
+  const paperBits = [model.paperTitle, model.paperMeta].filter(Boolean).join(' · ');
+  paperLine.textContent = paperBits;
+  paperLine.hidden = !paperBits;
+  $('#map-landing-copy').textContent = model.copy || COPY.landingCopy;
+  $('#map-landing-progress').hidden = !model.showProgress;
+  $('#map-landing-progress').textContent = model.progressText || COPY.landingProgress;
+  const start = $('#btn-build-map');
+  start.hidden = !model.showStart;
+  start.textContent = model.startLabel || COPY.startMap;
+}
+
+function renderMapPage() {
+  const page = mapPageModel({
+    products: current.products,
+    mapped: currentMapped,
+    synthesizing: isSynthesizingPaper(current.id),
+  });
+  const empty = '<p class="muted">（尚未生成）</p>';
+  const contributions = page.contributions.length
+    ? `<ul>${page.contributions.map(item => `<li>${citedHtml(item.text)} ${refsHtml(item.refs)}</li>`).join('')}</ul>`
+    : empty;
+  const evidence = page.keyEvidence.length
+    ? page.keyEvidence.map(item => {
+      const cite = `(${item.assetId})`;
+      const note = item.note ? escapeTemplate(item.note) : '';
+      return `${citeChipHtml(cite)} ${note} ${refsHtml(item.refs)}`;
+    }).join('<br>')
+    : empty;
+  const glossary = page.glossary.length
+    ? page.glossary.map(item => `${escapeTemplate(item.term)} ${item.defRef ? citeChipHtml(item.defRef) : ''}`).join('　')
+    : empty;
+  let retell = `<p class="muted">手动触发 · 输入 = L1 + 全部 L2 + 已有深挖 · 未深挖节将标注「未经深挖核验」</p>`;
+  if (page.retell.state === 'running') {
+    retell += `<p>正在生成复述稿</p><button class="btn small" type="button" data-action="cancel-synth">取消</button>`;
+  } else if (page.retell.state === 'done') {
+    retell += `<div class="md retell-body"></div><div class="dig-head"><button class="btn small" type="button" data-action="resynthesize">${escapeTemplate(page.retell.primaryLabel)}</button></div>`;
+  } else {
+    retell += `<button class="btn primary" type="button" data-action="synthesize">${escapeTemplate(page.retell.primaryLabel)}</button>`;
+    if (page.retell.hint) retell += `<span class="muted"> ${escapeTemplate(page.retell.hint)}</span>`;
+  }
+  const body = $('#map-page-body');
+  body.innerHTML = `
+    <div class="card map-sec"><h3>要解决的问题</h3>${page.problem.text ? `<p>${citedHtml(page.problem.text)} ${refsHtml(page.problem.refs)}</p>` : empty}</div>
+    <div class="card map-sec"><h3>方法概述</h3>${page.method.text ? `<p>${citedHtml(page.method.text)} ${refsHtml(page.method.refs)}</p>` : empty}</div>
+    <div class="card map-sec"><h3>贡献声明</h3>${contributions}</div>
+    <div class="card map-sec"><h3>关键证据</h3>${evidence}</div>
+    <div class="card map-sec"><h3>术语表</h3><p>${glossary}</p></div>
+    <div class="card map-sec" id="retell-block"><h3>复述稿（综合）</h3>${retell}</div>
+  `;
+  const retellBody = body.querySelector('.retell-body');
+  if (retellBody && page.retell.body) renderCitedMarkdownInto(retellBody, page.retell.body);
+}
+
+function renderSectionPage() {
+  const model = sectionPageModel({
+    partId: reader.sectionId,
+    mapped: currentMapped,
+    products: current.products,
+    paper: current,
+    runningPartIds: runningDeepDivePartIds(sessionTaskList(), current.id),
+    runningDetail: diveRunningDetail(current.id),
+    citeFocus: reader.citeFocus,
+  });
+  const paper = current;
+  const busy = isDeepDivingPaper(current.id) && model.deepDive.state !== 'running';
+  let l2 = '';
+  if (model.l2) {
+    const points = model.l2.points.map(item => `<li>${citedHtml(item.text || '')} ${refsHtml(item.refs)}</li>`).join('');
+    const assets = (model.l2.keyAssets || []).map(id => citeChipHtml(`(${id})`)).join(' ');
+    const pages = model.l2.pages ? `页码 p${model.l2.pages.start}–p${model.l2.pages.end}` : '';
+    l2 = `<div class="card l2-card">
+      <div class="chip" style="margin-bottom:6px">L2 节薄摘要</div>
+      <div class="gist">${citedHtml(model.l2.gist)}</div>
+      ${points ? `<ul>${points}</ul>` : ''}
+      <div class="muted">${assets}${assets && pages ? ' · ' : ''}${escapeTemplate(pages)}</div>
+    </div>`;
+  }
+  let dig = '<div class="card dig-zone">';
+  if (model.deepDive.state === 'skipped') {
+    dig += `<div class="dig-empty muted">${escapeTemplate(model.deepDive.hint)}</div>`;
+  } else if (model.deepDive.state === 'running') {
+    dig += `<div class="dig-empty"><p>${escapeTemplate(model.deepDive.progressText)}</p>
+      <button class="btn small" type="button" data-action="cancel-dig">取消</button></div>`;
+  } else if (model.deepDive.state === 'done') {
+    dig += `<div class="dig-head"><span class="chip">L3 深挖结果</span><span style="flex:1"></span>
+      <button class="btn small" type="button" data-action="redig">${escapeTemplate(model.deepDive.primaryLabel)}</button>
+      <button class="btn small ghost" type="button" data-action="trace">${escapeTemplate(model.deepDive.traceLabel)}</button></div>
+      <div class="dig-result md"></div>`;
+  } else {
+    dig += `<div class="dig-empty"><p class="muted">本节尚未深挖</p>
+      <button class="btn primary" type="button" data-action="start-dig"${busy ? ' disabled' : ''}>▶ ${escapeTemplate(model.deepDive.primaryLabel)}</button>
+      <p class="muted">配方打底 + 工具越界取证；深挖任务在任务中心可回看步骤</p></div>`;
+  }
+  dig += '</div>';
+  let figs = '';
+  if (model.figures.length) {
+    const cards = model.figures.map(item => {
+      const focus = model.focusAssetId === item.id ? ' is-locate' : '';
+      const cap = `${escapeTemplate(item.caption)}${item.page ? ` (p${item.page})` : ''}`;
+      return `<div class="fig-box${focus}" id="asset-${escapeTemplate(item.id)}">
+        <img alt="${escapeTemplate(item.caption)}" data-crop-id="${escapeTemplate(item.cropAssetId)}">
+        <div class="fig-cap">${cap} ${citeChipHtml(`(${item.id})`)}</div>
+      </div>`;
+    }).join('');
+    figs = `<div class="card fig-zone"><h4>图表区</h4><div class="fig-grid">${cards}</div></div>`;
+  }
+  const mark = model.showMark
+    ? `<button class="btn mark-switch${model.marked ? ' on' : ''}" type="button" data-action="mark">${escapeTemplate(model.markLabel)}</button>`
+    : '';
+  const foot = `<div class="card sec-foot">${mark}
+    <button class="btn ghost" type="button" data-action="read-source">${escapeTemplate(model.readSourceLabel)}</button>
+    <span style="flex:1"></span>
+    <span class="muted">${escapeTemplate(model.pagesLabel)}</span>
+  </div>`;
+  const legacy = model.legacyAnalysis
+    ? `<details class="card legacy-analysis"><summary>${escapeTemplate(COPY.legacyTitle)}</summary><div class="md legacy-body"></div></details>`
+    : '';
+  const body = $('#section-page-body');
+  body.innerHTML = `${l2}${dig}${figs}${foot}${legacy}`;
+  const result = body.querySelector('.dig-result');
+  if (result && model.deepDive.body) renderCitedMarkdownInto(result, model.deepDive.body);
+  const legacyBody = body.querySelector('.legacy-body');
+  if (legacyBody) renderCitedMarkdownInto(legacyBody, model.legacyAnalysis.text);
+  fillCropImages(body, paper).then(() => {
+    if (current !== paper) return;
+    focusAsset(model.focusAssetId);
+  });
+}
+
+async function fillCropImages(root, paper) {
+  const imgs = [...root.querySelectorAll('img[data-crop-id]')];
+  if (!imgs.length) return;
+  const ids = [...new Set(imgs.map(img => img.dataset.cropId))];
+  const crops = await loadCropDataUrls(paper, ids);
+  if (current !== paper) return;
+  for (const img of imgs) {
+    const url = crops[img.dataset.cropId];
+    if (url) img.src = url;
+    else img.alt = `${img.alt}（加载失败）`;
+  }
+}
+
+function focusAsset(assetId) {
+  if (!assetId) return;
+  const el = document.getElementById(`asset-${assetId}`);
+  if (!el) return;
+  el.classList.add('is-locate');
+  el.scrollIntoView({ block: 'center' });
+}
+
+function currentSecIdForCite() {
+  if (!reader.sectionId) return null;
+  return sectionForPart(currentMapped, reader.sectionId)?.id
+    || (currentMapped?.sections ?? []).find(section => section.id === reader.sectionId)?.id
+    || null;
+}
+
+function applyCite(raw) {
+  const pointer = typeof raw === 'string' ? parseRefs(raw)[0] : raw;
+  if (!pointer) return;
+  const next = view.routeCite(reader, pointer, { mapped: currentMapped, currentSecId: currentSecIdForCite() });
+  commitReader(next);
+  const focus = next.citeFocus;
+  if (focus?.type === 'blocks') {
+    renderSource();
+    highlightLocate({
+      cite: {
+        startSecId: focus.secId,
+        startBlock: focus.start,
+        endSecId: focus.secId,
+        endBlock: focus.end,
+      },
+    });
+  } else if (focus?.type === 'asset') {
+    focusAsset(focus.assetId);
+  } else if (focus?.type === 'page') {
+    if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
+    else if (pdfDocument) renderPdfPage();
+  }
+}
+
+function onProtocolContentClick(event) {
+  const cite = event.target.closest('[data-cite]');
+  if (cite) {
+    event.preventDefault();
+    applyCite(cite.dataset.cite);
+    return;
+  }
+  const btn = event.target.closest('[data-action]');
+  if (!btn || btn.disabled) return;
+  event.preventDefault();
+  handleProtocolAction(btn.dataset.action);
+}
+
+function handleProtocolAction(action) {
+  if (action === 'synthesize') {
+    startSynthesize(false).catch(err => toast(errorText(err), true));
+    return;
+  }
+  if (action === 'resynthesize') {
+    if (!confirm(COPY.overwriteRetell)) return;
+    startSynthesize(true).catch(err => toast(errorText(err), true));
+    return;
+  }
+  if (action === 'cancel-synth') {
+    cancelOpenProtocolTask(PROTOCOL_TASKS.synthesize);
+    return;
+  }
+  if (action === 'start-dig' || action === 'redig') {
+    startSectionDive(action === 'redig').catch(err => toast(errorText(err), true));
+    return;
+  }
+  if (action === 'cancel-dig') {
+    cancelOpenProtocolTask(PROTOCOL_TASKS.deepDive);
+    return;
+  }
+  if (action === 'trace') {
+    const taskId = traceTaskId(sessionTaskList(), { paperId: current?.id, partId: reader.sectionId });
+    jumpToTask(taskId).catch(err => toast(errorText(err), true));
+    return;
+  }
+  if (action === 'mark') {
+    toggleSectionMark().catch(err => toast(errorText(err), true));
+    return;
+  }
+  if (action === 'read-source') {
+    readSectionSource(reader.sectionId);
+  }
+}
+
 function renderMapTab() {
   if (!current) return;
   const surface = view.mapSurface(reader);
-  const landing = $('#map-landing');
-  const split = $('#map-split');
-  landing.hidden = surface !== 'landing-idle' && surface !== 'landing-running';
-  split.hidden = surface === 'landing-idle' || surface === 'landing-running';
-  $('#map-landing-progress').hidden = surface !== 'landing-running';
-  $('#btn-build-map').hidden = surface === 'landing-running';
-  if (surface === 'landing-running') {
-    $('#map-landing-title').textContent = '正在建图';
-  } else {
-    $('#map-landing-title').textContent = '这篇论文还未建图';
-  }
+  renderLanding(surface);
 
   const tree = $('#map-tree');
   tree.classList.toggle('rail', reader.treeCollapsed);
@@ -609,6 +912,8 @@ function renderMapTab() {
   const partIds = view.deepAllPartIds(currentMapped);
   const deepBtn = $('#btn-deep-all');
   deepBtn.disabled = !reader.hasMap || partIds.length === 0 || isDeepDivingPaper(current.id);
+  if (surface === 'map') renderMapPage();
+  if (surface === 'section') renderSectionPage();
   updateReaderMeta();
   updatePaneFabs();
 }
@@ -620,6 +925,33 @@ function drillSection(sectionId) {
 
 function backToMap() {
   commitReader(view.backToMap(reader));
+}
+
+function readSectionSource(partId) {
+  const section = sectionForPart(currentMapped, partId)
+    || (currentMapped?.sections ?? []).find(item => item.id === partId);
+  const secId = section?.id || partId;
+  commitReader(view.setSourceSection(view.switchTab(reader, 'source'), secId));
+  sourceTab = secId;
+  renderSource();
+  highlightLocate({ secId });
+}
+
+async function toggleSectionMark() {
+  if (!current || !reader.sectionId) return;
+  const marked = current.readMarks?.[reader.sectionId] == null;
+  await papers.setReadMark(current, reader.sectionId, marked);
+  renderMapTab();
+}
+
+async function jumpToTask(taskId) {
+  showView('tasks');
+  await pollTasks();
+  if (!taskId) return;
+  const row = document.querySelector(`[data-task-id="${CSS.escape(taskId)}"]`);
+  if (!row) return;
+  row.classList.add('is-locate');
+  row.scrollIntoView({ block: 'center' });
 }
 
 async function refreshPaperRecord(paperId) {
@@ -639,37 +971,135 @@ async function refreshPaperRecord(paperId) {
   }
 }
 
-async function startDeepAll() {
-  if (!current || !currentMapped) return;
-  if (!model.settingsReady()) {
-    toast('请先在「设置」中配置 API', true);
-    openSettingsModal();
-    return;
+async function cancelOpenProtocolTask(kind) {
+  const open = openProtocolTaskMeta(current?.id, kind);
+  if (!open) return;
+  try {
+    await bridge.invoke('tasks.cancel@1', { taskId: open.taskId });
+  } catch (err) {
+    toast(`取消失败：${errorText(err)}`, true);
   }
+}
+
+async function startBuildMap() {
+  if (!current || isMappingPaper(current.id) || !ensureSettings()) return;
+  const paperId = current.id;
+  const input = { paperId, overwriteConfirmed: false };
+  let meta = null;
+  try {
+    const { taskId } = await bridge.start(PROTOCOL_TASKS.buildMap, input);
+    meta = {
+      kind: PROTOCOL_TASKS.buildMap,
+      input,
+      lastStage: null,
+      retry: () => startBuildMap(),
+    };
+    registerSessionTask(taskId, meta);
+    reader = view.setMapping(reader, true);
+    renderMapTab();
+    toast('已开始建图');
+    const { status, error } = await trackTask(bridge, taskId, {
+      onEvent: event => {
+        if (event.event === 'stage' && event.detail?.stage) {
+          meta.lastStage = event.detail.stage;
+          if (current?.id === paperId) renderMapTab();
+        }
+      },
+    });
+    meta.status = status;
+    await refreshPaperRecord(paperId);
+    if (current?.id === paperId) {
+      await refreshMapped(current);
+      if (reader.tab === 'source') renderSource();
+      if (reader.tab === 'chat') renderChat();
+      if (reader.tab === 'recall') renderRecall();
+    }
+    if (status === 'failed') toast(error?.message || '建图失败', true);
+    else if (status === 'succeeded') toast('建图已完成');
+  } catch (err) {
+    if (meta && !meta.status) meta.status = 'failed';
+    toast(errorText(err), true);
+  } finally {
+    if (current?.id === paperId) {
+      reader = view.setMapping(reader, isMappingPaper(paperId));
+      if (reader.appView === 'reader') renderMapTab();
+    }
+  }
+}
+
+async function startSynthesize(overwriteConfirmed) {
+  if (!current || isSynthesizingPaper(current.id) || !ensureSettings()) return;
+  const paperId = current.id;
+  const input = { paperId, overwriteConfirmed: !!overwriteConfirmed };
+  let meta = null;
+  try {
+    const { taskId } = await bridge.start(PROTOCOL_TASKS.synthesize, input);
+    meta = {
+      kind: PROTOCOL_TASKS.synthesize,
+      input,
+      retry: () => startSynthesize(true),
+    };
+    registerSessionTask(taskId, meta);
+    if (current?.id === paperId) renderMapTab();
+    toast('已开始生成复述稿');
+    const { status, error } = await trackTask(bridge, taskId, {});
+    meta.status = status;
+    await refreshPaperRecord(paperId);
+    if (status === 'failed') toast(error?.message || '复述稿生成失败', true);
+    else if (status === 'succeeded') toast('复述稿已生成');
+  } catch (err) {
+    if (meta && !meta.status) meta.status = 'failed';
+    toast(errorText(err), true);
+  } finally {
+    if (current?.id === paperId && reader.appView === 'reader') renderMapTab();
+  }
+}
+
+async function startDeepAll() {
+  if (!current || !currentMapped || !ensureSettings()) return;
   const partIds = view.deepAllPartIds(currentMapped);
   if (!partIds.length || isDeepDivingPaper(current.id)) return;
   await startDeepDive(current.id, partIds);
 }
 
+async function startSectionDive(overwrite) {
+  if (!current || !reader.sectionId || !ensureSettings()) return;
+  if (isDeepDivingPaper(current.id)) {
+    toast('已有深挖任务进行中', true);
+    return;
+  }
+  if (overwrite && !confirm(COPY.overwriteDive)) return;
+  await startDeepDive(current.id, [reader.sectionId]);
+}
+
 async function startDeepDive(paperId, partIds) {
   if (!paperId || !partIds?.length) return;
   const input = { paperId, partIds };
+  const batch = partIds.length > 1;
   let meta = null;
   try {
     const { taskId } = await bridge.start(PROTOCOL_TASKS.deepDive, input);
     meta = {
       kind: PROTOCOL_TASKS.deepDive,
       input,
+      lastDetail: null,
       retry: () => startDeepDive(paperId, partIds),
     };
     registerSessionTask(taskId, meta);
     if (current?.id === paperId) renderMapTab();
-    toast('已开始全部深挖');
-    const { status, error } = await trackTask(bridge, taskId, {});
+    toast(batch ? '已开始全部深挖' : '已开始深挖');
+    const { status, error } = await trackTask(bridge, taskId, {
+      onEvent: event => {
+        if (event.event === 'stage' && event.detail) {
+          meta.lastDetail = event.detail;
+          if (current?.id === paperId) renderMapTab();
+        }
+      },
+    });
     meta.status = status;
     await refreshPaperRecord(paperId);
     if (status === 'failed') toast(error?.message || '深挖失败', true);
-    else if (status === 'succeeded') toast('全部深挖已完成');
+    else if (status === 'succeeded') toast(batch ? '全部深挖已完成' : '深挖已完成');
   } catch (err) {
     if (meta && !meta.status) meta.status = 'failed';
     toast(errorText(err), true);
@@ -762,9 +1192,13 @@ async function loadRecallImageAttachment(paper, image, img) {
 function renderRecall() {
   if (!current) return;
   const card = recallCard();
+  const mapped = hasMapProduct(current.products);
   $('#recall-editor').value = card.markdown || '';
   $('#recall-status').textContent = card.updatedAt ? `已保存 · ${fmtDate(card.updatedAt)}` : '';
-  $('#btn-recall-generate').textContent = card.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
+  const generate = $('#btn-recall-generate');
+  generate.textContent = card.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
+  generate.disabled = !mapped;
+  generate.title = mapped ? '' : '未建图：AI 草稿须先完成建图。';
   updateRecallPreview();
   renderRecallImages();
 }
@@ -777,26 +1211,23 @@ async function saveRecallCard({ silent = false } = {}) {
 }
 
 async function generateRecallDraft() {
-  if (!model.settingsReady()) {
-    toast('请先在「设置」中配置 API', true);
-    openSettingsModal();
+  if (!hasMapProduct(current?.products)) {
+    toast('未建图：AI 草稿须先完成建图。', true);
     return;
   }
-  const completed = papers.readingParts(current)
-    .map(def => ({ def, text: current.analyses?.[def.id]?.text?.trim() }))
-    .filter(item => item.text);
-  if (!completed.length) return toast('请先完成至少一个章节的 AI 精读', true);
+  if (!ensureSettings()) return;
+  const source = recallDraftMaterial(current.products).slice(0, 32000);
+  if (!source.trim()) return toast('暂无协议产物可生成草稿', true);
   if ($('#recall-editor').value.trim() && !confirm('重新生成会覆盖当前卡片文字，已添加的图片会保留。继续吗？')) return;
 
-  const source = completed.map(({ def, text }) => `===== ${def.label} =====\n${text}`).join('\n\n').slice(0, 32000);
   const messages = [
     {
       role: 'system',
-      content: '你是论文回忆卡编辑器。根据精读笔记生成高度凝练、事实准确、便于快速复习的中文 Markdown 卡片。不要复述章节结构，不要编造笔记中没有的信息。',
+      content: '你是论文回忆卡编辑器。根据阅读地图、节薄摘要与深挖结果生成高度凝练、事实准确、便于快速复习的中文 Markdown 卡片。不要复述章节结构，不要编造材料中没有的信息。',
     },
     {
       role: 'user',
-      content: `论文标题：${current.title}\n\n精读笔记：\n${source}\n\n请严格使用以下结构：\n## 一句话回忆\n一句话说明这项工作解决什么问题、如何解决。\n\n## 主要贡献\n- 2 至 4 条最重要贡献\n\n## 核心创新\n- 2 至 4 条方法或设计创新，并说明为什么有效\n\n## 关键证据\n- 最能支撑结论的实验结果或消融\n\n## 使用边界\n- 局限、适用条件或需要继续确认的问题`,
+      content: `论文标题：${current.title}\n\n协议产物：\n${source}\n\n请严格使用以下结构：\n## 一句话回忆\n一句话说明这项工作解决什么问题、如何解决。\n\n## 主要贡献\n- 2 至 4 条最重要贡献\n\n## 核心创新\n- 2 至 4 条方法或设计创新，并说明为什么有效\n\n## 关键证据\n- 最能支撑结论的实验结果或消融\n\n## 使用边界\n- 局限、适用条件或需要继续确认的问题`,
     },
   ];
   const editor = $('#recall-editor');
@@ -828,7 +1259,7 @@ async function generateRecallDraft() {
       toast(err.message, true);
     }
   } finally {
-    button.disabled = false;
+    button.disabled = !hasMapProduct(current?.products);
     $('#btn-recall-stop').hidden = true;
     recallAborter = null;
   }
@@ -2309,6 +2740,7 @@ function renderTaskList(tasks) {
   for (const task of tasks) {
     const row = document.createElement('div');
     row.className = 'task-row';
+    row.dataset.taskId = task.taskId;
 
     const head = document.createElement('div');
     head.className = 'task-row-head';
@@ -2405,6 +2837,9 @@ async function pollActiveTasks() {
         if (wasMapping && !mapping) {
           const fresh = await refreshPaperRecord(current.id);
           if (fresh) await refreshMapped(current);
+          if (reader.tab === 'source') renderSource();
+          if (reader.tab === 'chat') renderChat();
+          if (reader.tab === 'recall') renderRecall();
         }
         if (reader.appView === 'reader') renderMapTab();
       }
@@ -2570,6 +3005,9 @@ function bindEvents() {
   $('#btn-tree-map').onclick = backToMap;
   $('#btn-back-map').onclick = backToMap;
   $('#btn-deep-all').onclick = () => startDeepAll().catch(err => toast(errorText(err), true));
+  $('#btn-build-map').onclick = () => startBuildMap().catch(err => toast(errorText(err), true));
+  $('#map-page-body').onclick = onProtocolContentClick;
+  $('#section-page-body').onclick = onProtocolContentClick;
   bindPaneResizer($('#tree-resizer'), 'tree');
   bindPaneResizer($('#pdf-resizer'), 'pdf');
   $('#btn-pdf-attach').onclick = () => $('#pdf-attach-input').click();

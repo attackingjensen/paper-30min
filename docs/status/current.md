@@ -1,10 +1,10 @@
 # 项目当前状态
 
-> 更新时间：2026-09-12（#70 双侧栏交互与 PDF 对照接入完成）
+> 更新时间：2026-09-12（#71 地图页与节页内容区完成）
 
 ## 当前阶段
 
-项目定性为"论文精读"专精 agent harness（帮助用户高效阅读一篇完整论文）。Windows 端首轮工程化闭环已完成；当前处于 Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 收敛后的实施链推进期：定稿规格群 [#48](https://github.com/attackingjensen/paper-30min/issues/48)（PDF 块模型生产管线）/ [#51](https://github.com/attackingjensen/paper-30min/issues/51)（进度与已读完数据模型）/ [#52](https://github.com/attackingjensen/paper-30min/issues/52)（提问双形态契约）/ [#55](https://github.com/attackingjensen/paper-30min/issues/55)（建图协议与 L1/L2/L3 产物契约）/ [#56](https://github.com/attackingjensen/paper-30min/issues/56)（应用组织与导航结构）均 ready-for-agent，实施票 #57–#72 已拆出并接好 blocked-by 依赖；#57–#70 已完成关闭，实施前沿为 [#71](https://github.com/attackingjensen/paper-30min/issues/71)（地图页与节页内容区）。各票的实现细节、验收证据与走查留档以对应 GitHub Issue 的完成说明为准。
+项目定性为"论文精读"专精 agent harness（帮助用户高效阅读一篇完整论文）。Windows 端首轮工程化闭环已完成；当前处于 Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 收敛后的实施链推进期：定稿规格群 [#48](https://github.com/attackingjensen/paper-30min/issues/48)（PDF 块模型生产管线）/ [#51](https://github.com/attackingjensen/paper-30min/issues/51)（进度与已读完数据模型）/ [#52](https://github.com/attackingjensen/paper-30min/issues/52)（提问双形态契约）/ [#55](https://github.com/attackingjensen/paper-30min/issues/55)（建图协议与 L1/L2/L3 产物契约）/ [#56](https://github.com/attackingjensen/paper-30min/issues/56)（应用组织与导航结构）均 ready-for-agent，实施票 #57–#72 已拆出并接好 blocked-by 依赖；#57–#71 已完成关闭，实施前沿为 [#72](https://github.com/attackingjensen/paper-30min/issues/72)（书库与任务中心呈现、导出切换与走查）。各票的实现细节、验收证据与走查留档以对应 GitHub Issue 的完成说明为准。
 
 打磨批整改草稿已形成：[2026-09-07 打磨批整改草稿](../draft/2026-09-07-polish-batch-draft.md)，覆盖 UI 层静默行为、阅读流、任务中心与导航、Paper30Min 改名与新图标（已选定 B「30 分钟进度环」）、视觉系统重整；因分析架构调整暂缓转正式规格与票据，重估随地图收敛解禁，时点另定。
 
@@ -24,7 +24,7 @@
 
 - 采用 Tauri + Rust + 原生 JavaScript，SQLite 保存本地书库。
 - 支持本地 PDF、arXiv 和示例论文导入，浏览器整库可预检后迁移。
-- 支持论文、精读、PDF、翻译、问答和回想卡片的完整阅读流程。提问支持 @节 chip、原文选中片段引用块与建图门禁。阅读视图为四 tab（地图 / 原文 / 提问 / 回想卡片）与地图页 ⇄ 节页两层导航；翻译是原文 tab 的节级对照。节树与 PDF 对照栏可拖拽调宽、可收起为视口边缘浮钮；PDF 对照随节页定位该节起始页。任务运行期间书库 / 任务中心 / 阅读页往返不取消任务。
+- 支持论文、精读、PDF、翻译、问答和回想卡片的完整阅读流程。提问支持 @节 chip、原文选中片段引用块与建图门禁。阅读视图为四 tab（地图 / 原文 / 提问 / 回想卡片）与地图页 ⇄ 节页两层导航；翻译是原文 tab 的节级对照。地图页呈现 L1 五区块与复述稿（手动触发、重跑确认）；节页聚合 L2 薄摘要、三态深挖、图表区与已读完标记；出处指针按文本块 / 图表 / 页三分定位。节树与 PDF 对照栏可拖拽调宽、可收起为视口边缘浮钮；PDF 对照随节页定位该节起始页。任务运行期间书库 / 任务中心 / 阅读页往返不取消任务。
 - 模型调用由 Rust 发起，API Key 只保存在本机设置表；流式输出通过任务事件传给界面。
 - 任务中心支持排队、进行中、成功、失败、已取消、待重试等状态，以及取消、重试和关闭窗口时的等待/停止选择。
 - 论文成果、附件、设置和阅读位置在关闭并重新打开后可恢复。
@@ -32,11 +32,11 @@
 
 ## 工程验证
 
-- 根目录 `npm test`：213 项通过（递归含 `app/tests/`）。
-- `cd app && node --test`：130 项通过。
+- 根目录 `npm test`：225 项通过（递归含 `app/tests/`）。
+- `cd app && node --test`：142 项通过。
 - `cd app/src-tauri && cargo test`：218 项通过（`pdfparse_regression` 默认跑清单良构，全链 assert 模式本机实测 13/13 全绿）。
 - `cd app && npm run smoke`：14/14 通过。
-- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#69 四 tab / 落地分流 / #33 导航走查清单见 [Issue #69 走查](../draft/2026-09-12-issue69-walkthrough.md)；#70 双侧栏 / PDF 随节定位见 [Issue #70 走查](../draft/2026-09-12-issue70-walkthrough.md)，窗口点验待做。
+- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#69 四 tab / 落地分流 / #33 导航走查清单见 [Issue #69 走查](../draft/2026-09-12-issue69-walkthrough.md)；#70 双侧栏 / PDF 随节定位见 [Issue #70 走查](../draft/2026-09-12-issue70-walkthrough.md)；#71 地图 / 节页 / 出处 / 建图落地见 [Issue #71 走查](../draft/2026-09-12-issue71-walkthrough.md)，窗口点验待做。
 - 详细走查记录见 [Issue #31 真实窗口走查清单](../draft/2026-09-06-issue31-walkthrough.md)；各票新增测试的分布见对应 Issue 的完成说明。
 
 ## 实施状态
@@ -70,7 +70,7 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 | [#68](https://github.com/attackingjensen/paper-30min/issues/68) | 提问 UI 行为契约 | 已完成 |
 | [#69](https://github.com/attackingjensen/paper-30min/issues/69) | 视图状态机模块与四 tab 骨架 | 已完成 |
 | [#70](https://github.com/attackingjensen/paper-30min/issues/70) | 双侧栏交互与 PDF 对照接入 | 已完成 |
-| [#71](https://github.com/attackingjensen/paper-30min/issues/71) | 地图页与节页内容区 | 未开始 |
+| [#71](https://github.com/attackingjensen/paper-30min/issues/71) | 地图页与节页内容区 | 已完成 |
 | [#72](https://github.com/attackingjensen/paper-30min/issues/72) | 书库与任务中心呈现、导出切换与走查 | 未开始 |
 
 云端同步服务和 Android 阅读伴侣目前只有正式规格，分别见 [Issue #25](https://github.com/attackingjensen/paper-30min/issues/25) 和 [Issue #26](https://github.com/attackingjensen/paper-30min/issues/26)，暂不进入实现。
