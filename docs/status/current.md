@@ -1,10 +1,10 @@
 # 项目当前状态
 
-> 更新时间：2026-09-12（#71 地图页与节页内容区完成）
+> 更新时间：2026-09-12（#72 书库与任务中心呈现、导出切换与全量走查完成，#35 实施链收官）
 
 ## 当前阶段
 
-项目定性为"论文精读"专精 agent harness（帮助用户高效阅读一篇完整论文）。Windows 端首轮工程化闭环已完成；当前处于 Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 收敛后的实施链推进期：定稿规格群 [#48](https://github.com/attackingjensen/paper-30min/issues/48)（PDF 块模型生产管线）/ [#51](https://github.com/attackingjensen/paper-30min/issues/51)（进度与已读完数据模型）/ [#52](https://github.com/attackingjensen/paper-30min/issues/52)（提问双形态契约）/ [#55](https://github.com/attackingjensen/paper-30min/issues/55)（建图协议与 L1/L2/L3 产物契约）/ [#56](https://github.com/attackingjensen/paper-30min/issues/56)（应用组织与导航结构）均 ready-for-agent，实施票 #57–#72 已拆出并接好 blocked-by 依赖；#57–#71 已完成关闭，实施前沿为 [#72](https://github.com/attackingjensen/paper-30min/issues/72)（书库与任务中心呈现、导出切换与走查）。各票的实现细节、验收证据与走查留档以对应 GitHub Issue 的完成说明为准。
+项目定性为"论文精读"专精 agent harness（帮助用户高效阅读一篇完整论文）。Windows 端首轮工程化闭环已完成；Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 收敛后的实施链（#57–#72）已全部完成关闭：定稿规格群 [#48](https://github.com/attackingjensen/paper-30min/issues/48)（PDF 块模型生产管线）/ [#51](https://github.com/attackingjensen/paper-30min/issues/51)（进度与已读完数据模型）/ [#52](https://github.com/attackingjensen/paper-30min/issues/52)（提问双形态契约）/ [#55](https://github.com/attackingjensen/paper-30min/issues/55)（建图协议与 L1/L2/L3 产物契约）/ [#56](https://github.com/attackingjensen/paper-30min/issues/56)（应用组织与导航结构）均已落地并经真实窗口全量走查。各票的实现细节、验收证据与走查留档以对应 GitHub Issue 的完成说明为准；#72 走查中发现的「导入 → 解析 → 预渲染」UI 承接缺口（UI 无 pdfparse.convert@1 / pdfassets.prerender@1 触发入口，建图 preflight 依赖的产物在界面上无法生产）是实施链暴露的首要后续项，未立项。
 
 打磨批整改草稿已形成：[2026-09-07 打磨批整改草稿](../draft/2026-09-07-polish-batch-draft.md)，覆盖 UI 层静默行为、阅读流、任务中心与导航、Paper30Min 改名与新图标（已选定 B「30 分钟进度环」）、视觉系统重整；因分析架构调整暂缓转正式规格与票据，重估随地图收敛解禁，时点另定。
 
@@ -25,6 +25,8 @@
 - 采用 Tauri + Rust + 原生 JavaScript，SQLite 保存本地书库。
 - 支持本地 PDF、arXiv 和示例论文导入，浏览器整库可预检后迁移。
 - 支持论文、精读、PDF、翻译、问答和回想卡片的完整阅读流程。提问支持 @节 chip、原文选中片段引用块与建图门禁。阅读视图为四 tab（地图 / 原文 / 提问 / 回想卡片）与地图页 ⇄ 节页两层导航；翻译是原文 tab 的节级对照。地图页呈现 L1 五区块与复述稿（手动触发、重跑确认）；节页聚合 L2 薄摘要、三态深挖、图表区与已读完标记；出处指针按文本块 / 图表 / 页三分定位。节树与 PDF 对照栏可拖拽调宽、可收起为视口边缘浮钮；PDF 对照随节页定位该节起始页。任务运行期间书库 / 任务中心 / 阅读页往返不取消任务。
+- 书库卡片直接呈现建图状态（未建图 / 建图中带实时阶段 / 已建图带标记进度 n/N）；任务中心对协议任务呈现类型徽章、建图阶段流、深挖取证轨迹步骤流与批量逐节子进度（消费任务快照的 details 有界日志，JS 订阅前的事件不丢）。
+- 导出笔记内容源为协议产物（L1/L2/深挖/复述稿，笔记格式 v2），旧精读结果保留为文末只读附录。
 - 模型调用由 Rust 发起，API Key 只保存在本机设置表；流式输出通过任务事件传给界面。
 - 任务中心支持排队、进行中、成功、失败、已取消、待重试等状态，以及取消、重试和关闭窗口时的等待/停止选择。
 - 论文成果、附件、设置和阅读位置在关闭并重新打开后可恢复。
@@ -32,11 +34,11 @@
 
 ## 工程验证
 
-- 根目录 `npm test`：225 项通过（递归含 `app/tests/`）。
-- `cd app && node --test`：142 项通过。
-- `cd app/src-tauri && cargo test`：218 项通过（`pdfparse_regression` 默认跑清单良构，全链 assert 模式本机实测 13/13 全绿）。
+- 根目录 `npm test`：240 项通过（递归含 `app/tests/`）。
+- `cd app && node --test`：157 项通过。
+- `cd app/src-tauri && cargo test`：219 项通过（`pdfparse_regression` 默认跑清单良构，全链 assert 模式本机实测 13/13 全绿）。
 - `cd app && npm run smoke`：14/14 通过。
-- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#69 四 tab / 落地分流 / #33 导航走查清单见 [Issue #69 走查](../draft/2026-09-12-issue69-walkthrough.md)；#70 双侧栏 / PDF 随节定位见 [Issue #70 走查](../draft/2026-09-12-issue70-walkthrough.md)；#71 地图 / 节页 / 出处 / 建图落地见 [Issue #71 走查](../draft/2026-09-12-issue71-walkthrough.md)，窗口点验待做。
+- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#35 实施链的全量窗口点验（视图骨架 / 双侧栏 / 地图页与节页 / 书库与任务中心呈现 / 导出切换 / 阅读位置与重启恢复 / #33 移交用例）见 [Issue #72 全量走查](../draft/2026-09-12-issue72-walkthrough.md)。
 - 详细走查记录见 [Issue #31 真实窗口走查清单](../draft/2026-09-06-issue31-walkthrough.md)；各票新增测试的分布见对应 Issue 的完成说明。
 
 ## 实施状态
@@ -71,7 +73,7 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 | [#69](https://github.com/attackingjensen/paper-30min/issues/69) | 视图状态机模块与四 tab 骨架 | 已完成 |
 | [#70](https://github.com/attackingjensen/paper-30min/issues/70) | 双侧栏交互与 PDF 对照接入 | 已完成 |
 | [#71](https://github.com/attackingjensen/paper-30min/issues/71) | 地图页与节页内容区 | 已完成 |
-| [#72](https://github.com/attackingjensen/paper-30min/issues/72) | 书库与任务中心呈现、导出切换与走查 | 未开始 |
+| [#72](https://github.com/attackingjensen/paper-30min/issues/72) | 书库与任务中心呈现、导出切换与走查 | 已完成 |
 
 云端同步服务和 Android 阅读伴侣目前只有正式规格，分别见 [Issue #25](https://github.com/attackingjensen/paper-30min/issues/25) 和 [Issue #26](https://github.com/attackingjensen/paper-30min/issues/26)，暂不进入实现。
 
@@ -79,12 +81,14 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 
 这些事项是当前事实或技术限制，不自动转化为新的需求：
 
+- **UI 无解析/预渲染触发入口**（#72 走查暴露的首要缺口）：`pdfparse.convert@1` / `pdfassets.prerender@1` 任务能力已备（#57–#59），建图 preflight 依赖其产物，但界面上没有生产路径——导入 PDF 只跑 JS 文本层切分。用户在界面上无法让建图通过 preflight。建议立项：导入后自动排队 convert + prerender（#48 user story 10 的意图）。
 - 任务注册表仍为内存态，应用重启后不恢复历史任务。
 - 阅读位置尚未携带 `contentVersion`，也未接入云端同步。
 - 本机 PDF 打开时暂时一次性读取文件，尚未实现按页懒加载传输。
 - 移除回想卡片图片后，附件文件暂时没有清理命令。
 - 安装包、覆盖升级、干净账户安装和卸载验收尚未完成，属于 #32 范围。
-- #33（任务中心导航误取消任务）与 #34（公式密集论文 PDF 保真）已随 #35 地图收敛移交关闭：#33 语义经 #56 规格修订评论落 #69/#72 验收；#34 由 #48 管线的公式占位+裁切图策略覆盖，公式密集回归样例移交 #60，「编辑原文」入口暂不携带、实际使用仍痛再立票。
+- 批量「全部深挖」重跑已有结果的节无覆盖确认（单节「重新深挖」有），#72 走查记录在案。
+- #33（任务中心导航误取消任务）与 #34（公式密集论文 PDF 保真）已随 #35 地图收敛移交关闭：#33 语义经 #56 规格修订评论落 #69/#72 验收（#72 全量走查已覆盖往返不取消与关窗等待/停止）；#34 由 #48 管线的公式占位+裁切图策略覆盖，公式密集回归样例移交 #60，「编辑原文」入口暂不携带、实际使用仍痛再立票。
 
 ## 相关决策与维护规则
 
