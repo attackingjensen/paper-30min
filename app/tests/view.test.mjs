@@ -1,6 +1,6 @@
-// 视图状态机纯函数缝（#69 / 规格 #56 决策 1–6、14、22 与 #33 导航语义）：
-// 给定状态输入，断言 tab/节页/落地分流/侧栏折叠宽度/出处路由/阅读位置值域。
-// 不断言 DOM 与样式数值；UI 壳走真实窗口走查（#72）。
+// 视图状态机纯函数缝（#69/#70 / 规格 #56 决策 1–6、14、22 与 #33 导航语义）：
+// 给定状态输入，断言 tab/节页/落地分流/侧栏折叠宽度/拖拽/浮钮/节树状态/出处路由/阅读位置值域。
+// 不断言 DOM 与样式数值；UI 壳走真实窗口走查（#70 侧栏交互，全量在 #72）。
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -24,6 +24,7 @@ import {
   closePaper,
   collapsePdf,
   collapseTree,
+  deepAllPartIds,
   defaultPdfWidth,
   expandPdf,
   expandTree,
@@ -32,9 +33,15 @@ import {
   normalizeReadingView,
   openPaper,
   openSection,
+  paneFabVisibility,
+  pdfPageForSection,
+  resizePdfByClientX,
+  resizeTreeByClientX,
+  resolvedPdfWidth,
   routeCite,
   setHasMap,
   setMapping,
+  setPdfPage,
   setPdfWidth,
   setTreeWidth,
   shouldCancelTasks,
@@ -43,6 +50,8 @@ import {
   switchTab,
   togglePdf,
   toggleTranslateCompare,
+  treeItemStatus,
+  treeItems,
 } from '../ui/js/view.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -182,6 +191,81 @@ test('侧栏宽度钳制：节树 200–440 默认 250；PDF 最小 390、最宽
   assert.equal(clampPdfWidth(100, 1200), PDF_WIDTH_MIN);
   assert.equal(clampPdfWidth(2000, 1200), Math.round(1200 * PDF_WIDTH_MAX_RATIO));
   assert.equal(setPdfWidth(reader(), 500, 1200).pdfWidth, 500);
+});
+
+test('拖拽调宽：节树按指针相对左缘；PDF 按窗口右缘距离，未拖过时取默认约 46%', () => {
+  const tree = resizeTreeByClientX(reader(), 520, 200);
+  assert.equal(tree.treeWidth, 320);
+
+  const pdf = resizePdfByClientX(reader(), 700, 1200);
+  assert.equal(pdf.pdfWidth, 500);
+
+  assert.equal(resolvedPdfWidth(reader(), 1200), Math.round(1200 * PDF_WIDTH_DEFAULT_RATIO));
+  assert.equal(resolvedPdfWidth(setPdfWidth(reader(), 500, 1200), 1200), 500);
+  assert.equal(resolvedPdfWidth(setPdfWidth(reader(), 700, 1200), 800), Math.round(800 * PDF_WIDTH_MAX_RATIO));
+});
+
+test('浮钮：节树收起后仅地图/节页露出左缘 »；PDF 收起露出右缘 «，顶栏全关则无浮钮', () => {
+  const onMap = reader();
+  assert.deepEqual(paneFabVisibility(onMap), { tree: false, pdf: false });
+
+  const treeDown = collapseTree(onMap);
+  assert.deepEqual(paneFabVisibility(treeDown), { tree: true, pdf: false });
+  assert.equal(paneFabVisibility(switchTab(treeDown, 'source')).tree, false);
+  assert.equal(paneFabVisibility(switchAppView(treeDown, 'library')).tree, false);
+  assert.equal(paneFabVisibility(openPaper(initialState(), { hasMap: false })).tree, false);
+
+  const pdfDown = collapsePdf(onMap);
+  assert.deepEqual(paneFabVisibility(pdfDown), { tree: false, pdf: true });
+  assert.equal(paneFabVisibility(switchTab(pdfDown, 'chat')).pdf, true);
+  assert.equal(paneFabVisibility(togglePdf(pdfDown, false)).pdf, false);
+  assert.equal(paneFabVisibility(switchAppView(pdfDown, 'tasks')).pdf, false);
+});
+
+test('节树：进度状态点灰/橙/绿；References 灰显不参与 L2；全部深挖只收 L2 部分', () => {
+  const items = treeItems(mapped);
+  assert.deepEqual(items.map(item => [item.id, item.grey]), [
+    ['abstract', false],
+    ['part-1', false],
+    ['part-2', false],
+    ['sec_4_references', true],
+  ]);
+  assert.equal(items[3].title, 'References');
+
+  assert.equal(treeItemStatus('abstract', { grey: false }), 'todo');
+  assert.equal(treeItemStatus('abstract', {
+    products: [{ kind: 'dig', partId: 'abstract' }],
+  }), 'dug');
+  assert.equal(treeItemStatus('abstract', {
+    readMarks: { abstract: 1 },
+    products: [{ kind: 'dig', partId: 'abstract' }],
+  }), 'marked');
+  assert.equal(treeItemStatus('sec_4_references', { grey: true, readMarks: { 'sec_4_references': 1 } }), 'todo');
+
+  assert.deepEqual(deepAllPartIds(mapped), ['abstract', 'part-1', 'part-2']);
+  assert.deepEqual(deepAllPartIds(null), []);
+});
+
+test('进节页时 PDF 对照定位该节起始页；栏收起仍记页码，不自动展开', () => {
+  assert.equal(pdfPageForSection(mapped, 'part-2'), 2);
+  assert.equal(pdfPageForSection(mapped, 'sec_3_method'), 2);
+  assert.equal(pdfPageForSection(mapped, 'abstract'), 1);
+  assert.equal(pdfPageForSection(mapped, 'sec_4_references'), 3);
+  assert.equal(pdfPageForSection(mapped, 'ghost'), null);
+  assert.equal(pdfPageForSection(null, 'abstract'), null);
+
+  const toMethod = openSection(reader(), 'part-2', { mapped });
+  assert.equal(toMethod.sectionId, 'part-2');
+  assert.equal(toMethod.pdfPage, 2);
+
+  const collapsed = collapsePdf(setPdfPage(reader(), 1));
+  const stillCollapsed = openSection(collapsed, 'part-2', { mapped });
+  assert.equal(stillCollapsed.pdfCollapsed, true);
+  assert.equal(stillCollapsed.pdfOpen, true);
+  assert.equal(stillCollapsed.pdfPage, 2);
+
+  const noMap = openSection(reader(), 'part-2');
+  assert.equal(noMap.pdfPage, null);
 });
 
 test('出处定位三分：文本块→原文 tab，图表→节页，页码→展开 PDF 对照', () => {

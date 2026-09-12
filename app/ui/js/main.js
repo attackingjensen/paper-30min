@@ -1,6 +1,7 @@
 // 界面壳与编排：书库 / 阅读 / 任务中心三个视图与全部弹窗。
 // 领域规则在 js/ 模块里；本文件只做 DOM 与流程编排。阅读视图状态（四 tab、节页、
-// 落地分流、侧栏折叠）走 view.js 纯函数，壳只负责渲染（#69 / 规格 #56）。
+// 落地分流、侧栏折叠/拖拽、浮钮、节树状态）走 view.js 纯函数，壳只负责渲染
+//（#69/#70 / 规格 #56）。
 
 import { createBridge, trackTask, taskStatusLabel, isTerminalStatus, activeTasks } from '../bridge.js';
 import * as papers from './papers.js';
@@ -90,6 +91,7 @@ function registerSessionTask(taskId, entry) {
 let lastActiveTasks = [];    // 最近一次 activeOnly 轮询结果（供顶栏角标与 PDF 栏）
 let positionTimer = null;    // 阅读位置 500ms 防抖
 const recallBlobUrls = new Map(); // 回忆卡图片 imageId -> Blob URL，离开论文时统一 revoke
+let paneDrag = null;         // 双侧栏拖拽：{ side, pointerId, treeLeft }
 
 // 任务 kind -> 中文名（kind 带 @1 后缀，先剥掉版本再匹配）。
 const TASK_KIND_LABELS = {
@@ -97,6 +99,7 @@ const TASK_KIND_LABELS = {
   'model.test': '连接测试',
   'net.fetch-text': '网页抓取',
   'files.download': '文件下载',
+  'paper.deep-dive': '深挖',
 };
 
 function taskKindLabel(kind) {
@@ -139,8 +142,20 @@ function metadataTokens(paper) {
 }
 
 function isMappingPaper(paperId) {
+  return hasOpenProtocolTask(paperId, PROTOCOL_TASKS.buildMap);
+}
+
+function isDeepDivingPaper(paperId) {
+  return hasOpenProtocolTask(paperId, PROTOCOL_TASKS.deepDive);
+}
+
+function hasOpenProtocolTask(paperId, kind) {
   if (!paperId) return false;
-  const kind = PROTOCOL_TASKS.buildMap;
+  for (const meta of sessionTasks.values()) {
+    if (meta.kind !== kind || meta.input?.paperId !== paperId) continue;
+    if (meta.status && isTerminalStatus(meta.status)) continue;
+    return true;
+  }
   for (const task of lastActiveTasks) {
     if (task.kind !== kind) continue;
     const meta = sessionTasks.get(task.taskId);
@@ -193,11 +208,9 @@ function renderReaderTabs() {
 }
 
 function updatePaneFabs() {
-  const onReader = reader.paperOpen && reader.appView === 'reader';
-  const surface = view.mapSurface(reader);
-  const treeOn = onReader && reader.tab === 'map' && (surface === 'map' || surface === 'section');
-  $('#tree-fab').hidden = !(treeOn && reader.treeCollapsed);
-  $('#pdf-fab').hidden = !(onReader && reader.pdfOpen && reader.pdfCollapsed);
+  const fabs = view.paneFabVisibility(reader);
+  $('#tree-fab').hidden = !fabs.tree;
+  $('#pdf-fab').hidden = !fabs.pdf;
 }
 
 function showView(name) {
@@ -537,24 +550,12 @@ function updateReaderMeta() {
 
 // ---------------- 地图 tab 骨架（落地 / 地图页 / 节页） ----------------
 function mapNavItems() {
-  if (currentMapped?.sections?.length) {
-    return currentMapped.sections.map(section => ({
-      id: partIdForSection(currentMapped, section.id) || section.id,
-      title: section.title || section.id,
-      grey: section.role === 'references' || section.role === 'acknowledgments',
-    }));
-  }
+  if (currentMapped?.sections?.length) return view.treeItems(currentMapped);
   return papers.readingParts(current).map(part => ({
     id: part.id,
     title: part.pickerLabel || part.label,
     grey: false,
   }));
-}
-
-function sectionDot(partId) {
-  if (current.readMarks?.[partId] != null) return 'marked';
-  if ((current.products ?? []).some(item => item.kind === 'dig' && item.partId === partId)) return 'dug';
-  return 'todo';
 }
 
 function navTitleById(id) {
@@ -578,7 +579,7 @@ function renderMapTab() {
 
   const tree = $('#map-tree');
   tree.classList.toggle('rail', reader.treeCollapsed);
-  tree.style.width = `${reader.treeWidth}px`;
+  applyTreeWidth();
 
   $('#map-page').hidden = surface !== 'map';
   $('#section-page').hidden = surface !== 'section';
@@ -596,20 +597,85 @@ function renderMapTab() {
     button.type = 'button';
     button.className = 'tree-item' + (item.grey ? ' grey' : '') + (reader.sectionId === item.id ? ' cur' : '');
     const note = item.grey ? '<span class="muted tree-l2-note">不参与 L2</span>' : '';
-    button.innerHTML = `<span class="dot ${item.grey ? 'todo' : sectionDot(item.id)}"></span><span class="tname">${escapeTemplate(item.title)}</span>${note}`;
+    const dot = view.treeItemStatus(item.id, {
+      readMarks: current.readMarks,
+      products: current.products,
+      grey: item.grey,
+    });
+    button.innerHTML = `<span class="dot ${dot}"></span><span class="tname">${escapeTemplate(item.title)}</span>${note}`;
     button.onclick = () => drillSection(item.id);
     items.appendChild(button);
   }
+  const partIds = view.deepAllPartIds(currentMapped);
+  const deepBtn = $('#btn-deep-all');
+  deepBtn.disabled = !reader.hasMap || partIds.length === 0 || isDeepDivingPaper(current.id);
   updateReaderMeta();
   updatePaneFabs();
 }
 
 function drillSection(sectionId) {
-  commitReader(view.openSection(reader, sectionId));
+  commitReader(view.openSection(reader, sectionId, { mapped: currentMapped }));
+  if (pdfSidebarOpen && pdfDocument && Number.isFinite(pdfPage)) renderPdfPage();
 }
 
 function backToMap() {
   commitReader(view.backToMap(reader));
+}
+
+async function refreshPaperRecord(paperId) {
+  if (!paperId) return null;
+  try {
+    const fresh = await store.get(paperId);
+    if (!fresh) return null;
+    const idx = library.findIndex(item => item.id === fresh.id);
+    if (idx >= 0) library[idx] = fresh;
+    if (current?.id === fresh.id) {
+      current = fresh;
+      reader = view.setHasMap(reader, hasMapProduct(fresh.products));
+    }
+    return fresh;
+  } catch {
+    return null;
+  }
+}
+
+async function startDeepAll() {
+  if (!current || !currentMapped) return;
+  if (!model.settingsReady()) {
+    toast('请先在「设置」中配置 API', true);
+    openSettingsModal();
+    return;
+  }
+  const partIds = view.deepAllPartIds(currentMapped);
+  if (!partIds.length || isDeepDivingPaper(current.id)) return;
+  await startDeepDive(current.id, partIds);
+}
+
+async function startDeepDive(paperId, partIds) {
+  if (!paperId || !partIds?.length) return;
+  const input = { paperId, partIds };
+  let meta = null;
+  try {
+    const { taskId } = await bridge.start(PROTOCOL_TASKS.deepDive, input);
+    meta = {
+      kind: PROTOCOL_TASKS.deepDive,
+      input,
+      retry: () => startDeepDive(paperId, partIds),
+    };
+    registerSessionTask(taskId, meta);
+    if (current?.id === paperId) renderMapTab();
+    toast('已开始全部深挖');
+    const { status, error } = await trackTask(bridge, taskId, {});
+    meta.status = status;
+    await refreshPaperRecord(paperId);
+    if (status === 'failed') toast(error?.message || '深挖失败', true);
+    else if (status === 'succeeded') toast('全部深挖已完成');
+  } catch (err) {
+    if (meta && !meta.status) meta.status = 'failed';
+    toast(errorText(err), true);
+  } finally {
+    if (current?.id === paperId && reader.appView === 'reader') renderMapTab();
+  }
 }
 
 // ---------------- 回忆卡 ----------------
@@ -1535,6 +1601,7 @@ function hasPdf(paper = current) {
 function updatePdfSidebar() {
   const workspace = $('#reader-workspace');
   workspace.classList.toggle('pdf-closed', !pdfSidebarOpen);
+  applyPdfPaneWidth();
   $('#pdf-sidebar').hidden = !pdfSidebarOpen;
   $('#btn-pdf-toggle').setAttribute('aria-expanded', String(pdfSidebarOpen));
   $('#btn-pdf-toggle').setAttribute('aria-pressed', String(!!reader.pdfOpen));
@@ -1542,6 +1609,60 @@ function updatePdfSidebar() {
   $('#pdf-empty').hidden = !pdfSidebarOpen || hasPdf();
   $('#pdf-viewer').hidden = !pdfSidebarOpen || !hasPdf();
   renderPdfTasks();
+}
+
+function applyPdfPaneWidth() {
+  const workspace = $('#reader-workspace');
+  if (!pdfSidebarOpen) {
+    workspace.style.removeProperty('grid-template-columns');
+    return;
+  }
+  const width = view.resolvedPdfWidth(reader, window.innerWidth);
+  workspace.style.gridTemplateColumns = `minmax(0, 1fr) ${width}px`;
+}
+
+function applyTreeWidth() {
+  const tree = $('#map-tree');
+  if (tree) tree.style.width = `${reader.treeWidth}px`;
+}
+
+function beginPaneDrag(side, event) {
+  if (event.button !== 0) return;
+  const treeBox = $('#map-tree')?.getBoundingClientRect();
+  paneDrag = {
+    side,
+    pointerId: event.pointerId,
+    treeLeft: treeBox?.left ?? 0,
+  };
+  event.currentTarget.setPointerCapture(event.pointerId);
+  event.currentTarget.classList.add('on');
+  document.body.style.userSelect = 'none';
+  event.preventDefault();
+}
+
+function onPaneDragMove(event) {
+  if (!paneDrag || event.pointerId !== paneDrag.pointerId) return;
+  if (paneDrag.side === 'tree') {
+    reader = view.resizeTreeByClientX(reader, event.clientX, paneDrag.treeLeft);
+    applyTreeWidth();
+  } else {
+    reader = view.resizePdfByClientX(reader, event.clientX, window.innerWidth);
+    applyPdfPaneWidth();
+  }
+}
+
+function endPaneDrag(event) {
+  if (!paneDrag || event.pointerId !== paneDrag.pointerId) return;
+  event.currentTarget.classList.remove('on');
+  paneDrag = null;
+  document.body.style.userSelect = '';
+}
+
+function bindPaneResizer(handle, side) {
+  handle.addEventListener('pointerdown', event => beginPaneDrag(side, event));
+  handle.addEventListener('pointermove', onPaneDragMove);
+  handle.addEventListener('pointerup', endPaneDrag);
+  handle.addEventListener('pointercancel', endPaneDrag);
 }
 
 function togglePdfSidebar(force) {
@@ -2282,16 +2403,8 @@ async function pollActiveTasks() {
         const wasMapping = reader.mapping;
         reader = view.setMapping(reader, mapping);
         if (wasMapping && !mapping) {
-          try {
-            const fresh = await store.get(current.id);
-            if (fresh) {
-              current = fresh;
-              const idx = library.findIndex(item => item.id === fresh.id);
-              if (idx >= 0) library[idx] = fresh;
-              await refreshMapped(current);
-              reader = view.setHasMap(reader, hasMapProduct(current.products));
-            }
-          } catch { /* 刷新失败时仍按当前记录渲染 */ }
+          const fresh = await refreshPaperRecord(current.id);
+          if (fresh) await refreshMapped(current);
         }
         if (reader.appView === 'reader') renderMapTab();
       }
@@ -2456,6 +2569,9 @@ function bindEvents() {
   $('#btn-tree-fold').onclick = () => commitReader(view.collapseTree(reader), { restore: true });
   $('#btn-tree-map').onclick = backToMap;
   $('#btn-back-map').onclick = backToMap;
+  $('#btn-deep-all').onclick = () => startDeepAll().catch(err => toast(errorText(err), true));
+  bindPaneResizer($('#tree-resizer'), 'tree');
+  bindPaneResizer($('#pdf-resizer'), 'pdf');
   $('#btn-pdf-attach').onclick = () => $('#pdf-attach-input').click();
   $('#pdf-attach-input').onchange = e => {
     if (e.target.files[0]) attachPdf(e.target.files[0]).catch(err => toast('关联 PDF 失败：' + err.message, true));
@@ -2610,6 +2726,7 @@ function bindEvents() {
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
+      if (pdfSidebarOpen) applyPdfPaneWidth();
       if (pdfSidebarOpen && pdfDocument) fitPdfPage();
     }, 180);
   });

@@ -207,7 +207,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .reader-workspace.pdf-closed { grid-template-columns: minmax(0, 1fr); }
 .reader-primary { min-width: 0; }
 
-/* 地图 tab：B 双栏骨架（节树 + 内容）；拖拽调宽由后续票接入 */
+/* 地图 tab：B 双栏（节树 + 内容）；双侧栏 VSCode 式拖拽调宽 */
 .card {
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -237,6 +237,14 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 }
 .tree-fold:hover { background: var(--accent-soft); color: var(--accent); }
 .tree-foot { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.tree-resizer, .pdf-resizer {
+  position: absolute; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 5;
+  touch-action: none;
+}
+.tree-resizer { right: 0; }
+.tree-resizer:hover, .tree-resizer.on { background: var(--accent-soft); border-right: 2px solid var(--accent); }
+.pdf-resizer { left: 0; }
+.pdf-resizer:hover, .pdf-resizer.on { background: var(--accent-soft); border-left: 2px solid var(--accent); }
 .tree-item {
   display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; border: none;
   background: transparent; padding: 6px 8px; border-radius: 7px; font-size: 13.5px; cursor: pointer; color: var(--text);
@@ -569,6 +577,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   .library-filters input { grid-column: 1 / -1; }
   .map-split { flex-direction: column; }
   .map-tree { width: 100%; position: static; }
+  .tree-resizer, .pdf-resizer { display: none; }
   .map-content { padding: 12px 0 0; }
   .recall-surface { grid-template-columns: 1fr; min-height: 0; }
   .recall-pane { min-height: 42vh; }

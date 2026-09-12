@@ -1,9 +1,10 @@
-// 阅读视图状态机（#69 / 规格 #56）：当前视图、四 tab、节页选中、侧栏折叠与宽度、
-// 落地分流、出处定位路由、阅读位置值域。纯函数、无 DOM；UI 壳只负责渲染。
+// 阅读视图状态机（#69/#70 / 规格 #56）：当前视图、四 tab、节页选中、侧栏折叠与宽度、
+// 拖拽调宽、浮钮可见性、节树状态、落地分流、出处定位路由、阅读位置值域。
+// 纯函数、无 DOM；UI 壳只负责渲染。
 //
 // 消费方：本模块测试 + 阅读视图壳（main.js）。
 
-import { parseRefs, partIdForSection } from './protocol.js';
+import { l2Sections, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
 
 export const APP_VIEWS = ['library', 'tasks', 'reader'];
 export const READER_TABS = ['map', 'source', 'chat', 'recall'];
@@ -85,9 +86,12 @@ export function switchTab(state, tab) {
   return patch(state, { tab, citeFocus: null });
 }
 
-export function openSection(state, sectionId) {
+export function openSection(state, sectionId, { mapped = null } = {}) {
   if (!state.hasMap || !sectionId) return state;
-  return patch(state, { appView: 'reader', tab: 'map', sectionId, citeFocus: null });
+  const page = pdfPageForSection(mapped, sectionId);
+  const updates = { appView: 'reader', tab: 'map', sectionId, citeFocus: null };
+  if (Number.isFinite(page) && page >= 1) updates.pdfPage = page;
+  return patch(state, updates);
 }
 
 export function backToMap(state) {
@@ -110,6 +114,15 @@ export function setSourceSection(state, sourceSectionId) {
 
 export function setPdfPage(state, pdfPage) {
   return patch(state, { pdfPage: Number.isFinite(pdfPage) ? pdfPage : null });
+}
+
+/** 节起始页：接受精读部分 id 或原文章节 id。 */
+export function pdfPageForSection(mapped, sectionOrPartId) {
+  if (!mapped || !sectionOrPartId) return null;
+  const byId = (mapped.sections ?? []).find(section => section.id === sectionOrPartId);
+  const section = byId || sectionForPart(mapped, sectionOrPartId);
+  const page = section?.pageStart;
+  return Number.isFinite(page) && page >= 1 ? page : null;
 }
 
 export function toggleTranslateCompare(state, force) {
@@ -152,6 +165,47 @@ export function expandPdf(state) {
   return patch(state, { pdfOpen: true, pdfCollapsed: false });
 }
 
+/** 收起后视口边缘圆形浮钮：左节树仅地图/节页出现，右 PDF 在全开且收起时出现。 */
+export function paneFabVisibility(state) {
+  const onReader = !!state?.paperOpen && state.appView === 'reader';
+  const surface = mapSurface(state);
+  const treeOn = onReader && state.tab === 'map' && (surface === 'map' || surface === 'section');
+  return {
+    tree: treeOn && !!state.treeCollapsed,
+    pdf: onReader && !!state.pdfOpen && !!state.pdfCollapsed,
+  };
+}
+
+const TREE_GREY_ROLES = new Set(['references', 'acknowledgments']);
+
+/** 节树条目：L2 节用精读部分 id；References / Acknowledgments 灰显并保留节 id。 */
+export function treeItems(mapped) {
+  return (mapped?.sections ?? []).map(section => {
+    const grey = TREE_GREY_ROLES.has(section.role);
+    const partId = partIdForSection(mapped, section.id);
+    return {
+      id: partId || section.id,
+      title: section.title || section.id,
+      grey,
+    };
+  });
+}
+
+/** 状态点：灰=未深挖 / 橙=已深挖 / 绿=已标记读完。灰显节不参与 L2，点保持未深挖。 */
+export function treeItemStatus(partId, { readMarks = {}, products = [], grey = false } = {}) {
+  if (grey) return 'todo';
+  if (readMarks?.[partId] != null) return 'marked';
+  if ((products ?? []).some(item => item.kind === 'dig' && item.partId === partId)) return 'dug';
+  return 'todo';
+}
+
+/** 「全部深挖」的 partIds：参与 L2 的节，按阅读顺序。 */
+export function deepAllPartIds(mapped) {
+  return l2Sections(mapped)
+    .map(section => partIdForSection(mapped, section.id))
+    .filter(Boolean);
+}
+
 export function defaultPdfWidth(windowWidth) {
   return Math.round((Number(windowWidth) || 0) * PDF_WIDTH_DEFAULT_RATIO);
 }
@@ -165,6 +219,22 @@ export function clampPdfWidth(width, windowWidth) {
 
 export function setPdfWidth(state, width, windowWidth) {
   return patch(state, { pdfWidth: clampPdfWidth(width, windowWidth) });
+}
+
+/** 节树拖拽：指针相对栏左缘的距离即宽度。 */
+export function resizeTreeByClientX(state, clientX, treeLeft) {
+  return setTreeWidth(state, Number(clientX) - Number(treeLeft));
+}
+
+/** PDF 拖拽：指针到窗口右缘的距离即宽度。 */
+export function resizePdfByClientX(state, clientX, windowWidth) {
+  return setPdfWidth(state, Number(windowWidth) - Number(clientX), windowWidth);
+}
+
+/** 会话内已拖过用钳制后的栏宽；未拖过取窗口 46% 默认（仍走 PDF 钳制）。 */
+export function resolvedPdfWidth(state, windowWidth) {
+  if (Number.isFinite(state?.pdfWidth)) return clampPdfWidth(state.pdfWidth, windowWidth);
+  return clampPdfWidth(defaultPdfWidth(windowWidth), windowWidth);
 }
 
 /**
