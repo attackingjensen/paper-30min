@@ -509,6 +509,15 @@ fn deep_dive_tool_loop_completes_and_persists() {
 
     // 深挖中间轮不产生对外 chunk（决策 4）。
     assert!(sink.events().iter().all(|event| event.event != "chunk"), "深挖无对外 chunk");
+
+    // 快照 details 日志：阶段与工具轨迹随快照可回看——JS 订阅建立前发出的事件不经
+    // 通道重放，任务中心以快照日志为完整源（#72 走查实测订阅窗口丢事件后的补齐）。
+    let snapshot = registry.get(&task_id).expect("任务快照");
+    let details = snapshot.details.expect("快照携带 details 日志");
+    let events: Vec<&str> = details.iter().filter_map(|d| d["event"].as_str()).collect();
+    assert_eq!(events, vec!["stage", "tool", "tool"]);
+    assert_eq!(details[0]["detail"]["stage"], json!("deep-dive"));
+    assert_eq!(details[2]["detail"]["name"], json!("get_figure"));
 }
 
 #[test]

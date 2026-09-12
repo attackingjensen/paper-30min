@@ -21,7 +21,6 @@ pub fn write_export(library: &Library, input: &Value) -> Result<Value, BridgeErr
         .get("fileName")
         .and_then(Value::as_str)
         .ok_or_else(|| BridgeError::invalid_input("exports.write@1 需要字符串参数 fileName"))?;
-    require_safe_segment(file_name, "fileName")?;
     let content = input
         .get("contentBase64")
         .and_then(Value::as_str)
@@ -35,8 +34,13 @@ pub fn write_export(library: &Library, input: &Value) -> Result<Value, BridgeErr
         .map(str::trim)
         .filter(|value| !value.is_empty());
     match target_path {
+        // 选定路径由用户经保存对话框指定：fileName 只是元信息，不做单段安全名校验
+        // （导出笔记的逻辑名含中文书名号/省略号，ASCII 白名单会误杀，#72 走查发现）。
         Some(target) => write_chosen(target, &bytes),
-        None => write_partition(library.root(), file_name, &bytes),
+        None => {
+            require_safe_segment(file_name, "fileName")?;
+            write_partition(library.root(), file_name, &bytes)
+        }
     }
 }
 

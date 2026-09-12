@@ -41,6 +41,13 @@ import {
   sectionBinding,
   userBindingView,
 } from './qa.js';
+import {
+  fmtDate,
+  libraryMapState,
+  notesMarkdown,
+  ratingText,
+  taskDetailModel,
+} from './present.js';
 
 const bridge = createBridge(window.__TAURI__);
 let store = null; // createTauriStore(bridge)，启动序列中创建
@@ -89,6 +96,8 @@ let migrationToken = '';
 // 任务中心的「重试」按钮依赖这些条目）。
 const SESSION_TASKS_LIMIT = 50;
 const sessionTasks = new Map();
+/** 会话登记的取证轨迹步数上限（与 Rust tasks.rs SNAPSHOT_DETAILS_CAP 同值，两边各守一段）。 */
+const SESSION_STEPS_CAP = 200;
 
 function registerSessionTask(taskId, entry) {
   sessionTasks.set(taskId, entry);
@@ -127,11 +136,6 @@ function renderMarkdownInto(element, text) {
   typesetMath(element);
 }
 
-function fmtDate(ts) {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 function dateStamp(ts) {
   const d = new Date(ts);
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
@@ -150,11 +154,6 @@ function ensureSettings() {
   toast('请先在「设置」中配置 API', true);
   openSettingsModal();
   return false;
-}
-
-function ratingText(value) {
-  const rating = Math.min(Math.max(Number(value) || 0, 0), 5);
-  return rating ? `${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}` : '未评分';
 }
 
 function metadataTokens(paper) {
@@ -183,6 +182,9 @@ function hasOpenProtocolTask(paperId, kind) {
   for (const task of lastActiveTasks) {
     if (task.kind !== kind) continue;
     const meta = sessionTasks.get(task.taskId);
+    // 会话登记已知终态的任务不算开放：lastActiveTasks 是 3s 轮询快照，终态后短暂滞留
+    // 会让「正在生成/深挖中」卡到下一次渲染触发（#72 走查发现）。
+    if (meta?.status && isTerminalStatus(meta.status)) continue;
     if ((meta?.input?.paperId || task.input?.paperId) === paperId) return true;
   }
   return false;
@@ -240,6 +242,8 @@ function updatePaneFabs() {
 function showView(name) {
   if (current && name !== 'reader') void flushPositionSave(current);
   commitReader(view.switchAppView(reader, name), { restore: true });
+  // 回到书库即刷新：建图状态 chip 与进度点依赖最新记录与会话任务（#56 决策 12）。
+  if (name === 'library') void refreshLibrary();
 }
 
 // ---------------- 桥接长任务辅助 ----------------
@@ -377,6 +381,18 @@ async function refreshLibrary() {
       dots.appendChild(dot);
     }
     sub.appendChild(dots);
+    // 建图状态（#56 决策 12）：未建图 = 状态点；建图中 = 阶段进度；已建图 = 标记进度 n/N。
+    const mapState = libraryMapState({
+      mapped: hasMapProduct(p.products),
+      mapping: isMappingPaper(p.id),
+      mappingStage: mappingStageOf(p.id),
+      done,
+      total,
+    });
+    const mapChip = document.createElement('span');
+    mapChip.className = `map-state-chip ${mapState.tone}`;
+    mapChip.textContent = mapState.text;
+    sub.appendChild(mapChip);
     if (papers.isPaperRead(p)) {
       const doneChip = document.createElement('span');
       doneChip.className = 'metadata-chip pc-done';
@@ -1002,6 +1018,8 @@ async function startBuildMap() {
       onEvent: event => {
         if (event.event === 'stage' && event.detail?.stage) {
           meta.lastStage = event.detail.stage;
+          // 完整阶段载荷（含 map-l2 分片 shard/shards）供任务中心阶段流呈现。
+          meta.stageDetail = event.detail;
           if (current?.id === paperId) renderMapTab();
         }
       },
@@ -1083,6 +1101,7 @@ async function startDeepDive(paperId, partIds) {
       kind: PROTOCOL_TASKS.deepDive,
       input,
       lastDetail: null,
+      steps: [],
       retry: () => startDeepDive(paperId, partIds),
     };
     registerSessionTask(taskId, meta);
@@ -1093,6 +1112,10 @@ async function startDeepDive(paperId, partIds) {
         if (event.event === 'stage' && event.detail) {
           meta.lastDetail = event.detail;
           if (current?.id === paperId) renderMapTab();
+        } else if (event.event === 'tool' && event.detail) {
+          // 取证轨迹逐步累积，任务中心步骤流与「取证轨迹 →」回看共用（#56 决策 13）。
+          meta.steps.push(event.detail);
+          if (meta.steps.length > SESSION_STEPS_CAP) meta.steps.splice(0, meta.steps.length - SESSION_STEPS_CAP);
         }
       },
     });
@@ -2374,24 +2397,11 @@ async function exportTextFile(fileName, text, dialogTitle) {
 
 async function exportNotes() {
   if (!current) return;
-  const meta = [
-    `导入日期：${fmtDate(current.addedAt)}`,
-    `导出日期：${fmtDate(Date.now())}`,
-    `评分：${ratingText(current.rating)}`,
-    papers.paperCategories(current).length ? `分类：${papers.paperCategories(current).join('、')}` : '',
-    papers.paperTags(current).length ? `标签：${papers.paperTags(current).join('、')}` : '',
-  ].filter(Boolean).join(' · ');
-  const lines = [`# 精读笔记：${current.title}`, '', `> ${meta}`, ''];
-  if (current.recallCard?.markdown) {
-    lines.push('## 回想卡片', '', current.recallCard.markdown, '');
-  }
-  for (const def of papers.readingParts(current)) {
-    lines.push(`## ${def.label}`, '');
-    lines.push(current.analyses?.[def.id]?.text || '（尚未生成精读）', '');
-  }
+  // 内容源 = 协议产物（L1/L2/深挖/复述稿）；旧精读结果只读附录（#56 决策 21）。
+  const text = notesMarkdown({ paper: current, mapped: currentMapped, now: Date.now() });
   const safeTitle = current.title.slice(0, 60).replace(/[\\/:*?"<>|]/g, '_');
   try {
-    const written = await exportTextFile(`《${safeTitle}》精读笔记.md`, lines.join('\n'), '导出精读笔记');
+    const written = await exportTextFile(`《${safeTitle}》精读笔记.md`, text, '导出精读笔记');
     if (written) toast('精读笔记已导出');
   } catch (err) {
     toast('导出失败：' + err.message, true);
@@ -2810,6 +2820,45 @@ function renderTaskList(tasks) {
     }
     row.appendChild(progress);
 
+    // 协议任务附加区（#56 决策 13）：建图 = 阶段流；深挖 = 逐节子进度（批量）+ 工具步骤流；
+    // 综合与其他任务保持普通呈现。数据来自会话登记对事件流的累积，缺登记时自动降级。
+    const detail = taskDetailModel({ task, meta });
+    if (detail.stageFlow) {
+      const flow = document.createElement('div');
+      flow.className = 'task-stage-flow';
+      for (const stage of detail.stageFlow) {
+        const chip = document.createElement('span');
+        chip.className = `task-stage ${stage.state}`;
+        chip.textContent = stage.label;
+        flow.appendChild(chip);
+      }
+      row.appendChild(flow);
+    }
+    if (detail.subProgress) {
+      const sub = document.createElement('div');
+      sub.className = 'task-sub-progress';
+      const { index, total, title } = detail.subProgress;
+      sub.textContent = `逐节推进：第 ${index}/${total} 节${title ? ` · ${title}` : ''}`;
+      row.appendChild(sub);
+    }
+    if (detail.steps?.length) {
+      const stepsWrap = document.createElement('div');
+      stepsWrap.className = 'task-steps';
+      const head = document.createElement('div');
+      head.className = 'task-steps-head';
+      head.textContent = `取证轨迹（共 ${detail.stepsTotal} 步）`;
+      stepsWrap.appendChild(head);
+      const list = document.createElement('ol');
+      for (const step of detail.steps) {
+        const item = document.createElement('li');
+        item.className = step.ok ? '' : 'fail';
+        item.textContent = step.text;
+        list.appendChild(item);
+      }
+      stepsWrap.appendChild(list);
+      row.appendChild(stepsWrap);
+    }
+
     if (task.status === 'failed' && task.error) {
       const error = document.createElement('div');
       error.className = 'task-error';
@@ -2824,10 +2873,14 @@ function renderTaskList(tasks) {
 async function pollActiveTasks() {
   try {
     const result = await bridge.invoke('tasks.list@1', { activeOnly: true });
+    const prevCount = lastActiveTasks.length;
     lastActiveTasks = result?.tasks || [];
     const badge = $('#nav-tasks-badge');
     badge.hidden = lastActiveTasks.length === 0;
     badge.textContent = String(lastActiveTasks.length);
+    // 书库视图的建图状态 chip 依赖活动任务：任务出现/消失时刷新一次卡片，
+    // 免得停留书库期间「建图中」滞留或建图完成后不翻「已建图」（#72 走查发现）。
+    if (reader.appView === 'library' && lastActiveTasks.length !== prevCount) void refreshLibrary();
     renderPdfTasks();
     if (current) {
       const mapping = isMappingPaper(current.id);

@@ -81,6 +81,8 @@ pub struct TaskEvent {
 
 /// 任务最终状态查询（`getTask(taskId)`）返回的快照。
 /// `result` 与 TaskEvent 同义：succeeded 终态的结果载荷，缺省不序列化。
+/// `details` 是领域 detail 事件（阶段/工具轨迹）的有界日志：JS 订阅建立前发出的
+/// detail 事件不经事件通道重放，任务中心以快照日志为准回看（#55 追加补齐，#72 走查发现）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSnapshot {
@@ -94,9 +96,15 @@ pub struct TaskSnapshot {
     pub error: Option<BridgeError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<Value>>,
     pub created_at: String,
     pub updated_at: String,
 }
+
+/// 快照 details 日志容量：深挖批量场景的轨迹量级为「节数 × 步数上限 12」，
+/// 200 条覆盖十余节的批量深挖全程，超出丢最旧。
+pub(crate) const SNAPSHOT_DETAILS_CAP: usize = 200;
 
 /// 任务事件出口。生产环境由 Tauri 事件通道实现，测试用收集器实现，
 /// 使任务引擎不依赖 AppHandle 即可完整测试。
@@ -550,6 +558,7 @@ impl TaskRegistry {
                 progress: None,
                 error: None,
                 result: None,
+                details: None,
                 created_at: now.clone(),
                 updated_at: now,
             },
@@ -682,6 +691,8 @@ impl TaskRegistry {
 
     /// 领域事件：不改变状态/进度，携带 detail 载荷发自定义事件（阶段、工具轨迹等）。
     /// 事件名是事件流契约的一部分（规格 #55 决策 28）。
+    /// detail 同时 append 进快照的有界日志：JS 订阅建立前发出的事件不经通道重放，
+    /// 任务中心轮询快照即可拿到完整阶段/轨迹（#72 走查发现订阅窗口丢事件）。
     fn push_detail(&self, task_id: &str, sink: &Arc<dyn EventSink>, event: &'static str, detail: Value) {
         let snapshot = {
             let Ok(mut entries) = self.entries.lock() else {
@@ -690,6 +701,12 @@ impl TaskRegistry {
             let Some(entry) = entries.get_mut(task_id) else {
                 return;
             };
+            let log = entry.snapshot.details.get_or_insert_with(Vec::new);
+            log.push(json!({ "event": event, "detail": detail.clone() }));
+            if log.len() > SNAPSHOT_DETAILS_CAP {
+                let overflow = log.len() - SNAPSHOT_DETAILS_CAP;
+                log.drain(..overflow);
+            }
             entry.snapshot.updated_at = now_iso();
             entry.snapshot.clone()
         };

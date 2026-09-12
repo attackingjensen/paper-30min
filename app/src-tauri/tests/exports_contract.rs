@@ -94,6 +94,33 @@ fn write_with_target_path_uses_chosen_location() {
 }
 
 #[test]
+fn chosen_path_accepts_non_ascii_logical_name() {
+    // #72 走查发现：导出笔记的逻辑文件名含中文书名号/省略号（《标题…》精读笔记.md），
+    // 用户经保存对话框写入选定路径时被 fileName 的 ASCII 安全名校验拒绝，导出静默失败。
+    // chosen 路径下文件名由 targetPath 决定，fileName 仅为元信息，不应过安全名校验。
+    let (registry, library, dir) = common::env();
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = target_dir.path().join("精读笔记.md");
+    let result = invoke(
+        &registry,
+        &library,
+        "exports.write@1",
+        json!({
+            "fileName": "《某论文标题…》精读笔记.md",
+            "contentBase64": HELLO_B64,
+            "targetPath": target.to_string_lossy(),
+        }),
+    );
+    assert_eq!(result["location"], json!("chosen"));
+    assert_eq!(result["fileName"], json!("精读笔记.md"));
+    assert_eq!(std::fs::read(&target).expect("读取选定路径导出"), HELLO);
+    // 选定路径写入不落 exports 分区。
+    let partition = dir.path().join("exports");
+    let partition_written = partition.exists() && std::fs::read_dir(&partition).unwrap().next().is_some();
+    assert!(!partition_written);
+}
+
+#[test]
 fn target_path_with_missing_parent_is_rejected() {
     let (registry, library, _dir) = common::env();
     let missing = tempfile::tempdir().unwrap();

@@ -132,6 +132,17 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .metadata-chip.tag { background: #edf0f5; color: #536070; }
 /* 书库卡片「已读完」徽章：全部精读部分均有已读完标记的派生态 */
 .metadata-chip.pc-done { background: var(--ok); color: #fff; font-weight: 600; }
+/* 书库卡片建图状态（#56 决策 12）：未建图灰 / 建图中蓝 / 已建图绿，文字前带状态点。 */
+.map-state-chip {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 20px; padding: 1px 7px;
+  border-radius: 5px; font-size: 11.5px; line-height: 1.4;
+}
+.map-state-chip::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; flex: none; background: currentColor;
+}
+.map-state-chip.idle { background: #eef0f4; color: #7a8494; }
+.map-state-chip.running { background: #e3ecfd; color: #2b5bd7; }
+.map-state-chip.done { background: #e2f4e8; color: #227a45; }
 .progress-dots { display: inline-flex; gap: 4px; }
 .pdot { width: 9px; height: 9px; border-radius: 50%; background: #dcdfe8; }
 .pdot.done { background: var(--ok); }
@@ -174,6 +185,25 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   100% { margin-left: 100%; }
 }
 .task-error { color: var(--danger); font-size: 12.5px; }
+
+/* 协议任务附加区（#56 决策 13）：建图阶段流 / 深挖逐节子进度 / 工具步骤流 */
+.task-stage-flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.task-stage {
+  display: inline-flex; align-items: center; min-height: 20px; padding: 1px 8px;
+  border-radius: 999px; font-size: 11.5px;
+}
+.task-stage.todo { background: #eef0f4; color: #9aa2b1; }
+.task-stage.done { background: #e2f4e8; color: #227a45; }
+.task-stage.current { background: #e3ecfd; color: #2b5bd7; font-weight: 600; }
+.task-stage.failed { background: #fbe3e3; color: #b93a3a; font-weight: 600; }
+.task-sub-progress { font-size: 12.5px; color: var(--muted); }
+.task-steps { border-top: 1px dashed var(--border); padding-top: 6px; }
+.task-steps-head { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+.task-steps ol {
+  margin: 0; padding-left: 18px; font-size: 12px; color: #4a4f58;
+  max-height: 132px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+}
+.task-steps li.fail { color: var(--danger); }
 
 /* 阅读视图 PDF 栏内的论文级任务上下文 */
 .pdf-tasks {

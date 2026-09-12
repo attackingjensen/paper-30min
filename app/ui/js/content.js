@@ -2,7 +2,7 @@
 // 落地页分支、L1 五区块 + 复述稿、节页四段（L2 / 三态深挖 / 图表 / 标记）、
 // 出处分段与取证轨迹任务定位。无 DOM；UI 壳只负责渲染。
 //
-// 消费方：本模块测试 + 阅读视图壳（main.js）。
+// 消费方：本模块测试 + 阅读视图壳（main.js）+ 呈现层纯函数（present.js 复用 mappingStageLabel/productOf）。
 
 import { l2Sections, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
 import { cropAttachmentId } from './qa.js';
