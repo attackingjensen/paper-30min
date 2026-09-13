@@ -196,6 +196,26 @@ test('导入论文写入缝：createArxivPaper 生成当日 import 活动日', a
   assert.deepEqual(paper.activityDays, [{ day: papers.activityDayOf(Date.now()), kind: 'import' }]);
 });
 
+test('使用说明播种：createGuidePaper 首块落摘要位、其余为 part，且不计打卡', async () => {
+  const store = memoryStore();
+  papers.init(store);
+  const paper = await papers.createGuidePaper('Paper30Min 使用说明', [
+    { heading: '欢迎', text: '第一段' },
+    { heading: '配置模型', text: '第二段' },
+    { heading: '导入论文', text: '第三段' },
+  ]);
+  assert.equal(paper.title, 'Paper30Min 使用说明');
+  assert.equal(paper.sections.abstract, '第一段');
+  assert.equal(paper.sections['part-1'], '第二段');
+  assert.equal(paper.sections['part-2'], '第三段');
+  assert.deepEqual(paper.parts.map(part => part.id), ['part-1', 'part-2']);
+  // 播种是应用行为，不产生阅读活动日（规格 #51 打卡口径）。
+  assert.deepEqual(paper.activityDays, []);
+  // 落库后可按阅读部分展开（摘要 + 两节）。
+  const parts = papers.readingParts(paper);
+  assert.deepEqual(parts.map(part => part.id), ['abstract', 'part-1', 'part-2']);
+});
+
 test('精读结果写入缝：saveAnalysis 生成当日 analysis 活动日，同日幂等', async () => {
   const store = memoryStore();
   papers.init(store);

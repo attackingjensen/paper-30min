@@ -38,6 +38,7 @@ pub fn available_commands() -> &'static [&'static str] {
         "settings.putModel@1",
         "settings.putSkillsOverrides@1",
         "settings.putPdfparse@1",
+        "settings.putUi@1",
         "pdfparse.status@1",
         "skills.list@1",
         "exports.write@1",
@@ -215,6 +216,7 @@ pub fn invoke(
         "settings.putModel@1" => crate::settings::put_model(library, input),
         "settings.putSkillsOverrides@1" => crate::settings::put_skills_overrides(library, input),
         "settings.putPdfparse@1" => crate::settings::put_pdfparse(library, input),
+        "settings.putUi@1" => crate::settings::put_ui(library, input),
         "pdfparse.status@1" => Ok(json!({
             "schemaVersion": BRIDGE_SCHEMA_VERSION,
             "sidecar": crate::pdfparse::status(library),

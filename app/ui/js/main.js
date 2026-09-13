@@ -2397,6 +2397,31 @@ async function attachPdf(file) {
   toast('PDF 已关联，可与精读结果对照查看');
 }
 
+// ---------------- 内置使用说明（发布版首启播种） ----------------
+// 空书库且未播种过时创建一份纯文本「使用说明」；可删除，welcomeSeeded 标记保证不复活。
+const GUIDE_BLOCKS = [
+  { heading: '欢迎使用 Paper30Min', text: 'Paper30Min 是一个论文精读助手：用大模型把一篇完整论文压缩成可在约 30 分钟内读完的形态。这一份是使用说明，读完即可删除。\n\n核心节奏是「建图 → 定向深挖 → 综合复述」：先拿到一屏的阅读地图，再只深挖你关心的章节，最后让复述稿把全篇讲清楚。' },
+  { heading: '第一步：配置模型', text: '点右上角「设置」，填入模型服务的 Base URL、API Key 和模型名，保存后可用「连接测试」确认可用。API Key 只保存在本机，不会进入任何导出文件。' },
+  { heading: '导入论文', text: '书库页支持三种导入：本地 PDF（自动做版式解析）、arXiv 编号或链接（优先结构化 HTML，PDF 自动关联）、示例论文。导入后应用会在后台自动完成解析与预渲染（任务中心可见进度），为建图备好材料。' },
+  { heading: '建图与阅读地图', text: '打开论文后点「开始建图」。建图会为每个章节生成薄摘要，并合成一屏的阅读地图：论文要解决的问题、方法概述、贡献、关键证据位置与术语表。地图里的出处都可以点击定位。' },
+  { heading: '节页：深挖与已读完', text: '从左侧节树进入任一章节：顶部是该节薄摘要，中间可按需发起「深挖」（带取证轨迹的细致分析），下方汇集该节图表，页尾「标记已读完」用来推进阅读进度。全部节标记完，这篇论文就算读完了。' },
+  { heading: '提问', text: '「提问」页签支持三种问法：输入 @ 绑定某个章节提问；在「原文」页签选中一段文字后点浮动按钮就片段提问；不绑定时直接对全文提问。' },
+  { heading: '任务中心与其他', text: '所有耗时操作（解析、建图、深挖、下载）都会进入「任务」页签，可查看进度、取消或重试。顶栏还有技能库（调整各阶段提示词）、阅读 streak 与导出笔记。祝你阅读高效。' },
+];
+
+async function seedGuidePaper() {
+  if (library.length) return;
+  try {
+    const settings = await bridge.invoke('settings.get@1');
+    if (settings?.ui?.welcomeSeeded) return;
+    await papers.createGuidePaper('Paper30Min 使用说明', GUIDE_BLOCKS);
+    await bridge.invoke('settings.putUi@1', { settings: { welcomeSeeded: true } });
+    await refreshLibrary();
+  } catch (err) {
+    console.warn('使用说明播种失败：', err);
+  }
+}
+
 // ---------------- 导入 ----------------
 async function importPdfFile(file) {
   const btn = $('#btn-import');
@@ -3341,3 +3366,4 @@ if (skillsSource === 'builtin') toast('技能文件加载失败，已使用内�
 pollActiveTasks();
 setInterval(pollActiveTasks, 3000);
 await refreshLibrary();
+await seedGuidePaper();

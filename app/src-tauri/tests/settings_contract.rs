@@ -24,6 +24,37 @@ fn invoke_err(
 }
 
 #[test]
+fn ui_prefs_default_and_roundtrip() {
+    let (registry, library, _dir) = common::env();
+    let result = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(result["ui"]["welcomeSeeded"], json!(false));
+
+    let put = invoke(
+        &registry,
+        &library,
+        "settings.putUi@1",
+        json!({ "settings": { "welcomeSeeded": true, "unknownKey": 1 } }),
+    );
+    // 未知字段忽略不写（沿 put_pdfparse 纪律）。
+    assert_eq!(put["settings"], json!({ "welcomeSeeded": true }));
+
+    let again = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(again["ui"]["welcomeSeeded"], json!(true));
+}
+
+#[test]
+fn ui_prefs_reject_non_boolean_flag() {
+    let (registry, library, _dir) = common::env();
+    let error = invoke_err(
+        &registry,
+        &library,
+        "settings.putUi@1",
+        json!({ "settings": { "welcomeSeeded": "yes" } }),
+    );
+    assert_eq!(error.code, "invalid_input");
+}
+
+#[test]
 fn defaults_are_reported_before_any_write() {
     let (registry, library, _dir) = common::env();
     let result = invoke(&registry, &library, "settings.get@1", json!({}));

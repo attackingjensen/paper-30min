@@ -87,6 +87,31 @@ export async function createArxivPaper(parsed, arxivId, pdfBlob) {
   return paper;
 }
 
+/** 内置「使用说明」论文（发布版首启播种）：纯文本记录，无 PDF、不参与建图。
+ *  blocks: [{ heading, text }]，首个块落摘要位，其余依次落 part-N。 */
+export async function createGuidePaper(title, blocks) {
+  const sections = {};
+  const sectionPages = {};
+  const parts = [];
+  blocks.forEach((block, index) => {
+    const id = index === 0 ? 'abstract' : `part-${index}`;
+    sections[id] = block.text;
+    sectionPages[id] = { start: 1, end: 1 };
+    if (index > 0) parts.push({ id, title: block.heading, heading: block.heading, semanticType: 'part' });
+  });
+  const paper = {
+    ...basePaper(title),
+    numPages: 0,
+    sections,
+    sectionPages,
+    parts,
+    fullText: blocks.map(block => `${block.heading}\n\n${block.text}`).join('\n\n'),
+  };
+  // 不计入打卡：播种是应用行为，不是用户的阅读活动（规格 #51 打卡口径）。
+  await store.put(paper);
+  return paper;
+}
+
 // ---------------- 分类与标签 ----------------
 
 /** 分类/标签清洗：去首尾空白、压缩内部空白、按大小写不敏感去重。 */

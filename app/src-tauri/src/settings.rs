@@ -14,6 +14,9 @@ const SKILLS_OVERRIDES_KEY: &str = "skills.overrides";
 /// Docling 侧车设置（JSON 对象）：hfEndpoint 为模型下载端点覆盖（规格 #48 决策 3）。
 const PDFPARSE_KEY: &str = "pdfparse";
 
+/// UI 偏好设置（JSON 对象）：welcomeSeeded = 内置「使用说明」已播种标记（发布版首启）。
+const UI_KEY: &str = "ui";
+
 /// maxTokens 设置上限：settings 校验与协议任务的 stage 下限提升共用同一上限
 /// （协议任务把配置值抬到阶段下限时也不越过此上限）。
 pub(crate) const MAX_TOKENS_LIMIT: u64 = 200_000;
@@ -38,6 +41,15 @@ fn default_pdfparse() -> Map<String, Value> {
     })
     .as_object()
     .expect("默认侧车设置是对象")
+    .clone()
+}
+
+fn default_ui() -> Map<String, Value> {
+    json!({
+        "welcomeSeeded": false,
+    })
+    .as_object()
+    .expect("默认 UI 设置是对象")
     .clone()
 }
 
@@ -66,6 +78,10 @@ fn load_pdfparse(library: &Library) -> Result<Map<String, Value>, BridgeError> {
     load_object(library, PDFPARSE_KEY, default_pdfparse())
 }
 
+fn load_ui(library: &Library) -> Result<Map<String, Value>, BridgeError> {
+    load_object(library, UI_KEY, default_ui())
+}
+
 /// pdfparse 任务的 HF 端点覆盖：空串/缺省/损坏都归为 None（默认官方源+镜像回退）。
 pub(crate) fn pdfparse_hf_endpoint(library: &Library) -> Option<String> {
     let merged = load_pdfparse(library).ok()?;
@@ -83,6 +99,7 @@ pub fn get(library: &Library) -> Result<Value, BridgeError> {
         "model": Value::Object(load_model(library)?),
         "skillsOverrides": Value::Object(load_skills_overrides(library)?),
         "pdfparse": Value::Object(load_pdfparse(library)?),
+        "ui": Value::Object(load_ui(library)?),
     }))
 }
 
@@ -176,6 +193,34 @@ pub fn put_pdfparse(library: &Library, input: &Value) -> Result<Value, BridgeErr
     let text = serde_json::to_string(&Value::Object(merged.clone()))
         .map_err(|err| BridgeError::internal(format!("设置 JSON 编码失败: {err}")))?;
     library.put_setting(PDFPARSE_KEY, &text)?;
+    Ok(json!({
+        "schemaVersion": BRIDGE_SCHEMA_VERSION,
+        "settings": Value::Object(merged),
+    }))
+}
+
+/// 局部更新 UI 偏好：只校验并覆盖出现的字段，缺省字段沿用已存值。
+pub fn put_ui(library: &Library, input: &Value) -> Result<Value, BridgeError> {
+    let settings = input
+        .get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| BridgeError::invalid_input("settings.putUi@1 需要对象参数 settings"))?;
+    let mut merged = load_ui(library)?;
+    for (field, value) in settings {
+        match field.as_str() {
+            "welcomeSeeded" => {
+                if !value.is_boolean() {
+                    return Err(BridgeError::invalid_input("welcomeSeeded 必须是布尔值"));
+                }
+                merged.insert(field.clone(), value.clone());
+            }
+            // 未知字段忽略，不写入存储，避免污染设置对象。
+            _ => continue,
+        }
+    }
+    let text = serde_json::to_string(&Value::Object(merged.clone()))
+        .map_err(|err| BridgeError::internal(format!("设置 JSON 编码失败: {err}")))?;
+    library.put_setting(UI_KEY, &text)?;
     Ok(json!({
         "schemaVersion": BRIDGE_SCHEMA_VERSION,
         "settings": Value::Object(merged),
