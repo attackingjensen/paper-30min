@@ -181,5 +181,5 @@ pub fn run() {
             _ => {}
         })
         .run(tauri::generate_context!())
-        .expect("论文精读客户端启动失败");
+        .expect("Paper30Min 客户端启动失败");
 }

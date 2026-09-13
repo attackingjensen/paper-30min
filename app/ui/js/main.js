@@ -239,9 +239,20 @@ function updatePaneFabs() {
   $('#pdf-fab').hidden = !fabs.pdf;
 }
 
+// 原生窗口标题随视图切换；document.title 只作 WebView 内兜底（不同步原生标题，实测）。
+function setWindowTitle(title) {
+  document.title = title;
+  try {
+    const win = window.__TAURI__?.window?.getCurrentWindow?.();
+    if (win) void win.setTitle(title);
+  } catch { /* 浏览器/测试环境无原生窗口 */ }
+}
+
 function showView(name) {
   if (current && name !== 'reader') void flushPositionSave(current);
   commitReader(view.switchAppView(reader, name), { restore: true });
+  // 窗口标题：书库/任务中心显示产品名；阅读页显示「论文标题 · Paper30Min」（打磨批改名条款）。
+  if (name !== 'reader') setWindowTitle('Paper30Min');
   // 回到书库即刷新：建图状态 chip 与进度点依赖最新记录与会话任务（#56 决策 12）。
   if (name === 'library') void refreshLibrary();
 }
@@ -513,6 +524,7 @@ async function openPaper(p) {
   pdfScale = 1;
   $('#paste-area').value = '';
   $('#reader-title').textContent = p.title;
+  setWindowTitle(`${p.title} · Paper30Min`);
   reader = view.openPaper(reader, {
     hasMap: hasMapProduct(p.products),
     mapping: isMappingPaper(p.id),

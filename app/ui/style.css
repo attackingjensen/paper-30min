@@ -35,7 +35,8 @@ body {
   box-shadow: 0 6px 20px -12px rgba(30, 41, 59, .12);
   position: sticky; top: 0; z-index: 50;
 }
-.brand { font-weight: 700; font-size: 17px; cursor: pointer; white-space: nowrap; }
+.brand { font-weight: 700; font-size: 17px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; }
+.brand-icon { width: 24px; height: 24px; border-radius: 6px; flex: none; }
 .streak-badge {
   font-size: 13px;
   background: var(--accent-soft); color: var(--accent);

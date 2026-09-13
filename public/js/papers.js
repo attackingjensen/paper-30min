@@ -378,7 +378,7 @@ export function parseLibraryFile(text) {
     throw new Error('文件不是有效的 JSON');
   }
   if (!payload || payload.format !== LIBRARY_FORMAT) {
-    throw new Error('这不是论文精读书库导出文件');
+    throw new Error('这不是 Paper30Min 书库导出文件');
   }
   if (payload.version !== LIBRARY_VERSION) {
     throw new Error(`不支持的导出版本 ${payload.version}（当前支持 ${LIBRARY_VERSION}）`);

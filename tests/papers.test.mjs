@@ -404,7 +404,7 @@ test('importLibrary skips records without a usable id', async () => {
 
 test('parseLibraryFile rejects files that are not library exports', () => {
   assert.throws(() => papers.parseLibraryFile('not json'), /有效的 JSON/);
-  assert.throws(() => papers.parseLibraryFile('{}'), /不是论文精读书库导出文件/);
+  assert.throws(() => papers.parseLibraryFile('{}'), /不是 Paper30Min 书库导出文件/);
   assert.throws(
     () => papers.parseLibraryFile(JSON.stringify({ format: 'paper-30min-library', version: 99, papers: [] })),
     /不支持的导出版本/,

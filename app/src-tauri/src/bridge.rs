@@ -60,7 +60,7 @@ pub fn invoke(
         "app.info@1" => Ok(json!({
             "schemaVersion": BRIDGE_SCHEMA_VERSION,
             "app": {
-                "name": "Paper30min",
+                "name": "Paper30Min",
                 "version": env!("CARGO_PKG_VERSION"),
                 "identifier": "com.paper30min.reader",
                 "platform": std::env::consts::OS,

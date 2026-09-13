@@ -208,7 +208,7 @@ fn parse_envelope(bytes: &[u8]) -> Result<Value, BridgeError> {
 fn require_library_export(payload: &Value) -> Result<i64, BridgeError> {
     let format = payload.get("format").and_then(Value::as_str).unwrap_or("");
     if format != LIBRARY_FORMAT {
-        return Err(BridgeError::invalid_input("这不是论文精读书库导出文件"));
+        return Err(BridgeError::invalid_input("这不是 Paper30Min 书库导出文件"));
     }
     let version = payload
         .get("version")

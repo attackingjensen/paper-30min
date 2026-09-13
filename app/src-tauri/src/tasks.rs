@@ -175,7 +175,7 @@ enum TaskPlan {
     },
 }
 
-const DEFAULT_STREAM_TEXT: &str = "论文精读 Windows 正式客户端桥接演示任务：\
+const DEFAULT_STREAM_TEXT: &str = "Paper30Min Windows 正式客户端桥接演示任务：\
 这段文本按块流式发送，验证 start / subscribe / getTask 事件闭环。";
 
 fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, BridgeError> {

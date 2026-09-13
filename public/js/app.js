@@ -1016,7 +1016,7 @@ async function exportLibrary() {
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `论文精读书库-${fmtDate(Date.now())}.json`;
+    a.download = `Paper30Min-书库-${fmtDate(Date.now())}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
     toast('书库已导出（API Key 未包含在内）');
