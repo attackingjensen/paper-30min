@@ -225,6 +225,13 @@ pub(crate) fn base_command(layout: &SidecarLayout, hf_endpoint: Option<&str>) ->
         .env("HF_HUB_DISABLE_XET", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Windows 下抑制控制台黑窗：侧车纯后台运行，stdout/stderr 已走管道（安装版实测弹窗）。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     if let Some(endpoint) = hf_endpoint {
         command.env("HF_ENDPOINT", endpoint);
     }

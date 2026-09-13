@@ -8,7 +8,7 @@
 
 打磨批整改草稿 [2026-09-07 打磨批整改草稿](../draft/2026-09-07-polish-batch-draft.md) 的先行项已落地：soft-ui 皮肤（浅底、靛蓝主色、大圆角、彩色柔影与上浮/聚焦反馈）进入正式 UI 并通过真实窗口视觉走查（[2026-09-13 soft-ui 走查](../draft/2026-09-13-softui-walkthrough.md)）；产品改名 **Paper30Min** 与新图标「30 分钟进度环」已全量替换（窗口/任务栏/安装包图标全套、favicon、顶栏品牌、动态窗口标题「论文标题 · Paper30Min」、文档层产品称谓；bundle identifier 保持 com.paper30min.reader 不动以保既有数据根）。草稿其余项经 2026-09-13 重估因大规模重构失效，作者决定放弃，草稿留档退役。
 
-发布线动向（2026-09-13）：Windows 第一版发布工程已推进到出包。steven123397/dev 已合入 main（不用 PR，两分支同源），版本号 1.0.0 落位；包形态=NSIS 安装包（currentUser，免管理员），`Paper30Min_1.0.0_x64-setup.exe`（约 700MB，侧车与模型随包）已构建并挂到 GitHub Release **v1.0.0 草稿**（待作者验收后发布）。首次启动空书库自动播种一份内置「使用说明」论文（纯文本、可删除不复活、不计打卡）。Linux 暂不支持：卡在 Docling 侧车仅 Windows 构建，适配另立项。发布前仍开放的验收项：草稿安装包的干净环境安装→建图全链实测、覆盖升级与卸载验收。
+发布线动向（2026-09-13）：Windows 第一版已发布。steven123397/dev 已合入 main（不用 PR，两分支同源），版本号 1.0.0 落位；`Paper30Min_1.0.0_x64-setup.exe`（约 700MB，侧车与模型随包）已通过 [GitHub Release v1.0.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0) 正式发布，作者在三台 Windows 机器上安装使用验收通过。首次启动空书库自动播种一份内置「使用说明」论文（纯文本、可删除不复活、不计打卡）。Linux 暂不支持：卡在 Docling 侧车仅 Windows 构建，适配另立项。遗留验收项：覆盖升级与卸载未专项验收（三台新装均通过）。发布后已修待出补丁的问题：侧车子进程在 Windows 下弹控制台黑窗（已修 `CREATE_NO_WINDOW`，随下一补丁版发布）。
 
 当前不扩展产品范围，不因零散感受新建打磨类 Issue，也不创建合入 `main` 的 PR。`steven123397/dev` 是当前协作分支。
 
