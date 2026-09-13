@@ -1,12 +1,12 @@
 # 项目当前状态
 
-> 更新时间：2026-09-12（#72 书库与任务中心呈现、导出切换与全量走查完成，#35 实施链收官）
+> 更新时间：2026-09-13（soft-ui 视觉皮肤落地正式 UI 并通过真实窗口走查）
 
 ## 当前阶段
 
 项目定性为"论文精读"专精 agent harness（帮助用户高效阅读一篇完整论文）。Windows 端首轮工程化闭环已完成；Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 收敛后的实施链（#57–#72）已全部完成关闭：定稿规格群 [#48](https://github.com/attackingjensen/paper-30min/issues/48)（PDF 块模型生产管线）/ [#51](https://github.com/attackingjensen/paper-30min/issues/51)（进度与已读完数据模型）/ [#52](https://github.com/attackingjensen/paper-30min/issues/52)（提问双形态契约）/ [#55](https://github.com/attackingjensen/paper-30min/issues/55)（建图协议与 L1/L2/L3 产物契约）/ [#56](https://github.com/attackingjensen/paper-30min/issues/56)（应用组织与导航结构）均已落地并经真实窗口全量走查。各票的实现细节、验收证据与走查留档以对应 GitHub Issue 的完成说明为准；#72 走查中发现的「导入 → 解析 → 预渲染」UI 承接缺口（UI 无 pdfparse.convert@1 / pdfassets.prerender@1 触发入口，建图 preflight 依赖的产物在界面上无法生产）是实施链暴露的首要后续项，未立项。
 
-打磨批整改草稿已形成：[2026-09-07 打磨批整改草稿](../draft/2026-09-07-polish-batch-draft.md)，覆盖 UI 层静默行为、阅读流、任务中心与导航、Paper30Min 改名与新图标（已选定 B「30 分钟进度环」）、视觉系统重整；因分析架构调整暂缓转正式规格与票据，重估随地图收敛解禁，时点另定。
+打磨批整改草稿已形成：[2026-09-07 打磨批整改草稿](../draft/2026-09-07-polish-batch-draft.md)，覆盖 UI 层静默行为、阅读流、任务中心与导航、Paper30Min 改名与新图标（已选定 B「30 分钟进度环」）、视觉系统重整；因分析架构调整暂缓转正式规格与票据，重估随地图收敛解禁，时点另定。其中视觉系统重整已先行落地：soft-ui 皮肤（浅底、靛蓝主色、大圆角、彩色柔影与上浮/聚焦反馈）已进入正式 UI 并通过真实窗口视觉走查（[2026-09-13 soft-ui 走查](../draft/2026-09-13-softui-walkthrough.md)）；其余打磨批项与登录页动效仍待解禁启动。
 
 当前不扩展产品范围，不因零散感受新建打磨类 Issue，也不创建合入 `main` 的 PR。`steven123397/dev` 是当前协作分支。
 
@@ -31,6 +31,7 @@
 - 任务中心支持排队、进行中、成功、失败、已取消、待重试等状态，以及取消、重试和关闭窗口时的等待/停止选择。
 - 论文成果、附件、设置和阅读位置在关闭并重新打开后可恢复。
 - 已完成第一轮渐进式前端重设计：书库、阅读和任务中心三视图，阅读位置可恢复，业务行为和数据契约与浏览器版保持一致。
+- 视觉系统为 soft-ui 皮肤：浅底 `#f8fafc`、靛蓝主色 `#6366f1`、18px 大圆角、彩色柔影，卡片/按钮/输入框/浮钮/弹窗带 hover 上浮、聚焦光圈与按压缩放反馈，全局选区淡靛蓝、细圆角滚动条；纯 CSS 落地于 `app/ui/style.css`，无逻辑改动。
 
 ## 工程验证
 
@@ -38,7 +39,7 @@
 - `cd app && node --test`：157 项通过。
 - `cd app/src-tauri && cargo test`：219 项通过（`pdfparse_regression` 默认跑清单良构，全链 assert 模式本机实测 13/13 全绿）。
 - `cd app && npm run smoke`：14/14 通过。
-- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#35 实施链的全量窗口点验（视图骨架 / 双侧栏 / 地图页与节页 / 书库与任务中心呈现 / 导出切换 / 阅读位置与重启恢复 / #33 移交用例）见 [Issue #72 全量走查](../draft/2026-09-12-issue72-walkthrough.md)。
+- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#35 实施链的全量窗口点验（视图骨架 / 双侧栏 / 地图页与节页 / 书库与任务中心呈现 / 导出切换 / 阅读位置与重启恢复 / #33 移交用例）见 [Issue #72 全量走查](../draft/2026-09-12-issue72-walkthrough.md)；soft-ui 皮肤的真实窗口视觉走查（18 项清单，1 项 tab hover 缺陷即修即验）见 [2026-09-13 soft-ui 走查](../draft/2026-09-13-softui-walkthrough.md)。
 - 详细走查记录见 [Issue #31 真实窗口走查清单](../draft/2026-09-06-issue31-walkthrough.md)；各票新增测试的分布见对应 Issue 的完成说明。
 
 ## 实施状态
