@@ -119,6 +119,8 @@ const TASK_KIND_LABELS = {
   'model.test': '连接测试',
   'net.fetch-text': '网页抓取',
   'files.download': '文件下载',
+  'pdfparse.convert': '解析 PDF',
+  'pdfassets.prerender': '预渲染页图',
   'paper.build-map': '建图',
   'paper.deep-dive': '深挖',
   'paper.synthesize': '综合',
@@ -1009,9 +1011,90 @@ async function cancelOpenProtocolTask(kind) {
   }
 }
 
+// ---------------- 建图前置产物（#73）----------------
+// 建图 preflight 依赖块模型/页图/裁切图，由 pdfparse.convert@1 → pdfassets.prerender@1
+// 串行生产。三处接线：本地 PDF 导入后、arXiv PDF 关联后自动排队；「开始建图」前兜底补齐。
+// 两任务都进会话登记（任务中心可见、失败可重试）；链路幂等：块模型已在库直接返回。
+
+// 论文记录只挂 pdfAttachment 句柄，附件全集要查 files.listAttachments@1（store.js attachPdfInfo 同缝）。
+async function paperAttachmentIds(paperId) {
+  try {
+    const result = await bridge.invoke('files.listAttachments@1', { paperId });
+    return new Set((result?.attachments || []).map(attachment => attachment.id));
+  } catch {
+    return new Set();
+  }
+}
+
+/** 该论文是否已有在途的解析/预渲染任务（防导入自动排队与建图兜底双开同一链路）。 */
+function hasOpenPreflightTask(paperId) {
+  for (const meta of sessionTasks.values()) {
+    if (meta.kind !== 'pdfparse.convert@1' && meta.kind !== 'pdfassets.prerender@1') continue;
+    if (meta.input?.paperId !== paperId) continue;
+    if (meta.status && isTerminalStatus(meta.status)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** 串行跑 convert → prerender。任一步失败 toast 并返回 false；无 PDF 附件返回 false。 */
+async function runPreflightChain(paperId) {
+  const ids = await paperAttachmentIds(paperId);
+  if (ids.has('blockmodel.json')) return true;
+  if (!ids.has('pdf')) return false;
+  if (hasOpenPreflightTask(paperId)) return false;
+  try {
+    const convertInput = { paperId };
+    const { taskId: convertId } = await bridge.start('pdfparse.convert@1', convertInput);
+    registerSessionTask(convertId, {
+      kind: 'pdfparse.convert@1',
+      input: convertInput,
+      retry: () => runPreflightChain(paperId),
+    });
+    const convert = await trackTask(bridge, convertId, {});
+    if (convert.status !== 'succeeded') {
+      if (convert.status === 'failed') toast(`PDF 解析失败：${convert.error?.message || '未知错误'}`, true);
+      return false;
+    }
+    const doclingJsonPath = convert.result?.doclingJsonPath;
+    if (!doclingJsonPath) {
+      toast('PDF 解析结果缺少 doclingJsonPath', true);
+      return false;
+    }
+    const prerenderInput = { paperId, doclingJsonPath };
+    const { taskId: prerenderId } = await bridge.start('pdfassets.prerender@1', prerenderInput);
+    registerSessionTask(prerenderId, {
+      kind: 'pdfassets.prerender@1',
+      input: prerenderInput,
+      retry: () => runPreflightChain(paperId),
+    });
+    const prerender = await trackTask(bridge, prerenderId, {});
+    if (prerender.status !== 'succeeded') {
+      if (prerender.status === 'failed') toast(`页图预渲染失败：${prerender.error?.message || '未知错误'}`, true);
+      return false;
+    }
+    await refreshPaperRecord(paperId);
+    return true;
+  } catch (err) {
+    toast(`建图前置准备失败：${errorText(err)}`, true);
+    return false;
+  }
+}
+
 async function startBuildMap() {
   if (!current || isMappingPaper(current.id) || !ensureSettings()) return;
   const paperId = current.id;
+  // 前置兜底：缺块模型且有 PDF 时先补产（#73），链路失败则不发起建图（preflight 必失败）。
+  const preflightIds = await paperAttachmentIds(paperId);
+  if (!preflightIds.has('blockmodel.json') && preflightIds.has('pdf')) {
+    if (hasOpenPreflightTask(paperId)) {
+      toast('正在解析与预渲染，完成后请再点「开始建图」');
+      return;
+    }
+    toast('正在准备建图：先解析 PDF 并预渲染页图…');
+    const ready = await runPreflightChain(paperId);
+    if (!ready) return;
+  }
   const input = { paperId, overwriteConfirmed: false };
   let meta = null;
   try {
@@ -2328,6 +2411,8 @@ async function importPdfFile(file) {
     openPaper(opened);
     const found = papers.readingParts(opened).filter(s => opened.sections?.[s.id]?.trim()).length;
     toast(`导入成功，自动识别出 ${found} 个精读部分`);
+    // 后台排队解析+预渲染（#73）：建图前置产物提前备好，不阻塞打开论文。
+    void runPreflightChain(paper.id);
   } catch (err) {
     console.error(err);
     toast('PDF 解析失败：' + err.message, true);
@@ -2384,6 +2469,7 @@ async function importArxiv() {
           await initPdfViewer();
         }
         toast('arXiv PDF 已下载并关联');
+        void runPreflightChain(paper.id);
       })
       .catch(err => {
         toast(`PDF 下载未完成（${err.message}），可稍后在 PDF 栏手动关联`, true);

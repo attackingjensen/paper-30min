@@ -398,7 +398,7 @@ pub(crate) fn require_sidecar(ctx: &RunContext) -> Result<SidecarLayout, BridgeE
 }
 
 /// pdfparse.convert@1：单篇 PDF → DoclingDocument JSON。
-/// 输入: { pdfPath, workDir?, formulaEnrichment? }
+/// 输入: { pdfPath?, paperId?, workDir?, formulaEnrichment? }（pdfPath 缺省 = paperId 论文的 pdf 附件）
 /// 结果: { doclingJsonPath, workDir, pages, elapsedMs, wallClockMs,
 ///         doclingVersion, ocrPages, warnings }
 /// 不做自动重试：转换动辄数分钟，失败后由用户显式重试（retryable 标记保留）。

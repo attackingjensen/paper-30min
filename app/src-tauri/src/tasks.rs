@@ -246,7 +246,30 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
             })
         }
         crate::pdfparse::TASK_CONVERT => {
-            let pdf_path = required_string(crate::pdfparse::TASK_CONVERT, input, "pdfPath")?;
+            // pdfPath 可缺省为 paperId 对应论文的 pdf 附件（与 pdfassets.prerender@1 的
+            // 缺省约定一致）：UI 承接链路只持有 paperId（#73）。
+            let pdf_path = match input
+                .get("pdfPath")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                Some(value) => std::path::PathBuf::from(value),
+                None => {
+                    let paper_id = input
+                        .get("paperId")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            BridgeError::invalid_input(
+                                "pdfparse.convert@1 需要 pdfPath 或 paperId",
+                            )
+                        })?;
+                    files::require_safe_segment(paper_id, "paperId")?;
+                    files::attachment_path(library.root(), paper_id, "pdf")?
+                }
+            };
             let work_dir = input
                 .get("workDir")
                 .and_then(Value::as_str)
@@ -260,7 +283,7 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 })?,
             };
             Ok(TaskPlan::PdfparseConvert {
-                pdf_path: std::path::PathBuf::from(pdf_path),
+                pdf_path,
                 work_dir,
                 formula_enrichment,
             })

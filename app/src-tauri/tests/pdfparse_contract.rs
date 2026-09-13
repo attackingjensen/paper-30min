@@ -229,6 +229,41 @@ fn convert_rejects_missing_pdf_path_input() {
     assert_eq!(error.code, "invalid_input");
 }
 
+/// paperId 缺省解析：计划阶段把 pdfPath 落到 attachments/{paperId}/pdf（#73 UI 承接）。
+/// 附件不存在时运行期报 pdf_not_found 且路径指向该论文附件目录——若计划阶段没接受
+/// paperId 会直接 invalid_input，两个断言可区分。
+#[test]
+fn convert_resolves_pdf_from_paper_id() {
+    let (registry, _library, _dir) = common::env();
+    let task_id = registry
+        .start(pdfparse::TASK_CONVERT, json!({ "paperId": "paper-x" }), Collector::new())
+        .expect("paperId 应被计划阶段接受");
+    let status = wait_terminal(&registry, &task_id, Duration::from_secs(30))
+        .expect("任务应收敛到终态");
+    assert_eq!(status, TaskStatus::Failed);
+    let snapshot = registry.get(&task_id).expect("任务快照");
+    let error = snapshot.error.expect("应有错误");
+    assert_eq!(error.code, "pdf_not_found");
+    assert!(
+        error.message.contains("paper-x"),
+        "错误路径应指向该论文附件目录: {}",
+        error.message
+    );
+}
+
+#[test]
+fn convert_rejects_unsafe_paper_id() {
+    let (registry, _library, _dir) = common::env();
+    let error = registry
+        .start(
+            pdfparse::TASK_CONVERT,
+            json!({ "paperId": "../evil" }),
+            Collector::new(),
+        )
+        .expect_err("非法 paperId 应在计划阶段拒绝");
+    assert_eq!(error.code, "invalid_input");
+}
+
 /// OCR 降级路径：无文本层页面触发 RapidOCR（torch 后端）并打降级标记。
 /// 真实加载 OCR 模型，耗时 2–3 分钟，默认跳过。
 #[test]
