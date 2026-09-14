@@ -1,14 +1,15 @@
 //! 页图与图表裁切预渲染（Issue #59，规格 #48 §双通道资产 / #41 决议）。
 //!
-//! 建图前备妥视觉资产：页图（每页 scale=2 webp，与块模型 prov 的 pdf.js 视口
+//! 深挖前备妥视觉资产：页图（每页 scale=2 webp，与块模型 prov 的 pdf.js 视口
 //! 坐标逐像素一致）+ 图表裁切图（按映射层换算后 bbox）。产物全部走附件缝落库
 //! （sha256 + 原子写 + 元数据事务），落库后逐件 verify 读回校验。
 //!
 //! 附件 ID 约定（"论文+页码→assetId" 由 (paper_id, attachment_id) 主键承载）：
 //! - 页图：`pageimg-{NNNN}`（页码零填充 4 位，附件列表字典序即页序）；
 //! - 裁切图：`crop-{assetId}`（assetId = fig_3 / tbl_2，编号从图注派生，见 pdfmap）；
-//! - 块模型：`blockmodel.json`（pdfmap 输出无损 JSON，#48 决策 5 解析产物入书库，
-//!   #55 建图 preflight 与四件工具的数据源）。
+//! - 块模型：`blockmodel.json`（pdfmap 输出无损 JSON，#48 决策 5 解析产物入书库；
+//!   convert 带 paperId 时立即落库，prerender 重映射覆盖以保持幂等。#55/#76
+//!   建图只等块模型，页图/裁切图齐备检查在深挖开工前）。
 //!
 //! arXiv HTML 来源论文不走进渲染管线（HTML 保真升档另票，#48 §Out of Scope）；
 //! 其图直链"用到才下载落附件"由既有 files.download@1 承载（流式 + sha256 +
@@ -17,7 +18,7 @@
 //! 渲染由侧车 `render` 子进程执行（pypdfium2 + Pillow，随包依赖；不需要布局/
 //! OCR 模型，门禁只看 deps_ready）。取消 = 终止子进程：渲染阶段产物只落工作
 //! 目录，子进程失败/被取消时不落任何附件；落库阶段逐件提交（中断会留下部分
-//! 附件），但附件 ID 从内容派生且重跑幂等覆盖，配合建图 preflight 的齐备性
+//! 附件），但附件 ID 从内容派生且重跑幂等覆盖，配合深挖 preflight 的齐备性
 //! 检查可自愈（#48 §诚实档 16 的"不留半成品"由齐备性门禁兜底）。
 
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,26 @@ pub const BLOCKMODEL_ATTACHMENT_ID: &str = "blockmodel.json";
 /// （#39 实测 130–180KB/页，正文与图内小字稳定可读）。
 pub const RENDER_SCALE: f64 = 2.0;
 pub const WEBP_QUALITY: u32 = 86;
+
+/// 块模型 JSON 经附件缝落库（convert 与 prerender 共用同一 ID 与内容类型，pretty JSON
+/// 字节一致，prerender 重映射后覆盖幂等）。
+pub(crate) fn persist_block_model(
+    library: &Library,
+    paper_id: &str,
+    mapped: &MappedPaper,
+) -> Result<files::AttachmentDto, BridgeError> {
+    let bytes = serde_json::to_vec_pretty(mapped)
+        .map_err(|err| BridgeError::internal(format!("块模型序列化失败: {err}")))?;
+    let dto = library.put_attachment_bytes(
+        paper_id,
+        BLOCKMODEL_ATTACHMENT_ID,
+        BLOCKMODEL_ATTACHMENT_ID,
+        "application/json",
+        &bytes,
+    )?;
+    library.verify_attachment(paper_id, &dto.id)?;
+    Ok(dto)
+}
 
 /// 页图附件 ID：`pageimg-0007`。
 pub fn page_attachment_id(page: u32) -> String {
@@ -212,8 +233,6 @@ fn prerender_once(
     // 映射层（纯函数，毫秒级）：块模型 + 三清单是裁切 bbox 的唯一来源。
     let mapped = crate::pdfmap::map_docling_json_file(docling_json_path)?;
     let job = build_render_job(&mapped);
-    let blockmodel_bytes = serde_json::to_vec_pretty(&mapped)
-        .map_err(|err| BridgeError::internal(format!("块模型序列化失败: {err}")))?;
 
     // PDF 路径：显式参数优先，缺省取论文的 pdf 附件。
     let default_pdf;
@@ -280,16 +299,8 @@ fn prerender_once(
     })?;
 
     // 渲染全部成功后才进入落库阶段（渲染阶段取消/失败不落任何附件）；
-    // 落库逐件提交，中断留下的部分附件由重跑幂等覆盖 + preflight 齐备性兜底。
-    let blockmodel_dto = ctx.library.put_attachment_bytes(
-        paper_id,
-        BLOCKMODEL_ATTACHMENT_ID,
-        BLOCKMODEL_ATTACHMENT_ID,
-        "application/json",
-        &blockmodel_bytes,
-    )?;
-    ctx.library
-        .verify_attachment(paper_id, &blockmodel_dto.id)?;
+    // 落库逐件提交，中断留下的部分附件由重跑幂等覆盖 + 深挖 preflight 齐备性兜底。
+    let blockmodel_dto = persist_block_model(&ctx.library, paper_id, &mapped)?;
 
     let mut page_assets = Vec::with_capacity(payload.pages.len());
     let total = (payload.pages.len() + payload.crops.len()) as u64;

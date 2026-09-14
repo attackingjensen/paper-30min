@@ -152,6 +152,7 @@ enum TaskPlan {
         pdf_path: std::path::PathBuf,
         work_dir: Option<std::path::PathBuf>,
         formula_enrichment: bool,
+        paper_id: Option<String>,
     },
     PdfparseBootstrap {
         endpoint: Option<String>,
@@ -247,7 +248,18 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
         }
         crate::pdfparse::TASK_CONVERT => {
             // pdfPath 可缺省为 paperId 对应论文的 pdf 附件（与 pdfassets.prerender@1 的
-            // 缺省约定一致）：UI 承接链路只持有 paperId（#73）。
+            // 缺省约定一致）：UI 承接链路只持有 paperId（#73）。带 paperId 时转换成功后
+            // 立即落块模型附件（#76）。
+            let paper_id = input
+                .get("paperId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    files::require_safe_segment(value, "paperId")?;
+                    Ok::<_, BridgeError>(value.to_string())
+                })
+                .transpose()?;
             let pdf_path = match input
                 .get("pdfPath")
                 .and_then(Value::as_str)
@@ -256,17 +268,9 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
             {
                 Some(value) => std::path::PathBuf::from(value),
                 None => {
-                    let paper_id = input
-                        .get("paperId")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .ok_or_else(|| {
-                            BridgeError::invalid_input(
-                                "pdfparse.convert@1 需要 pdfPath 或 paperId",
-                            )
-                        })?;
-                    files::require_safe_segment(paper_id, "paperId")?;
+                    let paper_id = paper_id.as_deref().ok_or_else(|| {
+                        BridgeError::invalid_input("pdfparse.convert@1 需要 pdfPath 或 paperId")
+                    })?;
                     files::attachment_path(library.root(), paper_id, "pdf")?
                 }
             };
@@ -286,6 +290,7 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 pdf_path,
                 work_dir,
                 formula_enrichment,
+                paper_id,
             })
         }
         crate::pdfparse::TASK_BOOTSTRAP => {
@@ -992,7 +997,14 @@ fn run_task(
             pdf_path,
             work_dir,
             formula_enrichment,
-        } => crate::pdfparse::run_convert(&ctx, &pdf_path, work_dir.as_deref(), formula_enrichment),
+            paper_id,
+        } => crate::pdfparse::run_convert(
+            &ctx,
+            &pdf_path,
+            work_dir.as_deref(),
+            formula_enrichment,
+            paper_id.as_deref(),
+        ),
         TaskPlan::PdfparseBootstrap { endpoint } => {
             crate::pdfparse::run_bootstrap(&ctx, endpoint.as_deref())
         }

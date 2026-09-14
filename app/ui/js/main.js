@@ -38,6 +38,7 @@ import {
   hasMapProduct,
   mentionCandidates,
   parseMentionTrigger,
+  prerenderAssetsReady,
   sectionBinding,
   userBindingView,
 } from './qa.js';
@@ -69,6 +70,7 @@ let chatAborter = null;      // 问答中断控制器（独立于精读生成任
 let editingSkillId = null;
 let sourceTab = 'abstract';
 let currentMapped = null;    // 当前论文块模型；未建图或加载失败为 null
+let currentAttachmentIds = new Set();
 let chatComposer = emptyBinding();
 let mentionItems = [];
 let mentionActive = 0;
@@ -515,6 +517,7 @@ async function openPaper(p) {
   revokeRecallBlobUrls();
   current = p;
   currentMapped = null;
+  currentAttachmentIds = new Set();
   chatComposer = emptyBinding();
   composerQuoteExpanded = false;
   mentionItems = [];
@@ -533,6 +536,7 @@ async function openPaper(p) {
   });
   renderReaderChrome({ restore: true });
   await refreshMapped(p);
+  await refreshAttachmentIds(p.id);
   if (current !== p) return;
   reader = view.setHasMap(reader, hasMapProduct(p.products));
   if (currentMapped) sourceTab = '__full';
@@ -565,6 +569,7 @@ async function abandonPaper({ keepView = false } = {}) {
   recallAborter?.abort();
   current = null;
   currentMapped = null;
+  currentAttachmentIds = new Set();
   chatComposer = emptyBinding();
   hideSourceAskFloat();
   hideMentionMenu();
@@ -737,6 +742,7 @@ function renderSectionPage() {
     runningPartIds: runningDeepDivePartIds(sessionTaskList(), current.id),
     runningDetail: diveRunningDetail(current.id),
     citeFocus: reader.citeFocus,
+    prerenderReady: prerenderAssetsReady(currentMapped, currentAttachmentIds),
   });
   const paper = current;
   const busy = isDeepDivingPaper(current.id) && model.deepDive.state !== 'running';
@@ -760,12 +766,14 @@ function renderSectionPage() {
       <button class="btn small" type="button" data-action="cancel-dig">取消</button></div>`;
   } else if (model.deepDive.state === 'done') {
     dig += `<div class="dig-head"><span class="chip">L3 深挖结果</span><span style="flex:1"></span>
-      <button class="btn small" type="button" data-action="redig">${escapeTemplate(model.deepDive.primaryLabel)}</button>
+      <button class="btn small" type="button" data-action="redig"${model.deepDive.primaryDisabled ? ' disabled' : ''}>${escapeTemplate(model.deepDive.primaryLabel)}</button>
       <button class="btn small ghost" type="button" data-action="trace">${escapeTemplate(model.deepDive.traceLabel)}</button></div>
+      ${model.deepDive.hint ? `<p class="muted">${escapeTemplate(model.deepDive.hint)}</p>` : ''}
       <div class="dig-result md"></div>`;
   } else {
-    dig += `<div class="dig-empty"><p class="muted">本节尚未深挖</p>
-      <button class="btn primary" type="button" data-action="start-dig"${busy ? ' disabled' : ''}>▶ ${escapeTemplate(model.deepDive.primaryLabel)}</button>
+    const idleHint = model.deepDive.hint || '本节尚未深挖';
+    dig += `<div class="dig-empty"><p class="muted">${escapeTemplate(idleHint)}</p>
+      <button class="btn primary" type="button" data-action="start-dig"${busy || model.deepDive.primaryDisabled ? ' disabled' : ''}>▶ ${escapeTemplate(model.deepDive.primaryLabel)}</button>
       <p class="muted">配方打底 + 工具越界取证；深挖任务在任务中心可回看步骤</p></div>`;
   }
   dig += '</div>';
@@ -941,7 +949,8 @@ function renderMapTab() {
   }
   const partIds = view.deepAllPartIds(currentMapped);
   const deepBtn = $('#btn-deep-all');
-  deepBtn.disabled = !reader.hasMap || partIds.length === 0 || isDeepDivingPaper(current.id);
+  const prerenderReady = prerenderAssetsReady(currentMapped, currentAttachmentIds);
+  deepBtn.disabled = !reader.hasMap || partIds.length === 0 || isDeepDivingPaper(current.id) || !prerenderReady;
   if (surface === 'map') renderMapPage();
   if (surface === 'section') renderSectionPage();
   updateReaderMeta();
@@ -1011,10 +1020,10 @@ async function cancelOpenProtocolTask(kind) {
   }
 }
 
-// ---------------- 建图前置产物（#73）----------------
-// 建图 preflight 依赖块模型/页图/裁切图，由 pdfparse.convert@1 → pdfassets.prerender@1
-// 串行生产。三处接线：本地 PDF 导入后、arXiv PDF 关联后自动排队；「开始建图」前兜底补齐。
-// 两任务都进会话登记（任务中心可见、失败可重试）；链路幂等：块模型已在库直接返回。
+// ---------------- 建图前置产物（#73 / #76）----------------
+// 导入后：convert（含块模型落库）→ 立刻排队 prerender（不等待）。
+// 「开始建图」只兜底块模型；页图齐备检查在深挖开工前。
+// 两任务都进会话登记（任务中心可见、失败可重试）。
 
 // 论文记录只挂 pdfAttachment 句柄，附件全集要查 files.listAttachments@1（store.js attachPdfInfo 同缝）。
 async function paperAttachmentIds(paperId) {
@@ -1026,10 +1035,16 @@ async function paperAttachmentIds(paperId) {
   }
 }
 
-/** 该论文是否已有在途的解析/预渲染任务（防导入自动排队与建图兜底双开同一链路）。 */
-function hasOpenPreflightTask(paperId) {
+async function refreshAttachmentIds(paperId) {
+  if (!paperId) return currentAttachmentIds;
+  const ids = await paperAttachmentIds(paperId);
+  if (current?.id === paperId) currentAttachmentIds = ids;
+  return ids;
+}
+
+function hasOpenKindTask(paperId, kind) {
   for (const meta of sessionTasks.values()) {
-    if (meta.kind !== 'pdfparse.convert@1' && meta.kind !== 'pdfassets.prerender@1') continue;
+    if (meta.kind !== kind) continue;
     if (meta.input?.paperId !== paperId) continue;
     if (meta.status && isTerminalStatus(meta.status)) continue;
     return true;
@@ -1037,63 +1052,125 @@ function hasOpenPreflightTask(paperId) {
   return false;
 }
 
-/** 串行跑 convert → prerender。任一步失败 toast 并返回 false；无 PDF 附件返回 false。 */
-async function runPreflightChain(paperId) {
+/** 无块模型且有 PDF 时跑 convert 并等待；已有块模型直接返回。 */
+async function ensureBlockModel(paperId) {
   const ids = await paperAttachmentIds(paperId);
-  if (ids.has('blockmodel.json')) return true;
-  if (!ids.has('pdf')) return false;
-  if (hasOpenPreflightTask(paperId)) return false;
+  if (ids.has(BLOCKMODEL_ATTACHMENT_ID)) return { ok: true, doclingJsonPath: null };
+  if (!ids.has('pdf')) return { ok: false };
+  if (hasOpenKindTask(paperId, 'pdfparse.convert@1')) return { ok: false };
   try {
     const convertInput = { paperId };
     const { taskId: convertId } = await bridge.start('pdfparse.convert@1', convertInput);
     registerSessionTask(convertId, {
       kind: 'pdfparse.convert@1',
       input: convertInput,
-      retry: () => runPreflightChain(paperId),
+      retry: async () => {
+        const result = await ensureBlockModel(paperId);
+        if (result.ok) void ensurePrerender(paperId, result.doclingJsonPath);
+        return result.ok;
+      },
     });
     const convert = await trackTask(bridge, convertId, {});
+    const meta = sessionTasks.get(convertId);
+    if (meta) meta.status = convert.status;
     if (convert.status !== 'succeeded') {
       if (convert.status === 'failed') toast(`PDF 解析失败：${convert.error?.message || '未知错误'}`, true);
-      return false;
+      return { ok: false };
     }
-    const doclingJsonPath = convert.result?.doclingJsonPath;
-    if (!doclingJsonPath) {
-      toast('PDF 解析结果缺少 doclingJsonPath', true);
-      return false;
-    }
-    const prerenderInput = { paperId, doclingJsonPath };
+    const doclingJsonPath = convert.result?.doclingJsonPath || null;
+    if (!doclingJsonPath) toast('PDF 解析结果缺少 doclingJsonPath', true);
+    await refreshAttachmentIds(paperId);
+    return { ok: true, doclingJsonPath };
+  } catch (err) {
+    toast(`建图前置准备失败：${errorText(err)}`, true);
+    return { ok: false };
+  }
+}
+
+/** 无页图/裁切图时启动 prerender，不等待终态。force 用于失败重试（覆盖半成品）。 */
+async function ensurePrerender(paperId, doclingJsonPath, { force = false } = {}) {
+  if (!paperId || !doclingJsonPath) return false;
+  if (hasOpenKindTask(paperId, 'pdfassets.prerender@1')) return false;
+  if (!force) {
+    const ids = await paperAttachmentIds(paperId);
+    const mapped = await readBlockModelJson(paperId);
+    const ready = mapped
+      ? prerenderAssetsReady(mapped, ids)
+      : [...ids].some(id => id.startsWith('pageimg-')) && [...ids].some(id => id.startsWith('crop-'));
+    if (ready) return true;
+  }
+  const prerenderInput = { paperId, doclingJsonPath };
+  try {
     const { taskId: prerenderId } = await bridge.start('pdfassets.prerender@1', prerenderInput);
     registerSessionTask(prerenderId, {
       kind: 'pdfassets.prerender@1',
       input: prerenderInput,
-      retry: () => runPreflightChain(paperId),
+      retry: () => ensurePrerender(paperId, doclingJsonPath, { force: true }),
     });
-    const prerender = await trackTask(bridge, prerenderId, {});
-    if (prerender.status !== 'succeeded') {
-      if (prerender.status === 'failed') toast(`页图预渲染失败：${prerender.error?.message || '未知错误'}`, true);
-      return false;
-    }
-    await refreshPaperRecord(paperId);
+    void trackPrerender(paperId, prerenderId);
     return true;
   } catch (err) {
-    toast(`建图前置准备失败：${errorText(err)}`, true);
+    toast(`页图预渲染启动失败：${errorText(err)}`, true);
     return false;
   }
+}
+
+async function readBlockModelJson(paperId) {
+  try {
+    const meta = await bridge.invoke('files.getAttachment@1', {
+      paperId,
+      attachmentId: BLOCKMODEL_ATTACHMENT_ID,
+    });
+    const attachment = meta?.attachment;
+    if (!attachment) return null;
+    const range = await bridge.invoke('files.readRange@1', {
+      paperId,
+      attachmentId: BLOCKMODEL_ATTACHMENT_ID,
+      offset: 0,
+      length: attachment.size,
+    });
+    return JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
+  } catch {
+    return null;
+  }
+}
+
+async function trackPrerender(paperId, prerenderId) {
+  const meta = sessionTasks.get(prerenderId);
+  try {
+    const prerender = await trackTask(bridge, prerenderId, {});
+    if (meta) meta.status = prerender.status;
+    if (prerender.status === 'failed') toast(`页图预渲染失败：${prerender.error?.message || '未知错误'}`, true);
+    await refreshAttachmentIds(paperId);
+    if (current?.id === paperId && reader.appView === 'reader') renderMapTab();
+  } catch (err) {
+    if (meta && !meta.status) meta.status = 'failed';
+    toast(`页图预渲染失败：${errorText(err)}`, true);
+  }
+}
+
+/** 导入后：等 convert，立刻排队 prerender。 */
+async function queueImportPreflight(paperId) {
+  const ready = await ensureBlockModel(paperId);
+  if (!ready.ok) return false;
+  void ensurePrerender(paperId, ready.doclingJsonPath);
+  return true;
 }
 
 async function startBuildMap() {
   if (!current || isMappingPaper(current.id) || !ensureSettings()) return;
   const paperId = current.id;
-  // 前置兜底：缺块模型且有 PDF 时先补产（#73），链路失败则不发起建图（preflight 必失败）。
+  // 前置兜底：缺块模型且有 PDF 时先补产（#76：只等 convert，预渲染与建图并行）。
   const preflightIds = await paperAttachmentIds(paperId);
-  if (!preflightIds.has('blockmodel.json') && preflightIds.has('pdf')) {
-    if (hasOpenPreflightTask(paperId)) {
-      toast('正在解析与预渲染，完成后请再点「开始建图」');
+  if (!preflightIds.has(BLOCKMODEL_ATTACHMENT_ID) && preflightIds.has('pdf')) {
+    if (hasOpenKindTask(paperId, 'pdfparse.convert@1')) {
+      toast('正在解析 PDF，完成后请再点「开始建图」');
       return;
     }
-    toast('正在准备建图：先解析 PDF 并预渲染页图…');
-    const ready = await runPreflightChain(paperId);
-    if (!ready) return;
+    toast('正在准备建图：先解析 PDF…');
+    const ready = await ensureBlockModel(paperId);
+    if (!ready.ok) return;
+    void ensurePrerender(paperId, ready.doclingJsonPath);
   }
   const input = { paperId, overwriteConfirmed: false };
   let meta = null;
@@ -1170,6 +1247,10 @@ async function startSynthesize(overwriteConfirmed) {
 
 async function startDeepAll() {
   if (!current || !currentMapped || !ensureSettings()) return;
+  if (!prerenderAssetsReady(currentMapped, currentAttachmentIds)) {
+    toast(COPY.prerenderPending, true);
+    return;
+  }
   const partIds = view.deepAllPartIds(currentMapped);
   if (!partIds.length || isDeepDivingPaper(current.id)) return;
   await startDeepDive(current.id, partIds);
@@ -1177,6 +1258,10 @@ async function startDeepAll() {
 
 async function startSectionDive(overwrite) {
   if (!current || !reader.sectionId || !ensureSettings()) return;
+  if (!prerenderAssetsReady(currentMapped, currentAttachmentIds)) {
+    toast(COPY.prerenderPending, true);
+    return;
+  }
   if (isDeepDivingPaper(current.id)) {
     toast('已有深挖任务进行中', true);
     return;
@@ -2437,7 +2522,7 @@ async function importPdfFile(file) {
     const found = papers.readingParts(opened).filter(s => opened.sections?.[s.id]?.trim()).length;
     toast(`导入成功，自动识别出 ${found} 个精读部分`);
     // 后台排队解析+预渲染（#73）：建图前置产物提前备好，不阻塞打开论文。
-    void runPreflightChain(paper.id);
+    void queueImportPreflight(paper.id);
   } catch (err) {
     console.error(err);
     toast('PDF 解析失败：' + err.message, true);
@@ -2494,7 +2579,7 @@ async function importArxiv() {
           await initPdfViewer();
         }
         toast('arXiv PDF 已下载并关联');
-        void runPreflightChain(paper.id);
+        void queueImportPreflight(paper.id);
       })
       .catch(err => {
         toast(`PDF 下载未完成（${err.message}），可稍后在 PDF 栏手动关联`, true);

@@ -444,15 +444,18 @@ fn sidecar_startup_timings(harness: &ChildHarness) -> (Option<u64>, Option<u64>)
 /// pdfparse.convert@1：单篇 PDF → DoclingDocument JSON。
 /// 输入: { pdfPath?, paperId?, workDir?, formulaEnrichment? }（pdfPath 缺省 = paperId 论文的 pdf 附件）
 /// 结果: { doclingJsonPath, workDir, pages, elapsedMs, wallClockMs,
-///         doclingVersion, ocrPages, warnings, timings, startupMs, modelLoadMs }
+///         doclingVersion, ocrPages, warnings, timings, startupMs, modelLoadMs,
+///         blockModelAssetId?, mappingWarnings? }
+/// 带 paperId 时转换成功后立即映射并落 blockmodel.json（#76）。
 /// 不做自动重试：转换动辄数分钟，失败后由用户显式重试（retryable 标记保留）。
 pub(crate) fn run_convert(
     ctx: &RunContext,
     pdf_path: &Path,
     work_dir: Option<&Path>,
     formula_enrichment: bool,
+    paper_id: Option<&str>,
 ) {
-    match convert_once(ctx, pdf_path, work_dir, formula_enrichment) {
+    match convert_once(ctx, pdf_path, work_dir, formula_enrichment, paper_id) {
         Ok(()) => {}
         Err(error) if error.code == CANCEL_SENTINEL => ctx.cancel_now(),
         Err(error) => ctx.fail(error),
@@ -464,6 +467,7 @@ fn convert_once(
     pdf_path: &Path,
     work_dir: Option<&Path>,
     formula_enrichment: bool,
+    paper_id: Option<&str>,
 ) -> Result<(), BridgeError> {
     ctx.cancel_checkpoint()?;
     if !pdf_path.is_file() {
@@ -521,12 +525,42 @@ fn convert_once(
                     map.insert("modelLoadMs".to_string(), json!(ms));
                 }
             }
+            if let Some(paper_id) = paper_id {
+                persist_convert_block_model(ctx, paper_id, &mut payload)?;
+            }
             ctx.succeed(Some(payload));
             Ok(())
         }
         Some(result) => Err(map_failure(&result, &harness)),
         None => Err(crashed_error(exit_code, &harness)),
     }
+}
+
+/// 转换成功后把块模型落入该书库附件；映射失败按 block_model_invalid 使任务失败
+/// （解析结果已在工作目录，用户可重试）。
+fn persist_convert_block_model(
+    ctx: &RunContext,
+    paper_id: &str,
+    payload: &mut Value,
+) -> Result<(), BridgeError> {
+    ctx.cancel_checkpoint()?;
+    let docling_path = payload
+        .get("doclingJsonPath")
+        .and_then(Value::as_str)
+        .ok_or_else(|| BridgeError::internal("转换结果缺少 doclingJsonPath，无法落块模型"))?;
+    let mapped = crate::pdfmap::map_docling_json_file(Path::new(docling_path)).map_err(|err| {
+        BridgeError::new(
+            "block_model_invalid",
+            format!("块模型映射失败: {}", err.message),
+            false,
+        )
+    })?;
+    let dto = crate::pdfassets::persist_block_model(&ctx.library, paper_id, &mapped)?;
+    if let Value::Object(map) = payload {
+        map.insert("blockModelAssetId".to_string(), json!(dto.id));
+        map.insert("mappingWarnings".to_string(), json!(mapped.warnings));
+    }
+    Ok(())
 }
 
 /// pdfparse.bootstrap@1：首启下载案在线补齐依赖与模型。

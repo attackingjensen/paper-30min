@@ -12,6 +12,8 @@ import {
   CHAT_HISTORY_WINDOW,
   assembleQaContext,
   cropAttachmentId,
+  pageAttachmentId,
+  prerenderAssetsReady,
 } from '../ui/js/qa.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -315,4 +317,17 @@ test('图像 token 按页图预算计入硬顶（裁切图保守高估）', () =
     }),
     err => err.code === 'input_too_large',
   );
+});
+
+test('页图附件 ID 零填充；预渲染齐备按页数与图表清单逐件检查', () => {
+  assert.equal(pageAttachmentId(1), 'pageimg-0001');
+  assert.equal(pageAttachmentId(12), 'pageimg-0012');
+  const complete = [
+    'pageimg-0001', 'pageimg-0002', 'pageimg-0003',
+    'crop-fig_1', 'crop-tbl_1', 'crop-fml-extra',
+  ];
+  assert.equal(prerenderAssetsReady(mapped, complete), true);
+  assert.equal(prerenderAssetsReady(mapped, complete.filter(id => id !== 'pageimg-0003')), false);
+  assert.equal(prerenderAssetsReady(mapped, complete.filter(id => id !== 'crop-fig_1')), false);
+  assert.equal(prerenderAssetsReady(null, complete), false);
 });

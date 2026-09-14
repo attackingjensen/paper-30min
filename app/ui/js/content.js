@@ -11,10 +11,11 @@ export const COPY = {
   startMap: '▶ 开始建图',
   landingIdle: '这篇论文还未建图',
   landingRunning: '正在建图',
-  landingCopy: '建图将生成：L1 阅读地图、全部节薄摘要（L2），并备妥页图与图表裁切图。建图完成后可进行深挖、复述稿与提问。',
+  landingCopy: '建图将生成：L1 阅读地图、全部节薄摘要（L2）。建图完成后可进行深挖、复述稿与提问。',
   landingProgress: '建图进行中：进度与任务中心联动。',
   startDive: '开始深挖',
   redive: '重新深挖',
+  prerenderPending: '页图预渲染中',
   trace: '取证轨迹 →',
   synthesize: '生成复述稿',
   resynthesize: '重新生成',
@@ -117,12 +118,14 @@ export function deepDiveZone({
   runningPartIds = [],
   runningDetail = null,
   grey = false,
+  prerenderReady = true,
 } = {}) {
   if (grey) {
     return {
       state: 'skipped',
       hint: COPY.greyDive,
       primaryLabel: null,
+      primaryDisabled: true,
       body: null,
       canCancel: false,
       needsOverwriteConfirm: false,
@@ -143,6 +146,7 @@ export function deepDiveZone({
       state: 'running',
       hint: '',
       primaryLabel: null,
+      primaryDisabled: true,
       body: typeof dig?.body === 'string' ? dig.body : null,
       canCancel: true,
       needsOverwriteConfirm: false,
@@ -153,8 +157,9 @@ export function deepDiveZone({
   if (typeof dig?.body === 'string' && dig.body.trim()) {
     return {
       state: 'done',
-      hint: '',
+      hint: prerenderReady ? '' : COPY.prerenderPending,
       primaryLabel: COPY.redive,
+      primaryDisabled: !prerenderReady,
       body: dig.body,
       canCancel: false,
       needsOverwriteConfirm: true,
@@ -164,8 +169,9 @@ export function deepDiveZone({
   }
   return {
     state: 'idle',
-    hint: '',
+    hint: prerenderReady ? '' : COPY.prerenderPending,
     primaryLabel: COPY.startDive,
+    primaryDisabled: !prerenderReady,
     body: null,
     canCancel: false,
     needsOverwriteConfirm: false,
@@ -247,6 +253,7 @@ export function sectionPageModel({
   runningPartIds = [],
   runningDetail = null,
   citeFocus = null,
+  prerenderReady = true,
 } = {}) {
   const section = resolveSection(mapped, partId);
   const grey = !!(section && TREE_GREY_ROLES.has(section.role));
@@ -265,7 +272,7 @@ export function sectionPageModel({
         pages: l2Ok.pages && typeof l2Ok.pages === 'object' ? l2Ok.pages : null,
       }
       : null,
-    deepDive: deepDiveZone({ partId, products, runningPartIds, runningDetail, grey }),
+    deepDive: deepDiveZone({ partId, products, runningPartIds, runningDetail, grey, prerenderReady }),
     figures: grey ? [] : sectionFigures(mapped, partId),
     marked: paper?.readMarks?.[partId] != null,
     showMark: !grey && (partId === 'abstract' || /^part-\d+$/.test(partId)),

@@ -11,6 +11,7 @@
 mod common;
 
 use paper30min_lib::bridge;
+use paper30min_lib::files::AttachmentWrite;
 use paper30min_lib::library::Library;
 use paper30min_lib::pdfparse;
 use paper30min_lib::tasks::{TaskRegistry, TaskStatus};
@@ -267,6 +268,71 @@ fn convert_rejects_unsafe_paper_id() {
         )
         .expect_err("非法 paperId 应在计划阶段拒绝");
     assert_eq!(error.code, "invalid_input");
+}
+
+/// 带 paperId 成功后立即落块模型附件（#76）；侧车未构建时跳过。
+#[test]
+fn convert_with_paper_id_persists_block_model_attachment() {
+    let (registry, library, _dir) = common::env();
+    if !sidecar_ready(&library) {
+        return;
+    }
+    let _guard = SIDECAR_LOCK.lock().unwrap();
+    bridge::invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        &json!({ "paper": {
+            "id": "p-convert", "title": "SampleNet", "sourceType": "local-pdf", "arxivId": null,
+            "pdfName": "sample_paper.pdf", "numPages": 2, "fullText": "", "rating": 3,
+            "categories": [], "tags": [],
+            "addedAt": "2026-09-01T08:00:00Z", "updatedAt": "2026-09-01T09:00:00Z",
+            "sections": [], "parts": [], "analyses": [], "translations": [],
+            "recallCard": { "markdown": "", "images": [] }, "chatMessages": [],
+        } }),
+    )
+    .expect("建论文记录");
+    let pdf_bytes = std::fs::read(sample_pdf()).expect("读取示例 PDF");
+    library
+        .put_attachment(
+            "p-convert",
+            AttachmentWrite {
+                id: "pdf".to_string(),
+                name: "sample_paper.pdf".to_string(),
+                content_type: Some("application/pdf".to_string()),
+                content_base64: {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.encode(&pdf_bytes)
+                },
+            },
+        )
+        .expect("PDF 附件落库");
+
+    let sink = Collector::new();
+    let task_id = registry
+        .start(
+            pdfparse::TASK_CONVERT,
+            json!({ "paperId": "p-convert" }),
+            sink.clone(),
+        )
+        .expect("启动 pdfparse.convert@1");
+    let status = wait_terminal(&registry, &task_id, CONVERT_TIMEOUT).expect("转换超时");
+    assert_eq!(status, TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let result = registry.get(&task_id).unwrap().result.expect("succeeded 应携带 result");
+    assert_eq!(result["blockModelAssetId"], json!("blockmodel.json"));
+    assert!(result["mappingWarnings"].is_array(), "应有 mappingWarnings 数组");
+    library
+        .verify_attachment("p-convert", "blockmodel.json")
+        .unwrap_or_else(|err| panic!("块模型附件完整性校验失败: {err}"));
+    let attachment = library
+        .get_attachment("p-convert", "blockmodel.json")
+        .expect("块模型附件应在位");
+    let (_, bytes) = library
+        .read_range("p-convert", "blockmodel.json", 0, attachment.size as u64)
+        .expect("读块模型");
+    let model: Value = serde_json::from_slice(&bytes).expect("块模型应为合法 JSON");
+    assert!(model["pageCount"].as_u64().unwrap() >= 1, "块模型应有页数: {model}");
 }
 
 /// OCR 降级路径：无文本层页面触发 RapidOCR（torch 后端）并打降级标记。

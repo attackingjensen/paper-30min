@@ -149,6 +149,17 @@ test('深挖区三态：未深挖 / 进行中 / 已深挖；灰显节跳过', ()
   assert.equal(skipped.state, 'skipped');
   assert.match(skipped.hint, /不参与 L2/);
   assert.equal(skipped.primaryLabel, null);
+
+  const waiting = deepDiveZone({ partId: 'part-2', products, runningPartIds: [], prerenderReady: false });
+  assert.equal(waiting.state, 'idle');
+  assert.equal(waiting.primaryDisabled, true);
+  assert.equal(waiting.hint, COPY.prerenderPending);
+  assert.equal(waiting.primaryLabel, COPY.startDive);
+
+  const waitingRedive = deepDiveZone({ partId: 'part-1', products, runningPartIds: [], prerenderReady: false });
+  assert.equal(waitingRedive.state, 'done');
+  assert.equal(waitingRedive.primaryDisabled, true);
+  assert.equal(waitingRedive.hint, COPY.prerenderPending);
 });
 
 test('地图页：L1 五区块带出处，复述稿未生成提示未深挖节', () => {

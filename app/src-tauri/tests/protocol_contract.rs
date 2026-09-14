@@ -372,36 +372,44 @@ fn build_map_rejects_rerun_without_overwrite_confirmation() {
 }
 
 #[test]
-fn build_map_preflight_missing_assets_fails_with_instruction() {
+fn build_map_preflight_missing_block_model_fails_with_instruction() {
     let (registry, library, _dir) = common::env();
     let _lock = env_lock!();
     let mock = MockHttp::start(|_request, _hit| sse_text(&l2_response()));
     let paper_id = seed_paper(&library);
     configure_model(&registry, &library, &mock.url(""));
 
-    // 缺块模型附件 → preflight_missing。
+    // 缺块模型附件 → preflight_missing（#76：建图只等块模型）。
     let (task_id, _) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
     let error = registry.get(&task_id).unwrap().error.unwrap();
     assert_eq!(error.code, "preflight_missing");
     assert!(!error.retryable);
-    assert!(error.message.contains("pdfassets.prerender@1"), "错误即指令: {}", error.message);
-
-    // 有块模型但缺一页图（pageimg-0003 从未落库）→ preflight_missing 且 details 列出缺失附件。
-    seed_block_model(&library, &paper_id);
-    for page in 1..=2u32 {
-        let id = format!("pageimg-{page:04}");
-        put_attachment(&library, &paper_id, &id, "image/webp", format!("page-{page}").as_bytes());
-    }
-    put_attachment(&library, &paper_id, "crop-fig_1", "image/webp", b"crop-fig");
-    put_attachment(&library, &paper_id, "crop-tbl_1", "image/webp", b"crop-tbl");
-    let (task_id, _) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
-    let error = registry.get(&task_id).unwrap().error.unwrap();
-    assert_eq!(error.code, "preflight_missing");
-    let missing = error.details.expect("缺失清单")["missing"].as_array().unwrap().clone();
-    assert!(missing.contains(&json!("pageimg-0003")), "缺失清单含所缺页图: {missing:?}");
+    assert!(error.message.contains("blockmodel.json"), "错误即指令: {}", error.message);
+    assert!(error.message.contains("pdfparse.convert@1"), "错误即指令: {}", error.message);
     assert_eq!(mock.hits(), 0, "preflight 失败不调用模型");
+}
+
+#[test]
+fn build_map_succeeds_with_only_block_model() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, hit| {
+        if hit == 1 {
+            sse_text(&l2_response())
+        } else {
+            sse_text(&map_response())
+        }
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(products_of(&library, &paper_id, "map").len(), 1);
+    assert_eq!(products_of(&library, &paper_id, "l2").len(), 3);
+    assert_eq!(mock.hits(), 2);
 }
 
 #[test]
@@ -427,6 +435,37 @@ fn build_map_hard_top_rejects_oversized_prompt() {
 // ============================================================================
 // paper.deep-dive@1
 // ============================================================================
+
+#[test]
+fn deep_dive_preflight_missing_visual_assets_fails_with_instruction() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, _hit| sse_text(DIG_MARKDOWN));
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    // 仅块模型在位、无页图/裁切图 → 深挖 preflight_missing，details 列出缺失件。
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
+    let error = registry.get(&task_id).unwrap().error.unwrap();
+    assert_eq!(error.code, "preflight_missing");
+    assert!(!error.retryable);
+    assert!(
+        error.message.contains("页图 / 裁切图尚未预渲染完成"),
+        "错误即指令: {}",
+        error.message
+    );
+    let missing = error.details.expect("缺失清单")["missing"].as_array().unwrap().clone();
+    assert!(missing.contains(&json!("pageimg-0001")), "缺失清单含页图: {missing:?}");
+    assert!(missing.contains(&json!("crop-fig_1")), "缺失清单含裁切图: {missing:?}");
+    assert_eq!(mock.hits(), 0, "preflight 失败不调用模型");
+}
 
 #[test]
 fn deep_dive_tool_loop_completes_and_persists() {

@@ -1,6 +1,6 @@
 //! 三阶段协议任务（Issue #65，规格 #55 §任务种类与编排 / §四件工具契约 / §建图编排）：
-//! `paper.build-map@1`（预渲染校验 → 调用① L2 全覆盖 → 调用② L1 合成）、
-//! `paper.deep-dive@1`（配方打底 + 文本协议工具循环，单节与批量同构 partIds[]）、
+//! `paper.build-map@1`（块模型门禁 → 调用① L2 全覆盖 → 调用② L1 合成）、
+//! `paper.deep-dive@1`（页图/裁切图齐备检查 + 配方打底 + 文本协议工具循环，单节与批量同构 partIds[]）、
 //! `paper.synthesize@1`（L1 + 全部 L2 + 已有深挖 → 复述稿）。
 //!
 //! 关键语义（规格 #55 决策 1–5、10–15、20–21）：
@@ -299,7 +299,7 @@ fn load_block_model(library: &Library, paper_id: &str) -> Result<MappedPaper, Br
             BridgeError::new(
                 "preflight_missing",
                 "建图前置产物不齐备：缺少块模型附件 blockmodel.json。\
-                 请先完成解析（pdfparse.convert@1）与预渲染（pdfassets.prerender@1）。",
+                 请先完成解析（pdfparse.convert@1）。",
                 false,
             )
             .with_details(json!({ "missing": [pdfassets::BLOCKMODEL_ATTACHMENT_ID] }))
@@ -1274,9 +1274,9 @@ pub(crate) fn run_build_map(ctx: &RunContext, paper_id: &str, overwrite_confirme
     finish_run(ctx, build_map_main(ctx, paper_id, overwrite_confirmed));
 }
 
-/// 建图 preflight：#48 产物齐备（块模型 JSON、页图全页、图表裁切图逐件），缺失即
-/// preflight_missing 错误即指令（先完成解析/预渲染）。
-fn preflight_build_map(ctx: &RunContext, paper_id: &str, mapped: &MappedPaper) -> Result<(), BridgeError> {
+/// 深挖开工前齐备检查：全部页图 + 图表清单全部裁切图（#74 B1 / #76：从建图迁来）。
+/// 缺失即 preflight_missing，details 列出缺失附件。
+fn preflight_visual_assets(ctx: &RunContext, paper_id: &str, mapped: &MappedPaper) -> Result<(), BridgeError> {
     let mut missing: Vec<String> = Vec::new();
     for page in 1..=mapped.page_count {
         let asset_id = pdfassets::page_attachment_id(page);
@@ -1295,11 +1295,7 @@ fn preflight_build_map(ctx: &RunContext, paper_id: &str, mapped: &MappedPaper) -
     }
     Err(BridgeError::new(
         "preflight_missing",
-        format!(
-            "建图前置产物不齐备：缺少 {} 件附件（{}…）。请先完成解析（pdfparse.convert@1）与预渲染（pdfassets.prerender@1）。",
-            missing.len(),
-            missing.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
-        ),
+        "页图 / 裁切图尚未预渲染完成，请等待预渲染任务结束后重试",
         false,
     )
     .with_details(json!({ "missing": missing })))
@@ -1340,7 +1336,6 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
     }
     ctx.emit_detail("stage", json!({ "stage": "preflight" }));
     let env = load_env(ctx, paper_id)?;
-    preflight_build_map(ctx, paper_id, &env.mapped)?;
     if !overwrite_confirmed && product_body(&env.paper, "map", "").is_some() {
         return Err(Halt::Failed(BridgeError::new(
             "already_exists",
@@ -1889,6 +1884,7 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
     if product_body(&env.paper, "map", "").is_none() {
         return Err(Halt::Failed(map_required_error()));
     }
+    preflight_visual_assets(ctx, paper_id, &env.mapped)?;
     // partIds 校验与节映射：未知部分 / 无法映射 / 缺薄摘要都在开工前拒绝（错误即指令）。
     let mut targets: Vec<(&String, &Section)> = Vec::with_capacity(part_ids.len());
     for part_id in part_ids {

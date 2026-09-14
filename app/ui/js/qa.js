@@ -17,11 +17,35 @@ import {
 export const CHAT_HISTORY_WINDOW = 12;
 export const BLOCKMODEL_ATTACHMENT_ID = 'blockmodel.json';
 export const CROP_ID_PREFIX = 'crop-';
+export const PAGE_ID_PREFIX = 'pageimg-';
 export const QA_GATE_MESSAGE = '未建图：提问须先完成建图。';
 
 /** 裁切图附件 ID：`crop-fig_3` / `crop-tbl_1`（与 Rust pdfassets::crop_attachment_id 同约定）。 */
 export function cropAttachmentId(assetId) {
   return `${CROP_ID_PREFIX}${assetId}`;
+}
+
+/** 页图附件 ID：`pageimg-0007`（与 Rust pdfassets::page_attachment_id 同约定）。 */
+export function pageAttachmentId(page) {
+  return `${PAGE_ID_PREFIX}${String(page).padStart(4, '0')}`;
+}
+
+/**
+ * 深挖视觉资产是否齐备：页图覆盖块模型每一页，裁切图覆盖图表清单每一件。
+ * 公式裁切（crop-fml-*）不计入图表清单，多出来不挡齐备。
+ */
+export function prerenderAssetsReady(mapped, attachmentIds) {
+  const ids = attachmentIds instanceof Set ? attachmentIds : new Set(attachmentIds ?? []);
+  const pageCount = Number(mapped?.pageCount) || 0;
+  if (pageCount < 1) return false;
+  for (let page = 1; page <= pageCount; page += 1) {
+    if (!ids.has(pageAttachmentId(page))) return false;
+  }
+  for (const entry of [...(mapped?.figures ?? []), ...(mapped?.tables ?? [])]) {
+    if (!entry?.id) continue;
+    if (!ids.has(cropAttachmentId(entry.id))) return false;
+  }
+  return true;
 }
 
 function qaError(code, message, details) {
