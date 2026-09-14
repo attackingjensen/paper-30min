@@ -1,6 +1,6 @@
 # 项目当前状态
 
-> 更新时间：2026-09-13（Paper30Min 改名与「30 分钟进度环」新图标落地，打磨批品牌主题完成）
+> 更新时间：2026-09-14（v1.0「太慢」反馈立性能规格 #74 与实施链 #75–#85）
 
 ## 当前阶段
 
@@ -9,6 +9,8 @@
 打磨批整改草稿 [2026-09-07 打磨批整改草稿](../draft/2026-09-07-polish-batch-draft.md) 的先行项已落地：soft-ui 皮肤（浅底、靛蓝主色、大圆角、彩色柔影与上浮/聚焦反馈）进入正式 UI 并通过真实窗口视觉走查（[2026-09-13 soft-ui 走查](../draft/2026-09-13-softui-walkthrough.md)）；产品改名 **Paper30Min** 与新图标「30 分钟进度环」已全量替换（窗口/任务栏/安装包图标全套、favicon、顶栏品牌、动态窗口标题「论文标题 · Paper30Min」、文档层产品称谓；bundle identifier 保持 com.paper30min.reader 不动以保既有数据根）。草稿其余项经 2026-09-13 重估因大规模重构失效，作者决定放弃，草稿留档退役。
 
 发布线动向（2026-09-13）：Windows 第一版已发布。steven123397/dev 已合入 main（不用 PR，两分支同源），版本号 1.0.0 落位；`Paper30Min_1.0.0_x64-setup.exe`（约 700MB，侧车与模型随包）已通过 [GitHub Release v1.0.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0) 正式发布，作者在三台 Windows 机器上安装使用验收通过。首次启动空书库自动播种一份内置「使用说明」论文（纯文本、可删除不复活、不计打卡）。Linux 暂不支持：卡在 Docling 侧车仅 Windows 构建，适配另立项。遗留验收项：覆盖升级与卸载未专项验收（三台新装均通过）。发布后已修待出补丁的问题：侧车子进程在 Windows 下弹控制台黑窗（已修 `CREATE_NO_WINDOW`，随下一补丁版发布）。
+
+v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深挖三处等待都过长）。源码分析结论：预渲染挡在建图前、建图调用①是一次巨型输出、深挖每轮全量重发且批量串行，再叠加侧车每次冷启与 Docling 默认 4 线程/ACCURATE 表模式。已立性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（对 #48/#55 的性能修订，不改产物契约）及实施链 #75–#85，当前下一步即按 #75（遥测与共享客户端）→ #76/#78/#79 → 其余票的顺序推进。
 
 当前不扩展产品范围，不因零散感受新建打磨类 Issue，也不创建合入 `main` 的 PR。`steven123397/dev` 是当前协作分支。
 
@@ -77,6 +79,22 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 | [#70](https://github.com/attackingjensen/paper-30min/issues/70) | 双侧栏交互与 PDF 对照接入 | 已完成 |
 | [#71](https://github.com/attackingjensen/paper-30min/issues/71) | 地图页与节页内容区 | 已完成 |
 | [#72](https://github.com/attackingjensen/paper-30min/issues/72) | 书库与任务中心呈现、导出切换与走查 | 已完成 |
+
+性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74) 的实施链（#75–#85，均以子 issue 挂到 #74，阻塞关系用 GitHub 依赖表达）：
+
+| Issue | 内容 | 状态 |
+| --- | --- | --- |
+| [#75](https://github.com/attackingjensen/paper-30min/issues/75) | 模型轮遥测、解析计时探针与共享 HTTP 客户端 | 待开始 |
+| [#76](https://github.com/attackingjensen/paper-30min/issues/76) | 建图只等块模型：convert 落块模型、preflight 迁移到深挖 | 待开始 |
+| [#77](https://github.com/attackingjensen/paper-30min/issues/77) | 页图与解析并行：prerender scope 与前端双排队 | 待开始（依赖 #76） |
+| [#78](https://github.com/attackingjensen/paper-30min/issues/78) | Docling 线程数按物理核、TableFormer FAST 与基线重建 | 待开始（依赖 #75） |
+| [#79](https://github.com/attackingjensen/paper-30min/issues/79) | 节薄摘要默认按节分片并有界并发 | 待开始（依赖 #75） |
+| [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 待开始（依赖 #75） |
+| [#81](https://github.com/attackingjensen/paper-30min/issues/81) | 深挖减轮：预附本节图表与一轮多工具 | 待开始（依赖 #75） |
+| [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型与请求体附加参数 | 待开始（依赖 #75） |
+| [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 待开始（依赖 #79、#80） |
+| [#84](https://github.com/attackingjensen/paper-30min/issues/84) | 常驻侧车：serve 模式、预热、空闲释放与回退 | 待开始（依赖 #75、#77） |
+| [#85](https://github.com/attackingjensen/paper-30min/issues/85) | 性能对照走查与状态同步 | 待开始（依赖全部） |
 
 云端同步服务和 Android 阅读伴侣目前只有正式规格，分别见 [Issue #25](https://github.com/attackingjensen/paper-30min/issues/25) 和 [Issue #26](https://github.com/attackingjensen/paper-30min/issues/26)，暂不进入实现。
 
