@@ -102,9 +102,9 @@ pub struct TaskSnapshot {
     pub updated_at: String,
 }
 
-/// 快照 details 日志容量：深挖批量场景的轨迹量级为「节数 × 步数上限 12」，
-/// 200 条覆盖十余节的批量深挖全程，超出丢最旧。
-pub(crate) const SNAPSHOT_DETAILS_CAP: usize = 200;
+/// 快照 details 日志容量：批量深挖的轮次 + 轨迹量级为「节数 ×（步数上限 12 + 轮次）」；
+/// 500 条覆盖十余节的批量深挖全程，超出丢最旧。
+pub(crate) const SNAPSHOT_DETAILS_CAP: usize = 500;
 
 /// 任务事件出口。生产环境由 Tauri 事件通道实现，测试用收集器实现，
 /// 使任务引擎不依赖 AppHandle 即可完整测试。

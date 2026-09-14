@@ -5,7 +5,9 @@
 // - 建图阶段事件 detail = { stage: 'preflight'|'map-l2'|'map-l1', shard?, shards? }
 // - 深挖阶段事件 detail = { stage: 'deep-dive', partId, secId, title, index, total }
 // - 工具轨迹事件 detail = { step, partId, secId, name, args, ok, result?, error? }
-// tasks.list@1 快照的 details 字段是有界日志（[{event, detail}]，容量 200）：
+// - 模型轮事件 detail = { stage, round, ttftMs, elapsedMs, receivedChars,
+//   partId?, shard?, promptTokens?, completionTokens?, cachedTokens?, reasoningTokens? }
+// tasks.list@1 快照的 details 字段是有界日志（[{event, detail}]，容量 500）：
 // JS 订阅建立前发出的 detail 事件不经通道重放，任务中心以快照日志为完整源；
 // 会话任务登记（main.js sessionTasks）作无 details 时的回退。
 //
@@ -142,14 +144,23 @@ function lastDetailOf(details, event) {
 /**
  * 协议任务在任务中心的附加呈现模型。task 为 tasks.list@1 快照条目（含 details 日志），
  * meta 为会话登记（可缺失——缺失时回退重建）。返回 { stageFlow?, subProgress?, steps?,
- * stepsTotal? }；非协议任务返回 {}。
+ * stepsTotal?, trace?, timings? }；非协议/解析任务返回 {}。
+ * trace 按 details 原序把 round / tool 插成一行，供阶段流/轨迹流就地插入轮次行。
  */
 export function taskDetailModel({ task = {}, meta = null } = {}) {
   const bare = String(task.kind || '').replace(/@\d+$/, '');
   const details = taskDetails(task, meta);
+  if (bare === 'pdfparse.convert') {
+    const timings = convertTimingRows(task.result);
+    return timings.length ? { timings } : {};
+  }
   if (bare === 'paper.build-map') {
     const stageFlow = buildMapStageFlow(lastDetailOf(details, 'stage'), task.status);
-    return stageFlow ? { stageFlow } : {};
+    const out = {};
+    if (stageFlow) out.stageFlow = stageFlow;
+    const trace = traceItems(details);
+    if (trace.length) out.trace = trace;
+    return out;
   }
   if (bare === 'paper.deep-dive') {
     const out = {};
@@ -168,9 +179,78 @@ export function taskDetailModel({ task = {}, meta = null } = {}) {
       out.steps = steps;
       out.stepsTotal = steps.length;
     }
+    const trace = traceItems(details);
+    if (trace.length) out.trace = trace;
     return out;
   }
+  if (bare === 'paper.synthesize') {
+    const trace = traceItems(details);
+    return trace.length ? { trace } : {};
+  }
   return {};
+}
+
+/** 按快照 details 原序穿插模型轮与工具步。 */
+function traceItems(details) {
+  const items = [];
+  for (const entry of details) {
+    if (entry?.event === 'round') items.push({ kind: 'round', ...roundView(entry.detail) });
+    else if (entry?.event === 'tool') items.push({ kind: 'tool', ...toolStepView(entry.detail) });
+  }
+  return items;
+}
+
+function formatSeconds(ms) {
+  const n = Number(ms);
+  return Number.isFinite(n) ? (n / 1000).toFixed(1) : '?';
+}
+
+/** 一轮模型调用的任务中心行：「第 n 轮 · 首字 x s · 总 y s · 输入 a / 输出 b · 缓存 c」。 */
+export function roundView(detail = {}) {
+  const round = Number(detail.round);
+  let text = `第 ${Number.isFinite(round) ? round : '?'} 轮 · 首字 ${formatSeconds(detail.ttftMs)} s · 总 ${formatSeconds(detail.elapsedMs)} s`;
+  const prompt = Number(detail.promptTokens);
+  const completion = Number(detail.completionTokens);
+  if (Number.isFinite(prompt) || Number.isFinite(completion)) {
+    text += ` · 输入 ${Number.isFinite(prompt) ? prompt : '—'} / 输出 ${Number.isFinite(completion) ? completion : '—'}`;
+  }
+  const cached = Number(detail.cachedTokens);
+  if (Number.isFinite(cached)) text += ` · 缓存 ${cached}`;
+  const reasoning = Number(detail.reasoningTokens);
+  return { text, reasoning: Number.isFinite(reasoning) && reasoning > 0 };
+}
+
+function numOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** 解析任务的计时拆分表：启动 / 模型加载 / 版面 / 表格 / OCR / 其他 / 总计。 */
+export function convertTimingRows(result = {}) {
+  const timings = result?.timings && typeof result.timings === 'object' ? result.timings : {};
+  const secToMs = key => {
+    const n = Number(timings[key]);
+    return Number.isFinite(n) ? Math.round(n * 1000) : null;
+  };
+  // 「其他」= 未单独成行的阶段：页解析、装配、阅读顺序，以及未归类项。
+  const otherKeys = ['page', 'assemble', 'readingOrder', 'other'];
+  const otherSeconds = otherKeys.reduce((sum, key) => {
+    const n = Number(timings[key]);
+    return Number.isFinite(n) ? sum + n : sum;
+  }, 0);
+  const otherMs = otherKeys.some(key => Number.isFinite(Number(timings[key])))
+    ? Math.round(otherSeconds * 1000)
+    : null;
+  const rows = [
+    { key: 'startup', label: '启动', ms: numOrNull(result.startupMs) },
+    { key: 'modelLoad', label: '模型加载', ms: numOrNull(result.modelLoadMs) },
+    { key: 'layout', label: '版面分析', ms: secToMs('layout') },
+    { key: 'table', label: '表格结构', ms: secToMs('table') },
+    { key: 'ocr', label: 'OCR', ms: secToMs('ocr') },
+    { key: 'other', label: '其他', ms: otherMs },
+    { key: 'total', label: '总计', ms: numOrNull(result.wallClockMs) ?? numOrNull(result.elapsedMs) },
+  ];
+  return rows.filter(row => row.ms != null);
 }
 
 // ---------------- 导出笔记（决策 21） ----------------

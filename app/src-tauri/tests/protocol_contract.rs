@@ -515,9 +515,9 @@ fn deep_dive_tool_loop_completes_and_persists() {
     let snapshot = registry.get(&task_id).expect("任务快照");
     let details = snapshot.details.expect("快照携带 details 日志");
     let events: Vec<&str> = details.iter().filter_map(|d| d["event"].as_str()).collect();
-    assert_eq!(events, vec!["stage", "tool", "tool"]);
+    assert_eq!(events, vec!["stage", "round", "tool", "round", "tool", "round"]);
     assert_eq!(details[0]["detail"]["stage"], json!("deep-dive"));
-    assert_eq!(details[2]["detail"]["name"], json!("get_figure"));
+    assert_eq!(details[4]["detail"]["name"], json!("get_figure"));
 }
 
 #[test]
@@ -739,6 +739,9 @@ fn synthesize_writes_retell_and_respects_gates() {
 
     let (task_id, sink) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let synth_rounds = events_named(&sink, "round");
+    assert_eq!(synth_rounds.len(), 1, "复述稿每轮一条 round");
+    assert_eq!(synth_rounds[0]["stage"], json!("synthesize"));
     let retells = products_of(&library, &paper_id, "retell");
     assert_eq!(retells.len(), 1);
     assert_eq!(retells[0].part_id, "");
@@ -814,4 +817,88 @@ fn protocol_task_kinds_registered_in_app_info() {
     for kind in [protocol::TASK_BUILD_MAP, protocol::TASK_DEEP_DIVE, protocol::TASK_SYNTHESIZE] {
         assert!(kinds.iter().any(|item| item == kind), "app.info 未列出 {kind}");
     }
+}
+
+fn sse_text_usage(text: &str, usage: Value) -> MockResponse {
+    MockResponse::sse(
+        vec![
+            json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]}).to_string(),
+            json!({"choices": [], "usage": usage}).to_string(),
+            "[DONE]".to_string(),
+        ],
+        Duration::from_millis(1),
+    )
+}
+
+#[test]
+fn build_map_emits_round_telemetry_and_omits_missing_usage() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, hit| {
+        if hit == 1 {
+            sse_text_usage(
+                &l2_response(),
+                json!({
+                    "prompt_tokens": 100,
+                    "completion_tokens": 40,
+                    "prompt_tokens_details": { "cached_tokens": 20 }
+                }),
+            )
+        } else {
+            sse_text(&map_response())
+        }
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let rounds = events_named(&sink, "round");
+    assert_eq!(rounds.len(), 2, "建图两调用各一条 round");
+    assert_eq!(rounds[0]["stage"], json!("map-l2"));
+    assert_eq!(rounds[0]["round"], json!(1));
+    assert_eq!(rounds[0]["shard"], json!(1));
+    assert_eq!(rounds[0]["promptTokens"], json!(100));
+    assert_eq!(rounds[0]["completionTokens"], json!(40));
+    assert_eq!(rounds[0]["cachedTokens"], json!(20));
+    assert!(rounds[0]["receivedChars"].as_u64().unwrap() > 0);
+    assert!(rounds[0]["ttftMs"].as_u64().is_some());
+    assert_eq!(rounds[1]["stage"], json!("map-l1"));
+    assert!(rounds[1].get("promptTokens").is_none(), "无 usage 时 token 字段缺省");
+    assert!(rounds[1].get("cachedTokens").is_none());
+
+    let snapshot = registry.get(&task_id).unwrap();
+    let details = snapshot.details.expect("快照应带 details");
+    let round_in_log = details.iter().filter(|entry| entry["event"] == json!("round")).count();
+    assert_eq!(round_in_log, 2);
+
+    let body: Value = serde_json::from_slice(&mock.requests()[0].body).unwrap();
+    assert_eq!(body["stream_options"], json!({ "include_usage": true }));
+}
+
+#[test]
+fn deep_dive_round_events_carry_part_id() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, _hit| sse_text(DIG_MARKDOWN));
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let rounds = events_named(&sink, "round");
+    assert!(!rounds.is_empty());
+    assert_eq!(rounds[0]["stage"], json!("deep-dive"));
+    assert_eq!(rounds[0]["partId"], json!("part-1"));
+    assert_eq!(rounds[0]["round"], json!(1));
 }

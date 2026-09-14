@@ -169,12 +169,16 @@ struct RenderPayload {
     skipped_crops: Vec<Value>,
     #[serde(default)]
     warnings: Vec<String>,
+    #[serde(default)]
+    render_ms: Option<u64>,
+    #[serde(default)]
+    encode_ms: Option<u64>,
 }
 
 /// pdfassets.prerender@1：单篇论文 → 页图 + 图表裁切图 + 块模型附件。
 /// 输入: { paperId, doclingJsonPath, pdfPath? }（pdfPath 缺省 = 论文的 pdf 附件）。
 /// 结果: { paperId, pageAssets[], crops[], skippedCrops[], warnings[],
-///         blockModelAssetId, elapsedMs }
+///         blockModelAssetId, elapsedMs, renderMs, encodeMs }
 /// 不做自动重试（与 convert 一致：渲染失败由用户显式重试）。
 pub(crate) fn run_prerender(
     ctx: &RunContext,
@@ -361,6 +365,8 @@ fn prerender_once(
         "blockModelAssetId": blockmodel_dto.id,
         "warnings": warnings,
         "elapsedMs": started.elapsed().as_millis() as u64,
+        "renderMs": payload.render_ms.unwrap_or(0),
+        "encodeMs": payload.encode_ms.unwrap_or(0),
     })));
     Ok(())
 }

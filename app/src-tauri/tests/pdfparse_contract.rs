@@ -143,6 +143,11 @@ fn convert_sample_pdf_produces_docling_document() {
     assert_eq!(result["doclingVersion"], json!("2.126.0"));
     assert!(result["elapsedMs"].as_u64().unwrap() > 0);
     assert_eq!(result["ocrPages"], json!([]));
+    let timings = result["timings"].as_object().expect("convert 应带 timings");
+    assert!(timings.contains_key("layout"), "timings 至少含版面");
+    assert!(timings.contains_key("table"), "timings 至少含表格");
+    assert!(result["startupMs"].as_u64().is_some(), "应有 startupMs");
+    assert!(result["modelLoadMs"].as_u64().is_some(), "应有 modelLoadMs");
 
     // 块级 prov 契约（#48 用户故事 13）：文本块带 page_no + BOTTOMLEFT bbox。
     let doc: Value = serde_json::from_str(

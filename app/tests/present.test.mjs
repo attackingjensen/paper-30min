@@ -6,8 +6,10 @@ import assert from 'node:assert/strict';
 import {
   NOTES_FORMAT_NOTE,
   buildMapStageFlow,
+  convertTimingRows,
   libraryMapState,
   notesMarkdown,
+  roundView,
   taskDetailModel,
   toolStepView,
 } from '../ui/js/present.js';
@@ -194,6 +196,68 @@ test('任务中心：快照 details 日志优先于会话登记（订阅前事�
   });
   const mapModel = taskDetailModel({ task: mapTask, meta: null });
   assert.deepEqual(mapModel.stageFlow.map(item => item.state), ['done', 'current', 'todo']);
+});
+
+test('任务中心：解析计时拆分与模型轮遥测行', () => {
+  assert.deepEqual(
+    convertTimingRows({
+      startupMs: 1200,
+      modelLoadMs: 3400,
+      wallClockMs: 18000,
+      timings: { layout: 5.2, table: 3.1, ocr: 0, other: 1.4 },
+    }).map(row => row.key),
+    ['startup', 'modelLoad', 'layout', 'table', 'ocr', 'other', 'total'],
+  );
+  assert.equal(
+    convertTimingRows({
+      timings: { page: 2, assemble: 0.5, readingOrder: 0.5, other: 1 },
+    }).find(row => row.key === 'other').ms,
+    4000,
+  );
+  const parseTask = taskSnapshot({
+    kind: 'pdfparse.convert@1',
+    status: 'succeeded',
+    result: { startupMs: 800, timings: { layout: 2, table: 1 }, elapsedMs: 5000 },
+  });
+  const parseModel = taskDetailModel({ task: parseTask, meta: null });
+  assert.equal(parseModel.timings[0].label, '启动');
+  assert.equal(parseModel.timings.find(row => row.key === 'layout').ms, 2000);
+
+  const round = roundView({
+    round: 2,
+    ttftMs: 400,
+    elapsedMs: 2100,
+    promptTokens: 800,
+    completionTokens: 120,
+    cachedTokens: 400,
+    reasoningTokens: 90,
+  });
+  assert.equal(round.text, '第 2 轮 · 首字 0.4 s · 总 2.1 s · 输入 800 / 输出 120 · 缓存 400');
+  assert.equal(round.reasoning, true);
+
+  const mapTask = taskSnapshot({
+    kind: 'paper.build-map@1',
+    details: [
+      { event: 'stage', detail: { stage: 'map-l2', shard: 1, shards: 1 } },
+      { event: 'round', detail: { stage: 'map-l2', round: 1, ttftMs: 200, elapsedMs: 1000, receivedChars: 12 } },
+    ],
+  });
+  const mapModelWithRound = taskDetailModel({ task: mapTask, meta: null });
+  assert.equal(mapModelWithRound.trace.length, 1);
+  assert.equal(mapModelWithRound.trace[0].kind, 'round');
+  assert.equal(mapModelWithRound.trace[0].reasoning, false);
+  assert.match(mapModelWithRound.trace[0].text, /第 1 轮/);
+
+  const diveTask = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    details: [
+      { event: 'round', detail: { stage: 'deep-dive', partId: 'part-1', round: 1, ttftMs: 200, elapsedMs: 800, receivedChars: 40 } },
+      { event: 'tool', detail: { step: 1, name: 'get_figure', args: { fig_id: 'fig_1' }, ok: true, result: { page: 2 } } },
+      { event: 'round', detail: { stage: 'deep-dive', partId: 'part-1', round: 2, ttftMs: 150, elapsedMs: 900, receivedChars: 80 } },
+    ],
+  });
+  const diveTrace = taskDetailModel({ task: diveTask, meta: null }).trace.map(item => item.kind);
+  assert.deepEqual(diveTrace, ['round', 'tool', 'round']);
 });
 
 // ---------------- 导出笔记 ----------------

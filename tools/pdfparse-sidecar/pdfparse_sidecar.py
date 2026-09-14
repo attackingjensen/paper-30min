@@ -75,9 +75,70 @@ FORMULA_MODEL_FILES = [
 ]
 
 
-def emit_progress(stage, done, total):
+def emit_progress(stage, done=0, total=0):
     line = json.dumps({"stage": stage, "done": done, "total": total}, ensure_ascii=False)
     print(f"PDFPARSE_PROGRESS {line}", flush=True)
+
+
+def _timing_seconds(item):
+    if item is None:
+        return 0.0
+    total = getattr(item, "total", None)
+    if callable(total):
+        try:
+            return float(total())
+        except Exception:  # noqa: BLE001
+            return 0.0
+    if isinstance(item, dict):
+        times = item.get("times") or []
+        try:
+            return float(sum(times))
+        except TypeError:
+            return 0.0
+    times = getattr(item, "times", None)
+    if times:
+        try:
+            return float(sum(times))
+        except TypeError:
+            return 0.0
+    return 0.0
+
+
+def summarize_pipeline_timings(timings):
+    """把 Docling conversion.timings 收成 {stage: seconds}，至少含 layout/table。"""
+    buckets = {
+        "layout": 0.0,
+        "table": 0.0,
+        "ocr": 0.0,
+        "page": 0.0,
+        "assemble": 0.0,
+        "readingOrder": 0.0,
+        "other": 0.0,
+    }
+    if not timings:
+        return buckets
+    items = timings.items() if hasattr(timings, "items") else []
+    known = (
+        ("table", ("table", "tableformer")),
+        ("ocr", ("ocr", "rapidocr")),
+        ("layout", ("layout",)),
+        ("readingOrder", ("reading_order", "reading-order", "readingorder")),
+        ("assemble", ("assemble",)),
+        ("page", ("page", "pdf", "backend", "parse")),
+    )
+    skip = {"pipeline_total", "pipeline", "total"}
+    for key, item in items:
+        key_l = str(key).lower()
+        if key_l in skip:
+            continue
+        seconds = _timing_seconds(item)
+        matched = None
+        for bucket, needles in known:
+            if any(needle in key_l for needle in needles):
+                matched = bucket
+                break
+        buckets[matched or "other"] += seconds
+    return {key: round(value, 3) for key, value in buckets.items()}
 
 
 def write_result(out_dir, payload):
@@ -263,9 +324,11 @@ def cmd_convert(args):
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+    emit_progress("startup")
     try:
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
+        from docling.datamodel.settings import settings
         from docling.document_converter import DocumentConverter, PdfFormatOption
     except ImportError as err:
         write_result(
@@ -273,6 +336,8 @@ def cmd_convert(args):
             error_payload("deps_missing", f"侧车依赖不完整: {err}", False),
         )
         return 0
+
+    settings.debug.profile_pipeline_timings = True
 
     pipeline_options = PdfPipelineOptions(
         artifacts_path=models_dir,
@@ -294,11 +359,13 @@ def cmd_convert(args):
             error_payload("conversion_failed", f"管线初始化失败: {err}", True),
         )
         return 0
+    emit_progress("models_loaded")
 
     try:
         conversion = converter.convert(str(pdf_path))
         docling_json = out_dir / "docling.json"
         conversion.document.save_as_json(str(docling_json))
+        timings = summarize_pipeline_timings(getattr(conversion, "timings", None))
     except Exception as err:  # noqa: BLE001
         detail = traceback.format_exc()[-1500:]
         write_result(
@@ -319,6 +386,7 @@ def cmd_convert(args):
         "doclingVersion": DOCLING_VERSION,
         "ocrPages": ocr_pages,
         "warnings": warnings,
+        "timings": timings,
     }
     write_result(out_dir, payload)
     return 0
@@ -400,6 +468,8 @@ def cmd_render(args):
     result_crops = []
     skipped = []
     warnings = []
+    render_ms = 0
+    encode_ms = 0
     try:
         with pdfium.PdfDocument(str(pdf_path)) as doc:
             page_count = len(doc)
@@ -418,12 +488,16 @@ def cmd_render(args):
             for index, page_no in enumerate(render_pages):
                 page = doc[page_no - 1]
                 try:
+                    render_started = time.perf_counter()
                     bitmap = page.render(scale=scale)
                     img = bitmap.to_pil().convert("RGB")
+                    render_ms += int((time.perf_counter() - render_started) * 1000)
                     width, height = img.size
                     if page_no in pages_wanted:
                         target = pages_dir / f"page-{page_no}.webp"
+                        encode_started = time.perf_counter()
                         img.save(str(target), "WEBP", quality=quality)
+                        encode_ms += int((time.perf_counter() - encode_started) * 1000)
                         result_pages.append(
                             {
                                 "page": page_no,
@@ -445,7 +519,9 @@ def cmd_render(args):
                             continue
                         cropped = img.crop((left, top, right, bottom))
                         target = crops_dir / f"{crop['id']}.webp"
+                        encode_started = time.perf_counter()
                         cropped.save(str(target), "WEBP", quality=quality)
+                        encode_ms += int((time.perf_counter() - encode_started) * 1000)
                         result_crops.append(
                             {
                                 "id": crop["id"],
@@ -478,6 +554,8 @@ def cmd_render(args):
             "skippedCrops": skipped,
             "warnings": warnings,
             "elapsedMs": int((time.perf_counter() - started) * 1000),
+            "renderMs": render_ms,
+            "encodeMs": encode_ms,
         },
     )
     return 0

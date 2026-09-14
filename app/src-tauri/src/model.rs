@@ -4,11 +4,11 @@
 
 use reqwest::blocking::{Client, Response};
 use reqwest::Url;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::error::BridgeError;
 use crate::library::Library;
@@ -116,6 +116,7 @@ fn collapse_slashes(value: &str) -> String {
 }
 
 /// 构造带浏览器 UA 的阻塞客户端；连接超时 20s，总超时由调用方按任务给出。
+/// 供 net.rs 等非模型路径使用；模型调用走 [`shared_http_client`] 以便跨轮复用连接。
 pub(crate) fn http_client(total_timeout: Duration) -> Result<Client, BridgeError> {
     Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
@@ -123,6 +124,217 @@ pub(crate) fn http_client(total_timeout: Duration) -> Result<Client, BridgeError
         .user_agent(BROWSER_UA)
         .build()
         .map_err(|err| BridgeError::internal(format!("HTTP 客户端初始化失败: {err}")))
+}
+
+/// 进程级共享客户端：无总超时（按请求设置 600/15/20 s），跨协议轮与 chat/test 复用连接。
+pub(crate) fn shared_http_client() -> Result<&'static Client, BridgeError> {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let client = Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .pool_max_idle_per_host(4)
+        .user_agent(BROWSER_UA)
+        .build()
+        .map_err(|err| BridgeError::internal(format!("HTTP 客户端初始化失败: {err}")))?;
+    Ok(CLIENT.get_or_init(|| client))
+}
+
+/// 一轮 chat 的 usage；端点不返回的字段保持缺省。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TokenUsage {
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+}
+
+impl TokenUsage {
+    fn from_value(value: &Value) -> Self {
+        let Some(usage) = value.get("usage") else {
+            return Self::default();
+        };
+        Self {
+            prompt_tokens: int_field(usage, "prompt_tokens"),
+            completion_tokens: int_field(usage, "completion_tokens"),
+            cached_tokens: usage
+                .pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(json_u64),
+            reasoning_tokens: usage
+                .pointer("/completion_tokens_details/reasoning_tokens")
+                .and_then(json_u64),
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        if other.prompt_tokens.is_some() {
+            self.prompt_tokens = other.prompt_tokens;
+        }
+        if other.completion_tokens.is_some() {
+            self.completion_tokens = other.completion_tokens;
+        }
+        if other.cached_tokens.is_some() {
+            self.cached_tokens = other.cached_tokens;
+        }
+        if other.reasoning_tokens.is_some() {
+            self.reasoning_tokens = other.reasoning_tokens;
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.prompt_tokens.is_none()
+            && self.completion_tokens.is_none()
+            && self.cached_tokens.is_none()
+            && self.reasoning_tokens.is_none()
+    }
+
+    pub(crate) fn to_json(&self) -> Option<Value> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut map = Map::new();
+        if let Some(value) = self.prompt_tokens {
+            map.insert("promptTokens".into(), json!(value));
+        }
+        if let Some(value) = self.completion_tokens {
+            map.insert("completionTokens".into(), json!(value));
+        }
+        if let Some(value) = self.cached_tokens {
+            map.insert("cachedTokens".into(), json!(value));
+        }
+        if let Some(value) = self.reasoning_tokens {
+            map.insert("reasoningTokens".into(), json!(value));
+        }
+        Some(Value::Object(map))
+    }
+}
+
+fn int_field(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(json_u64)
+}
+
+fn json_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .or_else(|| value.as_f64().and_then(|n| (n >= 0.0).then_some(n as u64)))
+}
+
+/// 一轮 chat/completions 的收集结果（协议轮与 model.chat 共用）。
+#[derive(Debug, Clone)]
+pub(crate) struct ChatCompletion {
+    pub text: String,
+    pub finish_reason: Option<String>,
+    pub usage: TokenUsage,
+    pub ttft_ms: u64,
+    pub elapsed_ms: u64,
+}
+
+impl ChatCompletion {
+    pub(crate) fn to_chat_result(&self) -> Value {
+        let mut map = Map::new();
+        map.insert("ttftMs".into(), json!(self.ttft_ms));
+        map.insert("elapsedMs".into(), json!(self.elapsed_ms));
+        if let Some(usage) = self.usage.to_json() {
+            map.insert("usage".into(), usage);
+        }
+        Value::Object(map)
+    }
+}
+
+/// 组装 chat 请求体。流式时附 `stream_options.include_usage`（OpenAI 兼容端点在
+/// `stream: false` 时拒收该字段，故非流式不加）。
+pub(crate) fn chat_request_body(
+    model: &str,
+    messages: &[Value],
+    temperature: f64,
+    max_tokens: u64,
+    stream: bool,
+) -> Value {
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": stream,
+    });
+    if stream {
+        body["stream_options"] = json!({ "include_usage": true });
+    }
+    body
+}
+
+/// POST chat/completions：共享客户端 + 按请求超时；SSE 抽增量与 usage（含 `choices: []`）。
+pub(crate) fn chat_completions<D, C>(
+    api_key: &str,
+    endpoint: &str,
+    body: &Value,
+    timeout: Duration,
+    mut on_delta: D,
+    between_reads: C,
+) -> Result<ChatCompletion, BridgeError>
+where
+    D: FnMut(&str) -> Result<(), BridgeError>,
+    C: FnMut() -> Result<(), BridgeError>,
+{
+    let started = Instant::now();
+    let client = shared_http_client()?;
+    let response = client
+        .post(endpoint)
+        .timeout(timeout)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .body(body.to_string())
+        .send()
+        .map_err(|err| network_error("model_network_error", err))?;
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        let snippet = read_body_snippet(response);
+        return Err(http_status_error("model_http_error", status, &snippet, true));
+    }
+    let is_event_stream = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|content_type| content_type.contains("event-stream"))
+        .unwrap_or(false);
+    let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    if !stream_requested || !is_event_stream {
+        let bytes = response
+            .bytes()
+            .map_err(|err| network_error("model_network_error", err))?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|err| {
+            BridgeError::new("model_http_error", format!("响应 JSON 解析失败: {err}"), false)
+        })?;
+        let choice = value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first());
+        let text = choice
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let finish_reason = choice
+            .and_then(|choice| choice.get("finish_reason"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if !text.is_empty() {
+            on_delta(&text)?;
+        }
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        return Ok(ChatCompletion {
+            text,
+            finish_reason,
+            usage: TokenUsage::from_value(&value),
+            ttft_ms: elapsed_ms,
+            elapsed_ms,
+        });
+    }
+    read_sse_completion(response, started, on_delta, between_reads)
 }
 
 /// 从 settings 表读取的模型连接配置。
@@ -247,7 +459,8 @@ fn truncate_chars(value: &str, max: usize) -> String {
 }
 
 /// model.chat@1：从 settings 读模型配置，POST chat/completions；
-/// SSE 增量逐块发 chunk（chunk=增量本身，不累积），非流式发单个 chunk。不带 result。
+/// SSE 增量逐块发 chunk（chunk=增量本身，不累积），非流式发单个 chunk。
+/// 成功终态 result 携带 usage 与 ttftMs/elapsedMs（#75）。
 /// 自动重试只在「尚未发出任何内容 chunk」时允许：一旦已产出 chunk，重发请求会把
 /// 已发出的增量再推一遍，前端按到达顺序拼接即出现重复前缀；此后失败直接 failed
 ///（错误保留 retryable，UI 手动重试是新任务，从干净状态开始）。
@@ -267,13 +480,7 @@ pub(crate) fn run_chat(
         Ok(endpoint) => endpoint,
         Err(error) => return ctx.fail(error),
     };
-    let body = json!({
-        "model": config.model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": stream,
-    });
+    let body = chat_request_body(&config.model, messages, temperature, max_tokens, stream);
     // 本次任务是否已向事件流发出内容 chunk；跨尝试共享，供重试门槛判断。
     let chunk_emitted = Arc::new(AtomicBool::new(false));
     let emitted = Arc::clone(&chunk_emitted);
@@ -282,8 +489,8 @@ pub(crate) fn run_chat(
         |ctx| chat_once(ctx, &config, &endpoint, &body, &emitted),
         || !chunk_emitted.load(Ordering::SeqCst),
     );
-    if outcome.is_ok() {
-        ctx.succeed(None);
+    if let Ok(completion) = outcome {
+        ctx.succeed(Some(completion.to_chat_result()));
     }
 }
 
@@ -293,66 +500,50 @@ fn chat_once(
     endpoint: &str,
     body: &Value,
     chunk_emitted: &AtomicBool,
-) -> Result<(), BridgeError> {
+) -> Result<ChatCompletion, BridgeError> {
     ctx.cancel_checkpoint()?;
-    let client = http_client(CHAT_TOTAL_TIMEOUT)?;
-    let response = client
-        .post(endpoint)
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .body(body.to_string())
-        .send()
-        .map_err(|err| network_error("model_network_error", err))?;
-    let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-        let snippet = read_body_snippet(response);
-        return Err(http_status_error("model_http_error", status, &snippet, true));
-    }
-    let is_event_stream = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|content_type| content_type.contains("event-stream"))
-        .unwrap_or(false);
-    let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    if !stream_requested || !is_event_stream {
-        // api.js 回退语义：非流式请求或上游未按 SSE 返回时按整段 JSON 处理。
-        let bytes = response
-            .bytes()
-            .map_err(|err| network_error("model_network_error", err))?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(|err| {
-            BridgeError::new("model_http_error", format!("响应 JSON 解析失败: {err}"), false)
-        })?;
-        let text = value
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        chunk_emitted.store(true, Ordering::SeqCst);
-        ctx.push_chunk(Progress { done: 1, total: 1 }, text.to_string());
-        return Ok(());
-    }
-    read_sse(ctx, response, chunk_emitted)
+    let mut chunk_count: u64 = 0;
+    chat_completions(
+        &config.api_key,
+        endpoint,
+        body,
+        CHAT_TOTAL_TIMEOUT,
+        |delta| {
+            chunk_count += 1;
+            chunk_emitted.store(true, Ordering::SeqCst);
+            ctx.push_chunk(
+                Progress {
+                    done: chunk_count,
+                    total: 0,
+                },
+                delta.to_string(),
+            );
+            Ok(())
+        },
+        || ctx.cancel_checkpoint(),
+    )
 }
 
-/// SSE 流式读取：按 8KB 块读，块间检查取消；按 \n 在字节层切行（UTF-8 安全），
-/// 每个非空增量发一个 chunk。finish_reason 非 stop/end_turn 不报错（api.js 只警告）。
-/// 发出第一个 chunk 时置 chunk_emitted，此后本次任务失败不再自动重试。
-fn read_sse(
-    ctx: &RunContext,
+/// SSE 流式读取：按 8KB 块读；按 \n 在字节层切行。抽增量、finish_reason 与 usage。
+/// `choices` 为空数组但带 `usage` 的事件要接受。读到 EOF 才结束，以便 keep-alive 排空响应体。
+fn read_sse_completion<D, C>(
     mut response: Response,
-    chunk_emitted: &AtomicBool,
-) -> Result<(), BridgeError> {
+    started: Instant,
+    mut on_delta: D,
+    mut between_reads: C,
+) -> Result<ChatCompletion, BridgeError>
+where
+    D: FnMut(&str) -> Result<(), BridgeError>,
+    C: FnMut() -> Result<(), BridgeError>,
+{
     let mut buffer: Vec<u8> = Vec::new();
-    let mut chunk_count: u64 = 0;
-    let mut done = false;
+    let mut text = String::new();
+    let mut finish_reason: Option<String> = None;
+    let mut usage = TokenUsage::default();
+    let mut ttft_ms: Option<u64> = None;
     let mut buf = [0_u8; READ_CHUNK];
-    while !done {
-        ctx.cancel_checkpoint()?;
+    loop {
+        between_reads()?;
         let read = response
             .read(&mut buf)
             .map_err(|err| network_error("model_network_error", err))?;
@@ -360,73 +551,118 @@ fn read_sse(
             break;
         }
         buffer.extend_from_slice(&buf[..read]);
-        // 按 \n 在字节层切行；不完整的最后一行留在缓冲里等下一块。
         while let Some(pos) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&line);
-            if let Some(delta) = sse_delta(&line, &mut done) {
-                chunk_count += 1;
-                chunk_emitted.store(true, Ordering::SeqCst);
-                ctx.push_chunk(
-                    Progress {
-                        done: chunk_count,
-                        total: 0,
-                    },
-                    delta,
-                );
-            }
-            if done {
-                break;
-            }
+            apply_sse_line(
+                &line,
+                &mut text,
+                &mut finish_reason,
+                &mut usage,
+                &mut ttft_ms,
+                started,
+                &mut on_delta,
+            )?;
         }
     }
-    if !done && !buffer.is_empty() {
-        // 流结束但缓冲里还有未换行的尾巴，也处理掉（api.js decoder flush 语义）。
+    if !buffer.is_empty() {
         let tail = String::from_utf8_lossy(&buffer).into_owned();
         for line in tail.split('\n') {
-            if let Some(delta) = sse_delta(line, &mut done) {
-                chunk_count += 1;
-                chunk_emitted.store(true, Ordering::SeqCst);
-                ctx.push_chunk(
-                    Progress {
-                        done: chunk_count,
-                        total: 0,
-                    },
-                    delta,
-                );
-            }
+            apply_sse_line(
+                line,
+                &mut text,
+                &mut finish_reason,
+                &mut usage,
+                &mut ttft_ms,
+                started,
+                &mut on_delta,
+            )?;
         }
+    }
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(ChatCompletion {
+        text,
+        finish_reason,
+        usage,
+        ttft_ms: ttft_ms.unwrap_or(elapsed_ms),
+        elapsed_ms,
+    })
+}
+
+fn apply_sse_line<D>(
+    line: &str,
+    text: &mut String,
+    finish_reason: &mut Option<String>,
+    usage: &mut TokenUsage,
+    ttft_ms: &mut Option<u64>,
+    started: Instant,
+    on_delta: &mut D,
+) -> Result<(), BridgeError>
+where
+    D: FnMut(&str) -> Result<(), BridgeError>,
+{
+    let Some(fields) = parse_sse_line(line) else {
+        return Ok(());
+    };
+    usage.merge(fields.usage);
+    if let Some(reason) = fields.finish_reason {
+        *finish_reason = Some(reason);
+    }
+    if !fields.delta.is_empty() {
+        if ttft_ms.is_none() {
+            *ttft_ms = Some(started.elapsed().as_millis() as u64);
+        }
+        text.push_str(&fields.delta);
+        on_delta(&fields.delta)?;
     }
     Ok(())
 }
 
-/// 处理一行 SSE：非 data: 行忽略；[DONE] 置结束；JSON 解析失败的行忽略。
-/// 增量取 choices[0].delta.content（回退 choices[0].message.content），非空才返回。
-fn sse_delta(line: &str, done: &mut bool) -> Option<String> {
+struct SseFields {
+    delta: String,
+    finish_reason: Option<String>,
+    usage: TokenUsage,
+}
+
+/// 处理一行 SSE：非 data: 行忽略；[DONE] 忽略（靠读到 EOF 结束）；JSON 解析失败忽略。
+/// 增量取 choices[0].delta.content（回退 message.content）；usage 可出现在 choices 为空的事件。
+fn parse_sse_line(line: &str) -> Option<SseFields> {
     let trimmed = line.trim();
     let payload = trimmed.strip_prefix("data:")?.trim();
     if payload == "[DONE]" {
-        *done = true;
         return None;
     }
     let value: Value = serde_json::from_str(payload).ok()?;
-    let choice = value.get("choices")?.as_array()?.first()?;
+    let usage = TokenUsage::from_value(&value);
+    let choice = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first());
     let delta = choice
-        .get("delta")
-        .and_then(|delta| delta.get("content"))
-        .and_then(Value::as_str)
-        .or_else(|| {
+        .and_then(|choice| {
             choice
-                .get("message")
-                .and_then(|message| message.get("content"))
+                .get("delta")
+                .and_then(|delta| delta.get("content"))
                 .and_then(Value::as_str)
+                .or_else(|| {
+                    choice
+                        .get("message")
+                        .and_then(|message| message.get("content"))
+                        .and_then(Value::as_str)
+                })
         })
-        .unwrap_or("");
-    if delta.is_empty() {
-        None
-    } else {
-        Some(delta.to_string())
-    }
+        .unwrap_or("")
+        .to_string();
+    let finish_reason = choice
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.is_empty())
+        .map(str::to_string);
+    Some(SseFields {
+        delta,
+        finish_reason,
+        usage,
+    })
 }
 
 /// model.test@1：移植 api.js testConnection 两段流程（不重试，单次尝试）。
@@ -461,9 +697,10 @@ pub(crate) fn run_test(ctx: &RunContext) {
 /// 第一段：GET {endpoint}/models（总超时 15s）。成功时返回给用户的消息。
 fn test_models(ctx: &RunContext, config: &ModelConfig, endpoint: &str) -> Result<String, BridgeError> {
     ctx.cancel_checkpoint()?;
-    let client = http_client(TEST_MODELS_TIMEOUT)?;
+    let client = shared_http_client()?;
     let response = client
         .get(endpoint)
+        .timeout(TEST_MODELS_TIMEOUT)
         .header("Authorization", format!("Bearer {}", config.api_key))
         .header("Accept", "application/json, text/event-stream")
         .send()
@@ -513,7 +750,7 @@ fn test_models(ctx: &RunContext, config: &ModelConfig, endpoint: &str) -> Result
 /// 第二段退路：POST chat/completions 最小请求（max_tokens=1，总超时 20s）。
 fn test_chat(ctx: &RunContext, config: &ModelConfig, endpoint: &str) -> Result<(), BridgeError> {
     ctx.cancel_checkpoint()?;
-    let client = http_client(TEST_CHAT_TIMEOUT)?;
+    let client = shared_http_client()?;
     let body = json!({
         "model": config.model,
         "messages": [{ "role": "user", "content": "ping" }],
@@ -521,6 +758,7 @@ fn test_chat(ctx: &RunContext, config: &ModelConfig, endpoint: &str) -> Result<(
     });
     let response = client
         .post(endpoint)
+        .timeout(TEST_CHAT_TIMEOUT)
         .header("Authorization", format!("Bearer {}", config.api_key))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")

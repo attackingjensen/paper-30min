@@ -66,9 +66,10 @@ fn chat_streams_deltas_in_order_to_normalized_endpoint() {
     assert_eq!(chunks, vec!["精读".to_string(), "桥接".to_string()], "增量应按序到达且不累积");
     let snapshot = registry.get(&task_id).unwrap();
     assert!(snapshot.error.is_none());
-    assert!(snapshot.result.is_none(), "model.chat 不带 result");
-    let serialized = serde_json::to_value(&snapshot).unwrap();
-    assert!(serialized.get("result").is_none(), "result 缺省不序列化");
+    let result = snapshot.result.expect("model.chat 成功应带 usage/时延 result");
+    assert!(result["ttftMs"].as_u64().is_some(), "应有 ttftMs");
+    assert!(result["elapsedMs"].as_u64().is_some(), "应有 elapsedMs");
+    assert!(result.get("usage").is_none(), "mock 未返回 usage 时字段缺省");
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 1);
@@ -90,6 +91,11 @@ fn chat_streams_deltas_in_order_to_normalized_endpoint() {
     assert_eq!(body["max_tokens"], json!(4096), "缺省取 settings 值");
     assert_eq!(body["temperature"], json!(0.3));
     assert_eq!(body["messages"][0]["content"], json!("总结这篇论文"));
+    assert_eq!(
+        body["stream_options"],
+        json!({ "include_usage": true }),
+        "流式请求应要求 usage"
+    );
 }
 
 #[test]
@@ -116,6 +122,8 @@ fn chat_non_streaming_returns_single_chunk() {
         .map(|event| event.chunk.clone().unwrap())
         .collect();
     assert_eq!(chunks, vec!["完整回复".to_string()], "非流式只发一个 chunk");
+    let body: Value = serde_json::from_slice(&mock.requests()[0].body).unwrap();
+    assert!(body.get("stream_options").is_none(), "非流式不加 stream_options");
 }
 
 #[test]
@@ -588,4 +596,111 @@ fn app_info_lists_new_task_kinds() {
     for kind in ["model.chat@1", "model.test@1", "net.fetch-text@1", "files.download@1"] {
         assert!(kinds.iter().any(|item| item == kind), "app.info 未列出 {kind}");
     }
+}
+
+fn sse_chat_with_usage(content: &str, usage: Value) -> MockResponse {
+    MockResponse::sse(
+        vec![
+            json!({"choices": [{"delta": {"content": content}}]}).to_string(),
+            json!({"choices": [], "usage": usage}).to_string(),
+            "[DONE]".to_string(),
+        ],
+        Duration::from_millis(1),
+    )
+}
+
+#[test]
+fn chat_extracts_usage_from_empty_choices_sse_event() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        sse_chat_with_usage(
+            "遥测",
+            json!({
+                "prompt_tokens": 12,
+                "completion_tokens": 4,
+                "prompt_tokens_details": { "cached_tokens": 8 },
+                "completion_tokens_details": { "reasoning_tokens": 2 }
+            }),
+        )
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let sink = Collector::new();
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            sink.clone(),
+        )
+        .unwrap();
+
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let chunks: Vec<String> = sink
+        .events()
+        .iter()
+        .filter(|event| event.event == "chunk")
+        .map(|event| event.chunk.clone().unwrap())
+        .collect();
+    assert_eq!(chunks, vec!["遥测".to_string()]);
+    let result = registry.get(&task_id).unwrap().result.expect("应带 result");
+    assert_eq!(result["usage"]["promptTokens"], json!(12));
+    assert_eq!(result["usage"]["completionTokens"], json!(4));
+    assert_eq!(result["usage"]["cachedTokens"], json!(8));
+    assert_eq!(result["usage"]["reasoningTokens"], json!(2));
+    assert!(result["ttftMs"].as_u64().is_some());
+    assert!(result["elapsedMs"].as_u64().unwrap() >= result["ttftMs"].as_u64().unwrap());
+}
+
+#[test]
+fn chat_non_streaming_carries_usage_from_json_body() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        MockResponse::json(
+            200,
+            json!({
+                "choices": [{"message": {"content": "完整回复"}}],
+                "usage": { "prompt_tokens": 3, "completion_tokens": 5 }
+            }),
+        )
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let sink = Collector::new();
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }], "stream": false }),
+            sink.clone(),
+        )
+        .unwrap();
+
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let result = registry.get(&task_id).unwrap().result.expect("应带 result");
+    assert_eq!(result["usage"]["promptTokens"], json!(3));
+    assert_eq!(result["usage"]["completionTokens"], json!(5));
+    assert!(result.get("usage").unwrap().get("cachedTokens").is_none());
+}
+
+#[test]
+fn consecutive_chats_reuse_http_connection() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| sse_chat(vec![
+        json!({"choices": [{"delta": {"content": "复用"}}]}).to_string(),
+    ]));
+    configure_model(&registry, &library, &mock.url(""));
+    for _ in 0..2 {
+        let sink = Collector::new();
+        let task_id = registry
+            .start(
+                "model.chat@1",
+                json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+                sink,
+            )
+            .unwrap();
+        assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    }
+    assert_eq!(mock.hits(), 2, "应发出两轮请求");
+    assert_eq!(
+        mock.connections(),
+        1,
+        "共享客户端应对同一 mock 复用 TCP 连接"
+    );
 }

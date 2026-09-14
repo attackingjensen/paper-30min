@@ -254,6 +254,8 @@ fn prerender_full_chain_stores_verified_assets() {
         .expect("succeeded 应携带 result");
     assert_eq!(result["pages"], json!(2));
     assert_eq!(result["blockModelAssetId"], json!("blockmodel.json"));
+    assert!(result["renderMs"].as_u64().is_some(), "应有 renderMs");
+    assert!(result["encodeMs"].as_u64().is_some(), "应有 encodeMs");
 
     // 页图：1224×1584（612×792pt @scale=2），token 预算与 #38 实测一致（1902/页）。
     let page_assets = result["pageAssets"].as_array().unwrap();

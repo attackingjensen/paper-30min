@@ -168,6 +168,7 @@ type MockHandler = Arc<dyn Fn(&MockRequest, u64) -> MockResponse + Send + Sync>;
 pub struct MockHttp {
     port: u16,
     hits: Arc<AtomicU64>,
+    connections: Arc<AtomicU64>,
     requests: Arc<Mutex<Vec<MockRequest>>>,
     shutdown: Arc<AtomicBool>,
     accept_thread: Option<JoinHandle<()>>,
@@ -179,10 +180,12 @@ impl MockHttp {
         listener.set_nonblocking(true).expect("设置非阻塞 accept");
         let port = listener.local_addr().expect("读取 mock 端口").port();
         let hits = Arc::new(AtomicU64::new(0));
+        let connections = Arc::new(AtomicU64::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
         let accept_thread = {
             let hits = Arc::clone(&hits);
+            let connections = Arc::clone(&connections);
             let requests = Arc::clone(&requests);
             let shutdown = Arc::clone(&shutdown);
             let handler: MockHandler = Arc::new(handler);
@@ -190,10 +193,14 @@ impl MockHttp {
                 while !shutdown.load(Ordering::SeqCst) {
                     match listener.accept() {
                         Ok((stream, _)) => {
+                            connections.fetch_add(1, Ordering::SeqCst);
                             let hits = Arc::clone(&hits);
                             let requests = Arc::clone(&requests);
                             let handler = Arc::clone(&handler);
-                            std::thread::spawn(move || serve_connection(stream, hits, requests, handler));
+                            let shutdown = Arc::clone(&shutdown);
+                            std::thread::spawn(move || {
+                                serve_connection(stream, hits, requests, handler, shutdown)
+                            });
                         }
                         Err(_) => std::thread::sleep(Duration::from_millis(5)),
                     }
@@ -203,6 +210,7 @@ impl MockHttp {
         Self {
             port,
             hits,
+            connections,
             requests,
             shutdown,
             accept_thread: Some(accept_thread),
@@ -217,6 +225,11 @@ impl MockHttp {
     /// 已处理请求数（重试测试断言用）。
     pub fn hits(&self) -> u64 {
         self.hits.load(Ordering::SeqCst)
+    }
+
+    /// 已 accept 的 TCP 连接数（共享客户端 keep-alive 断言用）。
+    pub fn connections(&self) -> u64 {
+        self.connections.load(Ordering::SeqCst)
     }
 
     /// 已记录请求（断言请求头/体用）。
@@ -239,17 +252,35 @@ fn serve_connection(
     hits: Arc<AtomicU64>,
     requests: Arc<Mutex<Vec<MockRequest>>>,
     handler: MockHandler,
+    shutdown: Arc<AtomicBool>,
 ) {
     // 部分平台 accept 出的流会继承非阻塞标志，显式设回阻塞。
     let _ = stream.set_nonblocking(false);
-    let Some(request) = read_request(&mut stream) else {
-        return;
-    };
-    let hit = hits.fetch_add(1, Ordering::SeqCst) + 1;
-    requests.lock().unwrap().push(request.clone());
-    let response = handler(&request, hit);
-    // 客户端中途取消时写会失败（broken pipe），忽略即可。
-    let _ = write_response(&mut stream, &response);
+    let mut first = true;
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        let idle = if first {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_millis(200)
+        };
+        let _ = stream.set_read_timeout(Some(idle));
+        let Some(request) = read_request(&mut stream) else {
+            return;
+        };
+        first = false;
+        let hit = hits.fetch_add(1, Ordering::SeqCst) + 1;
+        requests.lock().unwrap().push(request.clone());
+        let response = handler(&request, hit);
+        // 客户端中途取消时写会失败（broken pipe），忽略即可。
+        let keep_alive = !matches!(response.body, MockBody::TruncatedChunked { .. });
+        let _ = write_response(&mut stream, &response, keep_alive);
+        if !keep_alive {
+            return;
+        }
+    }
 }
 
 /// 解析请求：头读到 \r\n\r\n，按 Content-Length 读体。
@@ -304,7 +335,11 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<MockRequest> {
     })
 }
 
-fn write_response(stream: &mut std::net::TcpStream, response: &MockResponse) -> std::io::Result<()> {
+fn write_response(
+    stream: &mut std::net::TcpStream,
+    response: &MockResponse,
+    keep_alive: bool,
+) -> std::io::Result<()> {
     let status_text = match response.status {
         200 => "OK",
         400 => "Bad Request",
@@ -322,10 +357,22 @@ fn write_response(stream: &mut std::net::TcpStream, response: &MockResponse) -> 
     for (name, value) in &response.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
-    // 定长体带 Content-Length；分片体靠 Connection: close 收尾（close-delimited）。
-    head.push_str("Connection: close\r\n");
-    if let MockBody::Bytes(bytes) = &response.body {
-        head.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
+    // 定长体与完整 SSE 分片带 Content-Length，便于 HTTP/1.1 keep-alive 复用连接；
+    // 截断流仍靠 Connection: close 收尾。
+    if keep_alive {
+        head.push_str("Connection: keep-alive\r\n");
+    } else {
+        head.push_str("Connection: close\r\n");
+    }
+    match &response.body {
+        MockBody::Bytes(bytes) => {
+            head.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
+        }
+        MockBody::Chunked { chunks, .. } => {
+            let total: usize = chunks.iter().map(Vec::len).sum();
+            head.push_str(&format!("Content-Length: {total}\r\n"));
+        }
+        MockBody::TruncatedChunked { .. } => {}
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;

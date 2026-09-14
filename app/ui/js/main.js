@@ -96,7 +96,7 @@ let migrationToken = '';
 // 任务中心的「重试」按钮依赖这些条目）。
 const SESSION_TASKS_LIMIT = 50;
 const sessionTasks = new Map();
-/** 会话登记的取证轨迹步数上限（与 Rust tasks.rs SNAPSHOT_DETAILS_CAP 同值，两边各守一段）。 */
+/** 会话登记的取证轨迹步数上限（只收 tool 步；快照 details 容量 500 由 Rust SNAPSHOT_DETAILS_CAP 守）。 */
 const SESSION_STEPS_CAP = 200;
 
 function registerSessionTask(taskId, entry) {
@@ -2943,8 +2943,9 @@ function renderTaskList(tasks) {
     }
     row.appendChild(progress);
 
-    // 协议任务附加区（#56 决策 13）：建图 = 阶段流；深挖 = 逐节子进度（批量）+ 工具步骤流；
-    // 综合与其他任务保持普通呈现。数据来自会话登记对事件流的累积，缺登记时自动降级。
+    // 协议任务附加区（#56 决策 13 / #75）：建图 = 阶段流 + 穿插轮次；深挖 = 逐节子进度
+    // （批量）+ 轨迹流（工具步与模型轮按 details 原序）；解析 = 计时拆分。
+    // 数据来自任务快照 details，缺登记时自动降级。
     const detail = taskDetailModel({ task, meta });
     if (detail.stageFlow) {
       const flow = document.createElement('div');
@@ -2964,7 +2965,30 @@ function renderTaskList(tasks) {
       sub.textContent = `逐节推进：第 ${index}/${total} 节${title ? ` · ${title}` : ''}`;
       row.appendChild(sub);
     }
-    if (detail.steps?.length) {
+    if (detail.trace?.length) {
+      const hasTools = detail.trace.some(item => item.kind === 'tool');
+      const wrap = document.createElement('div');
+      wrap.className = hasTools ? 'task-steps' : 'task-rounds';
+      const head = document.createElement('div');
+      head.className = hasTools ? 'task-steps-head' : 'task-rounds-head';
+      const toolCount = detail.stepsTotal ?? detail.trace.filter(item => item.kind === 'tool').length;
+      head.textContent = hasTools ? `取证轨迹（共 ${toolCount} 步）` : '模型轮';
+      wrap.appendChild(head);
+      const list = document.createElement('div');
+      list.className = 'task-trace';
+      for (const item of detail.trace) {
+        const line = document.createElement('div');
+        if (item.kind === 'tool') {
+          line.className = item.ok ? 'task-tool' : 'task-tool fail';
+        } else {
+          line.className = item.reasoning ? 'task-round reasoning' : 'task-round';
+        }
+        line.textContent = item.text;
+        list.appendChild(line);
+      }
+      wrap.appendChild(list);
+      row.appendChild(wrap);
+    } else if (detail.steps?.length) {
       const stepsWrap = document.createElement('div');
       stepsWrap.className = 'task-steps';
       const head = document.createElement('div');
@@ -2980,6 +3004,21 @@ function renderTaskList(tasks) {
       }
       stepsWrap.appendChild(list);
       row.appendChild(stepsWrap);
+    }
+    if (detail.timings?.length) {
+      const table = document.createElement('div');
+      table.className = 'task-timings';
+      const head = document.createElement('div');
+      head.className = 'task-timings-head';
+      head.textContent = '解析计时';
+      table.appendChild(head);
+      for (const item of detail.timings) {
+        const line = document.createElement('div');
+        line.className = 'task-timing-row';
+        line.textContent = `${item.label} ${(item.ms / 1000).toFixed(1)} s`;
+        table.appendChild(line);
+      }
+      row.appendChild(table);
     }
 
     if (task.status === 'failed' && task.error) {

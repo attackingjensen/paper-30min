@@ -211,6 +211,8 @@ pub(crate) struct ChildHarness {
     stderr_tail: std::sync::Arc<std::sync::Mutex<String>>,
     stdout_thread: Option<std::thread::JoinHandle<()>>,
     stderr_thread: Option<std::thread::JoinHandle<()>>,
+    spawned_at: Instant,
+    progress_log: std::sync::Arc<std::sync::Mutex<Vec<(String, Instant)>>>,
 }
 
 pub(crate) fn base_command(layout: &SidecarLayout, hf_endpoint: Option<&str>) -> Command {
@@ -246,9 +248,12 @@ pub(crate) fn spawn_child(mut command: Command) -> Result<ChildHarness, BridgeEr
     let (progress_tx, progress_rx) = mpsc::channel::<Progress>();
     let stdout_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let progress_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let spawned_at = Instant::now();
 
     let stdout = child.stdout.take().expect("已配置 piped stdout");
     let stdout_lines_writer = std::sync::Arc::clone(&stdout_lines);
+    let progress_log_writer = std::sync::Arc::clone(&progress_log);
     let stdout_thread = std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
@@ -256,6 +261,15 @@ pub(crate) fn spawn_child(mut command: Command) -> Result<ChildHarness, BridgeEr
                 if let Ok(value) = serde_json::from_str::<Value>(payload) {
                     let done = value.get("done").and_then(Value::as_u64).unwrap_or(0);
                     let total = value.get("total").and_then(Value::as_u64).unwrap_or(0);
+                    let stage = value
+                        .get("stage")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    {
+                        let mut log = progress_log_writer.lock().unwrap_or_else(|e| e.into_inner());
+                        log.push((stage, Instant::now()));
+                    }
                     let _ = progress_tx.send(Progress { done, total });
                 }
                 continue;
@@ -296,6 +310,8 @@ pub(crate) fn spawn_child(mut command: Command) -> Result<ChildHarness, BridgeEr
         stderr_tail,
         stdout_thread: Some(stdout_thread),
         stderr_thread: Some(stderr_thread),
+        spawned_at,
+        progress_log,
     })
 }
 
@@ -404,10 +420,31 @@ pub(crate) fn require_sidecar(ctx: &RunContext) -> Result<SidecarLayout, BridgeE
     })
 }
 
+fn sidecar_startup_timings(harness: &ChildHarness) -> (Option<u64>, Option<u64>) {
+    let log = harness
+        .progress_log
+        .lock()
+        .map(|log| log.clone())
+        .unwrap_or_default();
+    let startup = log.iter().find(|(stage, _)| stage == "startup");
+    let loaded = log.iter().find(|(stage, _)| stage == "models_loaded");
+    let startup_ms = startup.and_then(|(_, at)| {
+        at.checked_duration_since(harness.spawned_at)
+            .map(|elapsed| elapsed.as_millis() as u64)
+    });
+    let model_load_ms = match (startup, loaded) {
+        (Some((_, start)), Some((_, loaded))) => loaded
+            .checked_duration_since(*start)
+            .map(|elapsed| elapsed.as_millis() as u64),
+        _ => None,
+    };
+    (startup_ms, model_load_ms)
+}
+
 /// pdfparse.convert@1：单篇 PDF → DoclingDocument JSON。
 /// 输入: { pdfPath?, paperId?, workDir?, formulaEnrichment? }（pdfPath 缺省 = paperId 论文的 pdf 附件）
 /// 结果: { doclingJsonPath, workDir, pages, elapsedMs, wallClockMs,
-///         doclingVersion, ocrPages, warnings }
+///         doclingVersion, ocrPages, warnings, timings, startupMs, modelLoadMs }
 /// 不做自动重试：转换动辄数分钟，失败后由用户显式重试（retryable 标记保留）。
 pub(crate) fn run_convert(
     ctx: &RunContext,
@@ -476,6 +513,13 @@ fn convert_once(
                     "wallClockMs".to_string(),
                     json!(started.elapsed().as_millis() as u64),
                 );
+                let (startup_ms, model_load_ms) = sidecar_startup_timings(&harness);
+                if let Some(ms) = startup_ms {
+                    map.insert("startupMs".to_string(), json!(ms));
+                }
+                if let Some(ms) = model_load_ms {
+                    map.insert("modelLoadMs".to_string(), json!(ms));
+                }
             }
             ctx.succeed(Some(payload));
             Ok(())

@@ -16,7 +16,7 @@
 //!   装配后超 983,616 输入 token 即报错拒绝（不截断）。token 为保守估算（CJK≈1、ASCII≈1/4），
 //!   页图按 #38 实测 1902 token/页、裁切图按 1024 token/张计预算。
 //! - 工具轨迹与逐节子进度经任务事件流（event="tool" / "stage"，载荷在 detail）可回看；
-//!   中间轮不产生对外 chunk（决策 4）。
+//!   每轮模型调用另发 event="round"（时延与 usage）；中间轮不产生对外 chunk（决策 4）。
 //!
 //! 精读部分 ↔ 块模型节的对应约定：abstract ↔ role=Abstract 节；part-N ↔ 第 N 个内容节
 //! （role ∈ Body/Appendix，按阅读顺序）。两来源分属导入解析与 Docling 映射两条管线，
@@ -24,7 +24,6 @@
 
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::io::Read;
 
 use crate::error::BridgeError;
 use crate::library::{ActivityDayDto, Library, PaperDto, ProductDto};
@@ -846,6 +845,37 @@ fn execute_tool(
 struct RoundOutput {
     text: String,
     finish_reason: Option<String>,
+    ttft_ms: u64,
+    elapsed_ms: u64,
+    usage: model::TokenUsage,
+}
+
+struct RoundCtx<'a> {
+    stage: &'a str,
+    part_id: Option<&'a str>,
+    shard: Option<u64>,
+}
+
+fn emit_round(ctx: &RunContext, meta: &RoundCtx, round: u32, output: &RoundOutput) {
+    let mut detail = json!({
+        "stage": meta.stage,
+        "round": round,
+        "ttftMs": output.ttft_ms,
+        "elapsedMs": output.elapsed_ms,
+        "receivedChars": output.text.chars().count() as u64,
+    });
+    if let Some(part_id) = meta.part_id {
+        detail["partId"] = json!(part_id);
+    }
+    if let Some(shard) = meta.shard {
+        detail["shard"] = json!(shard);
+    }
+    if let Some(Value::Object(usage)) = output.usage.to_json() {
+        for (key, value) in usage {
+            detail[key] = value;
+        }
+    }
+    ctx.emit_detail("round", detail);
 }
 
 fn chat_round(
@@ -857,109 +887,22 @@ fn chat_round(
     max_tokens: u64,
 ) -> Result<RoundOutput, BridgeError> {
     ctx.cancel_checkpoint()?;
-    let body = json!({
-        "model": config.model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": true,
-    });
-    let client = model::http_client(std::time::Duration::from_secs(600))?;
-    let response = client
-        .post(endpoint)
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .body(body.to_string())
-        .send()
-        .map_err(|err| model::network_error("model_network_error", err))?;
-    let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-        let snippet = model::read_body_snippet(response);
-        return Err(model::http_status_error("model_http_error", status, &snippet, true));
-    }
-    let is_event_stream = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|content_type| content_type.contains("event-stream"))
-        .unwrap_or(false);
-    if !is_event_stream {
-        // 非 SSE 回退：整段 JSON。
-        let bytes = response
-            .bytes()
-            .map_err(|err| model::network_error("model_network_error", err))?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(|err| {
-            BridgeError::new("model_http_error", format!("响应 JSON 解析失败: {err}"), false)
-        })?;
-        let choice = value
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first());
-        let text = choice
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let finish_reason = choice
-            .and_then(|choice| choice.get("finish_reason"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        return Ok(RoundOutput { text, finish_reason });
-    }
-    // SSE 收集：不在块间检查取消（决策 3：取消 = 当前步完成后停止）。
-    let mut response = response;
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut text = String::new();
-    let mut finish_reason: Option<String> = None;
-    let mut done = false;
-    let mut buf = [0_u8; model::READ_CHUNK];
-    while !done {
-        let read = response
-            .read(&mut buf)
-            .map_err(|err| model::network_error("model_network_error", err))?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&buf[..read]);
-        while let Some(pos) = buffer.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = buffer.drain(..=pos).collect();
-            let line = String::from_utf8_lossy(&line);
-            let trimmed = line.trim();
-            let Some(payload) = trimmed.strip_prefix("data:") else {
-                continue;
-            };
-            let payload = payload.trim();
-            if payload == "[DONE]" {
-                done = true;
-                break;
-            }
-            let Ok(value) = serde_json::from_str::<Value>(payload) else {
-                continue;
-            };
-            let Some(choice) = value.get("choices").and_then(Value::as_array).and_then(|c| c.first()) else {
-                continue;
-            };
-            if let Some(delta) = choice
-                .get("delta")
-                .and_then(|delta| delta.get("content"))
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    choice
-                        .get("message")
-                        .and_then(|message| message.get("content"))
-                        .and_then(Value::as_str)
-                })
-            {
-                text.push_str(delta);
-            }
-            if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-                finish_reason = Some(reason.to_string());
-            }
-        }
-    }
-    Ok(RoundOutput { text, finish_reason })
+    let body = model::chat_request_body(&config.model, messages, temperature, max_tokens, true);
+    let completion = model::chat_completions(
+        &config.api_key,
+        endpoint,
+        &body,
+        std::time::Duration::from_secs(600),
+        |_| Ok(()),
+        || Ok(()),
+    )?;
+    Ok(RoundOutput {
+        text: completion.text,
+        finish_reason: completion.finish_reason,
+        ttft_ms: completion.ttft_ms,
+        elapsed_ms: completion.elapsed_ms,
+        usage: completion.usage,
+    })
 }
 
 /// 单轮模型调用（带统一重试）：retryable 失败按 3 次尝试重试（协议轮不产生对外 chunk，
@@ -1441,6 +1384,11 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
             "建图调用①",
             prompt,
             env.stage_max_tokens(MIN_MAX_TOKENS_LONG),
+            RoundCtx {
+                stage: STAGE_MAP_L2,
+                part_id: None,
+                shard: Some(index as u64 + 1),
+            },
             |value| validate_l2_output(value, &shard_sections, &env.mapped, &mut warnings),
         ) {
             Ok(entries) => entries,
@@ -1492,6 +1440,11 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
         "建图调用②",
         prompt,
         env.stage_max_tokens(MIN_MAX_TOKENS),
+        RoundCtx {
+            stage: STAGE_MAP_L1,
+            part_id: None,
+            shard: None,
+        },
         |value| validate_map_output(value, &env.mapped, &mut warnings),
     ) {
         Ok(body) => body,
@@ -1591,10 +1544,12 @@ fn run_validated_call<T>(
     output_hint: &str,
     prompt: String,
     max_tokens: u64,
+    meta: RoundCtx<'_>,
     mut validate: impl FnMut(&str) -> Result<T, String>,
 ) -> Result<T, Halt> {
     let mut messages = vec![json!({ "role": "user", "content": prompt })];
     let mut consecutive_failures = 0_u32;
+    let mut round_no = 0_u32;
     loop {
         if ctx.cancel_checkpoint().is_err() {
             return Err(Halt::Cancelled);
@@ -1608,6 +1563,8 @@ fn run_validated_call<T>(
             max_tokens,
         )
         .map_err(|_| Halt::Handled)?;
+        round_no += 1;
+        emit_round(ctx, &meta, round_no, &round);
         // 轮后检查点：在途轮完成时已有取消请求 → 停止且不消费本轮输出（决策 3：
         // 取消 = 当前步完成后停止；建图场景由调用方接住并做中断部分结果落库）。
         if ctx.cancel_checkpoint().is_err() {
@@ -1647,6 +1604,7 @@ fn run_json_call<T>(
     stage_label: &str,
     prompt: String,
     max_tokens: u64,
+    meta: RoundCtx<'_>,
     mut validate: impl FnMut(&Value) -> Result<T, String>,
 ) -> Result<T, Halt> {
     run_validated_call(
@@ -1656,6 +1614,7 @@ fn run_json_call<T>(
         "直接按输出格式只输出一个 JSON 对象。",
         prompt,
         max_tokens,
+        meta,
         |text| {
             let value = extract_json_object(text)?;
             validate(&value)
@@ -1823,6 +1782,12 @@ fn dive_section(
     // 首条消息的 text 段即配方提示词；图像为当前节页图 ±1 页。
     let mut steps = 0_u32;
     let mut consecutive_failures = 0_u32;
+    let mut round_no = 0_u32;
+    let round_meta = RoundCtx {
+        stage: STAGE_DEEP_DIVE,
+        part_id: Some(part_id),
+        shard: None,
+    };
     loop {
         // 轮边界取消检查点（决策 3：取消 = 当前步完成后停止）。
         if ctx.cancel_checkpoint().is_err() {
@@ -1838,6 +1803,8 @@ fn dive_section(
             env.stage_max_tokens(MIN_MAX_TOKENS),
         )
         .map_err(|_| Halt::Handled)?;
+        round_no += 1;
+        emit_round(ctx, &round_meta, round_no, &round);
         // 轮后检查点：在途轮完成时已有取消请求 → 停止，不执行工具、不消费输出。
         if ctx.cancel_checkpoint().is_err() {
             return Err(Halt::Cancelled);
@@ -2074,6 +2041,11 @@ fn synthesize_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) 
         "直接按「问题 → 方法 → 证据 → 边界」产出复述稿。",
         prompt,
         env.stage_max_tokens(MIN_MAX_TOKENS_LONG),
+        RoundCtx {
+            stage: STAGE_SYNTHESIZE,
+            part_id: None,
+            shard: None,
+        },
         |text| {
             validate_markdown_headers(text, &SYNTHESIZE_HEADERS).map(|_| text.to_string())
         },
