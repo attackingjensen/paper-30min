@@ -1,6 +1,6 @@
 # 项目当前状态
 
-> 更新时间：2026-09-14（#76 窗口走查通过并关闭）
+> 更新时间：2026-09-14（建图慢的真因定位为思考模式默认开启；#82 重写、新增 #86）
 
 ## 当前阶段
 
@@ -10,7 +10,7 @@
 
 发布线动向（2026-09-13）：Windows 第一版已发布。steven123397/dev 已合入 main（不用 PR，两分支同源），版本号 1.0.0 落位；`Paper30Min_1.0.0_x64-setup.exe`（约 700MB，侧车与模型随包）已通过 [GitHub Release v1.0.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0) 正式发布，作者在三台 Windows 机器上安装使用验收通过。首次启动空书库自动播种一份内置「使用说明」论文（纯文本、可删除不复活、不计打卡）。Linux 暂不支持：卡在 Docling 侧车仅 Windows 构建，适配另立项。遗留验收项：覆盖升级与卸载未专项验收（三台新装均通过）。发布后已修待出补丁的问题：侧车子进程在 Windows 下弹控制台黑窗（已修 `CREATE_NO_WINDOW`，随下一补丁版发布）。
 
-v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深挖三处等待都过长）。源码分析结论：预渲染挡在建图前、建图调用①是一次巨型输出、深挖每轮全量重发且批量串行，再叠加侧车每次冷启与 Docling 默认 4 线程/ACCURATE 表模式。已立性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（对 #48/#55 的性能修订，不改产物契约）及实施链 #75–#85。[#75](https://github.com/attackingjensen/paper-30min/issues/75) 已关闭（契约测试 + 真实窗口点验解析计时与建图轮次行）。[#76](https://github.com/attackingjensen/paper-30min/issues/76) 已关闭：解析完成后即可建图，预渲染与建图并行，深挖等页图齐备。当前下一步按 #77（页图与解析并行）/ #78（Docling 线程与 FAST 表）/ #79（节薄摘要分片并发）推进。
+v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深挖三处等待都过长）。源码分析结论：预渲染挡在建图前、建图调用①是一次巨型输出、深挖每轮全量重发且批量串行，再叠加侧车每次冷启与 Docling 默认 4 线程/ACCURATE 表模式。已立性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（对 #48/#55 的性能修订，不改产物契约）及实施链 #75–#85。[#75](https://github.com/attackingjensen/paper-30min/issues/75) 已关闭（契约测试 + 真实窗口点验解析计时与建图轮次行）。[#76](https://github.com/attackingjensen/paper-30min/issues/76) 已关闭：解析完成后即可建图，预渲染与建图并行，深挖等页图齐备。#75 遥测随即揭示建图一轮「首字 164 s / 总 211 s」的真因：`qwen3.8-flash` 在 DashScope 默认开启思考且强度最高，推理 token 走 `reasoning_content`、应用侧不识别而静默；据此修订 #74 §E3（[修订评论](https://github.com/attackingjensen/paper-30min/issues/74#issuecomment-5665232412)）：协议四阶段默认 `enable_thinking: false`、问答默认开思考并显示「思考中」（[#82](https://github.com/attackingjensen/paper-30min/issues/82) 重写），新增 [#86](https://github.com/attackingjensen/paper-30min/issues/86)（可空 temperature、400 自动卸参数）。当前下一步：#82 是最直接的体感修复，优先；其后按 #77 / #78 / #79 推进。
 
 当前不扩展产品范围，不因零散感受新建打磨类 Issue，也不创建合入 `main` 的 PR。`steven123397/dev` 是当前协作分支。
 
@@ -91,9 +91,10 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 | [#79](https://github.com/attackingjensen/paper-30min/issues/79) | 节薄摘要默认按节分片并有界并发 | 待开始（依赖 #75） |
 | [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 待开始（依赖 #75） |
 | [#81](https://github.com/attackingjensen/paper-30min/issues/81) | 深挖减轮：预附本节图表与一轮多工具 | 待开始（依赖 #75） |
-| [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型与请求体附加参数 | 待开始（依赖 #75） |
+| [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型、请求体附加参数与思考模式默认策略（协议关、问答开） | 待开始（依赖 #75，优先） |
 | [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 待开始（依赖 #79、#80） |
 | [#84](https://github.com/attackingjensen/paper-30min/issues/84) | 常驻侧车：serve 模式、预热、空闲释放与回退 | 待开始（依赖 #75、#77） |
+| [#86](https://github.com/attackingjensen/paper-30min/issues/86) | 请求参数兼容性：可空 temperature 与 400 自动卸参数 | 待开始（依赖 #75） |
 | [#85](https://github.com/attackingjensen/paper-30min/issues/85) | 性能对照走查与状态同步 | 待开始（依赖全部） |
 
 云端同步服务和 Android 阅读伴侣目前只有正式规格，分别见 [Issue #25](https://github.com/attackingjensen/paper-30min/issues/25) 和 [Issue #26](https://github.com/attackingjensen/paper-30min/issues/26)，暂不进入实现。
