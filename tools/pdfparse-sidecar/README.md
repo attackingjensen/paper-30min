@@ -48,6 +48,8 @@ python tools/pdfparse-sidecar/build_sidecar.py --hf-endpoint https://hf-mirror.c
 输入 = `--pdf` + `--out-dir` + `--job <job.json>`；job 形状
 `{"scale": 2, "quality": 86, "pages": [1, ...], "crops": [{"id", "page", "bbox": [x, y, w, h]}]}`
 （bbox 为 pdf.js 视口坐标 scale=2 左上原点，与渲染位图像素坐标系一致）。
+`pages` 可为 null（按 PDF 实际页数渲染全部页图）或为空数组（不输出页图，仍渲染 crops 所在页）。
+进度 `done/total` 按页图与裁切产物件数计。
 输出 = `<out-dir>/pages/page-{n}.webp` + `<out-dir>/crops/{id}.webp` +
 result.json（逐件 width/height/bytes + `skippedCrops`）。裁切框钳制到页边界，
 完全页外记 skippedCrops 不编造（#48 §诚实档）。渲染只用 pypdfium2 + Pillow，

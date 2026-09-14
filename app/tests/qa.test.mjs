@@ -12,7 +12,9 @@ import {
   CHAT_HISTORY_WINDOW,
   assembleQaContext,
   cropAttachmentId,
+  cropImagesReady,
   pageAttachmentId,
+  pageImagesReady,
   prerenderAssetsReady,
 } from '../ui/js/qa.js';
 
@@ -330,4 +332,8 @@ test('页图附件 ID 零填充；预渲染齐备按页数与图表清单逐件�
   assert.equal(prerenderAssetsReady(mapped, complete.filter(id => id !== 'pageimg-0003')), false);
   assert.equal(prerenderAssetsReady(mapped, complete.filter(id => id !== 'crop-fig_1')), false);
   assert.equal(prerenderAssetsReady(null, complete), false);
+  assert.equal(pageImagesReady(mapped, complete), true);
+  assert.equal(pageImagesReady(mapped, complete.filter(id => id !== 'pageimg-0003')), false);
+  assert.equal(cropImagesReady(mapped, complete.filter(id => id !== 'pageimg-0003')), true);
+  assert.equal(cropImagesReady(mapped, complete.filter(id => id !== 'crop-fig_1')), false);
 });

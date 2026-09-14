@@ -34,18 +34,28 @@ export function pageAttachmentId(page) {
  * 深挖视觉资产是否齐备：页图覆盖块模型每一页，裁切图覆盖图表清单每一件。
  * 公式裁切（crop-fml-*）不计入图表清单，多出来不挡齐备。
  */
-export function prerenderAssetsReady(mapped, attachmentIds) {
+export function pageImagesReady(mapped, attachmentIds) {
   const ids = attachmentIds instanceof Set ? attachmentIds : new Set(attachmentIds ?? []);
   const pageCount = Number(mapped?.pageCount) || 0;
   if (pageCount < 1) return false;
   for (let page = 1; page <= pageCount; page += 1) {
     if (!ids.has(pageAttachmentId(page))) return false;
   }
-  for (const entry of [...(mapped?.figures ?? []), ...(mapped?.tables ?? [])]) {
+  return true;
+}
+
+export function cropImagesReady(mapped, attachmentIds) {
+  const ids = attachmentIds instanceof Set ? attachmentIds : new Set(attachmentIds ?? []);
+  if (!mapped) return false;
+  for (const entry of [...(mapped.figures ?? []), ...(mapped.tables ?? [])]) {
     if (!entry?.id) continue;
     if (!ids.has(cropAttachmentId(entry.id))) return false;
   }
   return true;
+}
+
+export function prerenderAssetsReady(mapped, attachmentIds) {
+  return pageImagesReady(mapped, attachmentIds) && cropImagesReady(mapped, attachmentIds);
 }
 
 function qaError(code, message, details) {

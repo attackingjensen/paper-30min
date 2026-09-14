@@ -33,11 +33,13 @@ import {
   applyMention,
   assembleQaContext,
   composerMessage,
+  cropImagesReady,
   emptyBinding,
   fragmentBinding,
   hasMapProduct,
   mentionCandidates,
   parseMentionTrigger,
+  pageImagesReady,
   prerenderAssetsReady,
   sectionBinding,
   userBindingView,
@@ -48,6 +50,7 @@ import {
   notesMarkdown,
   ratingText,
   taskDetailModel,
+  taskKindLabel,
 } from './present.js';
 
 const bridge = createBridge(window.__TAURI__);
@@ -97,9 +100,9 @@ let migrationToken = '';
 // 新增条目超出上限时按插入顺序淘汰最旧的 succeeded 条目（failed/cancelled 保留，
 // 任务中心的「重试」按钮依赖这些条目）。
 const SESSION_TASKS_LIMIT = 50;
-const sessionTasks = new Map();
 /** 会话登记的取证轨迹步数上限（只收 tool 步；快照 details 容量 500 由 Rust SNAPSHOT_DETAILS_CAP 守）。 */
 const SESSION_STEPS_CAP = 200;
+const sessionTasks = new Map();
 
 function registerSessionTask(taskId, entry) {
   sessionTasks.set(taskId, entry);
@@ -114,26 +117,6 @@ let lastActiveTasks = [];    // 最近一次 activeOnly 轮询结果（供顶栏
 let positionTimer = null;    // 阅读位置 500ms 防抖
 const recallBlobUrls = new Map(); // 回忆卡图片 imageId -> Blob URL，离开论文时统一 revoke
 let paneDrag = null;         // 双侧栏拖拽：{ side, pointerId, treeLeft }
-
-// 任务 kind -> 中文名（kind 带 @1 后缀，先剥掉版本再匹配）。
-const TASK_KIND_LABELS = {
-  'model.chat': '模型生成',
-  'model.test': '连接测试',
-  'net.fetch-text': '网页抓取',
-  'files.download': '文件下载',
-  'pdfparse.convert': '解析 PDF',
-  'pdfassets.prerender': '预渲染页图',
-  'paper.build-map': '建图',
-  'paper.deep-dive': '深挖',
-  'paper.synthesize': '综合',
-};
-
-function taskKindLabel(kind) {
-  const bare = String(kind || '').replace(/@\d+$/, '');
-  if (TASK_KIND_LABELS[bare]) return TASK_KIND_LABELS[bare];
-  if (bare.startsWith('demo.')) return '演示任务';
-  return bare || '未知任务';
-}
 
 function renderMarkdownInto(element, text) {
   element.innerHTML = renderMarkdown(text);
@@ -1020,10 +1003,10 @@ async function cancelOpenProtocolTask(kind) {
   }
 }
 
-// ---------------- 建图前置产物（#73 / #76）----------------
-// 导入后：convert（含块模型落库）→ 立刻排队 prerender（不等待）。
-// 「开始建图」只兜底块模型；页图齐备检查在深挖开工前。
-// 两任务都进会话登记（任务中心可见、失败可重试）。
+// ---------------- 建图前置产物（#73 / #76 / #77）----------------
+// 导入后同时排队 convert 与 prerender(scope=pages)；convert 成功后再排队
+// prerender(scope=crops)。「开始建图」只兜底块模型；页图/裁切图齐备检查在深挖开工前。
+// 各任务进会话登记（任务中心可见、失败可重试）；在途按 (kind, scope) 去重。
 
 // 论文记录只挂 pdfAttachment 句柄，附件全集要查 files.listAttachments@1（store.js attachPdfInfo 同缝）。
 async function paperAttachmentIds(paperId) {
@@ -1042,10 +1025,11 @@ async function refreshAttachmentIds(paperId) {
   return ids;
 }
 
-function hasOpenKindTask(paperId, kind) {
+function hasOpenPreflightTask(paperId, kind, scope) {
   for (const meta of sessionTasks.values()) {
     if (meta.kind !== kind) continue;
     if (meta.input?.paperId !== paperId) continue;
+    if (scope !== undefined && (meta.input?.scope || 'all') !== scope) continue;
     if (meta.status && isTerminalStatus(meta.status)) continue;
     return true;
   }
@@ -1057,7 +1041,7 @@ async function ensureBlockModel(paperId) {
   const ids = await paperAttachmentIds(paperId);
   if (ids.has(BLOCKMODEL_ATTACHMENT_ID)) return { ok: true, doclingJsonPath: null };
   if (!ids.has('pdf')) return { ok: false };
-  if (hasOpenKindTask(paperId, 'pdfparse.convert@1')) return { ok: false };
+  if (hasOpenPreflightTask(paperId, 'pdfparse.convert@1')) return { ok: false };
   try {
     const convertInput = { paperId };
     const { taskId: convertId } = await bridge.start('pdfparse.convert@1', convertInput);
@@ -1066,7 +1050,7 @@ async function ensureBlockModel(paperId) {
       input: convertInput,
       retry: async () => {
         const result = await ensureBlockModel(paperId);
-        if (result.ok) void ensurePrerender(paperId, result.doclingJsonPath);
+        if (result.ok) void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: result.doclingJsonPath });
         return result.ok;
       },
     });
@@ -1087,27 +1071,31 @@ async function ensureBlockModel(paperId) {
   }
 }
 
-/** 无页图/裁切图时启动 prerender，不等待终态。force 用于失败重试（覆盖半成品）。 */
-async function ensurePrerender(paperId, doclingJsonPath, { force = false } = {}) {
-  if (!paperId || !doclingJsonPath) return false;
-  if (hasOpenKindTask(paperId, 'pdfassets.prerender@1')) return false;
+/** 按 scope 启动 prerender，不等待终态。force 用于失败重试（覆盖半成品）。 */
+async function ensurePrerender(paperId, { scope = 'all', doclingJsonPath = null, force = false } = {}) {
+  if (!paperId) return false;
+  if (scope !== 'pages' && !doclingJsonPath) return false;
+  if (hasOpenPreflightTask(paperId, 'pdfassets.prerender@1', scope)) return false;
   if (!force) {
     const ids = await paperAttachmentIds(paperId);
     const mapped = await readBlockModelJson(paperId);
-    const ready = mapped
-      ? prerenderAssetsReady(mapped, ids)
-      : [...ids].some(id => id.startsWith('pageimg-')) && [...ids].some(id => id.startsWith('crop-'));
+    const ready = scope === 'pages'
+      ? pageImagesReady(mapped, ids)
+      : scope === 'crops'
+        ? cropImagesReady(mapped, ids)
+        : prerenderAssetsReady(mapped, ids);
     if (ready) return true;
   }
-  const prerenderInput = { paperId, doclingJsonPath };
+  const prerenderInput = { paperId, scope };
+  if (doclingJsonPath) prerenderInput.doclingJsonPath = doclingJsonPath;
   try {
     const { taskId: prerenderId } = await bridge.start('pdfassets.prerender@1', prerenderInput);
     registerSessionTask(prerenderId, {
       kind: 'pdfassets.prerender@1',
       input: prerenderInput,
-      retry: () => ensurePrerender(paperId, doclingJsonPath, { force: true }),
+      retry: () => ensurePrerender(paperId, { scope, doclingJsonPath, force: true }),
     });
-    void trackPrerender(paperId, prerenderId);
+    void trackPrerender(paperId, prerenderId, scope);
     return true;
   } catch (err) {
     toast(`页图预渲染启动失败：${errorText(err)}`, true);
@@ -1135,25 +1123,27 @@ async function readBlockModelJson(paperId) {
   }
 }
 
-async function trackPrerender(paperId, prerenderId) {
+async function trackPrerender(paperId, prerenderId, scope = 'all') {
   const meta = sessionTasks.get(prerenderId);
+  const label = taskKindLabel('pdfassets.prerender@1', { scope });
   try {
     const prerender = await trackTask(bridge, prerenderId, {});
     if (meta) meta.status = prerender.status;
-    if (prerender.status === 'failed') toast(`页图预渲染失败：${prerender.error?.message || '未知错误'}`, true);
+    if (prerender.status === 'failed') toast(`${label}失败：${prerender.error?.message || '未知错误'}`, true);
     await refreshAttachmentIds(paperId);
     if (current?.id === paperId && reader.appView === 'reader') renderMapTab();
   } catch (err) {
     if (meta && !meta.status) meta.status = 'failed';
-    toast(`页图预渲染失败：${errorText(err)}`, true);
+    toast(`${label}失败：${errorText(err)}`, true);
   }
 }
 
-/** 导入后：等 convert，立刻排队 prerender。 */
+/** 导入后：页图与解析并行；解析完成后补渲染图表裁切图。 */
 async function queueImportPreflight(paperId) {
+  void ensurePrerender(paperId, { scope: 'pages' });
   const ready = await ensureBlockModel(paperId);
   if (!ready.ok) return false;
-  void ensurePrerender(paperId, ready.doclingJsonPath);
+  void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: ready.doclingJsonPath });
   return true;
 }
 
@@ -1163,14 +1153,15 @@ async function startBuildMap() {
   // 前置兜底：缺块模型且有 PDF 时先补产（#76：只等 convert，预渲染与建图并行）。
   const preflightIds = await paperAttachmentIds(paperId);
   if (!preflightIds.has(BLOCKMODEL_ATTACHMENT_ID) && preflightIds.has('pdf')) {
-    if (hasOpenKindTask(paperId, 'pdfparse.convert@1')) {
+    if (hasOpenPreflightTask(paperId, 'pdfparse.convert@1')) {
       toast('正在解析 PDF，完成后请再点「开始建图」');
       return;
     }
     toast('正在准备建图：先解析 PDF…');
     const ready = await ensureBlockModel(paperId);
     if (!ready.ok) return;
-    void ensurePrerender(paperId, ready.doclingJsonPath);
+    void ensurePrerender(paperId, { scope: 'pages' });
+    void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: ready.doclingJsonPath });
   }
   const input = { paperId, overwriteConfirmed: false };
   let meta = null;
@@ -2328,7 +2319,7 @@ function renderPdfTasks() {
     const row = document.createElement('div');
     row.className = 'pdf-task-row';
     const label = document.createElement('span');
-    label.textContent = `正在下载 PDF（${taskKindLabel(snapshot.kind)}）`;
+    label.textContent = `正在下载 PDF（${taskKindLabel(snapshot.kind, meta.input)}）`;
     const badge = document.createElement('span');
     badge.className = `task-badge st-${snapshot.status}`;
     badge.textContent = taskStatusLabel(snapshot.status);
@@ -2964,7 +2955,8 @@ function renderTaskList(tasks) {
     head.className = 'task-row-head';
     const kind = document.createElement('span');
     kind.className = 'task-kind';
-    kind.textContent = taskKindLabel(task.kind);
+    const meta = sessionTasks.get(task.taskId);
+    kind.textContent = taskKindLabel(task.kind, meta?.input || task.input);
     const id = document.createElement('span');
     id.className = 'task-id';
     id.textContent = task.taskId;
@@ -2989,7 +2981,6 @@ function renderTaskList(tasks) {
       };
       actions.appendChild(cancel);
     }
-    const meta = sessionTasks.get(task.taskId);
     if (task.status === 'failed' && task.error?.retryable && meta?.retry) {
       const retry = document.createElement('button');
       retry.className = 'btn small primary';
@@ -3157,7 +3148,7 @@ function bindCloseFlow() {
     list.replaceChildren();
     for (const task of active) {
       const item = document.createElement('li');
-      item.textContent = `${taskKindLabel(task.kind)}（${task.taskId}）：${taskStatusLabel(task.status)}`;
+      item.textContent = `${taskKindLabel(task.kind, sessionTasks.get(task.taskId)?.input || task.input)}（${task.taskId}）：${taskStatusLabel(task.status)}`;
       list.appendChild(item);
     }
     $('#modal-close').hidden = false;

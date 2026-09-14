@@ -11,6 +11,7 @@ import {
   notesMarkdown,
   roundView,
   taskDetailModel,
+  taskKindLabel,
   toolStepView,
 } from '../ui/js/present.js';
 
@@ -326,6 +327,14 @@ test('导出笔记：未建图论文主体给提示行，旧结果仍入附录�
   assert.ok(empty.includes('（本论文尚未建图'));
   assert.ok(!empty.includes('## 附录'));
   assert.ok(!empty.includes('## 回想卡片'));
+});
+
+test('任务类型标签：prerender 按 scope 区分页图 / 图表 / 默认', () => {
+  assert.equal(taskKindLabel('pdfassets.prerender@1', { scope: 'pages' }), '预渲染页图');
+  assert.equal(taskKindLabel('pdfassets.prerender@1', { scope: 'crops' }), '预渲染图表');
+  assert.equal(taskKindLabel('pdfassets.prerender@1', { scope: 'all' }), '预渲染');
+  assert.equal(taskKindLabel('pdfassets.prerender@1'), '预渲染');
+  assert.equal(taskKindLabel('pdfparse.convert@1'), '解析 PDF');
 });
 
 test('导出笔记：无块模型时按精读部分顺序与标签组织节区；回想卡片保留', () => {

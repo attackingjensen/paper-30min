@@ -420,7 +420,10 @@ def cmd_render(args):
         job = json.loads(Path(args.job).read_text(encoding="utf-8"))
         scale = float(job.get("scale", 2.0))
         quality = int(job.get("quality", 86))
-        pages = sorted({int(p) for p in job["pages"]})
+        if "pages" not in job or job["pages"] is None:
+            pages_listed = None
+        else:
+            pages_listed = sorted({int(p) for p in job["pages"]})
         crops = [
             {
                 "id": str(crop["id"]),
@@ -429,8 +432,6 @@ def cmd_render(args):
             }
             for crop in job.get("crops", [])
         ]
-        if not pages:
-            raise ValueError("pages 不能为空")
         if not (0 < scale <= 8) or not (1 <= quality <= 100):
             raise ValueError("scale/quality 超界")
         for crop in crops:
@@ -456,8 +457,6 @@ def cmd_render(args):
     crops_by_page = {}
     for crop in crops:
         crops_by_page.setdefault(crop["page"], []).append(crop)
-    render_pages = sorted(set(pages) | set(crops_by_page))
-    pages_wanted = set(pages)
 
     pages_dir = out_dir / "pages"
     crops_dir = out_dir / "crops"
@@ -473,6 +472,14 @@ def cmd_render(args):
     try:
         with pdfium.PdfDocument(str(pdf_path)) as doc:
             page_count = len(doc)
+            # pages=null：按 PDF 实际页数渲染全部页图（scope=pages）。
+            # 空数组：不输出页图（scope=crops，render_pages 仍含裁切所在页）。
+            if pages_listed is None:
+                pages = list(range(1, page_count + 1))
+            else:
+                pages = pages_listed
+            render_pages = sorted(set(pages) | set(crops_by_page))
+            pages_wanted = set(pages)
             missing = [p for p in render_pages if p < 1 or p > page_count]
             if missing:
                 write_result(
@@ -484,8 +491,9 @@ def cmd_render(args):
                     ),
                 )
                 return 0
-            total = len(render_pages)
-            for index, page_no in enumerate(render_pages):
+            planned = len(pages_wanted) + len(crops)
+            done = 0
+            for page_no in render_pages:
                 page = doc[page_no - 1]
                 try:
                     render_started = time.perf_counter()
@@ -507,6 +515,9 @@ def cmd_render(args):
                                 "bytes": target.stat().st_size,
                             }
                         )
+                        done += 1
+                        if planned:
+                            emit_progress("render", done, planned)
                     for crop in crops_by_page.get(page_no, []):
                         x, y, crop_w, crop_h = crop["bbox"]
                         left = max(0, min(width, round(x)))
@@ -516,6 +527,9 @@ def cmd_render(args):
                         if right - left < 2 or bottom - top < 2:
                             skipped.append({"id": crop["id"], "reason": "bbox_outside_page"})
                             warnings.append(f"crop_skipped:{crop['id']}")
+                            done += 1
+                            if planned:
+                                emit_progress("render", done, planned)
                             continue
                         cropped = img.crop((left, top, right, bottom))
                         target = crops_dir / f"{crop['id']}.webp"
@@ -532,9 +546,11 @@ def cmd_render(args):
                                 "bytes": target.stat().st_size,
                             }
                         )
+                        done += 1
+                        if planned:
+                            emit_progress("render", done, planned)
                 finally:
                     page.close()
-                emit_progress("render", index + 1, total)
     except Exception as err:  # noqa: BLE001 - pypdfium2 打开/渲染失败统一归类
         detail = traceback.format_exc()[-1500:]
         write_result(

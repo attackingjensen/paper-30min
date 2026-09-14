@@ -146,7 +146,15 @@ fn prerender_rejects_missing_inputs_at_plan() {
             json!({ "paperId": "p-1" }),
             Collector::new(),
         )
-        .expect_err("缺 doclingJsonPath 应在计划阶段拒绝");
+        .expect_err("默认 scope=all 缺 doclingJsonPath 应在计划阶段拒绝");
+    assert_eq!(error.code, "invalid_input");
+    let error = registry
+        .start(
+            pdfassets::TASK_PRERENDER,
+            json!({ "paperId": "p-1", "scope": "crops" }),
+            Collector::new(),
+        )
+        .expect_err("scope=crops 缺 doclingJsonPath 应在计划阶段拒绝");
     assert_eq!(error.code, "invalid_input");
     let error = registry
         .start(
@@ -156,6 +164,41 @@ fn prerender_rejects_missing_inputs_at_plan() {
         )
         .expect_err("非法 paperId 应在计划阶段拒绝");
     assert_eq!(error.code, "invalid_input");
+}
+
+#[test]
+fn prerender_rejects_invalid_scope_at_plan() {
+    let (registry, _library, _dir) = common::env();
+    let error = registry
+        .start(
+            pdfassets::TASK_PRERENDER,
+            json!({ "paperId": "p-1", "scope": "both", "doclingJsonPath": "x.json" }),
+            Collector::new(),
+        )
+        .expect_err("非法 scope 应在计划阶段拒绝");
+    assert_eq!(error.code, "invalid_input");
+    let error = registry
+        .start(
+            pdfassets::TASK_PRERENDER,
+            json!({ "paperId": "p-1", "scope": 1, "doclingJsonPath": "x.json" }),
+            Collector::new(),
+        )
+        .expect_err("非字符串 scope 应在计划阶段拒绝");
+    assert_eq!(error.code, "invalid_input");
+}
+
+#[test]
+fn prerender_pages_scope_does_not_require_docling_json_path() {
+    let (registry, _library, _dir) = common::env();
+    let (task_id, _sink) =
+        start_prerender(&registry, json!({ "paperId": "no-such", "scope": "pages" }));
+    let status = wait_terminal(&registry, &task_id, Duration::from_secs(10)).expect("任务超时");
+    assert_eq!(status, TaskStatus::Failed);
+    let error = registry.get(&task_id).unwrap().error.unwrap();
+    assert_eq!(
+        error.code, "not_found",
+        "scope=pages 应越过计划阶段，在运行期报论文不存在"
+    );
 }
 
 #[test]
@@ -253,6 +296,7 @@ fn prerender_full_chain_stores_verified_assets() {
         .result
         .expect("succeeded 应携带 result");
     assert_eq!(result["pages"], json!(2));
+    assert_eq!(result["scope"], json!("all"));
     assert_eq!(result["blockModelAssetId"], json!("blockmodel.json"));
     assert!(result["renderMs"].as_u64().is_some(), "应有 renderMs");
     assert!(result["encodeMs"].as_u64().is_some(), "应有 encodeMs");
@@ -338,6 +382,169 @@ fn prerender_full_chain_stores_verified_assets() {
     library
         .verify_attachment("p-1", "pageimg-0001")
         .expect("重跑后校验");
+}
+
+fn put_pdf(library: &paper30min_lib::library::Library, paper_id: &str) {
+    let pdf_bytes = std::fs::read(sample_pdf()).expect("读取示例 PDF");
+    library
+        .put_attachment(
+            paper_id,
+            AttachmentWrite {
+                id: "pdf".to_string(),
+                name: "sample_paper.pdf".to_string(),
+                content_type: Some("application/pdf".to_string()),
+                content_base64: base64_encode(&pdf_bytes),
+            },
+        )
+        .expect("PDF 附件落库");
+}
+
+fn put_blockmodel(library: &paper30min_lib::library::Library, paper_id: &str) {
+    let mapped =
+        paper30min_lib::pdfmap::map_docling_json_str(&synthetic_docling_json().to_string())
+            .expect("合成块模型");
+    let bytes = serde_json::to_vec_pretty(&mapped).expect("序列化块模型");
+    library
+        .put_attachment(
+            paper_id,
+            AttachmentWrite {
+                id: pdfassets::BLOCKMODEL_ATTACHMENT_ID.to_string(),
+                name: pdfassets::BLOCKMODEL_ATTACHMENT_ID.to_string(),
+                content_type: Some("application/json".to_string()),
+                content_base64: base64_encode(&bytes),
+            },
+        )
+        .expect("块模型附件落库");
+}
+
+fn attachment_ids(library: &paper30min_lib::library::Library, paper_id: &str) -> Vec<String> {
+    library
+        .list_attachments(paper_id)
+        .expect("附件清单")
+        .into_iter()
+        .map(|item| item.id)
+        .collect()
+}
+
+#[test]
+fn prerender_pages_scope_stores_only_page_images() {
+    let (registry, library, _dir) = common::env();
+    if !require_render_ready() {
+        return;
+    }
+    let _guard = SIDECAR_LOCK.lock().unwrap();
+    put_paper(&registry, &library, "p-1");
+    put_pdf(&library, "p-1");
+
+    let (task_id, sink) = start_prerender(&registry, json!({ "paperId": "p-1", "scope": "pages" }));
+    let status = wait_terminal(&registry, &task_id, PRERENDER_TIMEOUT).expect("渲染超时");
+    assert_eq!(status, TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let result = registry
+        .get(&task_id)
+        .unwrap()
+        .result
+        .expect("succeeded 应携带 result");
+    assert_eq!(result["scope"], json!("pages"));
+    assert_eq!(result["pages"], json!(2));
+    assert!(
+        result.get("blockModelAssetId").is_none(),
+        "scope=pages 不落块模型"
+    );
+    assert_eq!(result["crops"], json!([]));
+    let page_assets = result["pageAssets"].as_array().unwrap();
+    assert_eq!(page_assets.len(), 2);
+    assert_eq!(page_assets[0]["assetId"], json!("pageimg-0001"));
+    assert_eq!(page_assets[1]["assetId"], json!("pageimg-0002"));
+
+    let ids = attachment_ids(&library, "p-1");
+    assert!(ids.contains(&"pageimg-0001".to_string()));
+    assert!(ids.contains(&"pageimg-0002".to_string()));
+    assert!(
+        !ids.iter().any(|id| id.starts_with("crop-")),
+        "scope=pages 不落裁切图: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id == "blockmodel.json"),
+        "scope=pages 不落块模型附件: {ids:?}"
+    );
+}
+
+#[test]
+fn prerender_crops_scope_stores_only_crops_and_block_model() {
+    // 侧车作业 pages=[]、crops 非空：只渲染裁切所在页且不输出页图（#77）。
+    let (registry, library, dir) = common::env();
+    if !require_render_ready() {
+        return;
+    }
+    let _guard = SIDECAR_LOCK.lock().unwrap();
+    put_paper(&registry, &library, "p-1");
+    put_pdf(&library, "p-1");
+    put_blockmodel(&library, "p-1");
+
+    let (task_id, sink) = start_prerender(
+        &registry,
+        json!({
+            "paperId": "p-1",
+            "scope": "crops",
+            "doclingJsonPath": dir.path().join("unused.json").to_string_lossy(),
+        }),
+    );
+    let status = wait_terminal(&registry, &task_id, PRERENDER_TIMEOUT).expect("渲染超时");
+    assert_eq!(status, TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let result = registry
+        .get(&task_id)
+        .unwrap()
+        .result
+        .expect("succeeded 应携带 result");
+    assert_eq!(result["scope"], json!("crops"));
+    assert_eq!(result["pages"], json!(0));
+    assert_eq!(result["pageAssets"], json!([]));
+    assert_eq!(result["blockModelAssetId"], json!("blockmodel.json"));
+    let crops = result["crops"].as_array().unwrap();
+    assert_eq!(crops.len(), 2, "图裁切 + 公式裁切");
+    assert_eq!(crops[0]["id"], json!("fig_1"));
+    assert_eq!(crops[0]["assetId"], json!("crop-fig_1"));
+
+    let ids = attachment_ids(&library, "p-1");
+    assert!(ids.contains(&"crop-fig_1".to_string()));
+    assert!(ids.contains(&"blockmodel.json".to_string()));
+    assert!(
+        !ids.iter().any(|id| id.starts_with("pageimg-")),
+        "scope=crops 不落页图: {ids:?}"
+    );
+}
+
+#[test]
+fn prerender_crops_falls_back_to_docling_when_block_model_missing() {
+    let (registry, library, dir) = common::env();
+    if !require_render_ready() {
+        return;
+    }
+    let _guard = SIDECAR_LOCK.lock().unwrap();
+    put_paper(&registry, &library, "p-1");
+    put_pdf(&library, "p-1");
+    let docling_path = dir.path().join("docling.json");
+    std::fs::write(&docling_path, synthetic_docling_json().to_string()).unwrap();
+
+    let (task_id, sink) = start_prerender(
+        &registry,
+        json!({
+            "paperId": "p-1",
+            "scope": "crops",
+            "doclingJsonPath": docling_path.to_string_lossy(),
+        }),
+    );
+    let status = wait_terminal(&registry, &task_id, PRERENDER_TIMEOUT).expect("渲染超时");
+    assert_eq!(status, TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let result = registry.get(&task_id).unwrap().result.expect("result");
+    assert_eq!(result["scope"], json!("crops"));
+    assert_eq!(result["blockModelAssetId"], json!("blockmodel.json"));
+    assert!(result["crops"].as_array().unwrap().len() >= 1);
+    let ids = attachment_ids(&library, "p-1");
+    assert!(ids.contains(&"blockmodel.json".to_string()));
+    assert!(!ids.iter().any(|id| id.starts_with("pageimg-")));
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

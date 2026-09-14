@@ -1,8 +1,12 @@
-//! 页图与图表裁切预渲染（Issue #59，规格 #48 §双通道资产 / #41 决议）。
+//! 页图与图表裁切预渲染（Issue #59 / #77，规格 #48 §双通道资产 / #74 B2）。
 //!
 //! 深挖前备妥视觉资产：页图（每页 scale=2 webp，与块模型 prov 的 pdf.js 视口
 //! 坐标逐像素一致）+ 图表裁切图（按映射层换算后 bbox）。产物全部走附件缝落库
 //! （sha256 + 原子写 + 元数据事务），落库后逐件 verify 读回校验。
+//!
+//! `pdfassets.prerender@1` 输入可选 `scope`：`pages`（只渲染页图，不需 Docling
+//! 产物、不落块模型）/ `crops`（只渲染裁切图，优先读块模型附件）/ `all`（默认，
+//! 行为同 #59）。前端导入后页图与解析并行，解析完成后补渲染裁切图。
 //!
 //! 附件 ID 约定（"论文+页码→assetId" 由 (paper_id, attachment_id) 主键承载）：
 //! - 页图：`pageimg-{NNNN}`（页码零填充 4 位，附件列表字典序即页序）；
@@ -88,14 +92,46 @@ pub fn estimate_image_tokens(width: u32, height: u32) -> u64 {
     tokens.clamp(66, 2502)
 }
 
+/// 预渲染范围（#74 B2 / #77）：pages 只渲染页图；crops 只渲染裁切图；all 二者都做。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrerenderScope {
+    Pages,
+    Crops,
+    All,
+}
+
+impl PrerenderScope {
+    pub fn parse(raw: Option<&str>) -> Result<Self, BridgeError> {
+        match raw.map(str::trim).filter(|value| !value.is_empty()) {
+            None | Some("all") => Ok(Self::All),
+            Some("pages") => Ok(Self::Pages),
+            Some("crops") => Ok(Self::Crops),
+            Some(other) => Err(BridgeError::invalid_input(format!(
+                "pdfassets.prerender@1 的 scope 须为 pages / crops / all，收到 {other}"
+            ))),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pages => "pages",
+            Self::Crops => "crops",
+            Self::All => "all",
+        }
+    }
+}
+
 /// 侧车 render 子命令的作业描述（camelCase，与 pdfparse_sidecar.py 对齐）。
+/// `pages = None`：序列化为 null，侧车按 PDF 实际页数渲染全部页图（scope=pages）。
+/// `pages = Some([])`：不输出页图（scope=crops）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderJob {
     pub scale: f64,
     pub quality: u32,
-    /// 待渲染页码（1 起，显式展开）。
-    pub pages: Vec<u32>,
+    /// 待渲染页码（1 起）。None = 由侧车按 PDF 页数展开。
+    #[serde(default)]
+    pub pages: Option<Vec<u32>>,
     /// 裁切清单：bbox 为 scale=2 视口坐标 [x, y, w, h]（左上原点）。
     pub crops: Vec<RenderJobCrop>,
 }
@@ -149,9 +185,26 @@ pub fn build_render_job(mapped: &MappedPaper) -> RenderJob {
     RenderJob {
         scale: RENDER_SCALE,
         quality: WEBP_QUALITY,
-        pages: (1..=mapped.page_count).collect(),
+        pages: Some((1..=mapped.page_count).collect()),
         crops,
     }
+}
+
+/// 只渲染页图：pages=null，侧车按 PDF 实际页数展开；crops 为空。
+pub fn pages_only_job() -> RenderJob {
+    RenderJob {
+        scale: RENDER_SCALE,
+        quality: WEBP_QUALITY,
+        pages: None,
+        crops: Vec::new(),
+    }
+}
+
+/// 只渲染裁切图：pages 为空数组（侧车不落页图），crops 来自块模型。
+pub fn crops_only_job(mapped: &MappedPaper) -> RenderJob {
+    let mut job = build_render_job(mapped);
+    job.pages = Some(Vec::new());
+    job
 }
 
 /// 公式裁切的清单内 ID（非附件 ID；附件 ID 由 crop_attachment_id 再加前缀）：
@@ -196,18 +249,20 @@ struct RenderPayload {
     encode_ms: Option<u64>,
 }
 
-/// pdfassets.prerender@1：单篇论文 → 页图 + 图表裁切图 + 块模型附件。
-/// 输入: { paperId, doclingJsonPath, pdfPath? }（pdfPath 缺省 = 论文的 pdf 附件）。
-/// 结果: { paperId, pageAssets[], crops[], skippedCrops[], warnings[],
-///         blockModelAssetId, elapsedMs, renderMs, encodeMs }
+/// pdfassets.prerender@1：按 scope 渲染页图和/或裁切图。
+/// 输入: { paperId, scope?, doclingJsonPath?, pdfPath? }
+/// （scope 默认 all；all/crops 需要 doclingJsonPath；pdfPath 缺省 = 论文的 pdf 附件）。
+/// 结果: { paperId, scope, pageAssets[], crops[], skippedCrops[], warnings[],
+///         blockModelAssetId?, elapsedMs, renderMs, encodeMs }
 /// 不做自动重试（与 convert 一致：渲染失败由用户显式重试）。
 pub(crate) fn run_prerender(
     ctx: &RunContext,
     paper_id: &str,
-    docling_json_path: &Path,
+    docling_json_path: Option<&Path>,
     pdf_path: Option<&Path>,
+    scope: PrerenderScope,
 ) {
-    match prerender_once(ctx, paper_id, docling_json_path, pdf_path) {
+    match prerender_once(ctx, paper_id, docling_json_path, pdf_path, scope) {
         Ok(()) => {}
         Err(error) if error.code == CANCEL_SENTINEL => ctx.cancel_now(),
         Err(error) => ctx.fail(error),
@@ -217,8 +272,9 @@ pub(crate) fn run_prerender(
 fn prerender_once(
     ctx: &RunContext,
     paper_id: &str,
-    docling_json_path: &Path,
+    docling_json_path: Option<&Path>,
     pdf_path: Option<&Path>,
+    scope: PrerenderScope,
 ) -> Result<(), BridgeError> {
     let started = Instant::now();
     ctx.cancel_checkpoint()?;
@@ -230,9 +286,22 @@ fn prerender_once(
         }
     }
 
-    // 映射层（纯函数，毫秒级）：块模型 + 三清单是裁切 bbox 的唯一来源。
-    let mapped = crate::pdfmap::map_docling_json_file(docling_json_path)?;
-    let job = build_render_job(&mapped);
+    let mapped = resolve_mapped(&ctx.library, paper_id, docling_json_path, scope)?;
+    let job = match scope {
+        PrerenderScope::Pages => pages_only_job(),
+        PrerenderScope::Crops => {
+            let mapped = mapped.as_ref().ok_or_else(|| {
+                BridgeError::invalid_input("pdfassets.prerender@1 的 scope=crops 需要块模型")
+            })?;
+            crops_only_job(mapped)
+        }
+        PrerenderScope::All => {
+            let mapped = mapped.as_ref().ok_or_else(|| {
+                BridgeError::invalid_input("pdfassets.prerender@1 的 scope=all 需要块模型")
+            })?;
+            build_render_job(mapped)
+        }
+    };
 
     // PDF 路径：显式参数优先，缺省取论文的 pdf 附件。
     let default_pdf;
@@ -300,7 +369,15 @@ fn prerender_once(
 
     // 渲染全部成功后才进入落库阶段（渲染阶段取消/失败不落任何附件）；
     // 落库逐件提交，中断留下的部分附件由重跑幂等覆盖 + 深挖 preflight 齐备性兜底。
-    let blockmodel_dto = persist_block_model(&ctx.library, paper_id, &mapped)?;
+    let blockmodel_id = if let Some(mapped) = mapped.as_ref() {
+        if scope != PrerenderScope::Pages {
+            Some(persist_block_model(&ctx.library, paper_id, mapped)?.id)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let mut page_assets = Vec::with_capacity(payload.pages.len());
     let total = (payload.pages.len() + payload.crops.len()) as u64;
@@ -365,21 +442,82 @@ fn prerender_once(
     let _ = std::fs::remove_dir_all(out_dir.join("pages"));
     let _ = std::fs::remove_dir_all(out_dir.join("crops"));
 
-    let mut warnings: Vec<String> = mapped.warnings.clone();
+    let mut warnings: Vec<String> = mapped
+        .as_ref()
+        .map(|mapped| mapped.warnings.clone())
+        .unwrap_or_default();
     warnings.extend(payload.warnings);
-    ctx.succeed(Some(json!({
+    let mut result = json!({
         "paperId": paper_id,
+        "scope": scope.as_str(),
         "pages": page_assets.len(),
         "pageAssets": page_assets,
         "crops": crops,
         "skippedCrops": payload.skipped_crops,
-        "blockModelAssetId": blockmodel_dto.id,
         "warnings": warnings,
         "elapsedMs": started.elapsed().as_millis() as u64,
         "renderMs": payload.render_ms.unwrap_or(0),
         "encodeMs": payload.encode_ms.unwrap_or(0),
-    })));
+    });
+    if let Some(id) = blockmodel_id {
+        result["blockModelAssetId"] = json!(id);
+    }
+    ctx.succeed(Some(result));
     Ok(())
+}
+
+/// 按 scope 解析块模型：pages 不需要；crops 先读附件、缺失则重映射 docling；all 始终重映射。
+fn resolve_mapped(
+    library: &Library,
+    paper_id: &str,
+    docling_json_path: Option<&Path>,
+    scope: PrerenderScope,
+) -> Result<Option<MappedPaper>, BridgeError> {
+    match scope {
+        PrerenderScope::Pages => Ok(None),
+        PrerenderScope::Crops => {
+            if let Some(mapped) = read_block_model_attachment(library, paper_id)? {
+                return Ok(Some(mapped));
+            }
+            let path = docling_json_path.ok_or_else(|| {
+                BridgeError::invalid_input(
+                    "pdfassets.prerender@1 的 scope=crops 需要 doclingJsonPath 或已有块模型附件",
+                )
+            })?;
+            Ok(Some(crate::pdfmap::map_docling_json_file(path)?))
+        }
+        PrerenderScope::All => {
+            let path = docling_json_path.ok_or_else(|| {
+                BridgeError::invalid_input(
+                    "pdfassets.prerender@1 的 scope=all 需要 doclingJsonPath",
+                )
+            })?;
+            Ok(Some(crate::pdfmap::map_docling_json_file(path)?))
+        }
+    }
+}
+
+fn read_block_model_attachment(
+    library: &Library,
+    paper_id: &str,
+) -> Result<Option<MappedPaper>, BridgeError> {
+    let Ok(attachment) = library.get_attachment(paper_id, BLOCKMODEL_ATTACHMENT_ID) else {
+        return Ok(None);
+    };
+    let (_, bytes) = library.read_range(
+        paper_id,
+        BLOCKMODEL_ATTACHMENT_ID,
+        0,
+        attachment.size as u64,
+    )?;
+    let mapped = serde_json::from_slice(&bytes).map_err(|err| {
+        BridgeError::new(
+            "block_model_invalid",
+            format!("块模型附件无法解析: {err}"),
+            false,
+        )
+    })?;
+    Ok(Some(mapped))
 }
 
 /// 单件渲染产物落附件缝并立即 verify（读回 sha256 比对，验收"verify 缝通过"）。
@@ -417,6 +555,25 @@ fn ingest_rendered(
 mod tests {
     use super::*;
     use crate::pdfmap::{AssetEntry, MappedPaper};
+
+    #[test]
+    fn prerender_scope_parses_pages_crops_all_and_rejects_unknown() {
+        assert_eq!(PrerenderScope::parse(None).unwrap(), PrerenderScope::All);
+        assert_eq!(
+            PrerenderScope::parse(Some("all")).unwrap(),
+            PrerenderScope::All
+        );
+        assert_eq!(
+            PrerenderScope::parse(Some("pages")).unwrap(),
+            PrerenderScope::Pages
+        );
+        assert_eq!(
+            PrerenderScope::parse(Some("crops")).unwrap(),
+            PrerenderScope::Crops
+        );
+        let err = PrerenderScope::parse(Some("both")).unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+    }
 
     #[test]
     fn page_attachment_id_zero_pads_for_lexical_order() {
@@ -491,11 +648,47 @@ mod tests {
         let job = build_render_job(&mapped);
         assert_eq!(job.scale, RENDER_SCALE);
         assert_eq!(job.quality, WEBP_QUALITY);
-        assert_eq!(job.pages, vec![1, 2, 3]);
+        assert_eq!(job.pages, Some(vec![1, 2, 3]));
         let crop_ids: Vec<&str> = job.crops.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(crop_ids, vec!["fig_1", "fig_3", "tbl_2"]);
         assert_eq!(job.crops[0].page, 1);
         assert_eq!(job.crops[0].bbox, [200.0, 384.0, 800.0, 400.0]);
+    }
+
+    #[test]
+    fn pages_only_job_sends_null_pages_and_has_no_crops() {
+        let job = pages_only_job();
+        assert!(job.crops.is_empty());
+        assert_eq!(job.pages, None);
+        let value = serde_json::to_value(&job).unwrap();
+        assert!(
+            value["pages"].is_null(),
+            "pages=null 让侧车按 PDF 实际页数渲染"
+        );
+        assert_eq!(value["crops"], json!([]));
+    }
+
+    #[test]
+    fn crops_only_job_sends_empty_pages_array() {
+        let mapped = MappedPaper {
+            schema_version: 1,
+            title: None,
+            source_name: None,
+            page_count: 3,
+            sections: Vec::new(),
+            frontmatter: Vec::new(),
+            furniture: Vec::new(),
+            figures: vec![asset("fig_1", 1)],
+            tables: Vec::new(),
+            references: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let job = crops_only_job(&mapped);
+        assert_eq!(job.pages, Some(vec![]));
+        let crop_ids: Vec<&str> = job.crops.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(crop_ids, vec!["fig_1"]);
+        let value = serde_json::to_value(&job).unwrap();
+        assert_eq!(value["pages"], json!([]));
     }
 
     fn formula_block(id: u32, page: u32, bbox: Option<[f64; 4]>) -> crate::pdfmap::Block {
@@ -561,7 +754,7 @@ mod tests {
         let job = RenderJob {
             scale: RENDER_SCALE,
             quality: WEBP_QUALITY,
-            pages: vec![1],
+            pages: Some(vec![1]),
             crops: vec![RenderJobCrop {
                 id: "fig_1".to_string(),
                 page: 1,

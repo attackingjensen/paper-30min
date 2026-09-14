@@ -159,8 +159,9 @@ enum TaskPlan {
     },
     PdfassetsPrerender {
         paper_id: String,
-        docling_json_path: std::path::PathBuf,
+        docling_json_path: Option<std::path::PathBuf>,
         pdf_path: Option<std::path::PathBuf>,
+        scope: crate::pdfassets::PrerenderScope,
     },
     PaperBuildMap {
         paper_id: String,
@@ -282,9 +283,9 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 .map(std::path::PathBuf::from);
             let formula_enrichment = match input.get("formulaEnrichment") {
                 None | Some(Value::Null) => false,
-                Some(value) => value.as_bool().ok_or_else(|| {
-                    BridgeError::invalid_input("formulaEnrichment 必须是布尔值")
-                })?,
+                Some(value) => value
+                    .as_bool()
+                    .ok_or_else(|| BridgeError::invalid_input("formulaEnrichment 必须是布尔值"))?,
             };
             Ok(TaskPlan::PdfparseConvert {
                 pdf_path,
@@ -305,8 +306,43 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
         crate::pdfassets::TASK_PRERENDER => {
             let paper_id = required_string(crate::pdfassets::TASK_PRERENDER, input, "paperId")?;
             files::require_safe_segment(paper_id, "paperId")?;
-            let docling_json_path =
-                required_string(crate::pdfassets::TASK_PRERENDER, input, "doclingJsonPath")?;
+            let scope = match input.get("scope") {
+                None | Some(Value::Null) => crate::pdfassets::PrerenderScope::parse(None)?,
+                Some(Value::String(value)) => {
+                    crate::pdfassets::PrerenderScope::parse(Some(value.as_str()))?
+                }
+                Some(_) => {
+                    return Err(BridgeError::invalid_input(
+                        "pdfassets.prerender@1 的 scope 必须是字符串",
+                    ))
+                }
+            };
+            let docling_json_path = match input.get("doclingJsonPath") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    let path = value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    match path {
+                        Some(path) => Some(std::path::PathBuf::from(path)),
+                        None => {
+                            return Err(BridgeError::invalid_input(
+                                "pdfassets.prerender@1 的 doclingJsonPath 必须是非空字符串",
+                            ))
+                        }
+                    }
+                }
+            };
+            if matches!(
+                scope,
+                crate::pdfassets::PrerenderScope::All | crate::pdfassets::PrerenderScope::Crops
+            ) && docling_json_path.is_none()
+            {
+                return Err(BridgeError::invalid_input(
+                    "pdfassets.prerender@1 的 scope=all / crops 需要 doclingJsonPath",
+                ));
+            }
             let pdf_path = input
                 .get("pdfPath")
                 .and_then(Value::as_str)
@@ -315,8 +351,9 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 .map(std::path::PathBuf::from);
             Ok(TaskPlan::PdfassetsPrerender {
                 paper_id: paper_id.to_string(),
-                docling_json_path: std::path::PathBuf::from(docling_json_path),
+                docling_json_path,
                 pdf_path,
+                scope,
             })
         }
         crate::protocol::TASK_BUILD_MAP => {
@@ -324,7 +361,11 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
             files::require_safe_segment(paper_id, "paperId")?;
             Ok(TaskPlan::PaperBuildMap {
                 paper_id: paper_id.to_string(),
-                overwrite_confirmed: optional_bool(crate::protocol::TASK_BUILD_MAP, input, "overwriteConfirmed")?,
+                overwrite_confirmed: optional_bool(
+                    crate::protocol::TASK_BUILD_MAP,
+                    input,
+                    "overwriteConfirmed",
+                )?,
             })
         }
         crate::protocol::TASK_DEEP_DIVE => {
@@ -333,7 +374,9 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
             let part_ids = input
                 .get("partIds")
                 .and_then(Value::as_array)
-                .ok_or_else(|| BridgeError::invalid_input("paper.deep-dive@1 需要数组参数 partIds"))?;
+                .ok_or_else(|| {
+                    BridgeError::invalid_input("paper.deep-dive@1 需要数组参数 partIds")
+                })?;
             let mut ids: Vec<String> = Vec::with_capacity(part_ids.len());
             for value in part_ids {
                 let id = value
@@ -346,7 +389,9 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 }
             }
             if ids.is_empty() {
-                return Err(BridgeError::invalid_input("paper.deep-dive@1 的 partIds 不能为空数组"));
+                return Err(BridgeError::invalid_input(
+                    "paper.deep-dive@1 的 partIds 不能为空数组",
+                ));
             }
             Ok(TaskPlan::PaperDeepDive {
                 paper_id: paper_id.to_string(),
@@ -358,7 +403,11 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
             files::require_safe_segment(paper_id, "paperId")?;
             Ok(TaskPlan::PaperSynthesize {
                 paper_id: paper_id.to_string(),
-                overwrite_confirmed: optional_bool(crate::protocol::TASK_SYNTHESIZE, input, "overwriteConfirmed")?,
+                overwrite_confirmed: optional_bool(
+                    crate::protocol::TASK_SYNTHESIZE,
+                    input,
+                    "overwriteConfirmed",
+                )?,
             })
         }
         _ => Err(BridgeError::unknown_command(kind)),
@@ -387,14 +436,11 @@ fn validate_chat_content(index: usize, content: &Value) -> Result<Value, BridgeE
                 )));
             }
             for (part_index, part) in parts.iter().enumerate() {
-                let kind = part
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        BridgeError::invalid_input(format!(
-                            "messages[{index}].content[{part_index}].type 必须是字符串"
-                        ))
-                    })?;
+                let kind = part.get("type").and_then(Value::as_str).ok_or_else(|| {
+                    BridgeError::invalid_input(format!(
+                        "messages[{index}].content[{part_index}].type 必须是字符串"
+                    ))
+                })?;
                 match kind {
                     "text" => {
                         if part.get("text").and_then(Value::as_str).is_none() {
@@ -440,13 +486,12 @@ fn plan_model_chat(input: &Value, library: &Library) -> Result<TaskPlan, BridgeE
         .ok_or_else(|| BridgeError::invalid_input("model.chat@1 需要非空数组参数 messages"))?;
     let mut checked = Vec::with_capacity(messages.len());
     for (index, message) in messages.iter().enumerate() {
-        let role = message
-            .get("role")
-            .and_then(Value::as_str)
-            .ok_or_else(|| BridgeError::invalid_input(format!("messages[{index}].role 必须是字符串")))?;
-        let content = message.get("content").ok_or_else(|| {
-            BridgeError::invalid_input(format!("messages[{index}] 缺少 content"))
+        let role = message.get("role").and_then(Value::as_str).ok_or_else(|| {
+            BridgeError::invalid_input(format!("messages[{index}].role 必须是字符串"))
         })?;
+        let content = message
+            .get("content")
+            .ok_or_else(|| BridgeError::invalid_input(format!("messages[{index}] 缺少 content")))?;
         let content = validate_chat_content(index, content)?;
         checked.push(json!({ "role": role, "content": content }));
     }
@@ -500,10 +545,9 @@ fn optional_u64(kind: &str, input: &Value, field: &str) -> Result<Option<u64>, B
     match input.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(value) => {
-            let number = value
-                .as_u64()
-                .filter(|number| *number > 0)
-                .ok_or_else(|| BridgeError::invalid_input(format!("{kind} 的 {field} 必须是正整数")))?;
+            let number = value.as_u64().filter(|number| *number > 0).ok_or_else(|| {
+                BridgeError::invalid_input(format!("{kind} 的 {field} 必须是正整数"))
+            })?;
             Ok(Some(number))
         }
     }
@@ -575,7 +619,10 @@ impl TaskRegistry {
         sink: Arc<dyn EventSink>,
     ) -> Result<String, BridgeError> {
         let plan = plan_task(kind, &input, &self.library)?;
-        let task_id = format!("task-{:06}", self.next_id.fetch_add(1, Ordering::SeqCst) + 1);
+        let task_id = format!(
+            "task-{:06}",
+            self.next_id.fetch_add(1, Ordering::SeqCst) + 1
+        );
         let now = now_iso();
         let entry = TaskEntry {
             snapshot: TaskSnapshot {
@@ -698,17 +745,37 @@ impl TaskRegistry {
     }
 
     /// 状态变化：更新快照并发 status 事件。
-    fn transition(&self, task_id: &str, sink: &Arc<dyn EventSink>, status: TaskStatus, error: Option<BridgeError>) {
+    fn transition(
+        &self,
+        task_id: &str,
+        sink: &Arc<dyn EventSink>,
+        status: TaskStatus,
+        error: Option<BridgeError>,
+    ) {
         self.publish(task_id, sink, Some(status), None, None, error, None);
     }
 
     /// 成功终态：可携带结果载荷（result 只在 succeeded 终态使用）。
     fn succeed(&self, task_id: &str, sink: &Arc<dyn EventSink>, result: Option<Value>) {
-        self.publish(task_id, sink, Some(TaskStatus::Succeeded), None, None, None, result);
+        self.publish(
+            task_id,
+            sink,
+            Some(TaskStatus::Succeeded),
+            None,
+            None,
+            None,
+            result,
+        );
     }
 
     /// 流式块：只推进进度并发 chunk 事件；取消请求后的状态在检查点统一切换，不在此覆盖。
-    fn push_chunk(&self, task_id: &str, sink: &Arc<dyn EventSink>, progress: Progress, chunk: String) {
+    fn push_chunk(
+        &self,
+        task_id: &str,
+        sink: &Arc<dyn EventSink>,
+        progress: Progress,
+        chunk: String,
+    ) {
         self.publish(task_id, sink, None, Some(progress), Some(chunk), None, None);
     }
 
@@ -721,7 +788,13 @@ impl TaskRegistry {
     /// 事件名是事件流契约的一部分（规格 #55 决策 28）。
     /// detail 同时 append 进快照的有界日志：JS 订阅建立前发出的事件不经通道重放，
     /// 任务中心轮询快照即可拿到完整阶段/轨迹（#72 走查发现订阅窗口丢事件）。
-    fn push_detail(&self, task_id: &str, sink: &Arc<dyn EventSink>, event: &'static str, detail: Value) {
+    fn push_detail(
+        &self,
+        task_id: &str,
+        sink: &Arc<dyn EventSink>,
+        event: &'static str,
+        detail: Value,
+    ) {
         let snapshot = {
             let Ok(mut entries) = self.entries.lock() else {
                 return;
@@ -976,7 +1049,9 @@ fn run_task(
             stream,
         } => crate::model::run_chat(&ctx, &messages, temperature, max_tokens, stream),
         TaskPlan::ModelTest => crate::model::run_test(&ctx),
-        TaskPlan::NetFetchText { url, max_bytes } => crate::net::run_fetch_text(&ctx, &url, max_bytes),
+        TaskPlan::NetFetchText { url, max_bytes } => {
+            crate::net::run_fetch_text(&ctx, &url, max_bytes)
+        }
         TaskPlan::FilesDownload {
             paper_id,
             attachment_id,
@@ -1012,7 +1087,14 @@ fn run_task(
             paper_id,
             docling_json_path,
             pdf_path,
-        } => crate::pdfassets::run_prerender(&ctx, &paper_id, &docling_json_path, pdf_path.as_deref()),
+            scope,
+        } => crate::pdfassets::run_prerender(
+            &ctx,
+            &paper_id,
+            docling_json_path.as_deref(),
+            pdf_path.as_deref(),
+            scope,
+        ),
         TaskPlan::PaperBuildMap {
             paper_id,
             overwrite_confirmed,

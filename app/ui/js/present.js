@@ -1,5 +1,6 @@
 // 书库卡片建图状态、任务中心协议任务呈现、导出笔记内容组装的纯函数缝
-// （#72 / 规格 #56 决策 12–13、21）。无 DOM；UI 壳（main.js）只负责渲染。
+// （#72 / 规格 #56 决策 12–13、21；#77 任务类型标签按 prerender scope 区分）。
+// 无 DOM；UI 壳（main.js）只负责渲染。
 //
 // 事件流契约（#55/#65，Rust protocol.rs 发射；#72 起快照携带 details 日志）：
 // - 建图阶段事件 detail = { stage: 'preflight'|'map-l2'|'map-l1', shard?, shards? }
@@ -32,6 +33,35 @@ export function libraryMapState({ mapped = false, mapping = false, mappingStage 
   }
   if (mapped) return { tone: 'done', text: `已建图 · 已读完 ${done}/${total}` };
   return { tone: 'idle', text: '未建图' };
+}
+
+// ---------------- 任务类型标签（#77：prerender 按 scope 区分） ----------------
+
+const TASK_KIND_LABELS = {
+  'model.chat': '模型生成',
+  'model.test': '连接测试',
+  'net.fetch-text': '网页抓取',
+  'files.download': '文件下载',
+  'pdfparse.convert': '解析 PDF',
+  'paper.build-map': '建图',
+  'paper.deep-dive': '深挖',
+  'paper.synthesize': '综合',
+};
+
+/** prerender 任务中心类型标签：pages / crops / 缺省（all）三档。 */
+export function prerenderTaskLabel(scope) {
+  if (scope === 'pages') return '预渲染页图';
+  if (scope === 'crops') return '预渲染图表';
+  return '预渲染';
+}
+
+/** 任务 kind → 中文名；prerender 再按 input.scope 细分。 */
+export function taskKindLabel(kind, input = {}) {
+  const bare = String(kind || '').replace(/@\d+$/, '');
+  if (bare === 'pdfassets.prerender') return prerenderTaskLabel(input?.scope);
+  if (TASK_KIND_LABELS[bare]) return TASK_KIND_LABELS[bare];
+  if (bare.startsWith('demo.')) return '演示任务';
+  return bare || '未知任务';
 }
 
 // ---------------- 任务中心协议呈现（决策 13） ----------------
