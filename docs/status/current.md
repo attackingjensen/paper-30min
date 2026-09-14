@@ -1,6 +1,6 @@
 # 项目当前状态
 
-> 更新时间：2026-09-14（#76 实现落地，待真实窗口走查）
+> 更新时间：2026-09-14（#76 窗口走查通过并关闭）
 
 ## 当前阶段
 
@@ -10,7 +10,7 @@
 
 发布线动向（2026-09-13）：Windows 第一版已发布。steven123397/dev 已合入 main（不用 PR，两分支同源），版本号 1.0.0 落位；`Paper30Min_1.0.0_x64-setup.exe`（约 700MB，侧车与模型随包）已通过 [GitHub Release v1.0.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0) 正式发布，作者在三台 Windows 机器上安装使用验收通过。首次启动空书库自动播种一份内置「使用说明」论文（纯文本、可删除不复活、不计打卡）。Linux 暂不支持：卡在 Docling 侧车仅 Windows 构建，适配另立项。遗留验收项：覆盖升级与卸载未专项验收（三台新装均通过）。发布后已修待出补丁的问题：侧车子进程在 Windows 下弹控制台黑窗（已修 `CREATE_NO_WINDOW`，随下一补丁版发布）。
 
-v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深挖三处等待都过长）。源码分析结论：预渲染挡在建图前、建图调用①是一次巨型输出、深挖每轮全量重发且批量串行，再叠加侧车每次冷启与 Docling 默认 4 线程/ACCURATE 表模式。已立性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（对 #48/#55 的性能修订，不改产物契约）及实施链 #75–#85。[#75](https://github.com/attackingjensen/paper-30min/issues/75) 已关闭（契约测试 + 真实窗口点验解析计时与建图轮次行）。[#76](https://github.com/attackingjensen/paper-30min/issues/76) 已实现：`pdfparse.convert@1` 带 `paperId` 成功后立即落块模型，`paper.build-map@1` 只等块模型，页图/裁切图齐备检查迁到 `paper.deep-dive@1`，导入后预渲染与建图并行；节页「开始深挖」在预渲染完成前禁用。真实窗口走查仍待做。当前下一步按 #77（页图与解析并行）/ #78（Docling 线程与 FAST 表）/ #79（节薄摘要分片并发）推进。
+v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深挖三处等待都过长）。源码分析结论：预渲染挡在建图前、建图调用①是一次巨型输出、深挖每轮全量重发且批量串行，再叠加侧车每次冷启与 Docling 默认 4 线程/ACCURATE 表模式。已立性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（对 #48/#55 的性能修订，不改产物契约）及实施链 #75–#85。[#75](https://github.com/attackingjensen/paper-30min/issues/75) 已关闭（契约测试 + 真实窗口点验解析计时与建图轮次行）。[#76](https://github.com/attackingjensen/paper-30min/issues/76) 已关闭：解析完成后即可建图，预渲染与建图并行，深挖等页图齐备。当前下一步按 #77（页图与解析并行）/ #78（Docling 线程与 FAST 表）/ #79（节薄摘要分片并发）推进。
 
 当前不扩展产品范围，不因零散感受新建打磨类 Issue，也不创建合入 `main` 的 PR。`steven123397/dev` 是当前协作分支。
 
@@ -43,7 +43,7 @@ v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深�
 - `cd app && node --test`：160 项通过。
 - `cd app/src-tauri && cargo test`：231 项通过（`pdfparse_regression` 默认跑清单良构，全链 assert 模式本机实测 13/13 全绿）。
 - `cd app && npm run smoke`：14/14 通过。
-- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#35 实施链的全量窗口点验（视图骨架 / 双侧栏 / 地图页与节页 / 书库与任务中心呈现 / 导出切换 / 阅读位置与重启恢复 / #33 移交用例）见 [Issue #72 全量走查](../draft/2026-09-12-issue72-walkthrough.md)；soft-ui 皮肤的真实窗口视觉走查（18 项清单，1 项 tab hover 缺陷即修即验）见 [2026-09-13 soft-ui 走查](../draft/2026-09-13-softui-walkthrough.md)；#75 任务中心点验解析成功后的计时拆分与建图进行中的模型轮行（首字/总时长/token，reasoning 高亮）。
+- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#35 实施链的全量窗口点验（视图骨架 / 双侧栏 / 地图页与节页 / 书库与任务中心呈现 / 导出切换 / 阅读位置与重启恢复 / #33 移交用例）见 [Issue #72 全量走查](../draft/2026-09-12-issue72-walkthrough.md)；soft-ui 皮肤的真实窗口视觉走查（18 项清单，1 项 tab hover 缺陷即修即验）见 [2026-09-13 soft-ui 走查](../draft/2026-09-13-softui-walkthrough.md)；#75 任务中心点验解析成功后的计时拆分与建图进行中的模型轮行（首字/总时长/token，reasoning 高亮）；#76 点验解析结束即可建图、任务中心同时可见预渲染、深挖按钮在预渲染完成前禁用并有提示。
 - 详细走查记录见 [Issue #31 真实窗口走查清单](../draft/2026-09-06-issue31-walkthrough.md)；各票新增测试的分布见对应 Issue 的完成说明。
 
 ## 实施状态
@@ -85,8 +85,8 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 | Issue | 内容 | 状态 |
 | --- | --- | --- |
 | [#75](https://github.com/attackingjensen/paper-30min/issues/75) | 模型轮遥测、解析计时探针与共享 HTTP 客户端 | 已完成 |
-| [#76](https://github.com/attackingjensen/paper-30min/issues/76) | 建图只等块模型：convert 落块模型、preflight 迁移到深挖 | 已实现（待窗口走查） |
-| [#77](https://github.com/attackingjensen/paper-30min/issues/77) | 页图与解析并行：prerender scope 与前端双排队 | 待开始（依赖 #76） |
+| [#76](https://github.com/attackingjensen/paper-30min/issues/76) | 建图只等块模型：convert 落块模型、preflight 迁移到深挖 | 已完成 |
+| [#77](https://github.com/attackingjensen/paper-30min/issues/77) | 页图与解析并行：prerender scope 与前端双排队 | 待开始 |
 | [#78](https://github.com/attackingjensen/paper-30min/issues/78) | Docling 线程数按物理核、TableFormer FAST 与基线重建 | 待开始（依赖 #75） |
 | [#79](https://github.com/attackingjensen/paper-30min/issues/79) | 节薄摘要默认按节分片并有界并发 | 待开始（依赖 #75） |
 | [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 待开始（依赖 #75） |
