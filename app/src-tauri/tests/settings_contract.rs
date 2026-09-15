@@ -66,6 +66,9 @@ fn defaults_are_reported_before_any_write() {
     assert_eq!(model["temperature"], json!(0.3));
     assert_eq!(model["maxTokens"], json!(4096));
     assert_eq!(model["maxChars"], json!(16000));
+    assert_eq!(model["stageModels"], json!({}));
+    assert_eq!(model["extraBody"], json!({}));
+    assert_eq!(model["stageExtraBody"], json!({}));
     assert_eq!(result["skillsOverrides"], json!({}));
     assert_eq!(result["pdfparse"]["hfEndpoint"], json!(""));
     assert_eq!(result["pdfparse"]["tableMode"], json!("fast"));
@@ -115,6 +118,13 @@ fn put_model_rejects_invalid_values() {
         json!({ "baseUrl": 42 }),
         json!({ "apiKey": true }),
         json!({ "model": ["gpt-x"] }),
+        json!({ "extraBody": "not-object" }),
+        json!({ "extraBody": [] }),
+        json!({ "stageModels": { "qa": ["m"] } }),
+        json!({ "stageModels": { "qa": "" } }),
+        json!({ "stageModels": { "qa": 1 } }),
+        json!({ "stageExtraBody": { "qa": "not-object" } }),
+        json!({ "stageExtraBody": { "deep-dive": [] } }),
     ] {
         let error = invoke_err(
             &registry,
@@ -296,6 +306,41 @@ fn put_pdfparse_validates_table_mode() {
         json!({ "settings": { "tableMode": "fast" } }),
     );
     assert_eq!(fast["settings"]["tableMode"], json!("fast"));
+}
+
+#[test]
+fn put_model_accepts_stage_fields_and_ignores_unknown_stage_keys() {
+    let (registry, library, _dir) = common::env();
+    let saved = invoke(
+        &registry,
+        &library,
+        "settings.putModel@1",
+        json!({
+            "settings": {
+                "stageModels": { "qa": "qwen-qa", "nope": "ignored", "map-l2": "fast-x" },
+                "extraBody": { "temperature": null, "foo": 1 },
+                "stageExtraBody": {
+                    "deep-dive": { "enable_thinking": true, "reasoning_effort": "low" },
+                    "unknown": { "drop": true }
+                }
+            }
+        }),
+    );
+    assert_eq!(
+        saved["settings"]["stageModels"],
+        json!({ "qa": "qwen-qa", "map-l2": "fast-x" })
+    );
+    assert_eq!(saved["settings"]["extraBody"], json!({ "temperature": null, "foo": 1 }));
+    assert_eq!(
+        saved["settings"]["stageExtraBody"],
+        json!({ "deep-dive": { "enable_thinking": true, "reasoning_effort": "low" } })
+    );
+
+    let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(loaded["model"]["stageModels"], saved["settings"]["stageModels"]);
+    assert_eq!(loaded["model"]["extraBody"], saved["settings"]["extraBody"]);
+    assert_eq!(loaded["model"]["stageExtraBody"], saved["settings"]["stageExtraBody"]);
+    assert_eq!(loaded["model"]["maxTokens"], json!(4096), "新字段写入不应清掉缺省");
 }
 
 #[test]

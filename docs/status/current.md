@@ -1,6 +1,6 @@
 # 项目当前状态
 
-> 更新时间：2026-09-15（#78 落地：解析 FAST + 物理核线程，回归基线已重建）
+> 更新时间：2026-09-15（#82 真实窗口点验通过，下一步 #79）
 
 ## 当前阶段
 
@@ -10,7 +10,7 @@
 
 发布线动向（2026-09-13）：Windows 第一版已发布。steven123397/dev 已合入 main（不用 PR，两分支同源），版本号 1.0.0 落位；`Paper30Min_1.0.0_x64-setup.exe`（约 700MB，侧车与模型随包）已通过 [GitHub Release v1.0.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0) 正式发布，作者在三台 Windows 机器上安装使用验收通过。首次启动空书库自动播种一份内置「使用说明」论文（纯文本、可删除不复活、不计打卡）。Linux 暂不支持：卡在 Docling 侧车仅 Windows 构建，适配另立项。遗留验收项：覆盖升级与卸载未专项验收（三台新装均通过）。发布后已修待出补丁的问题：侧车子进程在 Windows 下弹控制台黑窗（已修 `CREATE_NO_WINDOW`，随下一补丁版发布）。
 
-v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深挖三处等待都过长）。源码分析结论：预渲染挡在建图前、建图调用①是一次巨型输出、深挖每轮全量重发且批量串行，再叠加侧车每次冷启与 Docling 默认 4 线程/ACCURATE 表模式。已立性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（对 #48/#55 的性能修订，不改产物契约）及实施链 #75–#85。[#75](https://github.com/attackingjensen/paper-30min/issues/75) 已关闭（契约测试 + 真实窗口点验解析计时与建图轮次行）。[#76](https://github.com/attackingjensen/paper-30min/issues/76) 已关闭：解析完成后即可建图，预渲染与建图并行，深挖等页图齐备。[#77](https://github.com/attackingjensen/paper-30min/issues/77) 已关闭：导入后页图预渲染与解析并行，解析完成后补渲染图表裁切图（真实窗口点验任务中心双任务与图表补渲染；页图预渲染明显快于解析）。[#78](https://github.com/attackingjensen/paper-30min/issues/78) 已落地：解析默认 TableFormer FAST、线程按物理核钳制到 [2, 8]，#60 夹具同机 dump 总耗时 481 s → 344 s（约 −29%），facts 无退步并重建 `baselineSeconds`；设置可切回 ACCURATE。#75 遥测随即揭示建图一轮「首字 164 s / 总 211 s」的真因：`qwen3.8-flash` 在 DashScope 默认开启思考且强度最高，推理 token 走 `reasoning_content`、应用侧不识别而静默；据此修订 #74 §E3（[修订评论](https://github.com/attackingjensen/paper-30min/issues/74#issuecomment-5665232412)）：协议四阶段默认 `enable_thinking: false`、问答默认开思考并显示「思考中」（[#82](https://github.com/attackingjensen/paper-30min/issues/82) 重写），新增 [#86](https://github.com/attackingjensen/paper-30min/issues/86)（可空 temperature、400 自动卸参数）。当前下一步：#82 是最直接的体感修复，优先；其后按 #79 推进。#78 设置面板待真实窗口点验。
+v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深挖三处等待都过长）。源码分析结论：预渲染挡在建图前、建图调用①是一次巨型输出、深挖每轮全量重发且批量串行，再叠加侧车每次冷启与 Docling 默认 4 线程/ACCURATE 表模式。已立性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（对 #48/#55 的性能修订，不改产物契约）及实施链 #75–#85。[#75](https://github.com/attackingjensen/paper-30min/issues/75) 已关闭（契约测试 + 真实窗口点验解析计时与建图轮次行）。[#76](https://github.com/attackingjensen/paper-30min/issues/76) 已关闭：解析完成后即可建图，预渲染与建图并行，深挖等页图齐备。[#77](https://github.com/attackingjensen/paper-30min/issues/77) 已关闭：导入后页图预渲染与解析并行，解析完成后补渲染图表裁切图（真实窗口点验任务中心双任务与图表补渲染；页图预渲染明显快于解析）。[#78](https://github.com/attackingjensen/paper-30min/issues/78) 已关闭：解析默认 TableFormer FAST、线程按物理核钳制到 [2, 8]，#60 夹具同机 dump 总耗时 481 s → 344 s（约 −29%），facts 无退步并重建 `baselineSeconds`；设置可切回 ACCURATE（契约测试 + 作者真实窗口点验 FAST / ACCURATE 单选）。#75 遥测随即揭示建图一轮「首字 164 s / 总 211 s」的真因：`qwen3.8-flash` 在 DashScope 默认开启思考且强度最高，推理 token 走 `reasoning_content`、应用侧不识别而静默；据此修订 #74 §E3（[修订评论](https://github.com/attackingjensen/paper-30min/issues/74#issuecomment-5665232412)）：协议四阶段默认 `enable_thinking: false`、问答默认开思考并显示「思考中」（[#82](https://github.com/attackingjensen/paper-30min/issues/82) 重写），新增 [#86](https://github.com/attackingjensen/paper-30min/issues/86)（可空 temperature、400 自动卸参数）。[#82](https://github.com/attackingjensen/paper-30min/issues/82) 已关闭：协议四阶段默认关思考、问答默认开思考并显示思考心跳；可为每阶段指定模型名与请求体附加参数（契约测试 + 作者真实窗口点验通过）。当前下一步按 [#79](https://github.com/attackingjensen/paper-30min/issues/79) 推进。
 
 当前不扩展产品范围，不因零散感受新建打磨类 Issue，也不创建合入 `main` 的 PR。`steven123397/dev` 是当前协作分支。
 
@@ -29,9 +29,9 @@ v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深�
 - 采用 Tauri + Rust + 原生 JavaScript，SQLite 保存本地书库。
 - 支持本地 PDF、arXiv 和示例论文导入，浏览器整库可预检后迁移。
 - 支持论文、精读、PDF、翻译、问答和回想卡片的完整阅读流程。提问支持 @节 chip、原文选中片段引用块与建图门禁。阅读视图为四 tab（地图 / 原文 / 提问 / 回想卡片）与地图页 ⇄ 节页两层导航；翻译是原文 tab 的节级对照。地图页呈现 L1 五区块与复述稿（手动触发、重跑确认）；节页聚合 L2 薄摘要、三态深挖、图表区与已读完标记；出处指针按文本块 / 图表 / 页三分定位。节树与 PDF 对照栏可拖拽调宽、可收起为视口边缘浮钮；PDF 对照随节页定位该节起始页。任务运行期间书库 / 任务中心 / 阅读页往返不取消任务。导入 PDF 后页图预渲染与解析并行，解析完成后补渲染图表裁切图；解析完成即可建图。解析默认 TableFormer FAST、线程按物理核钳制到 2–8，设置可切回 ACCURATE。节页「开始深挖」在页图与裁切图齐备前禁用并提示「页图预渲染中」。
-- 书库卡片直接呈现建图状态（未建图 / 建图中带实时阶段 / 已建图带标记进度 n/N）；任务中心对协议任务呈现类型徽章、建图阶段流、深挖取证轨迹步骤流（工具步与模型轮按 details 原序穿插：首字时延、总时长、输入/输出 token、缓存命中；reasoning token 非零时高亮）与批量逐节子进度；解析任务详情展示启动 / 模型加载 / 版面 / 表格 / OCR / 其他 / 总计的计时拆分（消费任务快照的 details 有界日志，容量 500，JS 订阅前的事件不丢）。`pdfassets.prerender` 按 scope 显示「预渲染页图 / 预渲染图表 / 预渲染」。模型调用跨轮复用进程级 HTTP 客户端。
+- 书库卡片直接呈现建图状态（未建图 / 建图中带实时阶段 / 已建图带标记进度 n/N）；任务中心对协议任务呈现类型徽章、建图阶段流、深挖取证轨迹步骤流（工具步与模型轮按 details 原序穿插：首字时延、总时长、输入/输出 token、缓存命中；reasoning token 非零或思考耗时非零时高亮，轮次行显示「思考 x s」）与批量逐节子进度；解析任务详情展示启动 / 模型加载 / 版面 / 表格 / OCR / 其他 / 总计的计时拆分（消费任务快照的 details 有界日志，容量 500，JS 订阅前的事件不丢）。`pdfassets.prerender` 按 scope 显示「预渲染页图 / 预渲染图表 / 预渲染」。模型调用跨轮复用进程级 HTTP 客户端。
 - 导出笔记内容源为协议产物（L1/L2/深挖/复述稿，笔记格式 v2），旧精读结果保留为文末只读附录。
-- 模型调用由 Rust 发起，API Key 只保存在本机设置表；流式输出通过任务事件传给界面。
+- 模型调用由 Rust 发起，API Key 只保存在本机设置表；流式输出通过任务事件传给界面。协议四阶段默认 `enable_thinking: false`，问答默认开启思考；可为每阶段指定模型名与请求体附加参数。SSE 识别 `reasoning_content`，思考进行中地图页 / 节页 / 问答面板显示「模型思考中 · 已 x s」或「思考中 · x s」。
 - 任务中心支持排队、进行中、成功、失败、已取消、待重试等状态，以及取消、重试和关闭窗口时的等待/停止选择。
 - 论文成果、附件、设置和阅读位置在关闭并重新打开后可恢复。
 - 已完成第一轮渐进式前端重设计：书库、阅读和任务中心三视图，阅读位置可恢复，业务行为和数据契约与浏览器版保持一致。
@@ -39,11 +39,11 @@ v1.0 发布后的首要反馈是「太慢」（解析/预渲染、建图、深�
 
 ## 工程验证
 
-- 根目录 `npm test`：244 项通过（递归含 `app/tests/`）。
-- `cd app && node --test`：161 项通过。
-- `cd app/src-tauri && cargo test`：243 项通过（`pdfparse_regression` 默认跑清单良构，全链 assert 模式本机实测 13/13 全绿；#78 已用 FAST + 物理核同机 dump 重建 `baselineSeconds`）。
+- 根目录 `npm test`：248 项通过（递归含 `app/tests/`）。
+- `cd app && node --test`：165 项通过。
+- `cd app/src-tauri && cargo test`：250 项通过（`pdfparse_regression` 默认跑清单良构，全链 assert 模式本机实测 13/13 全绿；#78 已用 FAST + 物理核同机 dump 重建 `baselineSeconds`）。
 - `cd app && npm run smoke`：14/14 通过。
-- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#35 实施链的全量窗口点验（视图骨架 / 双侧栏 / 地图页与节页 / 书库与任务中心呈现 / 导出切换 / 阅读位置与重启恢复 / #33 移交用例）见 [Issue #72 全量走查](../draft/2026-09-12-issue72-walkthrough.md)；soft-ui 皮肤的真实窗口视觉走查（18 项清单，1 项 tab hover 缺陷即修即验）见 [2026-09-13 soft-ui 走查](../draft/2026-09-13-softui-walkthrough.md)；#75 任务中心点验解析成功后的计时拆分与建图进行中的模型轮行（首字/总时长/token，reasoning 高亮）；#76 点验解析结束即可建图、任务中心同时可见预渲染、深挖按钮在预渲染完成前禁用并有提示；#77 点验导入后「解析 PDF」与「预渲染页图」并行、解析完成后出现「预渲染图表」、三者完成后深挖可用。
+- 真实 Tauri 窗口走查：#31 清单 12 项曾通过（见 draft）；#35 实施链的全量窗口点验（视图骨架 / 双侧栏 / 地图页与节页 / 书库与任务中心呈现 / 导出切换 / 阅读位置与重启恢复 / #33 移交用例）见 [Issue #72 全量走查](../draft/2026-09-12-issue72-walkthrough.md)；soft-ui 皮肤的真实窗口视觉走查（18 项清单，1 项 tab hover 缺陷即修即验）见 [2026-09-13 soft-ui 走查](../draft/2026-09-13-softui-walkthrough.md)；#75 任务中心点验解析成功后的计时拆分与建图进行中的模型轮行（首字/总时长/token，reasoning 高亮）；#76 点验解析结束即可建图、任务中心同时可见预渲染、深挖按钮在预渲染完成前禁用并有提示；#77 点验导入后「解析 PDF」与「预渲染页图」并行、解析完成后出现「预渲染图表」、三者完成后深挖可用；#78 点验设置「解析」区 FAST / ACCURATE 单选；#82 点验默认设置下协议关思考、问答开思考，作者确认观感无问题。
 - 详细走查记录见 [Issue #31 真实窗口走查清单](../draft/2026-09-06-issue31-walkthrough.md)；各票新增测试的分布见对应 Issue 的完成说明。
 
 ## 实施状态
@@ -87,11 +87,11 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 | [#75](https://github.com/attackingjensen/paper-30min/issues/75) | 模型轮遥测、解析计时探针与共享 HTTP 客户端 | 已完成 |
 | [#76](https://github.com/attackingjensen/paper-30min/issues/76) | 建图只等块模型：convert 落块模型、preflight 迁移到深挖 | 已完成 |
 | [#77](https://github.com/attackingjensen/paper-30min/issues/77) | 页图与解析并行：prerender scope 与前端双排队 | 已完成 |
-| [#78](https://github.com/attackingjensen/paper-30min/issues/78) | Docling 线程数按物理核、TableFormer FAST 与基线重建 | 已落地（回归基线已重建；设置面板待窗口点验） |
+| [#78](https://github.com/attackingjensen/paper-30min/issues/78) | Docling 线程数按物理核、TableFormer FAST 与基线重建 | 已完成 |
 | [#79](https://github.com/attackingjensen/paper-30min/issues/79) | 节薄摘要默认按节分片并有界并发 | 待开始（依赖 #75） |
 | [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 待开始（依赖 #75） |
 | [#81](https://github.com/attackingjensen/paper-30min/issues/81) | 深挖减轮：预附本节图表与一轮多工具 | 待开始（依赖 #75） |
-| [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型、请求体附加参数与思考模式默认策略（协议关、问答开） | 待开始（依赖 #75，优先） |
+| [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型、请求体附加参数与思考模式默认策略（协议关、问答开） | 已完成 |
 | [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 待开始（依赖 #79、#80） |
 | [#84](https://github.com/attackingjensen/paper-30min/issues/84) | 常驻侧车：serve 模式、预热、空闲释放与回退 | 待开始（依赖 #75、#77） |
 | [#86](https://github.com/attackingjensen/paper-30min/issues/86) | 请求参数兼容性：可空 temperature 与 400 自动卸参数 | 待开始（依赖 #75） |

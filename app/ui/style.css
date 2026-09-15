@@ -522,6 +522,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .chat-msg .md p:first-child { margin-top: 0; }
 .chat-msg .md p:last-child { margin-bottom: 0; }
 .chat-msg.err { border-color: var(--danger); color: var(--danger); }
+.chat-msg.chat-thinking { color: var(--muted); font-style: italic; }
 .chat-user-text { white-space: pre-wrap; }
 .chat-bind-chip, .chat-quote {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -598,6 +599,24 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 .settings-block { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .settings-block h4 { margin: 0 0 4px; font-size: 14px; }
+.settings-fold { margin-top: 12px; }
+.settings-fold > summary {
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text);
+}
+.settings-hint { margin: 8px 0 4px; }
+.settings-preview {
+  margin: 0; padding: 10px 12px; border-radius: 10px; background: #eef2ff;
+  font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-all;
+}
+.modal textarea {
+  width: 100%; min-height: 72px; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: 10px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  margin-top: 3px; resize: vertical;
+}
+.modal select {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px;
+  font-size: 14px; margin: 3px 0 6px; background: var(--card);
+}
 .settings-radios { display: flex; flex-wrap: wrap; gap: 12px 18px; margin-top: 8px; }
 .modal label.radio {
   display: inline-flex; align-items: center; gap: 6px;

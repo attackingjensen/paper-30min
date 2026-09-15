@@ -91,6 +91,10 @@ fn chat_streams_deltas_in_order_to_normalized_endpoint() {
     assert_eq!(body["max_tokens"], json!(4096), "缺省取 settings 值");
     assert_eq!(body["temperature"], json!(0.3));
     assert_eq!(body["messages"][0]["content"], json!("总结这篇论文"));
+    assert!(
+        body.get("enable_thinking").is_none(),
+        "未传 stage 时不应注入内建思考默认"
+    );
     assert_eq!(
         body["stream_options"],
         json!({ "include_usage": true }),
@@ -159,6 +163,8 @@ fn chat_plan_validation_rejects_bad_input_at_start() {
         json!({ "messages": [{ "role": "user", "content": [{ "type": "image_url", "image_url": { "url": "" } }] }] }),
         json!({ "messages": [{ "role": "user", "content": "x" }], "stream": "yes" }),
         json!({ "messages": [{ "role": "user", "content": "x" }], "temperature": "high" }),
+        json!({ "messages": [{ "role": "user", "content": "x" }], "stage": "nope" }),
+        json!({ "messages": [{ "role": "user", "content": "x" }], "stage": 1 }),
     ] {
         let error = registry.start("model.chat@1", input.clone(), sink.clone()).unwrap_err();
         assert_eq!(error.code, "invalid_input", "应拒绝非法输入: {input}");
@@ -702,5 +708,145 @@ fn consecutive_chats_reuse_http_connection() {
         mock.connections(),
         1,
         "共享客户端应对同一 mock 复用 TCP 连接"
+    );
+}
+
+#[test]
+fn chat_stage_qa_injects_enable_thinking_true() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        sse_chat(vec![
+            json!({"choices": [{"delta": {"content": "答"}}]}).to_string(),
+            json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}).to_string(),
+        ])
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let sink = Collector::new();
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({
+                "messages": [{ "role": "user", "content": "hi" }],
+                "stage": "qa"
+            }),
+            sink,
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let body: Value = serde_json::from_slice(&mock.requests()[0].body).unwrap();
+    assert_eq!(body["enable_thinking"], json!(true));
+    assert_eq!(body["model"], json!("gpt-smoke"));
+}
+
+#[test]
+fn chat_stage_extra_body_overrides_and_null_deletes_protected_keys() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        sse_chat(vec![
+            json!({"choices": [{"delta": {"content": "x"}}]}).to_string(),
+            json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}).to_string(),
+        ])
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    bridge::invoke(
+        &registry,
+        &library,
+        "settings.putModel@1",
+        &json!({
+            "settings": {
+                "extraBody": {
+                    "temperature": null,
+                    "model": "hijack",
+                    "messages": [],
+                    "stream": false,
+                    "keep": 1
+                },
+                "stageExtraBody": {
+                    "deep-dive": { "enable_thinking": true, "reasoning_effort": "low" }
+                }
+            }
+        }),
+    )
+    .expect("写入附加参数");
+    let sink = Collector::new();
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({
+                "messages": [{ "role": "user", "content": "hi" }],
+                "stage": "deep-dive"
+            }),
+            sink,
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let body: Value = serde_json::from_slice(&mock.requests()[0].body).unwrap();
+    assert_eq!(body["enable_thinking"], json!(true));
+    assert_eq!(body["reasoning_effort"], json!("low"));
+    assert_eq!(body["keep"], json!(1));
+    assert!(body.get("temperature").is_none(), "null 应删除 temperature");
+    assert_eq!(body["model"], json!("gpt-smoke"), "model 不可被覆盖");
+    assert_eq!(body["stream"], json!(true), "stream 不可被覆盖");
+    assert_eq!(body["messages"][0]["content"], json!("hi"), "messages 不可被覆盖");
+}
+
+#[test]
+fn chat_ignores_reasoning_content_and_emits_thinking_then_content() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        MockResponse::sse(
+            vec![
+                json!({"choices": [{"delta": {"reasoning_content": "想"}}]}).to_string(),
+                json!({"choices": [{"delta": {"reasoning_content": "一"}}]}).to_string(),
+                json!({"choices": [{"delta": {"reasoning_content": "想"}}]}).to_string(),
+                json!({"choices": [{"delta": {"content": "答案"}, "finish_reason": "stop"}]}).to_string(),
+                "[DONE]".to_string(),
+            ],
+            Duration::from_millis(40),
+        )
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let sink = Collector::new();
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            sink.clone(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+
+    let events = sink.events();
+    let chunks: Vec<String> = events
+        .iter()
+        .filter(|event| event.event == "chunk")
+        .map(|event| event.chunk.clone().unwrap())
+        .collect();
+    assert_eq!(chunks, vec!["答案".to_string()], "推理段不应产生 chunk");
+
+    let thinking: Vec<&paper30min_lib::tasks::TaskEvent> = events
+        .iter()
+        .filter(|event| event.event == "thinking")
+        .collect();
+    assert!(!thinking.is_empty(), "应至少有一条 thinking");
+    assert_eq!(thinking[0].detail.as_ref().unwrap()["kind"], json!("thinking"));
+    assert!(thinking[0].detail.as_ref().unwrap()["elapsedMs"].as_u64().is_some());
+    assert!(thinking[0].detail.as_ref().unwrap()["reasoningChars"].as_u64().unwrap() > 0);
+
+    let first_chunk = events.iter().position(|event| event.event == "chunk").unwrap();
+    assert!(
+        events.iter().skip(first_chunk).all(|event| event.event != "thinking"),
+        "正文到达后不应再有 thinking"
+    );
+
+    let result = registry.get(&task_id).unwrap().result.expect("应带 result");
+    let ttft = result["ttftMs"].as_u64().unwrap();
+    let reasoning = result["reasoningMs"].as_u64().unwrap();
+    let elapsed = result["elapsedMs"].as_u64().unwrap();
+    assert!(reasoning > 0);
+    assert!(ttft <= elapsed);
+    assert!(
+        ttft.saturating_add(reasoning) <= elapsed,
+        "首字时延应落在首个推理增量，思考时长为推理→正文，二者之和不超过总时长"
     );
 }

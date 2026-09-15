@@ -236,6 +236,15 @@ test('任务中心：解析计时拆分与模型轮遥测行', () => {
   assert.equal(round.text, '第 2 轮 · 首字 0.4 s · 总 2.1 s · 输入 800 / 输出 120 · 缓存 400');
   assert.equal(round.reasoning, true);
 
+  const thinkingRound = roundView({
+    round: 1,
+    ttftMs: 200,
+    elapsedMs: 4000,
+    reasoningMs: 1600,
+  });
+  assert.equal(thinkingRound.text, '第 1 轮 · 首字 0.2 s · 总 4.0 s · 思考 1.6 s');
+  assert.equal(thinkingRound.reasoning, true);
+
   const mapTask = taskSnapshot({
     kind: 'paper.build-map@1',
     details: [

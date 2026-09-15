@@ -549,14 +549,18 @@ fn deep_dive_tool_loop_completes_and_persists() {
     // 深挖中间轮不产生对外 chunk（决策 4）。
     assert!(sink.events().iter().all(|event| event.event != "chunk"), "深挖无对外 chunk");
 
-    // 快照 details 日志：阶段与工具轨迹随快照可回看——JS 订阅建立前发出的事件不经
-    // 通道重放，任务中心以快照日志为完整源（#72 走查实测订阅窗口丢事件后的补齐）。
+    // 快照 details 日志：阶段、正文开始与工具轨迹随快照可回看——JS 订阅建立前发出的
+    // 事件不经通道重放，任务中心以快照日志为完整源（#72 走查实测订阅窗口丢事件后的补齐）。
+    // 每轮正文开始发 content（清思考态），协议轮仍不对外发 chunk。
     let snapshot = registry.get(&task_id).expect("任务快照");
     let details = snapshot.details.expect("快照携带 details 日志");
     let events: Vec<&str> = details.iter().filter_map(|d| d["event"].as_str()).collect();
-    assert_eq!(events, vec!["stage", "round", "tool", "round", "tool", "round"]);
+    assert_eq!(
+        events,
+        vec!["stage", "content", "round", "tool", "content", "round", "tool", "content", "round"]
+    );
     assert_eq!(details[0]["detail"]["stage"], json!("deep-dive"));
-    assert_eq!(details[4]["detail"]["name"], json!("get_figure"));
+    assert_eq!(details[6]["detail"]["name"], json!("get_figure"));
 }
 
 #[test]
@@ -940,4 +944,148 @@ fn deep_dive_round_events_carry_part_id() {
     assert_eq!(rounds[0]["stage"], json!("deep-dive"));
     assert_eq!(rounds[0]["partId"], json!("part-1"));
     assert_eq!(rounds[0]["round"], json!(1));
+}
+
+#[test]
+fn protocol_stages_default_to_enable_thinking_false() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, hit| {
+        if hit == 1 {
+            sse_text(&l2_response())
+        } else if hit == 2 {
+            sse_text(&map_response())
+        } else if hit == 3 {
+            sse_text(DIG_MARKDOWN)
+        } else {
+            sse_text(RETELL_MARKDOWN)
+        }
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, _) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let (task_id, _) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+
+    let bodies: Vec<Value> = mock
+        .requests()
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert!(bodies.len() >= 4, "建图两轮 + 深挖 + 复述稿");
+    for (index, body) in bodies.iter().enumerate() {
+        assert_eq!(
+            body["enable_thinking"],
+            json!(false),
+            "协议阶段请求 {index} 应关闭思考"
+        );
+    }
+}
+
+#[test]
+fn build_map_stage_model_applies_only_to_first_call_and_round_model_matches() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, hit| {
+        if hit == 1 {
+            sse_text(&l2_response())
+        } else {
+            sse_text(&map_response())
+        }
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+    bridge::invoke(
+        &registry,
+        &library,
+        "settings.putModel@1",
+        &json!({ "settings": { "stageModels": { "map-l2": "fast-x" } } }),
+    )
+    .expect("写入阶段模型");
+
+    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let bodies: Vec<Value> = mock
+        .requests()
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["model"], json!("fast-x"));
+    assert_eq!(bodies[1]["model"], json!("qwen-protocol"));
+
+    let rounds = events_named(&sink, "round");
+    assert_eq!(rounds.len(), 2);
+    assert_eq!(rounds[0]["model"], json!("fast-x"));
+    assert_eq!(rounds[1]["model"], json!("qwen-protocol"));
+}
+
+#[test]
+fn synthesize_emits_thinking_then_content_and_round_reasoning_ms() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, _hit| {
+        MockResponse::sse(
+            vec![
+                json!({"choices": [{"delta": {"reasoning_content": "想"}}]}).to_string(),
+                json!({"choices": [{"delta": {"reasoning_content": "一"}}]}).to_string(),
+                json!({"choices": [{"delta": {"reasoning_content": "想"}}]}).to_string(),
+                json!({"choices": [{"delta": {"content": RETELL_MARKDOWN}, "finish_reason": "stop"}]}).to_string(),
+                "[DONE]".to_string(),
+            ],
+            Duration::from_millis(40),
+        )
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    let mut paper = library.get_paper(&paper_id).unwrap();
+    paper.products.push(ProductDto {
+        kind: "dig".to_string(),
+        part_id: "part-1".to_string(),
+        body: json!(DIG_MARKDOWN),
+        updated_at: "2026-09-11T00:00:00Z".to_string(),
+    });
+    library.put_paper(paper).unwrap();
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let events = sink.events();
+    let thinking_at = events.iter().position(|event| event.event == "thinking");
+    let content_at = events.iter().position(|event| event.event == "content");
+    assert!(thinking_at.is_some(), "应发出 thinking");
+    assert!(content_at.is_some(), "正文开始应发出 content");
+    assert!(thinking_at.unwrap() < content_at.unwrap(), "thinking 应早于 content");
+    assert!(
+        events.iter().skip(content_at.unwrap()).all(|event| event.event != "thinking"),
+        "正文到达后不应再有 thinking"
+    );
+
+    let contents = events_named(&sink, "content");
+    assert_eq!(contents[0]["stage"], json!("synthesize"));
+
+    let rounds = events_named(&sink, "round");
+    assert_eq!(rounds.len(), 1);
+    assert_eq!(rounds[0]["stage"], json!("synthesize"));
+    let ttft = rounds[0]["ttftMs"].as_u64().unwrap();
+    let reasoning = rounds[0]["reasoningMs"].as_u64().unwrap();
+    let elapsed = rounds[0]["elapsedMs"].as_u64().unwrap();
+    assert!(reasoning > 0);
+    assert!(ttft.saturating_add(reasoning) <= elapsed);
 }

@@ -6,8 +6,9 @@ use reqwest::blocking::{Client, Response};
 use reqwest::Url;
 use serde_json::{json, Map, Value};
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::BridgeError;
@@ -229,6 +230,7 @@ pub(crate) struct ChatCompletion {
     pub usage: TokenUsage,
     pub ttft_ms: u64,
     pub elapsed_ms: u64,
+    pub reasoning_ms: Option<u64>,
 }
 
 impl ChatCompletion {
@@ -236,6 +238,9 @@ impl ChatCompletion {
         let mut map = Map::new();
         map.insert("ttftMs".into(), json!(self.ttft_ms));
         map.insert("elapsedMs".into(), json!(self.elapsed_ms));
+        if let Some(ms) = self.reasoning_ms {
+            map.insert("reasoningMs".into(), json!(ms));
+        }
         if let Some(usage) = self.usage.to_json() {
             map.insert("usage".into(), usage);
         }
@@ -243,14 +248,23 @@ impl ChatCompletion {
     }
 }
 
+/// 可按阶段覆盖的模型调用阶段（设置键与 `model.chat@1` 的 `stage` 共用）。
+pub(crate) const MODEL_STAGES: [&str; 5] = ["map-l2", "map-l1", "deep-dive", "synthesize", "qa"];
+const PROTECTED_BODY_KEYS: [&str; 3] = ["model", "messages", "stream"];
+const THINKING_HEARTBEAT: Duration = Duration::from_secs(1);
+
 /// 组装 chat 请求体。流式时附 `stream_options.include_usage`（OpenAI 兼容端点在
-/// `stream: false` 时拒收该字段，故非流式不加）。
+/// `stream: false` 时拒收该字段，故非流式不加）。随后按
+/// 内建阶段默认 → extraBody → stageExtraBody[stage] 浅合并；`null` 删键。
 pub(crate) fn chat_request_body(
     model: &str,
     messages: &[Value],
     temperature: f64,
     max_tokens: u64,
     stream: bool,
+    stage: Option<&str>,
+    extra_body: &Map<String, Value>,
+    stage_extra_body: &Map<String, Value>,
 ) -> Value {
     let mut body = json!({
         "model": model,
@@ -262,21 +276,174 @@ pub(crate) fn chat_request_body(
     if stream {
         body["stream_options"] = json!({ "include_usage": true });
     }
+    apply_stage_extras(
+        &mut body,
+        stage,
+        extra_body,
+        stage.and_then(|key| stage_extra_body.get(key)).and_then(Value::as_object),
+    );
     body
 }
 
+fn builtin_stage_extra(stage: Option<&str>) -> Map<String, Value> {
+    let mut extra = Map::new();
+    match stage {
+        Some("map-l2" | "map-l1" | "deep-dive" | "synthesize") => {
+            extra.insert("enable_thinking".into(), json!(false));
+        }
+        Some("qa") => {
+            extra.insert("enable_thinking".into(), json!(true));
+        }
+        _ => {}
+    }
+    extra
+}
+
+fn apply_overlay(target: &mut Map<String, Value>, overlay: &Map<String, Value>) {
+    for (key, value) in overlay {
+        if PROTECTED_BODY_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if value.is_null() {
+            target.remove(key);
+        } else {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn apply_stage_extras(
+    body: &mut Value,
+    stage: Option<&str>,
+    extra_body: &Map<String, Value>,
+    stage_extra: Option<&Map<String, Value>>,
+) {
+    let Some(map) = body.as_object_mut() else {
+        return;
+    };
+    apply_overlay(map, &builtin_stage_extra(stage));
+    apply_overlay(map, extra_body);
+    if let Some(layer) = stage_extra {
+        apply_overlay(map, layer);
+    }
+}
+
+pub(crate) struct RequestExtras {
+    pub extra_body: Map<String, Value>,
+    pub stage_extra_body: Map<String, Value>,
+    pub stage_models: Map<String, Value>,
+}
+
+pub(crate) fn load_request_extras(library: &Library) -> RequestExtras {
+    let stored = library
+        .get_setting("model")
+        .ok()
+        .flatten()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let object = |key: &str| {
+        stored
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    RequestExtras {
+        extra_body: object("extraBody"),
+        stage_extra_body: object("stageExtraBody"),
+        stage_models: object("stageModels"),
+    }
+}
+
+pub(crate) fn model_name_for(
+    stage: Option<&str>,
+    stage_models: &Map<String, Value>,
+    fallback: &str,
+) -> String {
+    stage
+        .and_then(|key| stage_models.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+pub(crate) fn is_model_stage(value: &str) -> bool {
+    MODEL_STAGES.contains(&value)
+}
+
+pub(crate) fn parse_chat_stage(value: Option<&Value>) -> Result<Option<String>, BridgeError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(stage)) if is_model_stage(stage) => Ok(Some(stage.clone())),
+        _ => Err(BridgeError::invalid_input(
+            "stage 必须是 map-l2 / map-l1 / deep-dive / synthesize / qa",
+        )),
+    }
+}
+
+pub(crate) fn validate_stage_models(value: &Value) -> Result<Value, BridgeError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| BridgeError::invalid_input("stageModels 必须是对象"))?;
+    let mut cleaned = Map::new();
+    for (key, item) in object {
+        if !is_model_stage(key) {
+            continue;
+        }
+        let name = item
+            .as_str()
+            .map(str::trim)
+            .ok_or_else(|| BridgeError::invalid_input("阶段模型名必须是非空字符串"))?;
+        if name.is_empty() {
+            return Err(BridgeError::invalid_input("阶段模型名必须是非空字符串"));
+        }
+        cleaned.insert(key.clone(), json!(name));
+    }
+    Ok(Value::Object(cleaned))
+}
+
+pub(crate) fn validate_extra_body(value: &Value) -> Result<Value, BridgeError> {
+    if value.as_object().is_none() {
+        return Err(BridgeError::invalid_input("extraBody 必须是 JSON 对象"));
+    }
+    Ok(value.clone())
+}
+
+pub(crate) fn validate_stage_extra_body(value: &Value) -> Result<Value, BridgeError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| BridgeError::invalid_input("stageExtraBody 必须是对象"))?;
+    let mut cleaned = Map::new();
+    for (key, item) in object {
+        if !is_model_stage(key) {
+            continue;
+        }
+        if !item.is_object() {
+            return Err(BridgeError::invalid_input(
+                "阶段附加参数必须是 JSON 对象",
+            ));
+        }
+        cleaned.insert(key.clone(), item.clone());
+    }
+    Ok(Value::Object(cleaned))
+}
+
 /// POST chat/completions：共享客户端 + 按请求超时；SSE 抽增量与 usage（含 `choices: []`）。
-pub(crate) fn chat_completions<D, C>(
+pub(crate) fn chat_completions<D, C, T>(
     api_key: &str,
     endpoint: &str,
     body: &Value,
     timeout: Duration,
     mut on_delta: D,
     between_reads: C,
+    on_thinking: T,
 ) -> Result<ChatCompletion, BridgeError>
 where
     D: FnMut(&str) -> Result<(), BridgeError>,
     C: FnMut() -> Result<(), BridgeError>,
+    T: FnMut(u64, u64) -> Result<(), BridgeError> + Send,
 {
     let started = Instant::now();
     let client = shared_http_client()?;
@@ -332,9 +499,10 @@ where
             usage: TokenUsage::from_value(&value),
             ttft_ms: elapsed_ms,
             elapsed_ms,
+            reasoning_ms: None,
         });
     }
-    read_sse_completion(response, started, on_delta, between_reads)
+    read_sse_completion(response, started, on_delta, between_reads, on_thinking)
 }
 
 /// 从 settings 表读取的模型连接配置。
@@ -461,6 +629,7 @@ fn truncate_chars(value: &str, max: usize) -> String {
 /// model.chat@1：从 settings 读模型配置，POST chat/completions；
 /// SSE 增量逐块发 chunk（chunk=增量本身，不累积），非流式发单个 chunk。
 /// 成功终态 result 携带 usage 与 ttftMs/elapsedMs（#75）。
+/// 可选 `stage` 决定内建思考默认与阶段模型；未传 stage 时只应用 extraBody。
 /// 自动重试只在「尚未发出任何内容 chunk」时允许：一旦已产出 chunk，重发请求会把
 /// 已发出的增量再推一遍，前端按到达顺序拼接即出现重复前缀；此后失败直接 failed
 ///（错误保留 retryable，UI 手动重试是新任务，从干净状态开始）。
@@ -470,6 +639,7 @@ pub(crate) fn run_chat(
     temperature: f64,
     max_tokens: u64,
     stream: bool,
+    stage: Option<&str>,
 ) {
     let config = match load_model_config(&ctx.library) {
         Ok(Some(config)) => config,
@@ -480,13 +650,25 @@ pub(crate) fn run_chat(
         Ok(endpoint) => endpoint,
         Err(error) => return ctx.fail(error),
     };
-    let body = chat_request_body(&config.model, messages, temperature, max_tokens, stream);
+    let extras = load_request_extras(&ctx.library);
+    let model = model_name_for(stage, &extras.stage_models, &config.model);
+    let body = chat_request_body(
+        &model,
+        messages,
+        temperature,
+        max_tokens,
+        stream,
+        stage,
+        &extras.extra_body,
+        &extras.stage_extra_body,
+    );
     // 本次任务是否已向事件流发出内容 chunk；跨尝试共享，供重试门槛判断。
     let chunk_emitted = Arc::new(AtomicBool::new(false));
     let emitted = Arc::clone(&chunk_emitted);
+    let stage_owned = stage.map(str::to_string);
     let outcome = run_with_retry_while(
         ctx,
-        |ctx| chat_once(ctx, &config, &endpoint, &body, &emitted),
+        |ctx| chat_once(ctx, &config, &endpoint, &body, &emitted, stage_owned.as_deref()),
         || !chunk_emitted.load(Ordering::SeqCst),
     );
     if let Ok(completion) = outcome {
@@ -500,6 +682,7 @@ fn chat_once(
     endpoint: &str,
     body: &Value,
     chunk_emitted: &AtomicBool,
+    stage: Option<&str>,
 ) -> Result<ChatCompletion, BridgeError> {
     ctx.cancel_checkpoint()?;
     let mut chunk_count: u64 = 0;
@@ -521,98 +704,217 @@ fn chat_once(
             Ok(())
         },
         || ctx.cancel_checkpoint(),
+        |elapsed_ms, reasoning_chars| {
+            let mut detail = json!({
+                "kind": "thinking",
+                "elapsedMs": elapsed_ms,
+                "reasoningChars": reasoning_chars,
+            });
+            if let Some(stage) = stage {
+                detail["stage"] = json!(stage);
+            }
+            ctx.emit_detail("thinking", detail);
+            Ok(())
+        },
     )
+}
+
+struct ThinkingClock {
+    started: Instant,
+    active: AtomicBool,
+    chars: AtomicU64,
+    last_emit: Mutex<Option<Instant>>,
+}
+
+impl ThinkingClock {
+    fn new(started: Instant) -> Self {
+        Self {
+            started,
+            active: AtomicBool::new(false),
+            chars: AtomicU64::new(0),
+            last_emit: Mutex::new(None),
+        }
+    }
+
+    fn note_reasoning(&self, chars: u64) {
+        self.chars.store(chars, Ordering::SeqCst);
+        self.active.store(true, Ordering::SeqCst);
+    }
+
+    fn note_content(&self) {
+        self.active.store(false, Ordering::SeqCst);
+    }
+
+    fn try_emit(&self) -> Option<(u64, u64)> {
+        let mut last = self.last_emit.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !self.active.load(Ordering::SeqCst) {
+            return None;
+        }
+        let now = Instant::now();
+        let due = last
+            .map(|at| now.duration_since(at) >= THINKING_HEARTBEAT)
+            .unwrap_or(true);
+        if !due {
+            return None;
+        }
+        *last = Some(now);
+        Some((
+            self.started.elapsed().as_millis() as u64,
+            self.chars.load(Ordering::SeqCst),
+        ))
+    }
+}
+
+fn emit_thinking<T>(clock: &ThinkingClock, on_thinking: &Mutex<T>) -> Result<(), BridgeError>
+where
+    T: FnMut(u64, u64) -> Result<(), BridgeError>,
+{
+    let mut callback = on_thinking
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some((elapsed_ms, reasoning_chars)) = clock.try_emit() else {
+        return Ok(());
+    };
+    callback(elapsed_ms, reasoning_chars)
 }
 
 /// SSE 流式读取：按 8KB 块读；按 \n 在字节层切行。抽增量、finish_reason 与 usage。
 /// `choices` 为空数组但带 `usage` 的事件要接受。读到 EOF 才结束，以便 keep-alive 排空响应体。
-fn read_sse_completion<D, C>(
+/// 推理增量（`reasoning_content`）不进正文、不触发 chunk；思考进行中每 ≥1s 回调一次，
+/// 即使底层 `read` 阻塞也由旁路心跳补发。
+fn read_sse_completion<D, C, T>(
     mut response: Response,
     started: Instant,
     mut on_delta: D,
     mut between_reads: C,
+    on_thinking: T,
 ) -> Result<ChatCompletion, BridgeError>
 where
     D: FnMut(&str) -> Result<(), BridgeError>,
     C: FnMut() -> Result<(), BridgeError>,
+    T: FnMut(u64, u64) -> Result<(), BridgeError> + Send,
 {
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut text = String::new();
-    let mut finish_reason: Option<String> = None;
-    let mut usage = TokenUsage::default();
-    let mut ttft_ms: Option<u64> = None;
-    let mut buf = [0_u8; READ_CHUNK];
-    loop {
-        between_reads()?;
-        let read = response
-            .read(&mut buf)
-            .map_err(|err| network_error("model_network_error", err))?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&buf[..read]);
-        while let Some(pos) = buffer.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = buffer.drain(..=pos).collect();
-            let line = String::from_utf8_lossy(&line);
-            apply_sse_line(
-                &line,
-                &mut text,
-                &mut finish_reason,
-                &mut usage,
-                &mut ttft_ms,
-                started,
-                &mut on_delta,
-            )?;
-        }
-    }
-    if !buffer.is_empty() {
-        let tail = String::from_utf8_lossy(&buffer).into_owned();
-        for line in tail.split('\n') {
-            apply_sse_line(
-                line,
-                &mut text,
-                &mut finish_reason,
-                &mut usage,
-                &mut ttft_ms,
-                started,
-                &mut on_delta,
-            )?;
-        }
-    }
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-    Ok(ChatCompletion {
-        text,
-        finish_reason,
-        usage,
-        ttft_ms: ttft_ms.unwrap_or(elapsed_ms),
-        elapsed_ms,
+    let clock = ThinkingClock::new(started);
+    let on_thinking = Mutex::new(on_thinking);
+    let stop = AtomicBool::new(false);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stop.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(200));
+                let _ = emit_thinking(&clock, &on_thinking);
+            }
+        });
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut state = SseReadState::default();
+        let mut buf = [0_u8; READ_CHUNK];
+        let outcome = (|| {
+            loop {
+                between_reads()?;
+                emit_thinking(&clock, &on_thinking)?;
+                let read = response
+                    .read(&mut buf)
+                    .map_err(|err| network_error("model_network_error", err))?;
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&buf[..read]);
+                while let Some(pos) = buffer.iter().position(|byte| *byte == b'\n') {
+                    let line: Vec<u8> = buffer.drain(..=pos).collect();
+                    let line = String::from_utf8_lossy(&line);
+                    apply_sse_line(&line, &mut state, started, &clock, &on_thinking, &mut on_delta)?;
+                }
+            }
+            if !buffer.is_empty() {
+                let tail = String::from_utf8_lossy(&buffer).into_owned();
+                for line in tail.split('\n') {
+                    apply_sse_line(line, &mut state, started, &clock, &on_thinking, &mut on_delta)?;
+                }
+            }
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let reasoning_ms = state.reasoning_ms();
+            Ok(ChatCompletion {
+                text: state.text,
+                finish_reason: state.finish_reason,
+                usage: state.usage,
+                ttft_ms: state.ttft_ms.unwrap_or(elapsed_ms),
+                elapsed_ms,
+                reasoning_ms,
+            })
+        })();
+        stop.store(true, Ordering::SeqCst);
+        outcome
     })
 }
 
-fn apply_sse_line<D>(
+#[derive(Default)]
+struct SseReadState {
+    text: String,
+    finish_reason: Option<String>,
+    usage: TokenUsage,
+    ttft_ms: Option<u64>,
+    first_reasoning_ms: Option<u64>,
+    first_content_ms: Option<u64>,
+    reasoning_chars: u64,
+}
+
+impl SseReadState {
+    fn mark_first_token(&mut self, started: Instant) {
+        if self.ttft_ms.is_none() {
+            self.ttft_ms = Some(started.elapsed().as_millis() as u64);
+        }
+    }
+
+    fn reasoning_ms(&self) -> Option<u64> {
+        match (self.first_reasoning_ms, self.first_content_ms) {
+            (Some(start), Some(end)) => Some(end.saturating_sub(start)),
+            _ => None,
+        }
+    }
+}
+
+fn apply_sse_line<D, T>(
     line: &str,
-    text: &mut String,
-    finish_reason: &mut Option<String>,
-    usage: &mut TokenUsage,
-    ttft_ms: &mut Option<u64>,
+    state: &mut SseReadState,
     started: Instant,
+    clock: &ThinkingClock,
+    on_thinking: &Mutex<T>,
     on_delta: &mut D,
 ) -> Result<(), BridgeError>
 where
     D: FnMut(&str) -> Result<(), BridgeError>,
+    T: FnMut(u64, u64) -> Result<(), BridgeError>,
 {
     let Some(fields) = parse_sse_line(line) else {
         return Ok(());
     };
-    usage.merge(fields.usage);
+    state.usage.merge(fields.usage);
     if let Some(reason) = fields.finish_reason {
-        *finish_reason = Some(reason);
+        state.finish_reason = Some(reason);
+    }
+    if !fields.reasoning.is_empty() {
+        state.mark_first_token(started);
+        if state.first_reasoning_ms.is_none() {
+            state.first_reasoning_ms = Some(started.elapsed().as_millis() as u64);
+        }
+        state.reasoning_chars += fields.reasoning.chars().count() as u64;
+        clock.note_reasoning(state.reasoning_chars);
+        if state.first_content_ms.is_none() {
+            emit_thinking(clock, on_thinking)?;
+        }
     }
     if !fields.delta.is_empty() {
-        if ttft_ms.is_none() {
-            *ttft_ms = Some(started.elapsed().as_millis() as u64);
+        state.mark_first_token(started);
+        if state.first_content_ms.is_none() {
+            state.first_content_ms = Some(started.elapsed().as_millis() as u64);
         }
-        text.push_str(&fields.delta);
+        {
+            // 与心跳线程共用 on_thinking 锁：先关掉 clock，再发正文，避免思考回调排到 content 之后。
+            let _guard = on_thinking
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            clock.note_content();
+        }
+        state.text.push_str(&fields.delta);
         on_delta(&fields.delta)?;
     }
     Ok(())
@@ -620,12 +922,15 @@ where
 
 struct SseFields {
     delta: String,
+    reasoning: String,
     finish_reason: Option<String>,
     usage: TokenUsage,
 }
 
 /// 处理一行 SSE：非 data: 行忽略；[DONE] 忽略（靠读到 EOF 结束）；JSON 解析失败忽略。
-/// 增量取 choices[0].delta.content（回退 message.content）；usage 可出现在 choices 为空的事件。
+/// 正文增量取 choices[0].delta.content（回退 message.content）；
+/// 推理增量取 delta.reasoning_content（不进正文）。
+/// usage 可出现在 choices 为空的事件。
 fn parse_sse_line(line: &str) -> Option<SseFields> {
     let trimmed = line.trim();
     let payload = trimmed.strip_prefix("data:")?.trim();
@@ -638,21 +943,25 @@ fn parse_sse_line(line: &str) -> Option<SseFields> {
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|choices| choices.first());
-    let delta = choice
-        .and_then(|choice| {
-            choice
-                .get("delta")
-                .and_then(|delta| delta.get("content"))
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    choice
-                        .get("message")
-                        .and_then(|message| message.get("content"))
-                        .and_then(Value::as_str)
-                })
-        })
-        .unwrap_or("")
-        .to_string();
+    let field_text = |field: &str| {
+        choice
+            .and_then(|choice| {
+                choice
+                    .get("delta")
+                    .and_then(|delta| delta.get(field))
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        choice
+                            .get("message")
+                            .and_then(|message| message.get(field))
+                            .and_then(Value::as_str)
+                    })
+            })
+            .unwrap_or("")
+            .to_string()
+    };
+    let delta = field_text("content");
+    let reasoning = field_text("reasoning_content");
     let finish_reason = choice
         .and_then(|choice| choice.get("finish_reason"))
         .and_then(Value::as_str)
@@ -660,6 +969,7 @@ fn parse_sse_line(line: &str) -> Option<SseFields> {
         .map(str::to_string);
     Some(SseFields {
         delta,
+        reasoning,
         finish_reason,
         usage,
     })

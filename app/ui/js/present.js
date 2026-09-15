@@ -247,7 +247,14 @@ export function roundView(detail = {}) {
   const cached = Number(detail.cachedTokens);
   if (Number.isFinite(cached)) text += ` · 缓存 ${cached}`;
   const reasoning = Number(detail.reasoningTokens);
-  return { text, reasoning: Number.isFinite(reasoning) && reasoning > 0 };
+  const reasoningMs = Number(detail.reasoningMs);
+  if (Number.isFinite(reasoningMs) && reasoningMs > 0) {
+    text += ` · 思考 ${formatSeconds(reasoningMs)} s`;
+  }
+  return {
+    text,
+    reasoning: (Number.isFinite(reasoning) && reasoning > 0) || (Number.isFinite(reasoningMs) && reasoningMs > 0),
+  };
 }
 
 function numOrNull(value) {

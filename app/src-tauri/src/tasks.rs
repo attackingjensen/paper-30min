@@ -134,6 +134,7 @@ enum TaskPlan {
         temperature: f64,
         max_tokens: u64,
         stream: bool,
+        stage: Option<String>,
     },
     ModelTest,
     NetFetchText {
@@ -525,11 +526,13 @@ fn plan_model_chat(input: &Value, library: &Library) -> Result<TaskPlan, BridgeE
             .as_bool()
             .ok_or_else(|| BridgeError::invalid_input("stream 必须是布尔值"))?,
     };
+    let stage = crate::model::parse_chat_stage(input.get("stage"))?;
     Ok(TaskPlan::ModelChat {
         messages: checked,
         temperature,
         max_tokens,
         stream,
+        stage,
     })
 }
 
@@ -1047,7 +1050,8 @@ fn run_task(
             temperature,
             max_tokens,
             stream,
-        } => crate::model::run_chat(&ctx, &messages, temperature, max_tokens, stream),
+            stage,
+        } => crate::model::run_chat(&ctx, &messages, temperature, max_tokens, stream, stage.as_deref()),
         TaskPlan::ModelTest => crate::model::run_test(&ctx),
         TaskPlan::NetFetchText { url, max_bytes } => {
             crate::net::run_fetch_text(&ctx, &url, max_bytes)

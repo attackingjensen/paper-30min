@@ -294,6 +294,40 @@
         <input id="set-maxchars" type="number" min="2000" max="60000" step="1000">
       </label>
     </div>
+    <details class="settings-block settings-fold">
+      <summary>阶段模型与附加参数</summary>
+      <p class="muted settings-hint" id="set-thinking-hint" hidden>该模型家族支持思考模式。本应用默认对建图 / 深挖 / 复述稿关闭思考、对问答开启；如需调整请在阶段附加参数中设置 <code>enable_thinking</code> 或 <code>reasoning_effort</code>。</p>
+      <label>节薄摘要（建图①）
+        <input id="set-stage-map-l2" data-stage="map-l2" class="set-stage-model" placeholder="">
+      </label>
+      <label>阅读地图（建图②）
+        <input id="set-stage-map-l1" data-stage="map-l1" class="set-stage-model" placeholder="">
+      </label>
+      <label>深挖
+        <input id="set-stage-deep-dive" data-stage="deep-dive" class="set-stage-model" placeholder="">
+      </label>
+      <label>复述稿
+        <input id="set-stage-synthesize" data-stage="synthesize" class="set-stage-model" placeholder="">
+      </label>
+      <label>问答
+        <input id="set-stage-qa" data-stage="qa" class="set-stage-model" placeholder="">
+      </label>
+      <label>全局附加参数（JSON 对象）
+        <textarea id="set-extra-body" rows="4" placeholder='例如：{"temperature": null}'></textarea>
+      </label>
+      <label>阶段附加参数
+        <select id="set-stage-extra-key">
+          <option value="map-l2">节薄摘要 map-l2</option>
+          <option value="map-l1">阅读地图 map-l1</option>
+          <option value="deep-dive">深挖</option>
+          <option value="synthesize">复述稿</option>
+          <option value="qa">问答</option>
+        </select>
+        <textarea id="set-stage-extra-body" rows="4" placeholder="{}"></textarea>
+      </label>
+      <p class="muted">当前生效参数（只读）</p>
+      <pre class="settings-preview" id="set-extra-preview"></pre>
+    </details>
     <div class="settings-block">
       <h4>解析</h4>
       <p class="muted">表格结构识别模式。FAST 更快；复杂合并单元格时精度略降。</p>

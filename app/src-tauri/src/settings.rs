@@ -30,6 +30,9 @@ fn default_model() -> Map<String, Value> {
         "temperature": 0.3,
         "maxTokens": 4096,
         "maxChars": 16000,
+        "stageModels": {},
+        "extraBody": {},
+        "stageExtraBody": {},
     })
     .as_object()
     .expect("默认模型设置是对象")
@@ -149,6 +152,18 @@ pub fn put_model(library: &Library, input: &Value) -> Result<Value, BridgeError>
                 if number < min || number > max {
                     return Err(BridgeError::invalid_input(format!("{field} 必须在 {min}..={max} 之间")));
                 }
+            }
+            "stageModels" => {
+                merged.insert(field.clone(), crate::model::validate_stage_models(value)?);
+                continue;
+            }
+            "extraBody" => {
+                merged.insert(field.clone(), crate::model::validate_extra_body(value)?);
+                continue;
+            }
+            "stageExtraBody" => {
+                merged.insert(field.clone(), crate::model::validate_stage_extra_body(value)?);
+                continue;
             }
             // 未知字段忽略，不写入存储，避免污染设置对象。
             _ => continue,

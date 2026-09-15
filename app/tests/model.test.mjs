@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   initModel, initSettings, loadSettings, saveSettings, settingsReady,
   chat, testConnection, DEFAULT_SETTINGS,
+  isReasoningFamily, mergeExtraBody, extraBodyPreview, reduceThinkingStatus, thinkingStatusText,
 } from '../ui/js/model.js';
 
 function createFakeBridge({ settings } = {}) {
@@ -81,6 +82,7 @@ test('chat：chunk 累积与 onDelta(full) 次序，succeeded resolve 全文', a
   assert.equal(startCall.input.temperature, 0.7);
   assert.equal(startCall.input.maxTokens, 2048);
   assert.equal(startCall.input.stream, true);
+  assert.equal(startCall.input.stage, undefined);
   assert.deepEqual(startCall.input.messages, [{ role: 'user', content: 'hi' }]);
 
   bridge.emitLast({ event: 'chunk', chunk: '你' });
@@ -89,6 +91,18 @@ test('chat：chunk 累积与 onDelta(full) 次序，succeeded resolve 全文', a
 
   assert.equal(await promise, '你好');
   assert.deepEqual(deltas, ['你', '你好']);
+});
+
+test('chat：传入 stage 时写入 model.chat@1 输入', async () => {
+  const bridge = createFakeBridge();
+  initModel(bridge);
+  await initSettings();
+  const promise = chat([{ role: 'user', content: 'hi' }], { stage: 'qa' });
+  await tick();
+  const startCall = bridge.calls.find(c => c.method === 'start');
+  assert.equal(startCall.input.stage, 'qa');
+  bridge.emitLast({ event: 'status', status: 'succeeded' });
+  await promise;
 });
 
 test('chat：failed reject 携带 code 与 retryable', async () => {
@@ -190,5 +204,44 @@ test('DEFAULT_SETTINGS 与浏览器端字段一致', () => {
     temperature: 0.3,
     maxTokens: 4096,
     maxChars: 16000,
+    stageModels: {},
+    extraBody: {},
+    stageExtraBody: {},
   });
+});
+
+test('推理家族提示：qwen3.8-flash 须命中，普通 gpt-4o-mini 不命中', () => {
+  assert.equal(isReasoningFamily('qwen3.8-flash'), true);
+  assert.equal(isReasoningFamily('qwen-plus'), true);
+  assert.equal(isReasoningFamily('deepseek-chat'), true);
+  assert.equal(isReasoningFamily('gpt-4o-mini'), false);
+});
+
+test('当前生效参数预览：内建默认 + extraBody + 阶段覆盖，null 删键，保护三键', () => {
+  assert.deepEqual(mergeExtraBody('map-l2'), { enable_thinking: false });
+  assert.deepEqual(mergeExtraBody('qa'), { enable_thinking: true });
+  assert.deepEqual(mergeExtraBody(undefined, { foo: 1 }), { foo: 1 });
+  assert.deepEqual(
+    mergeExtraBody('deep-dive', { keep: 1 }, { 'deep-dive': { enable_thinking: true, reasoning_effort: 'low' } }),
+    { enable_thinking: true, keep: 1, reasoning_effort: 'low' },
+  );
+  assert.deepEqual(
+    mergeExtraBody('qa', { temperature: null, model: 'hijack', enable_thinking: false }),
+    { enable_thinking: false },
+  );
+  const preview = extraBodyPreview({}, {});
+  assert.equal(preview['map-l1'].enable_thinking, false);
+  assert.equal(preview.synthesize.enable_thinking, false);
+  assert.equal(preview.qa.enable_thinking, true);
+});
+
+test('思考心跳归约：thinking 激活，chunk/round/content 清除', () => {
+  const thinking = { event: 'thinking', detail: { elapsedMs: 1200, reasoningChars: 12, stage: 'qa' } };
+  const active = reduceThinkingStatus([thinking]);
+  assert.equal(active.elapsedMs, 1200);
+  assert.equal(thinkingStatusText(active, { qa: true }), '思考中 · 1.2 s');
+  assert.equal(thinkingStatusText(active), '模型思考中 · 已 1.2 s');
+  assert.equal(reduceThinkingStatus([thinking, { event: 'chunk', chunk: '答' }]), null);
+  assert.equal(reduceThinkingStatus([thinking, { event: 'round', detail: { round: 1 } }]), null);
+  assert.equal(reduceThinkingStatus([thinking, { event: 'content', detail: { stage: 'synthesize' } }]), null);
 });

@@ -848,6 +848,8 @@ struct RoundOutput {
     ttft_ms: u64,
     elapsed_ms: u64,
     usage: model::TokenUsage,
+    reasoning_ms: Option<u64>,
+    model: String,
 }
 
 struct RoundCtx<'a> {
@@ -860,6 +862,7 @@ fn emit_round(ctx: &RunContext, meta: &RoundCtx, round: u32, output: &RoundOutpu
     let mut detail = json!({
         "stage": meta.stage,
         "round": round,
+        "model": output.model,
         "ttftMs": output.ttft_ms,
         "elapsedMs": output.elapsed_ms,
         "receivedChars": output.text.chars().count() as u64,
@@ -869,6 +872,9 @@ fn emit_round(ctx: &RunContext, meta: &RoundCtx, round: u32, output: &RoundOutpu
     }
     if let Some(shard) = meta.shard {
         detail["shard"] = json!(shard);
+    }
+    if let Some(ms) = output.reasoning_ms {
+        detail["reasoningMs"] = json!(ms);
     }
     if let Some(Value::Object(usage)) = output.usage.to_json() {
         for (key, value) in usage {
@@ -880,21 +886,55 @@ fn emit_round(ctx: &RunContext, meta: &RoundCtx, round: u32, output: &RoundOutpu
 
 fn chat_round(
     ctx: &RunContext,
-    config: &model::ModelConfig,
-    endpoint: &str,
+    env: &ProtocolEnv,
+    meta: &RoundCtx,
     messages: &[Value],
-    temperature: f64,
     max_tokens: u64,
 ) -> Result<RoundOutput, BridgeError> {
     ctx.cancel_checkpoint()?;
-    let body = model::chat_request_body(&config.model, messages, temperature, max_tokens, true);
+    let model = env.model_for(meta.stage);
+    let (extra_body, stage_extra_body) = env.extra_body_for(meta.stage);
+    let body = model::chat_request_body(
+        &model,
+        messages,
+        env.temperature,
+        max_tokens,
+        true,
+        Some(meta.stage),
+        &extra_body,
+        &stage_extra_body,
+    );
+    let mut saw_content = false;
     let completion = model::chat_completions(
-        &config.api_key,
-        endpoint,
+        &env.config.api_key,
+        &env.endpoint,
         &body,
         std::time::Duration::from_secs(600),
-        |_| Ok(()),
+        |_| {
+            if !saw_content {
+                saw_content = true;
+                let mut detail = json!({ "stage": meta.stage });
+                if let Some(part_id) = meta.part_id {
+                    detail["partId"] = json!(part_id);
+                }
+                ctx.emit_detail("content", detail);
+            }
+            Ok(())
+        },
         || Ok(()),
+        |elapsed_ms, reasoning_chars| {
+            let mut detail = json!({
+                "kind": "thinking",
+                "stage": meta.stage,
+                "elapsedMs": elapsed_ms,
+                "reasoningChars": reasoning_chars,
+            });
+            if let Some(part_id) = meta.part_id {
+                detail["partId"] = json!(part_id);
+            }
+            ctx.emit_detail("thinking", detail);
+            Ok(())
+        },
     )?;
     Ok(RoundOutput {
         text: completion.text,
@@ -902,6 +942,8 @@ fn chat_round(
         ttft_ms: completion.ttft_ms,
         elapsed_ms: completion.elapsed_ms,
         usage: completion.usage,
+        reasoning_ms: completion.reasoning_ms,
+        model,
     })
 }
 
@@ -909,15 +951,12 @@ fn chat_round(
 /// 重发无重复推送问题）。Err(()) 表示终态已由重试机器处理（failed 或 cancelled）。
 fn chat_round_retried(
     ctx: &RunContext,
-    config: &model::ModelConfig,
-    endpoint: &str,
+    env: &ProtocolEnv,
+    meta: &RoundCtx,
     messages: &[Value],
-    temperature: f64,
     max_tokens: u64,
 ) -> Result<RoundOutput, ()> {
-    run_with_retry(ctx, |ctx| {
-        chat_round(ctx, config, endpoint, messages, temperature, max_tokens)
-    })
+    run_with_retry(ctx, |ctx| chat_round(ctx, env, meta, messages, max_tokens))
 }
 
 // ============================================================================
@@ -1209,12 +1248,29 @@ struct ProtocolEnv {
     temperature: f64,
     /// settings 的 maxTokens 配置值（读一次，各阶段按下限抬升后使用）。
     max_tokens: u64,
+    extra_body: Map<String, Value>,
+    stage_extra_body: Map<String, Value>,
+    stage_models: Map<String, Value>,
 }
 
 impl ProtocolEnv {
     /// 阶段 max_tokens：配置值抬到阶段下限（防 JSON/长文截断），不超过设置上限。
     fn stage_max_tokens(&self, floor: u64) -> u64 {
         self.max_tokens.max(floor).min(settings::MAX_TOKENS_LIMIT)
+    }
+
+    fn model_for(&self, stage: &str) -> String {
+        model::model_name_for(Some(stage), &self.stage_models, &self.config.model)
+    }
+
+    fn extra_body_for(&self, stage: &str) -> (Map<String, Value>, Map<String, Value>) {
+        (self.extra_body.clone(), {
+            let mut only = Map::new();
+            if let Some(value) = self.stage_extra_body.get(stage) {
+                only.insert(stage.to_string(), value.clone());
+            }
+            only
+        })
     }
 }
 
@@ -1255,6 +1311,7 @@ fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError
         .and_then(|value| value.get("maxTokens"))
         .and_then(Value::as_u64)
         .unwrap_or(tasks::DEFAULT_MAX_TOKENS);
+    let extras = model::load_request_extras(&ctx.library);
     Ok(ProtocolEnv {
         paper,
         mapped,
@@ -1263,6 +1320,9 @@ fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError
         endpoint,
         temperature,
         max_tokens,
+        extra_body: extras.extra_body,
+        stage_extra_body: extras.stage_extra_body,
+        stage_models: extras.stage_models,
     })
 }
 
@@ -1551,10 +1611,9 @@ fn run_validated_call<T>(
         }
         let round = chat_round_retried(
             ctx,
-            &env.config,
-            &env.endpoint,
+            env,
+            &meta,
             &messages,
-            env.temperature,
             max_tokens,
         )
         .map_err(|_| Halt::Handled)?;
@@ -1791,10 +1850,9 @@ fn dive_section(
         check_hard_top(estimate_messages_tokens(&messages), "深挖工具循环").map_err(Halt::Failed)?;
         let round = chat_round_retried(
             ctx,
-            &env.config,
-            &env.endpoint,
+            env,
+            &round_meta,
             &messages,
-            env.temperature,
             env.stage_max_tokens(MIN_MAX_TOKENS),
         )
         .map_err(|_| Halt::Handled)?;

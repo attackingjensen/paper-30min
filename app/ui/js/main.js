@@ -70,6 +70,8 @@ let currentView = 'library'; // library | tasks | reader
 let currentTab = 'map';      // map | source | chat | recall
 let reader = view.initialState();
 let chatAborter = null;      // 问答中断控制器（独立于精读生成任务）
+let settingsStageExtraDraft = {};
+let settingsStageExtraKey = 'map-l2';
 let editingSkillId = null;
 let sourceTab = 'abstract';
 let currentMapped = null;    // 当前论文块模型；未建图或加载失败为 null
@@ -622,6 +624,27 @@ function openProtocolTaskMeta(paperId, kind) {
   return null;
 }
 
+function applyThinkingEvent(meta, event) {
+  if (!meta) return false;
+  if (event.event === 'thinking' && event.detail) {
+    meta.thinking = event.detail;
+    return true;
+  }
+  if ((event.event === 'round' || event.event === 'chunk' || event.event === 'content') && meta.thinking) {
+    meta.thinking = null;
+    return true;
+  }
+  return false;
+}
+
+function protocolThinkingText(paperId, kind, partId = null) {
+  const open = openProtocolTaskMeta(paperId, kind);
+  const thinking = open?.meta?.thinking;
+  if (!thinking) return '';
+  if (partId && thinking.partId && thinking.partId !== partId) return '';
+  return model.thinkingStatusText(thinking);
+}
+
 function mappingStageOf(paperId) {
   return openProtocolTaskMeta(paperId, PROTOCOL_TASKS.buildMap)?.meta.lastStage || null;
 }
@@ -668,7 +691,10 @@ function renderLanding(surface) {
   paperLine.hidden = !paperBits;
   $('#map-landing-copy').textContent = model.copy || COPY.landingCopy;
   $('#map-landing-progress').hidden = !model.showProgress;
-  $('#map-landing-progress').textContent = model.progressText || COPY.landingProgress;
+  const thinking = protocolThinkingText(current.id, PROTOCOL_TASKS.buildMap);
+  $('#map-landing-progress').textContent = thinking
+    ? `${model.progressText || COPY.landingProgress} · ${thinking}`
+    : (model.progressText || COPY.landingProgress);
   const start = $('#btn-build-map');
   start.hidden = !model.showStart;
   start.textContent = model.startLabel || COPY.startMap;
@@ -696,7 +722,8 @@ function renderMapPage() {
     : empty;
   let retell = `<p class="muted">手动触发 · 输入 = L1 + 全部 L2 + 已有深挖 · 未深挖节将标注「未经深挖核验」</p>`;
   if (page.retell.state === 'running') {
-    retell += `<p>正在生成复述稿</p><button class="btn small" type="button" data-action="cancel-synth">取消</button>`;
+    const thinking = protocolThinkingText(current.id, PROTOCOL_TASKS.synthesize);
+    retell += `<p>正在生成复述稿${thinking ? ` · ${escapeTemplate(thinking)}` : ''}</p><button class="btn small" type="button" data-action="cancel-synth">取消</button>`;
   } else if (page.retell.state === 'done') {
     retell += `<div class="md retell-body"></div><div class="dig-head"><button class="btn small" type="button" data-action="resynthesize">${escapeTemplate(page.retell.primaryLabel)}</button></div>`;
   } else {
@@ -745,7 +772,11 @@ function renderSectionPage() {
   if (model.deepDive.state === 'skipped') {
     dig += `<div class="dig-empty muted">${escapeTemplate(model.deepDive.hint)}</div>`;
   } else if (model.deepDive.state === 'running') {
-    dig += `<div class="dig-empty"><p>${escapeTemplate(model.deepDive.progressText)}</p>
+    const thinking = protocolThinkingText(current.id, PROTOCOL_TASKS.deepDive, reader.sectionId);
+    const progress = thinking
+      ? `${model.deepDive.progressText} · ${thinking}`
+      : model.deepDive.progressText;
+    dig += `<div class="dig-empty"><p>${escapeTemplate(progress)}</p>
       <button class="btn small" type="button" data-action="cancel-dig">取消</button></div>`;
   } else if (model.deepDive.state === 'done') {
     dig += `<div class="dig-head"><span class="chip">L3 深挖结果</span><span style="flex:1"></span>
@@ -1184,6 +1215,8 @@ async function startBuildMap() {
           // 完整阶段载荷（含 map-l2 分片 shard/shards）供任务中心阶段流呈现。
           meta.stageDetail = event.detail;
           if (current?.id === paperId) renderMapTab();
+        } else if (applyThinkingEvent(meta, event) && current?.id === paperId) {
+          renderMapTab();
         }
       },
     });
@@ -1223,7 +1256,11 @@ async function startSynthesize(overwriteConfirmed) {
     registerSessionTask(taskId, meta);
     if (current?.id === paperId) renderMapTab();
     toast('已开始生成复述稿');
-    const { status, error } = await trackTask(bridge, taskId, {});
+    const { status, error } = await trackTask(bridge, taskId, {
+      onEvent: event => {
+        if (applyThinkingEvent(meta, event) && current?.id === paperId) renderMapTab();
+      },
+    });
     meta.status = status;
     await refreshPaperRecord(paperId);
     if (status === 'failed') toast(error?.message || '复述稿生成失败', true);
@@ -1287,6 +1324,8 @@ async function startDeepDive(paperId, partIds) {
           // 取证轨迹逐步累积，任务中心步骤流与「取证轨迹 →」回看共用（#56 决策 13）。
           meta.steps.push(event.detail);
           if (meta.steps.length > SESSION_STEPS_CAP) meta.steps.splice(0, meta.steps.length - SESSION_STEPS_CAP);
+        } else if (applyThinkingEvent(meta, event) && current?.id === paperId) {
+          renderMapTab();
         }
       },
     });
@@ -2197,8 +2236,21 @@ async function sendChat() {
       const messages = await assembleCurrentQa(paper, q, userMsg);
       const text = await model.chat(messages, {
         stream: true,
+        stage: 'qa',
         signal: chatAborter.signal,
-        onDelta: full => { renderMarkdownInto(bubble, full); $('#chat-log').scrollTop = $('#chat-log').scrollHeight; },
+        onEvent: event => {
+          const status = model.reduceThinkingStatus([event]);
+          if (status) {
+            bubble.classList.add('chat-thinking');
+            bubble.textContent = model.thinkingStatusText(status, { qa: true });
+            $('#chat-log').scrollTop = $('#chat-log').scrollHeight;
+          }
+        },
+        onDelta: full => {
+          bubble.classList.remove('chat-thinking');
+          renderMarkdownInto(bubble, full);
+          $('#chat-log').scrollTop = $('#chat-log').scrollHeight;
+        },
         retry: () => { void askOnce(); },
       });
       renderMarkdownInto(bubble, text || '（无回复）');
@@ -2712,6 +2764,73 @@ async function saveOrganizeMetadata() {
 }
 
 // ---------------- 设置弹窗 ----------------
+function jsonObjectText(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.keys(value).length) return '';
+  return JSON.stringify(value, null, 2);
+}
+
+function parseJsonObject(text, label) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return {};
+  let value;
+  try {
+    value = JSON.parse(trimmed);
+  } catch {
+    throw new Error(`${label} 不是合法 JSON`);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} 必须是 JSON 对象`);
+  }
+  return value;
+}
+
+function stageModelInputs() {
+  return $$('.set-stage-model');
+}
+
+function updateStageModelPlaceholders() {
+  const main = $('#set-model').value.trim() || '主模型';
+  stageModelInputs().forEach(input => { input.placeholder = main; });
+}
+
+function updateThinkingHint() {
+  $('#set-thinking-hint').hidden = !model.isReasoningFamily($('#set-model').value.trim());
+}
+
+function flushStageExtraDraft() {
+  const key = settingsStageExtraKey;
+  const text = $('#set-stage-extra-body').value;
+  if (!String(text || '').trim()) {
+    delete settingsStageExtraDraft[key];
+    return;
+  }
+  settingsStageExtraDraft[key] = parseJsonObject(text, `阶段附加参数（${key}）`);
+}
+
+function fillStageExtraEditor() {
+  const key = $('#set-stage-extra-key').value;
+  $('#set-stage-extra-body').value = jsonObjectText(settingsStageExtraDraft[key]);
+}
+
+function updateExtraPreview() {
+  let extraBody = {};
+  try { extraBody = parseJsonObject($('#set-extra-body').value, '全局附加参数'); } catch { extraBody = {}; }
+  let stageExtra = { ...settingsStageExtraDraft };
+  try {
+    const key = $('#set-stage-extra-key').value;
+    const text = $('#set-stage-extra-body').value;
+    if (String(text || '').trim()) stageExtra[key] = parseJsonObject(text, '阶段附加参数');
+    else delete stageExtra[key];
+  } catch { /* 预览在编辑非法 JSON 时保持上一份可读草稿 */ }
+  $('#set-extra-preview').textContent = JSON.stringify(model.extraBodyPreview(extraBody, stageExtra), null, 2);
+}
+
+function refreshSettingsDerived() {
+  updateStageModelPlaceholders();
+  updateThinkingHint();
+  updateExtraPreview();
+}
+
 async function openSettingsModal() {
   const s = model.loadSettings();
   $('#set-baseurl').value = s.baseUrl;
@@ -2720,6 +2839,14 @@ async function openSettingsModal() {
   $('#set-temp').value = s.temperature;
   $('#set-maxchars').value = s.maxChars;
   $('#api-test-result').textContent = '';
+  settingsStageExtraDraft = { ...(s.stageExtraBody || {}) };
+  stageModelInputs().forEach(input => {
+    input.value = s.stageModels?.[input.dataset.stage] || '';
+  });
+  $('#set-extra-body').value = jsonObjectText(s.extraBody);
+  settingsStageExtraKey = $('#set-stage-extra-key').value || 'map-l2';
+  fillStageExtraEditor();
+  refreshSettingsDerived();
   let tableMode = 'fast';
   try {
     const all = await bridge.invoke('settings.get@1');
@@ -2738,6 +2865,21 @@ function collectSettingsForm() {
   s.model = $('#set-model').value.trim();
   s.temperature = parseFloat($('#set-temp').value) || 0.3;
   s.maxChars = parseInt($('#set-maxchars').value, 10) || 16000;
+  const stageModels = {};
+  stageModelInputs().forEach(input => {
+    const name = input.value.trim();
+    if (name) stageModels[input.dataset.stage] = name;
+  });
+  s.stageModels = stageModels;
+  s.extraBody = parseJsonObject($('#set-extra-body').value, '全局附加参数');
+  flushStageExtraDraft();
+  const stageExtraBody = {};
+  for (const [key, value] of Object.entries(settingsStageExtraDraft)) {
+    if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) {
+      stageExtraBody[key] = value;
+    }
+  }
+  s.stageExtraBody = stageExtraBody;
   return s;
 }
 
@@ -3269,6 +3411,21 @@ function bindEvents() {
     refreshLibrary();
   };
   $('#btn-settings').onclick = openSettingsModal;
+  $('#set-model').addEventListener('input', refreshSettingsDerived);
+  $('#set-extra-body').addEventListener('input', updateExtraPreview);
+  $('#set-stage-extra-body').addEventListener('input', updateExtraPreview);
+  $('#set-stage-extra-key').addEventListener('change', () => {
+    const next = $('#set-stage-extra-key').value;
+    $('#set-stage-extra-key').value = settingsStageExtraKey;
+    try { flushStageExtraDraft(); } catch (err) {
+      toast(errorText(err), true);
+      return;
+    }
+    settingsStageExtraKey = next;
+    $('#set-stage-extra-key').value = next;
+    fillStageExtraEditor();
+    updateExtraPreview();
+  });
   $('#btn-save-settings').onclick = async () => {
     try { await saveSettings(); } catch (err) { toast('设置保存失败：' + errorText(err), true); }
   };
