@@ -14,7 +14,6 @@ export const PROTOCOL_TASKS = {
 };
 export const MAX_TOOL_STEPS = 12;
 export const MAX_PARSE_FAILURES = 2;
-export const SHARD_TOKEN_THRESHOLD = 200_000;
 export const INPUT_TOKEN_HARD_TOP = 983_616;
 export const READ_SECTION_CHAR_CAP = 8_000;
 export const SEARCH_HIT_CAP = 50;
@@ -94,33 +93,12 @@ export function renderAssetList(entries) {
 
 // ---------- 配方装配（协议提示词 + 关注点叠加经 skills.js composePrompt） ----------
 /**
- * 建图调用①装配：全文估算超阈值时按节贪心分片（保持节序），返回各分片的完整提示词。
+ * 建图调用①装配：每个参与 L2 的原文章节自成一片，返回各分片的完整提示词。
  * 分片合并不在此调用模型「总结摘要的摘要」——见 mergeL2ShardOutputs 的确定性拼装。
  */
-export function assembleMapL2({ title, mapped, threshold = SHARD_TOKEN_THRESHOLD } = {}) {
+export function assembleMapL2({ title, mapped } = {}) {
   const sections = l2Sections(mapped);
-  const base = composePrompt('map-l2', { values: { title, paperText: '' } });
-  const budget = Math.max(1, threshold - estimateTextTokens(base));
-  const sized = sections.map(section => ({ section, tokens: estimateTextTokens(renderSectionText(section)) }));
-  const total = sized.reduce((sum, item) => sum + item.tokens, 0);
-  let groups;
-  if (total <= budget) {
-    groups = [sections];
-  } else {
-    groups = [];
-    let current = [];
-    let currentTokens = 0;
-    for (const { section, tokens } of sized) {
-      if (current.length && currentTokens + tokens > budget) {
-        groups.push(current);
-        current = [];
-        currentTokens = 0;
-      }
-      current.push(section);
-      currentTokens += tokens;
-    }
-    if (current.length) groups.push(current);
-  }
+  const groups = sections.map(section => [section]);
   return {
     sharded: groups.length > 1,
     shards: groups.map(group => {

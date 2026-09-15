@@ -72,6 +72,10 @@ test('书库卡片：建图中 = 阶段进度（无阶段事件时退化为纯�
     { tone: 'running', text: '建图中 · 生成节薄摘要（L2）' },
   );
   assert.deepEqual(libraryMapState({ mapping: true }), { tone: 'running', text: '建图中' });
+  assert.deepEqual(
+    libraryMapState({ mapping: true, mappingStage: 'map-l2', mappingProgress: { done: 2, total: 5 } }),
+    { tone: 'running', text: '建图中 · 薄摘要 2/4' },
+  );
 });
 
 test('书库卡片：已建图 = 标记进度 n/N', () => {
@@ -83,11 +87,11 @@ test('书库卡片：已建图 = 标记进度 n/N', () => {
 
 // ---------------- 建图阶段流 ----------------
 
-test('建图阶段流：map-l2 进行中带分片，preflight 已完成、map-l1 未到达', () => {
-  const flow = buildMapStageFlow({ stage: 'map-l2', shard: 2, shards: 3 }, 'running');
+test('建图阶段流：map-l2 进行中用进度 n/N，preflight 已完成、map-l1 未到达', () => {
+  const flow = buildMapStageFlow({ stage: 'map-l2', shard: 2, shards: 4 }, 'running', { done: 2, total: 5 });
   assert.deepEqual(flow, [
     { key: 'preflight', label: '预渲染校验', state: 'done' },
-    { key: 'map-l2', label: '生成节薄摘要（L2） · 分片 2/3', state: 'current' },
+    { key: 'map-l2', label: '生成节薄摘要（L2） · 2/4', state: 'current' },
     { key: 'map-l1', label: '合成阅读地图（L1）', state: 'todo' },
   ]);
 });
@@ -134,6 +138,29 @@ test('任务中心：建图任务呈现阶段流', () => {
   const model = taskDetailModel({ task, meta });
   assert.deepEqual(model.stageFlow.map(item => item.state), ['done', 'done', 'current']);
   assert.equal(model.steps, undefined);
+});
+
+test('任务中心：建图 L2 按 secId 显示排队 / 生成中 / 完成 / 失败', () => {
+  const task = taskSnapshot({
+    kind: 'paper.build-map@1',
+    status: 'failed',
+    progress: { done: 1, total: 4 },
+    error: { code: 'protocol_shard_failed', details: { failedSections: [{ secId: 'sec_2', code: 'protocol_parse_failed' }] } },
+    details: [
+      { event: 'stage', detail: { stage: 'map-l2', shards: 3, sections: ['sec_1', 'sec_2', 'sec_3'] } },
+      { event: 'stage', detail: { stage: 'map-l2', shard: 1, shards: 3, secId: 'sec_1', shardStatus: 'done' } },
+      { event: 'stage', detail: { stage: 'map-l2', shard: 2, shards: 3, secId: 'sec_2', shardStatus: 'failed' } },
+    ],
+  });
+  const model = taskDetailModel({ task, meta: null });
+  assert.deepEqual(model.shardFlow.map(item => item.state), ['done', 'failed', 'queued']);
+  assert.equal(model.shardFlow[0].label, 'sec_1 · 完成');
+  assert.equal(model.shardFlow[1].label, 'sec_2 · 失败');
+  assert.equal(model.shardFlow[2].label, 'sec_3 · 排队');
+  assert.equal(
+    taskDetailModel({ task: { ...task, status: 'succeeded' }, meta: null }).shardFlow,
+    undefined,
+  );
 });
 
 test('任务中心：批量深挖呈现逐节子进度与工具步骤流', () => {

@@ -848,6 +848,11 @@ impl TaskRegistry {
                 return;
             };
             if let Some(status) = status {
+                // 有界并发下多个工作线程可能共用同一任务的重试机器：某一片
+                // 已 failed/cancelled 后，另一片的 retry_waiting→running 不得把终态复活。
+                if entry.snapshot.status.is_terminal() {
+                    return;
+                }
                 entry.snapshot.status = status;
             }
             if let Some(progress) = &progress {

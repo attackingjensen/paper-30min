@@ -10,7 +10,7 @@ import path from 'node:path';
 
 import { initSkills, loadSkills } from '../ui/js/skills.js';
 import {
-  MAX_TOOL_STEPS, MAX_PARSE_FAILURES, SHARD_TOKEN_THRESHOLD, INPUT_TOKEN_HARD_TOP,
+  MAX_TOOL_STEPS, MAX_PARSE_FAILURES, INPUT_TOKEN_HARD_TOP,
   estimateTextTokens, l2Sections, contentSections, partIdForSection, sectionForPart,
   renderSectionText, renderPaperText, renderAssetList,
   assembleMapL2, validateL2Output, mergeL2ShardOutputs, assembleMapL1,
@@ -41,7 +41,6 @@ await loadSkills();
 test('协议常量与 Rust 侧锚定', () => {
   assert.equal(MAX_TOOL_STEPS, 12);
   assert.equal(MAX_PARSE_FAILURES, 2);
-  assert.equal(SHARD_TOKEN_THRESHOLD, 200_000);
   assert.equal(INPUT_TOKEN_HARD_TOP, 983_616);
 });
 
@@ -74,21 +73,16 @@ test('文本层渲染格式与 Rust 契约断言锚定', () => {
   assert.ok(paperText.startsWith('## sec_2_introduction Introduction (p1-2)'));
 });
 
-test('建图调用①装配：单片覆盖与分片打包', () => {
+test('建图调用①装配：默认每节一片', () => {
   const { sharded, shards } = assembleMapL2({ title: 'Fixture 论文：小样例方法', mapped: fixture });
-  assert.equal(sharded, false);
-  assert.equal(shards.length, 1);
-  assert.deepEqual(shards[0].secIds, ['sec_1_abstract', 'sec_2_introduction', 'sec_3_method']);
+  assert.equal(sharded, true);
+  assert.equal(shards.length, 3);
+  assert.deepEqual(shards.map(shard => shard.secIds), [['sec_1_abstract'], ['sec_2_introduction'], ['sec_3_method']]);
   assert.ok(shards[0].prompt.includes('Fixture 论文：小样例方法'));
-  assert.ok(shards[0].prompt.includes('## sec_2_introduction Introduction (p1-2)'));
-  assert.ok(shards[0].prompt.includes('摘要（abstract）：') || shards[0].prompt.includes('abstract（摘要）'), '叠加全表关注点');
-  assert.ok(shards[0].estimatedTokens > 0);
-
-  // 阈值压到极低 → 每节自成一片（与 Rust 契约测试 build_map_shards 同形态）。
-  const tiny = assembleMapL2({ title: 'Fixture 论文：小样例方法', mapped: fixture, threshold: 1 });
-  assert.equal(tiny.sharded, true);
-  assert.equal(tiny.shards.length, 3);
-  assert.deepEqual(tiny.shards.map(shard => shard.secIds), [['sec_1_abstract'], ['sec_2_introduction'], ['sec_3_method']]);
+  assert.ok(shards[1].prompt.includes('## sec_2_introduction Introduction (p1-2)'));
+  assert.ok(shards.every(shard => shard.prompt.includes('摘要（abstract）：') || shard.prompt.includes('abstract（摘要）')), '每片叠加全表关注点');
+  assert.ok(shards.every(shard => shard.estimatedTokens > 0));
+  assert.ok(!shards[0].prompt.includes('## sec_2_introduction'), '单片不含其他节文本层');
 });
 
 test('L2 输出校验：覆盖、清理与确定性重排', () => {

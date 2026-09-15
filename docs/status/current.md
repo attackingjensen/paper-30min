@@ -6,7 +6,7 @@
 
 Paper30Min 是「论文精读」专精 agent harness：帮助用户高效读完一篇完整论文。Windows 正式客户端 **1.0.0** 已发布（[GitHub Release](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0)）；`steven123397/dev` 与 `main` 同源，当前协作走 `dev`，不创建合入 `main` 的 PR，也不因零散感受新建打磨类 Issue。
 
-Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。当前工作是性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）：v1.0 反馈解析、建图、深挖都太慢。已完成 #75–#78、#82；**下一步是 [#79](https://github.com/attackingjensen/paper-30min/issues/79)**（节薄摘要按节分片并有界并发）。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
+Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。当前工作是性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）：v1.0 反馈解析、建图、深挖都太慢。已完成 #75–#78、#82；[#79](https://github.com/attackingjensen/paper-30min/issues/79) 契约与实现已落地，10 节真实窗口对照待作者点验（走查归 [#85](https://github.com/attackingjensen/paper-30min/issues/85)）。**下一步是 [#80](https://github.com/attackingjensen/paper-30min/issues/80)**（深挖轮次进度与最终稿预览）。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
 
 ## 已具备能力
 
@@ -36,7 +36,7 @@ Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专�
 | [#76](https://github.com/attackingjensen/paper-30min/issues/76) | 建图只等块模型 | 已完成 |
 | [#77](https://github.com/attackingjensen/paper-30min/issues/77) | 页图与解析并行 | 已完成 |
 | [#78](https://github.com/attackingjensen/paper-30min/issues/78) | 物理核线程、TableFormer FAST、回归基线 | 已完成 |
-| [#79](https://github.com/attackingjensen/paper-30min/issues/79) | 节薄摘要按节分片并有界并发 | 待开始 |
+| [#79](https://github.com/attackingjensen/paper-30min/issues/79) | 节薄摘要按节分片并有界并发 | 实现已落地，待真实窗口 |
 | [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 待开始 |
 | [#81](https://github.com/attackingjensen/paper-30min/issues/81) | 深挖减轮：预附图表与一轮多工具 | 待开始 |
 | [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型与思考默认（协议关、问答开） | 已完成 |

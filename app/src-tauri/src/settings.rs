@@ -17,6 +17,12 @@ const PDFPARSE_KEY: &str = "pdfparse";
 
 /// UI 偏好设置（JSON 对象）：welcomeSeeded = 内置「使用说明」已播种标记（发布版首启）。
 const UI_KEY: &str = "ui";
+/// 协议编排设置（JSON 对象）：concurrency 为节薄摘要 / 批量深挖的有界并发上限（#79 / #83）。
+const PROTOCOL_KEY: &str = "protocol";
+
+pub(crate) const DEFAULT_PROTOCOL_CONCURRENCY: u64 = 3;
+pub(crate) const MIN_PROTOCOL_CONCURRENCY: u64 = 1;
+pub(crate) const MAX_PROTOCOL_CONCURRENCY: u64 = 6;
 
 /// maxTokens 设置上限：settings 校验与协议任务的 stage 下限提升共用同一上限
 /// （协议任务把配置值抬到阶段下限时也不越过此上限）。
@@ -58,6 +64,15 @@ fn default_ui() -> Map<String, Value> {
     .clone()
 }
 
+fn default_protocol() -> Map<String, Value> {
+    json!({
+        "concurrency": DEFAULT_PROTOCOL_CONCURRENCY,
+    })
+    .as_object()
+    .expect("默认协议设置是对象")
+    .clone()
+}
+
 /// 读取存储的 JSON 对象并与缺省值合并；从未写入或内容损坏时按缺省处理。
 fn load_object(library: &Library, key: &str, defaults: Map<String, Value>) -> Result<Map<String, Value>, BridgeError> {
     let mut merged = defaults;
@@ -85,6 +100,10 @@ fn load_pdfparse(library: &Library) -> Result<Map<String, Value>, BridgeError> {
 
 fn load_ui(library: &Library) -> Result<Map<String, Value>, BridgeError> {
     load_object(library, UI_KEY, default_ui())
+}
+
+fn load_protocol(library: &Library) -> Result<Map<String, Value>, BridgeError> {
+    load_object(library, PROTOCOL_KEY, default_protocol())
 }
 
 /// pdfparse 任务的表格结构模式：仅 `fast` / `accurate`；其余（含损坏存储）回落 fast。
@@ -119,7 +138,19 @@ pub fn get(library: &Library) -> Result<Value, BridgeError> {
         "skillsOverrides": Value::Object(load_skills_overrides(library)?),
         "pdfparse": Value::Object(load_pdfparse(library)?),
         "ui": Value::Object(load_ui(library)?),
+        "protocol": Value::Object(load_protocol(library)?),
     }))
+}
+
+/// 协议有界并发上限：损坏或越界存储回落缺省 3，并钳制在 1–6。
+pub(crate) fn protocol_concurrency(library: &Library) -> u32 {
+    load_protocol(library)
+        .ok()
+        .as_ref()
+        .and_then(|merged| merged.get("concurrency"))
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_PROTOCOL_CONCURRENCY)
+        .clamp(MIN_PROTOCOL_CONCURRENCY, MAX_PROTOCOL_CONCURRENCY) as u32
 }
 
 /// 局部更新模型设置：只校验并覆盖出现的字段，缺省字段沿用已存值。
@@ -265,6 +296,39 @@ pub fn put_ui(library: &Library, input: &Value) -> Result<Value, BridgeError> {
     let text = serde_json::to_string(&Value::Object(merged.clone()))
         .map_err(|err| BridgeError::internal(format!("设置 JSON 编码失败: {err}")))?;
     library.put_setting(UI_KEY, &text)?;
+    Ok(json!({
+        "schemaVersion": BRIDGE_SCHEMA_VERSION,
+        "settings": Value::Object(merged),
+    }))
+}
+
+/// 局部更新协议编排设置：concurrency 为 1–6 的整数，默认 3。
+pub fn put_protocol(library: &Library, input: &Value) -> Result<Value, BridgeError> {
+    let settings = input
+        .get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| BridgeError::invalid_input("settings.putProtocol@1 需要对象参数 settings"))?;
+    let mut merged = load_protocol(library)?;
+    for (field, value) in settings {
+        match field.as_str() {
+            "concurrency" => {
+                let number = value.as_u64().ok_or_else(|| {
+                    BridgeError::invalid_input("concurrency 必须是 1–6 的整数")
+                })?;
+                if number < MIN_PROTOCOL_CONCURRENCY || number > MAX_PROTOCOL_CONCURRENCY {
+                    return Err(BridgeError::invalid_input(format!(
+                        "concurrency 必须在 {MIN_PROTOCOL_CONCURRENCY}..={MAX_PROTOCOL_CONCURRENCY} 之间"
+                    )));
+                }
+                merged.insert(field.clone(), json!(number));
+            }
+            // 未知字段忽略，不写入存储，避免污染设置对象。
+            _ => continue,
+        }
+    }
+    let text = serde_json::to_string(&Value::Object(merged.clone()))
+        .map_err(|err| BridgeError::internal(format!("设置 JSON 编码失败: {err}")))?;
+    library.put_setting(PROTOCOL_KEY, &text)?;
     Ok(json!({
         "schemaVersion": BRIDGE_SCHEMA_VERSION,
         "settings": Value::Object(merged),

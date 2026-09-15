@@ -211,7 +211,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   display: inline-flex; align-items: center; min-height: 20px; padding: 1px 8px;
   border-radius: 999px; font-size: 11.5px;
 }
-.task-stage.todo { background: #eef0f4; color: #9aa2b1; }
+.task-stage.todo, .task-stage.queued { background: #eef0f4; color: #9aa2b1; }
 .task-stage.done { background: #e2f4e8; color: #227a45; }
 .task-stage.current { background: #e3ecfd; color: #2b5bd7; font-weight: 600; }
 .task-stage.failed { background: #fbe3e3; color: #b93a3a; font-weight: 600; }

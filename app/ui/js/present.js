@@ -3,7 +3,7 @@
 // 无 DOM；UI 壳（main.js）只负责渲染。
 //
 // 事件流契约（#55/#65，Rust protocol.rs 发射；#72 起快照携带 details 日志）：
-// - 建图阶段事件 detail = { stage: 'preflight'|'map-l2'|'map-l1', shard?, shards? }
+// - 建图阶段事件 detail = { stage: 'preflight'|'map-l2'|'map-l1', shard?, shards?, secId?, shardStatus?, sections? }
 // - 深挖阶段事件 detail = { stage: 'deep-dive', partId, secId, title, index, total }
 // - 工具轨迹事件 detail = { step, partId, secId, name, args, ok, result?, error? }
 // - 模型轮事件 detail = { stage, round, ttftMs, elapsedMs, receivedChars,
@@ -24,8 +24,13 @@ import { readingParts, paperCategories, paperTags } from './papers.js';
  * 卡片建图状态 chip：未建图 = 状态点；建图中 = 阶段进度；已建图 = 标记进度 n/N。
  * 返回 { tone: 'idle'|'running'|'done', text }。
  */
-export function libraryMapState({ mapped = false, mapping = false, mappingStage = null, done = 0, total = 0 } = {}) {
+export function libraryMapState({ mapped = false, mapping = false, mappingStage = null, mappingProgress = null, done = 0, total = 0 } = {}) {
   if (mapping) {
+    const l2Total = Number(mappingProgress?.total) - 1;
+    if (Number.isFinite(l2Total) && l2Total > 0) {
+      const l2Done = Math.min(Number(mappingProgress.done) || 0, l2Total);
+      return { tone: 'running', text: `建图中 · 薄摘要 ${l2Done}/${l2Total}` };
+    }
     return {
       tone: 'running',
       text: mappingStage ? `建图中 · ${mappingStageLabel(mappingStage)}` : '建图中',
@@ -74,7 +79,7 @@ export const MAP_STAGE_FLOW = ['preflight', 'map-l2', 'map-l1'];
  * succeeded 终态不再显示阶段流（进度条 100% 已足够），返回 null。
  * failed 时当前阶段标 failed 红，让「停在哪个阶段」可见；cancelled 是用户主动停止，保持 current。
  */
-export function buildMapStageFlow(stageDetail = null, status = 'running') {
+export function buildMapStageFlow(stageDetail = null, status = 'running', progress = null) {
   if (status === 'succeeded') return null;
   const stage = stageDetail?.stage;
   const currentIndex = MAP_STAGE_FLOW.indexOf(stage);
@@ -83,16 +88,55 @@ export function buildMapStageFlow(stageDetail = null, status = 'running') {
   return MAP_STAGE_FLOW.map((key, index) => {
     let label = mappingStageLabel(key);
     if (key === 'map-l2' && index === currentIndex) {
-      const shard = Number(stageDetail?.shard);
-      const shards = Number(stageDetail?.shards);
-      if (Number.isFinite(shard) && Number.isFinite(shards) && shards > 1) {
-        label += ` · 分片 ${shard}/${shards}`;
+      const l2Total = Number(progress?.total) - 1;
+      if (Number.isFinite(l2Total) && l2Total > 1) {
+        const l2Done = Math.min(Number(progress.done) || 0, l2Total);
+        label += ` · ${l2Done}/${l2Total}`;
       }
     }
     const state = index < currentIndex ? 'done'
       : index === currentIndex ? (failed ? 'failed' : 'current')
         : 'todo';
     return { key, label, state };
+  });
+}
+
+const SHARD_STATE_LABEL = { queued: '排队', current: '生成中', done: '完成', failed: '失败' };
+
+/**
+ * 建图 L2 各片状态：由 stage 事件的 sections / secId / shardStatus 归约。
+ * 返回 [{ key, secId, label, state }]；尚无 map-l2 事件时为 null。
+ */
+export function l2ShardFlow({ details = [], status = 'running', error = null } = {}) {
+  if (status === 'succeeded') return null;
+  const stages = details.filter(entry => entry?.event === 'stage' && entry.detail?.stage === 'map-l2');
+  if (!stages.length) return null;
+  const listed = stages.find(entry => Array.isArray(entry.detail?.sections))?.detail.sections
+    || stages.map(entry => entry.detail?.secId).filter(Boolean);
+  const secIds = [...new Set(listed.map(id => String(id)).filter(Boolean))];
+  if (!secIds.length) {
+    const shards = Number(stages[0].detail?.shards);
+    if (!Number.isFinite(shards) || shards < 1) return null;
+    for (let i = 1; i <= shards; i++) secIds.push(`分片 ${i}`);
+  }
+  const latest = new Map();
+  for (const entry of stages) {
+    const secId = entry.detail?.secId;
+    if (!secId) continue;
+    latest.set(String(secId), entry.detail.shardStatus);
+  }
+  const failedIds = new Set(
+    (error?.details?.failedSections ?? []).map(item => String(item?.secId || '')).filter(Boolean),
+  );
+  const terminalFail = status === 'failed';
+  return secIds.map(secId => {
+    let state = 'queued';
+    if (failedIds.has(secId)) state = 'failed';
+    else if (latest.get(secId) === 'done') state = 'done';
+    else if (latest.get(secId) === 'failed') state = 'failed';
+    else if (latest.get(secId) === 'running') state = terminalFail ? 'failed' : 'current';
+    const statusLabel = SHARD_STATE_LABEL[state] || state;
+    return { key: secId, secId, label: `${secId} · ${statusLabel}`, state };
   });
 }
 
@@ -173,7 +217,7 @@ function lastDetailOf(details, event) {
 
 /**
  * 协议任务在任务中心的附加呈现模型。task 为 tasks.list@1 快照条目（含 details 日志），
- * meta 为会话登记（可缺失——缺失时回退重建）。返回 { stageFlow?, subProgress?, steps?,
+ * meta 为会话登记（可缺失——缺失时回退重建）。返回 { stageFlow?, shardFlow?, subProgress?, steps?,
  * stepsTotal?, trace?, timings? }；非协议/解析任务返回 {}。
  * trace 按 details 原序把 round / tool 插成一行，供阶段流/轨迹流就地插入轮次行。
  */
@@ -185,9 +229,11 @@ export function taskDetailModel({ task = {}, meta = null } = {}) {
     return timings.length ? { timings } : {};
   }
   if (bare === 'paper.build-map') {
-    const stageFlow = buildMapStageFlow(lastDetailOf(details, 'stage'), task.status);
+    const stageFlow = buildMapStageFlow(lastDetailOf(details, 'stage'), task.status, task.progress);
     const out = {};
     if (stageFlow) out.stageFlow = stageFlow;
+    const shardFlow = l2ShardFlow({ details, status: task.status, error: task.error });
+    if (shardFlow) out.shardFlow = shardFlow;
     const trace = traceItems(details);
     if (trace.length) out.trace = trace;
     return out;

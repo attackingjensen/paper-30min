@@ -116,6 +116,7 @@ function registerSessionTask(taskId, entry) {
   }
 }
 let lastActiveTasks = [];    // 最近一次 activeOnly 轮询结果（供顶栏角标与 PDF 栏）
+let lastMappingProgressSig = '';
 let positionTimer = null;    // 阅读位置 500ms 防抖
 const recallBlobUrls = new Map(); // 回忆卡图片 imageId -> Blob URL，离开论文时统一 revoke
 let paneDrag = null;         // 双侧栏拖拽：{ side, pointerId, treeLeft }
@@ -386,6 +387,7 @@ async function refreshLibrary() {
       mapped: hasMapProduct(p.products),
       mapping: isMappingPaper(p.id),
       mappingStage: mappingStageOf(p.id),
+      mappingProgress: mappingProgressOf(p.id),
       done,
       total,
     });
@@ -649,6 +651,18 @@ function mappingStageOf(paperId) {
   return openProtocolTaskMeta(paperId, PROTOCOL_TASKS.buildMap)?.meta.lastStage || null;
 }
 
+function mappingProgressOf(paperId) {
+  const open = openProtocolTaskMeta(paperId, PROTOCOL_TASKS.buildMap);
+  if (open?.meta?.progress) return open.meta.progress;
+  for (const task of lastActiveTasks) {
+    if (String(task.kind || '').replace(/@\d+$/, '') !== 'paper.build-map') continue;
+    const meta = sessionTasks.get(task.taskId);
+    if (meta?.status && isTerminalStatus(meta.status)) continue;
+    if ((meta?.input?.paperId || task.input?.paperId) === paperId) return task.progress || null;
+  }
+  return null;
+}
+
 function diveRunningDetail(paperId) {
   return openProtocolTaskMeta(paperId, PROTOCOL_TASKS.deepDive)?.meta.lastDetail || null;
 }
@@ -679,6 +693,7 @@ function renderLanding(surface) {
     hasMap: surface === 'map' || surface === 'section',
     mapping: surface === 'landing-running',
     mappingStage: mappingStageOf(current.id),
+    mappingProgress: mappingProgressOf(current.id),
   });
   const landing = $('#map-landing');
   const split = $('#map-split');
@@ -1210,11 +1225,17 @@ async function startBuildMap() {
     toast('已开始建图');
     const { status, error } = await trackTask(bridge, taskId, {
       onEvent: event => {
+        if (event.progress) {
+          meta.progress = event.progress;
+          if (current?.id === paperId) renderMapTab();
+          if (reader.appView === 'library') void refreshLibrary();
+        }
         if (event.event === 'stage' && event.detail?.stage) {
           meta.lastStage = event.detail.stage;
-          // 完整阶段载荷（含 map-l2 分片 shard/shards）供任务中心阶段流呈现。
+          // 完整阶段载荷（含 map-l2 分片 shard/shards/secId）供任务中心阶段流呈现。
           meta.stageDetail = event.detail;
           if (current?.id === paperId) renderMapTab();
+          if (reader.appView === 'library') void refreshLibrary();
         } else if (applyThinkingEvent(meta, event) && current?.id === paperId) {
           renderMapTab();
         }
@@ -2848,13 +2869,17 @@ async function openSettingsModal() {
   fillStageExtraEditor();
   refreshSettingsDerived();
   let tableMode = 'fast';
+  let concurrency = 3;
   try {
     const all = await bridge.invoke('settings.get@1');
     if (all?.pdfparse?.tableMode === 'accurate') tableMode = 'accurate';
-  } catch (_) { /* 读失败时保持 fast */ }
+    const n = Number(all?.protocol?.concurrency);
+    if (Number.isFinite(n)) concurrency = n;
+  } catch (_) { /* 读失败时保持缺省 */ }
   $$('input[name="set-table-mode"]').forEach(el => {
     el.checked = el.value === tableMode;
   });
+  $('#set-protocol-concurrency').value = String(concurrency);
   $('#modal-settings').hidden = false;
 }
 
@@ -2890,8 +2915,13 @@ function selectedTableMode() {
 }
 
 async function saveSettings() {
+  const concurrency = Math.round(Number($('#set-protocol-concurrency').value));
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 6) {
+    throw new Error('协议并发须为 1–6 的整数');
+  }
   await model.saveSettings(collectSettingsForm());
   await bridge.invoke('settings.putPdfparse@1', { settings: { tableMode: selectedTableMode() } });
+  await bridge.invoke('settings.putProtocol@1', { settings: { concurrency } });
   $('#modal-settings').hidden = true;
   refreshLibrary();
   toast('设置已保存');
@@ -3180,13 +3210,13 @@ function renderTaskList(tasks) {
     // （批量）+ 轨迹流（工具步与模型轮按 details 原序）；解析 = 计时拆分。
     // 数据来自任务快照 details，缺登记时自动降级。
     const detail = taskDetailModel({ task, meta });
-    if (detail.stageFlow) {
+    for (const chips of [detail.stageFlow, detail.shardFlow].filter(Boolean)) {
       const flow = document.createElement('div');
       flow.className = 'task-stage-flow';
-      for (const stage of detail.stageFlow) {
+      for (const item of chips) {
         const chip = document.createElement('span');
-        chip.className = `task-stage ${stage.state}`;
-        chip.textContent = stage.label;
+        chip.className = `task-stage ${item.state}`;
+        chip.textContent = item.label;
         flow.appendChild(chip);
       }
       row.appendChild(flow);
@@ -3275,7 +3305,14 @@ async function pollActiveTasks() {
     badge.textContent = String(lastActiveTasks.length);
     // 书库视图的建图状态 chip 依赖活动任务：任务出现/消失时刷新一次卡片，
     // 免得停留书库期间「建图中」滞留或建图完成后不翻「已建图」（#72 走查发现）。
-    if (reader.appView === 'library' && lastActiveTasks.length !== prevCount) void refreshLibrary();
+    const mappingSig = lastActiveTasks
+      .filter(t => String(t.kind || '').startsWith('paper.build-map'))
+      .map(t => `${t.taskId}:${t.progress?.done ?? ''}/${t.progress?.total ?? ''}`)
+      .join('|');
+    if (reader.appView === 'library' && (lastActiveTasks.length !== prevCount || mappingSig !== lastMappingProgressSig)) {
+      void refreshLibrary();
+    }
+    lastMappingProgressSig = mappingSig;
     renderPdfTasks();
     if (current) {
       const mapping = isMappingPaper(current.id);

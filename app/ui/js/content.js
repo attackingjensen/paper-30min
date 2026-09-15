@@ -85,9 +85,15 @@ function paperMeta(paper) {
   return bits.join(' · ');
 }
 
-export function landingModel({ paper, hasMap = false, mapping = false, mappingStage = null } = {}) {
+export function landingModel({ paper, hasMap = false, mapping = false, mappingStage = null, mappingProgress = null } = {}) {
   if (hasMap) return { surface: 'map', chatGated: false };
   const running = !!mapping;
+  const l2Total = Number(mappingProgress?.total) - 1;
+  const progressText = running
+    ? (Number.isFinite(l2Total) && l2Total > 0
+      ? `建图进行中：薄摘要 ${Math.min(Number(mappingProgress.done) || 0, l2Total)}/${l2Total}`
+      : (mappingStage ? `建图进行中：${mappingStageLabel(mappingStage)}` : COPY.landingProgress))
+    : '';
   return {
     surface: running ? 'landing-running' : 'landing-idle',
     heading: running ? COPY.landingRunning : COPY.landingIdle,
@@ -97,9 +103,7 @@ export function landingModel({ paper, hasMap = false, mapping = false, mappingSt
     showStart: !running,
     startLabel: COPY.startMap,
     showProgress: running,
-    progressText: running
-      ? (mappingStage ? `建图进行中：${mappingStageLabel(mappingStage)}` : COPY.landingProgress)
-      : '',
+    progressText,
     chatGated: true,
   };
 }

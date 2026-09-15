@@ -12,7 +12,8 @@
 //!   调用②前/中被取消时，已完成的 L2 分片以 `partial: true` 标记落库并计 partial 打卡。
 //! - 重跑覆盖须 overwriteConfirmed=true，否则以 already_exists 错误即指令拒绝；深挖/综合
 //!   在未建图（无 map 产物）时以 map_required 错误即指令拒绝。
-//! - 超长护栏：调用①装配估算超 ~20 万 token 时按节分片多次调用再确定性合并；任一调用
+//! - 超长护栏：调用①默认每个参与 L2 的原文章节自成一片，经有界并发运行器推进
+//!   （上限 `protocol.concurrency`，默认 3）；合并仍是按节序的确定性拼装。任一调用
 //!   装配后超 983,616 输入 token 即报错拒绝（不截断）。token 为保守估算（CJK≈1、ASCII≈1/4），
 //!   页图按 #38 实测 1902 token/页、裁切图按 1024 token/张计预算。
 //! - 工具轨迹与逐节子进度经任务事件流（event="tool" / "stage"，载荷在 detail）可回看；
@@ -23,7 +24,9 @@
 //! 节数不一致时建图仍覆盖全部内容节，无法落键的部分记入 result.warnings 提示。
 
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use crate::error::BridgeError;
 use crate::library::{ActivityDayDto, Library, PaperDto, ProductDto};
@@ -41,8 +44,6 @@ pub const TASK_SYNTHESIZE: &str = "paper.synthesize@1";
 pub const MAX_TOOL_STEPS: u32 = 12;
 /// 文本协议解析失败的连续容忍次数（工具调用块解析 / 阶段输出校验共用）。
 pub(crate) const MAX_PARSE_FAILURES: u32 = 2;
-/// 调用①装配估算的分片阈值（~20 万 token）。
-pub(crate) const DEFAULT_SHARD_TOKEN_THRESHOLD: u64 = 200_000;
 /// 任一调用装配后的输入 token 硬顶（#38 实测，不截断、报错拒绝）。
 pub(crate) const DEFAULT_INPUT_TOKEN_HARD_TOP: u64 = 983_616;
 /// read_section 单窗字符上限（约 8KB）。
@@ -76,16 +77,8 @@ const SYNTHESIZE_HEADERS: [&str; 4] = ["## 问题", "## 方法", "## 证据", "#
 const MIN_MAX_TOKENS: u64 = 8_192;
 const MIN_MAX_TOKENS_LONG: u64 = 16_384;
 
-/// 测试挂钩：经环境变量下调护栏阈值（生产缺省 DEFAULT_*）。
-const SHARD_THRESHOLD_ENV: &str = "PAPER30MIN_PROTOCOL_SHARD_TOKENS";
+/// 测试挂钩：经环境变量下调输入硬顶（生产缺省 DEFAULT_*）。
 const HARD_TOP_ENV: &str = "PAPER30MIN_PROTOCOL_HARD_TOP";
-
-fn shard_token_threshold() -> u64 {
-    std::env::var(SHARD_THRESHOLD_ENV)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_SHARD_TOKEN_THRESHOLD)
-}
 
 fn input_token_hard_top() -> u64 {
     std::env::var(HARD_TOP_ENV)
@@ -856,6 +849,7 @@ struct RoundCtx<'a> {
     stage: &'a str,
     part_id: Option<&'a str>,
     shard: Option<u64>,
+    sec_id: Option<&'a str>,
 }
 
 fn emit_round(ctx: &RunContext, meta: &RoundCtx, round: u32, output: &RoundOutput) {
@@ -872,6 +866,9 @@ fn emit_round(ctx: &RunContext, meta: &RoundCtx, round: u32, output: &RoundOutpu
     }
     if let Some(shard) = meta.shard {
         detail["shard"] = json!(shard);
+    }
+    if let Some(sec_id) = meta.sec_id {
+        detail["secId"] = json!(sec_id);
     }
     if let Some(ms) = output.reasoning_ms {
         detail["reasoningMs"] = json!(ms);
@@ -1361,33 +1358,9 @@ fn preflight_visual_assets(ctx: &RunContext, paper_id: &str, mapped: &MappedPape
     .with_details(json!({ "missing": missing })))
 }
 
-/// 调用①分片规划：全文装配估算超阈值时按节贪心打包（保持节序），单节超阈值自成一片；
-/// 片内装配仍超硬顶由 check_hard_top 拒绝。
-fn plan_l2_shards<'a>(sections: &[&'a Section], base_overhead: u64) -> Vec<Vec<&'a Section>> {
-    let budget = shard_token_threshold().saturating_sub(base_overhead).max(1);
-    let full: u64 = sections
-        .iter()
-        .map(|section| estimate_text_tokens(&render_section_text(section)))
-        .sum();
-    if full <= budget {
-        return vec![sections.to_vec()];
-    }
-    let mut shards: Vec<Vec<&Section>> = Vec::new();
-    let mut current: Vec<&Section> = Vec::new();
-    let mut current_tokens = 0_u64;
-    for section in sections {
-        let tokens = estimate_text_tokens(&render_section_text(section));
-        if !current.is_empty() && current_tokens + tokens > budget {
-            shards.push(std::mem::take(&mut current));
-            current_tokens = 0;
-        }
-        current.push(section);
-        current_tokens += tokens;
-    }
-    if !current.is_empty() {
-        shards.push(current);
-    }
-    shards
+/// 调用①分片规划：每个参与 L2 的原文章节自成一片（#79；单节超硬顶由 check_hard_top 拒绝）。
+fn plan_l2_shards<'a>(sections: &[&'a Section]) -> Vec<Vec<&'a Section>> {
+    sections.iter().copied().map(|section| vec![section]).collect()
 }
 
 fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -> Result<Value, Halt> {
@@ -1405,64 +1378,172 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
     }
     let title = env.paper.title.clone();
     let sections = l2_sections(&env.mapped);
-    let mut warnings: Vec<String> = env.mapped.warnings.clone();
+    let warnings = Mutex::new(env.mapped.warnings.clone());
 
-    // ---- 调用①：全文 → 全部节薄摘要（超阈值按节分片，合并为确定性拼装） ----
-    let base_prompt = env.skills.compose(
-        STAGE_MAP_L2,
-        &[("title", title.as_str()), ("paperText", "")],
-        "",
-    )?;
-    let base_overhead = estimate_text_tokens(&base_prompt);
-    let shards = plan_l2_shards(&sections, base_overhead);
+    // ---- 调用①：每节一片，有界并发，合并为确定性拼装 ----
+    let shards = plan_l2_shards(&sections);
     let total_shards = shards.len();
-    let mut l2_entries: Vec<Value> = Vec::new();
-    for (index, shard) in shards.iter().enumerate() {
-        if ctx.cancel_checkpoint().is_err() {
-            return persist_build_map_partial(ctx, paper_id, &env, l2_entries, &warnings);
-        }
+    let items: Vec<(usize, &Section)> = shards
+        .iter()
+        .enumerate()
+        .map(|(index, shard)| (index, shard[0]))
+        .collect();
+    ctx.emit_detail(
+        "stage",
+        json!({
+            "stage": STAGE_MAP_L2,
+            "shards": total_shards,
+            "sections": items.iter().map(|(_, section)| section.id.as_str()).collect::<Vec<_>>(),
+        }),
+    );
+    ctx.push_progress(Progress {
+        done: 0,
+        total: total_shards as u64 + 1,
+    });
+    let completed_count = AtomicU64::new(0);
+    let concurrency = settings::protocol_concurrency(&ctx.library) as usize;
+    let outcome = run_bounded(ctx, &items, concurrency, |ctx, (index, section)| {
+        let shard_no = *index as u64 + 1;
+        let sec_id = section.id.as_str();
         ctx.emit_detail(
             "stage",
-            json!({ "stage": STAGE_MAP_L2, "shard": index + 1, "shards": total_shards }),
+            json!({
+                "stage": STAGE_MAP_L2,
+                "shard": shard_no,
+                "shards": total_shards,
+                "secId": sec_id,
+                "shardStatus": "running",
+            }),
         );
-        let paper_text = render_paper_text(shard);
+        let paper_text = render_paper_text(&[*section]);
         let prompt = env.skills.compose(
             STAGE_MAP_L2,
             &[("title", title.as_str()), ("paperText", paper_text.as_str())],
             "",
         )?;
-        check_hard_top(estimate_text_tokens(&prompt), "建图调用①").map_err(Halt::Failed)?;
-        let shard_sections = shard.clone();
-        let entries = match run_json_call(
+        if let Err(error) = check_hard_top(estimate_text_tokens(&prompt), "建图调用①") {
+            ctx.emit_detail(
+                "stage",
+                json!({
+                    "stage": STAGE_MAP_L2,
+                    "shard": shard_no,
+                    "shards": total_shards,
+                    "secId": sec_id,
+                    "shardStatus": "failed",
+                }),
+            );
+            return Err(Halt::Failed(error));
+        }
+        let shard_sections = vec![*section];
+        let mut local_warnings = Vec::new();
+        match run_json_call(
             ctx,
             &env,
             "建图调用①",
             prompt,
-            env.stage_max_tokens(MIN_MAX_TOKENS_LONG),
+            env.stage_max_tokens(MIN_MAX_TOKENS),
             RoundCtx {
                 stage: STAGE_MAP_L2,
                 part_id: None,
-                shard: Some(index as u64 + 1),
+                shard: Some(shard_no),
+                sec_id: Some(sec_id),
             },
-            |value| validate_l2_output(value, &shard_sections, &env.mapped, &mut warnings),
+            |value| validate_l2_output(value, &shard_sections, &env.mapped, &mut local_warnings),
         ) {
-            Ok(entries) => entries,
-            Err(Halt::Cancelled) => {
-                return persist_build_map_partial(ctx, paper_id, &env, l2_entries, &warnings)
+            Ok(entries) => {
+                warnings
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(local_warnings);
+                ctx.emit_detail(
+                    "stage",
+                    json!({
+                        "stage": STAGE_MAP_L2,
+                        "shard": shard_no,
+                        "shards": total_shards,
+                        "secId": sec_id,
+                        "shardStatus": "done",
+                    }),
+                );
+                let done = completed_count.fetch_add(1, Ordering::SeqCst) + 1;
+                ctx.push_progress(Progress {
+                    done,
+                    total: total_shards as u64 + 1,
+                });
+                Ok(entries)
             }
-            Err(other) => return Err(other),
-        };
-        l2_entries.extend(entries);
-        ctx.push_progress(Progress {
-            done: index as u64 + 1,
-            total: total_shards as u64 + 1,
-        });
+            Err(Halt::Failed(error)) => {
+                ctx.emit_detail(
+                    "stage",
+                    json!({
+                        "stage": STAGE_MAP_L2,
+                        "shard": shard_no,
+                        "shards": total_shards,
+                        "secId": sec_id,
+                        "shardStatus": "failed",
+                    }),
+                );
+                Err(Halt::Failed(error))
+            }
+            Err(other) => Err(other),
+        }
+    });
+
+    let mut warnings = warnings.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !outcome.failed.is_empty() {
+        let l2_entries: Vec<Value> = outcome
+            .completed
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        write_partial_l2(ctx, paper_id, &env, l2_entries)?;
+        let failed_sections: Vec<Value> = outcome
+            .failed
+            .iter()
+            .map(|(index, error)| {
+                json!({
+                    "secId": items[*index].1.id,
+                    "code": error.code,
+                    "message": error.message,
+                })
+            })
+            .collect();
+        let names = failed_sections
+            .iter()
+            .filter_map(|item| item["secId"].as_str())
+            .collect::<Vec<_>>()
+            .join("、");
+        return Err(Halt::Failed(
+            BridgeError::new(
+                "protocol_shard_failed",
+                format!("建图调用①有 {} 节未通过：{names}", failed_sections.len()),
+                outcome.failed.iter().any(|(_, error)| error.retryable),
+            )
+            .with_details(json!({ "failedSections": failed_sections })),
+        ));
     }
+    if outcome.stopped {
+        let l2_entries: Vec<Value> = outcome
+            .completed
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect();
+        write_partial_l2(ctx, paper_id, &env, l2_entries)?;
+        if ctx.registry.cancel_requested(&ctx.task_id) {
+            return Err(Halt::Cancelled);
+        }
+        return Err(Halt::Handled);
+    }
+    let l2_entries: Vec<Value> = outcome
+        .completed
+        .into_iter()
+        .flat_map(|(_, entries)| entries)
+        .collect();
 
     // 取消点：调用①已完成、调用②未开始 —— 已产出 L2 按中断部分结果落库
     // （partial: true 标记 + partial 打卡），地图不建。
     if ctx.cancel_checkpoint().is_err() {
-        return persist_build_map_partial(ctx, paper_id, &env, l2_entries, &warnings);
+        return persist_build_map_partial(ctx, paper_id, &env, l2_entries);
     }
 
     // ---- 调用②：全部 L2 + 图表清单 + 摘要 → L1 阅读地图 ----
@@ -1499,11 +1580,12 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
             stage: STAGE_MAP_L1,
             part_id: None,
             shard: None,
+            sec_id: None,
         },
         |value| validate_map_output(value, &env.mapped, &mut warnings),
     ) {
         Ok(body) => body,
-        Err(Halt::Cancelled) => return persist_build_map_partial(ctx, paper_id, &env, l2_entries, &warnings),
+        Err(Halt::Cancelled) => return persist_build_map_partial(ctx, paper_id, &env, l2_entries),
         Err(other) => return Err(other),
     };
 
@@ -1539,14 +1621,13 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
     }))
 }
 
-/// 建图取消的 L2 中断部分结果落库（partial 标记 + partial 打卡），任务转 Cancelled。
-fn persist_build_map_partial(
+/// 建图中断时把已完成 L2 以 partial 标记落库并计 partial 打卡。
+fn write_partial_l2(
     ctx: &RunContext,
     paper_id: &str,
     env: &ProtocolEnv,
     l2_entries: Vec<Value>,
-    _warnings: &[String],
-) -> Result<Value, Halt> {
+) -> Result<(), Halt> {
     let mut updates: Vec<(String, String, Value)> = Vec::new();
     for entry in l2_entries {
         let sec_id = entry["secId"].as_str().unwrap_or("").to_string();
@@ -1563,6 +1644,17 @@ fn persist_build_map_partial(
     if !updates.is_empty() {
         persist_products(&ctx.library, paper_id, updates, Some("partial"))?;
     }
+    Ok(())
+}
+
+/// 建图取消的 L2 中断部分结果落库（partial 标记 + partial 打卡），任务转 Cancelled。
+fn persist_build_map_partial(
+    ctx: &RunContext,
+    paper_id: &str,
+    env: &ProtocolEnv,
+    l2_entries: Vec<Value>,
+) -> Result<Value, Halt> {
+    write_partial_l2(ctx, paper_id, env, l2_entries)?;
     Err(Halt::Cancelled)
 }
 
@@ -1582,6 +1674,92 @@ enum Halt {
 impl From<BridgeError> for Halt {
     fn from(error: BridgeError) -> Self {
         Halt::Failed(error)
+    }
+}
+
+/// 有界并发运行器（#79 引入，#83 批量深挖复用）：最多 N 个工作线程从共享队列取项；
+/// 任一项 Failed 或取消检查点命中时置停止标志，其余线程完成当前项后不再取新项。
+struct BoundedOutcome<T> {
+    completed: Vec<(usize, T)>,
+    failed: Vec<(usize, BridgeError)>,
+    stopped: bool,
+}
+
+fn run_bounded<T, I, F>(
+    ctx: &RunContext,
+    items: &[I],
+    concurrency: usize,
+    work: F,
+) -> BoundedOutcome<T>
+where
+    I: Sync,
+    T: Send,
+    F: Fn(&RunContext, &I) -> Result<T, Halt> + Sync,
+{
+    let n = items.len();
+    if n == 0 {
+        return BoundedOutcome {
+            completed: Vec::new(),
+            failed: Vec::new(),
+            stopped: false,
+        };
+    }
+    let workers = concurrency.max(1).min(n);
+    let queue = Mutex::new((0..n).collect::<VecDeque<usize>>());
+    let stop = AtomicBool::new(false);
+    let completed = Mutex::new(Vec::<(usize, T)>::new());
+    let failed = Mutex::new(Vec::<(usize, BridgeError)>::new());
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                if ctx.cancel_checkpoint().is_err() {
+                    stop.store(true, Ordering::SeqCst);
+                    break;
+                }
+                let index = {
+                    let mut queue = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    match queue.pop_front() {
+                        Some(index) => index,
+                        None => break,
+                    }
+                };
+                match work(ctx, &items[index]) {
+                    Ok(value) => completed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push((index, value)),
+                    Err(Halt::Failed(error)) => {
+                        stop.store(true, Ordering::SeqCst);
+                        failed
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .push((index, error));
+                    }
+                    Err(Halt::Cancelled) | Err(Halt::Handled) => {
+                        stop.store(true, Ordering::SeqCst);
+                    }
+                }
+            });
+        }
+    });
+
+    let mut completed = completed
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    completed.sort_by_key(|(index, _)| *index);
+    BoundedOutcome {
+        completed,
+        failed: failed
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        stopped: stop.load(Ordering::SeqCst),
     }
 }
 
@@ -1841,6 +2019,7 @@ fn dive_section(
         stage: STAGE_DEEP_DIVE,
         part_id: Some(part_id),
         shard: None,
+        sec_id: None,
     };
     loop {
         // 轮边界取消检查点（决策 3：取消 = 当前步完成后停止）。
@@ -2099,6 +2278,7 @@ fn synthesize_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) 
             stage: STAGE_SYNTHESIZE,
             part_id: None,
             shard: None,
+            sec_id: None,
         },
         |text| {
             validate_markdown_headers(text, &SYNTHESIZE_HEADERS).map(|_| text.to_string())
@@ -2413,12 +2593,15 @@ a", &DEEP_DIVE_HEADERS).is_err());
     }
 
     #[test]
-    fn shard_planning_packs_sections_under_budget() {
+    fn shard_planning_one_section_per_shard() {
         let mapped = sample_mapped();
         let sections = l2_sections(&mapped);
-        // 预算充足 → 单片。
-        let shards = plan_l2_shards(&sections, 0);
-        assert_eq!(shards.len(), 1);
-        assert_eq!(shards[0].len(), sections.len());
+        let shards = plan_l2_shards(&sections);
+        assert_eq!(shards.len(), sections.len());
+        assert!(shards.iter().all(|shard| shard.len() == 1));
+        assert_eq!(
+            shards.iter().map(|shard| shard[0].id.as_str()).collect::<Vec<_>>(),
+            sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>()
+        );
     }
 }

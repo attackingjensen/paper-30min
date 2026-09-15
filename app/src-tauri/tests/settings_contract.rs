@@ -72,6 +72,7 @@ fn defaults_are_reported_before_any_write() {
     assert_eq!(result["skillsOverrides"], json!({}));
     assert_eq!(result["pdfparse"]["hfEndpoint"], json!(""));
     assert_eq!(result["pdfparse"]["tableMode"], json!("fast"));
+    assert_eq!(result["protocol"]["concurrency"], json!(3));
 }
 
 #[test]
@@ -344,6 +345,53 @@ fn put_model_accepts_stage_fields_and_ignores_unknown_stage_keys() {
 }
 
 #[test]
+fn protocol_concurrency_defaults_and_rejects_out_of_range() {
+    let (registry, library, _dir) = common::env();
+    let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(loaded["protocol"]["concurrency"], json!(3));
+
+    for settings in [
+        json!({ "concurrency": 0 }),
+        json!({ "concurrency": 7 }),
+        json!({ "concurrency": -1 }),
+        json!({ "concurrency": 1.5 }),
+        json!({ "concurrency": "3" }),
+        json!({ "concurrency": true }),
+    ] {
+        let error = invoke_err(
+            &registry,
+            &library,
+            "settings.putProtocol@1",
+            json!({ "settings": settings }),
+        );
+        assert_eq!(error.code, "invalid_input", "应拒绝越界 concurrency: {settings}");
+        assert!(!error.retryable);
+    }
+    for input in [json!({}), json!({ "settings": "text" }), json!({ "settings": [] })] {
+        let error = invoke_err(&registry, &library, "settings.putProtocol@1", input.clone());
+        assert_eq!(error.code, "invalid_input", "应拒绝非法输入: {input}");
+    }
+
+    let saved = invoke(
+        &registry,
+        &library,
+        "settings.putProtocol@1",
+        json!({ "settings": { "concurrency": 2, "unknownKey": 1 } }),
+    );
+    assert_eq!(saved["settings"], json!({ "concurrency": 2 }));
+    let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(loaded["protocol"]["concurrency"], json!(2));
+
+    let six = invoke(
+        &registry,
+        &library,
+        "settings.putProtocol@1",
+        json!({ "settings": { "concurrency": 6 } }),
+    );
+    assert_eq!(six["settings"]["concurrency"], json!(6));
+}
+
+#[test]
 fn app_info_lists_settings_commands() {
     let (registry, library, _dir) = common::env();
     let info = invoke(&registry, &library, "app.info@1", json!({}));
@@ -353,6 +401,7 @@ fn app_info_lists_settings_commands() {
         "settings.putModel@1",
         "settings.putSkillsOverrides@1",
         "settings.putPdfparse@1",
+        "settings.putProtocol@1",
         "pdfparse.status@1",
         "dialog.pickFile@1",
         "dialog.saveFile@1",

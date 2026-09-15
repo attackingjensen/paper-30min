@@ -293,7 +293,11 @@
       <label class="inline">单节送读字数上限
         <input id="set-maxchars" type="number" min="2000" max="60000" step="1000">
       </label>
+      <label class="inline">协议并发
+        <input id="set-protocol-concurrency" type="number" min="1" max="6" step="1">
+      </label>
     </div>
+    <p class="muted">协议并发是建图节薄摘要同时进行的节数（后续批量深挖共用）。中转站限流时请调低，范围 1–6，默认 3。</p>
     <details class="settings-block settings-fold">
       <summary>阶段模型与附加参数</summary>
       <p class="muted settings-hint" id="set-thinking-hint" hidden>该模型家族支持思考模式。本应用默认对建图 / 深挖 / 复述稿关闭思考、对问答开启；如需调整请在阶段附加参数中设置 <code>enable_thinking</code> 或 <code>reasoning_effort</code>。</p>

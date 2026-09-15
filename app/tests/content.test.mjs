@@ -105,6 +105,15 @@ test('落地页：未建图显示开始建图；进行中改进度文案；提�
   assert.equal(running.showProgress, true);
   assert.equal(running.progressText, '建图进行中：生成节薄摘要（L2）');
   assert.equal(running.chatGated, true);
+  assert.equal(
+    landingModel({
+      paper,
+      mapping: true,
+      mappingStage: 'map-l2',
+      mappingProgress: { done: 2, total: 5 },
+    }).progressText,
+    '建图进行中：薄摘要 2/4',
+  );
 
   const pending = landingModel({ paper, hasMap: false, mapping: true });
   assert.equal(pending.progressText, COPY.landingProgress);
