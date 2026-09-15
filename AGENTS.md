@@ -14,7 +14,10 @@
 
 ### 项目文档
 
-开始项目分析、规划或实现前，先读取 `docs/status/current.md`、`CONTEXT.md` 和相关 GitHub Wayfinder 地图/票据。完成会实质改变目标、能力、风险、进行中事项或下一步的工作后，同步覆盖更新 `docs/status/current.md`。文档分层及背景、草稿和原型的读取规则见 `docs/README.md`。
+- 开始项目分析、规划或实现前，先读取 `docs/status/current.md`、`CONTEXT.md` 和相关 GitHub Wayfinder 地图/票据。
+- 完成会实质改变目标、能力、风险、进行中事项或下一步的工作后，覆盖更新 `docs/status/current.md`。
+- 关票与实现收口只交一次：把 `current.md` 和这次工作的代码、测试、规格收口放进**同一次** git 提交。单独改状态快照不够成一次提交；留在工作区，并进下一笔带代码、测试或规格收口的提交。
+- 文档分层及背景、草稿和原型的读取规则见 `docs/README.md`。
 
 ### Wayfinder 与规格
 

@@ -117,4 +117,4 @@ Windows 正式客户端规格 [Issue #24](https://github.com/attackingjensen/pap
 - Rust/JavaScript 接口边界见 [本地能力接口规格](../background/client-local-rust-js-boundary.md)（同上）。
 - 项目术语和领域约束见 [CONTEXT.md](../../CONTEXT.md)；当前架构的权威决策见 ADR [0006](../adr/0006-three-layer-reading-protocol.md)（三层阅读协议）与 [0007](../adr/0007-progress-and-products-data-model.md)（进度与产物数据模型）。
 - 具体需求、决策和验收以 GitHub Issue、规格文件和走查记录为准；本文件只记录当前快照。
-- 完成一项工作后，只在该工作改变当前目标、能力、风险、未完成事项或下一步时更新本文件；不要把提交记录、命令输出和过程日志复制到这里。
+- 完成一项工作后，只在该工作改变当前目标、能力、风险、未完成事项或下一步时更新本文件；不要把提交记录、命令输出和过程日志复制到这里。本文件随那次工作同一次提交，不为覆盖快照单独开提交（见 `AGENTS.md`「项目文档」）。
