@@ -596,6 +596,14 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .modal label.inline input { width: 110px; margin-top: 0; }
 .modal-row { margin: 4px 0; }
 .modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.settings-block { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.settings-block h4 { margin: 0 0 4px; font-size: 14px; }
+.settings-radios { display: flex; flex-wrap: wrap; gap: 12px 18px; margin-top: 8px; }
+.modal label.radio {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 500; margin: 0;
+}
+.modal label.radio input { width: auto; margin: 0; }
 
 /* 整理弹窗 */
 .organize-modal { width: 560px; }

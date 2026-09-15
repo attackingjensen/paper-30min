@@ -160,13 +160,15 @@ pub fn resolve_sidecar(library_root: &Path) -> Option<SidecarLayout> {
     None
 }
 
-/// `pdfparse.status@1`：纯文件系统检查（不启动 Python，毫秒级），
-/// 供导入前探明侧车可用性与 download 案的待补齐项。
+/// `pdfparse.status@1`：纯文件系统检查（不启动 Python，毫秒级）并回显当前
+/// `tableMode`，供导入前探明侧车可用性与 download 案的待补齐项。
 pub fn status(library: &Library) -> Value {
+    let table_mode = crate::settings::pdfparse_table_mode(library);
     match resolve_sidecar(library.root()) {
         None => json!({
             "present": false,
             "ready": false,
+            "tableMode": table_mode,
         }),
         Some(layout) => {
             let deps = deps_ready(&layout.root);
@@ -180,6 +182,7 @@ pub fn status(library: &Library) -> Value {
                 "modelsDir": layout.models_dir.to_string_lossy(),
                 "modelsReady": missing.is_empty(),
                 "missingModels": missing,
+                "tableMode": table_mode,
             })
         }
     }
@@ -445,7 +448,7 @@ fn sidecar_startup_timings(harness: &ChildHarness) -> (Option<u64>, Option<u64>)
 /// 输入: { pdfPath?, paperId?, workDir?, formulaEnrichment? }（pdfPath 缺省 = paperId 论文的 pdf 附件）
 /// 结果: { doclingJsonPath, workDir, pages, elapsedMs, wallClockMs,
 ///         doclingVersion, ocrPages, warnings, timings, startupMs, modelLoadMs,
-///         blockModelAssetId?, mappingWarnings? }
+///         tableMode, numThreads, blockModelAssetId?, mappingWarnings? }
 /// 带 paperId 时转换成功后立即映射并落 blockmodel.json（#76）。
 /// 不做自动重试：转换动辄数分钟，失败后由用户显式重试（retryable 标记保留）。
 pub(crate) fn run_convert(
@@ -492,10 +495,13 @@ fn convert_once(
     std::fs::create_dir_all(&out_dir)
         .map_err(|err| BridgeError::internal(format!("解析工作目录创建失败: {err}")))?;
 
+    let table_mode = crate::settings::pdfparse_table_mode(&ctx.library);
     let mut command = base_command(&layout, configured_hf_endpoint(ctx).as_deref());
     command
         .arg("--models-dir")
         .arg(&layout.models_dir)
+        .arg("--table-mode")
+        .arg(table_mode)
         .arg("convert")
         .arg("--pdf")
         .arg(pdf_path)

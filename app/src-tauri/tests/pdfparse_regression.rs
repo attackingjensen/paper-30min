@@ -2,8 +2,8 @@
 //!
 //! #46 的 10 篇踩坑论文固化为回归夹具：夹具 PDF 全链（侧车转换 → 映射层）→
 //! 断言基线 = #48 User Stories 1–8 对应事实（节结构、附录存活、furniture 剔除、
-//! prov 覆盖、参考文献编号）；性能门禁 = 单篇转换耗时不超 #46 实测值 1.5 倍
-//! （机器状态容差见下）；Docling 版本锁定：侧车自报版本须等于
+//! prov 覆盖、参考文献编号）；性能门禁 = 单篇转换耗时不超 manifest.baselineSeconds
+//! 的 1.5 倍（#78 起基线为 FAST + 物理核同机实测；机器状态容差见下）；Docling 版本锁定：侧车自报版本须等于
 //! `manifest.doclingVersion`，升级流程见 `tools/pdfparse-sidecar/README.md`
 //! 与 `tests/fixtures/regression/README.md`。
 //!
@@ -44,7 +44,7 @@ static SIDECAR_LOCK: Mutex<()> = Mutex::new(());
 const ENV_FIXTURES: &str = "PAPER30MIN_PDFPARSE_FIXTURES";
 const ENV_DUMP_DIR: &str = "PAPER30MIN_PDFPARSE_FIXTURES_DUMP_DIR";
 const ENV_PERF_FACTOR: &str = "PAPER30MIN_PDFPARSE_PERF_FACTOR";
-/// 单篇转换上限：2106.09685 基线 176s × 1.5 ≈ 265s，再留冷启动余量。
+/// 单篇转换上限：26 页夹具冷启动余量（#78 后基线约 57s × 1.5 仍远低于此）。
 const CONVERT_TIMEOUT: Duration = Duration::from_secs(900);
 /// furniture 泄漏探针：出现次数 ≥3 且足够长的 furniture 文本不得进入节块。
 const FURNITURE_PROBE_MIN_OCCURRENCES: usize = 3;
@@ -396,7 +396,14 @@ fn expect_violations(entry: &Value, paper: &MappedPaper) -> Vec<String> {
 }
 
 /// dump 模式的单篇事实（人工策展 manifest 的依据 + 版本升级同机对照数据）。
-fn dump_facts(entry: &Value, paper: &MappedPaper, measured_seconds: Option<f64>, docling_version: Option<&str>) -> Value {
+/// `convert_meta` 来自侧车 convert 结果，用于 #74/#78 同机前后对照（timings / tableMode / numThreads）。
+fn dump_facts(
+    entry: &Value,
+    paper: &MappedPaper,
+    measured_seconds: Option<f64>,
+    docling_version: Option<&str>,
+    convert_meta: Option<&Value>,
+) -> Value {
     let counts = |kind: BlockKind| all_blocks(paper).filter(|b| b.kind == kind).count();
     json!({
         "id": entry["id"],
@@ -405,6 +412,9 @@ fn dump_facts(entry: &Value, paper: &MappedPaper, measured_seconds: Option<f64>,
         "baselineSeconds": entry["baselineSeconds"],
         "measuredSeconds": measured_seconds,
         "doclingVersion": docling_version,
+        "timings": convert_meta.and_then(|value| value.get("timings")).cloned(),
+        "tableMode": convert_meta.and_then(|value| value.get("tableMode")).cloned(),
+        "numThreads": convert_meta.and_then(|value| value.get("numThreads")).cloned(),
         "facts": {
             "title": paper.title,
             "sections": paper.sections.iter().map(|s| json!({
@@ -604,7 +614,7 @@ fn dump_baseline_facts() {
     for entry in manifest["papers"].as_array().unwrap() {
         let id = entry["id"].as_str().unwrap();
         let (docling_path, measured_seconds, docling_version) = match &dump_dir {
-            Some(dir) => (dir.join(format!("{id}.json")), None, None),
+            Some(dir) => (dir.join(format!("{id}.json")), None, None::<String>),
             None => {
                 let pdf = fixtures_dir().join(entry["pdf"].as_str().unwrap());
                 let work = tempfile::tempdir().expect("临时工作目录");
@@ -614,15 +624,20 @@ fn dump_baseline_facts() {
                 let version = result["doclingVersion"].as_str().map(str::to_string);
                 // 临时目录随 work 删除前先把 JSON 读出来映射。
                 let paper = map_docling_json_file(&path).expect("映射应成功");
-                let facts = dump_facts(entry, &paper, Some(seconds), version.as_deref());
-                eprintln!("[dump {id}] {seconds:.1}s 引擎违例 {} 项", facts["facts"]["engineViolations"].as_array().unwrap().len());
+                let facts = dump_facts(entry, &paper, Some(seconds), version.as_deref(), Some(&result));
+                let layout = result["timings"]["layout"].as_f64().unwrap_or(0.0);
+                let table = result["timings"]["table"].as_f64().unwrap_or(0.0);
+                eprintln!(
+                    "[dump {id}] {seconds:.1}s layout={layout:.1}s table={table:.1}s 引擎违例 {} 项",
+                    facts["facts"]["engineViolations"].as_array().unwrap().len()
+                );
                 out.push(facts);
                 continue;
             }
         };
         let paper = map_docling_json_file(&docling_path)
             .unwrap_or_else(|e| panic!("映射 {id} 失败（{}）: {e}", docling_path.display()));
-        let facts = dump_facts(entry, &paper, measured_seconds, docling_version);
+        let facts = dump_facts(entry, &paper, measured_seconds, docling_version.as_deref(), None);
         eprintln!("[dump {id}] 引擎违例 {} 项", facts["facts"]["engineViolations"].as_array().unwrap().len());
         out.push(facts);
     }

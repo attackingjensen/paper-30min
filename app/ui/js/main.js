@@ -2712,7 +2712,7 @@ async function saveOrganizeMetadata() {
 }
 
 // ---------------- 设置弹窗 ----------------
-function openSettingsModal() {
+async function openSettingsModal() {
   const s = model.loadSettings();
   $('#set-baseurl').value = s.baseUrl;
   $('#set-apikey').value = s.apiKey;
@@ -2720,6 +2720,14 @@ function openSettingsModal() {
   $('#set-temp').value = s.temperature;
   $('#set-maxchars').value = s.maxChars;
   $('#api-test-result').textContent = '';
+  let tableMode = 'fast';
+  try {
+    const all = await bridge.invoke('settings.get@1');
+    if (all?.pdfparse?.tableMode === 'accurate') tableMode = 'accurate';
+  } catch (_) { /* 读失败时保持 fast */ }
+  $$('input[name="set-table-mode"]').forEach(el => {
+    el.checked = el.value === tableMode;
+  });
   $('#modal-settings').hidden = false;
 }
 
@@ -2733,8 +2741,15 @@ function collectSettingsForm() {
   return s;
 }
 
+function selectedTableMode() {
+  return $$('input[name="set-table-mode"]').find(el => el.checked)?.value === 'accurate'
+    ? 'accurate'
+    : 'fast';
+}
+
 async function saveSettings() {
   await model.saveSettings(collectSettingsForm());
+  await bridge.invoke('settings.putPdfparse@1', { settings: { tableMode: selectedTableMode() } });
   $('#modal-settings').hidden = true;
   refreshLibrary();
   toast('设置已保存');

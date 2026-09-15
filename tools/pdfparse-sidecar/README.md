@@ -36,8 +36,10 @@ python tools/pdfparse-sidecar/build_sidecar.py --hf-endpoint https://hf-mirror.c
 
 ## 进程契约
 
-输入 = PDF 路径 + 选项（`--formula-enrichment`），输出 = `<out-dir>/docling.json`
-（DoclingDocument 无损 JSON）+ `<out-dir>/result.json`（结构化结果）+ stdout 单行
+输入 = PDF 路径 + 选项（`--formula-enrichment`；全局 `--table-mode fast|accurate`，
+默认 `fast`），输出 = `<out-dir>/docling.json`
+（DoclingDocument 无损 JSON）+ `<out-dir>/result.json`（结构化结果，含 `tableMode` /
+`numThreads`）+ stdout 单行
 `PDFPARSE_RESULT` / `PDFPARSE_PROGRESS`。错误码：`pdf_not_found`、
 `pdf_open_failed`、`conversion_failed`、`deps_missing`、`model_missing`、
 `model_download_failed`、`bootstrap_failed`、`bootstrap_required`（Rust 预检）、
@@ -66,6 +68,9 @@ result.json（逐件 width/height/bytes + `skippedCrops`）。裁切框钳制到
 - OCR 仅对无文本层页触发（预扫 `pypdfium2` 文本层，存在无文本层页才启用
   RapidOCR torch 后端；onnxruntime 不随包），触发页在结果 `ocrPages` 标记并附
   `scanned_pages_ocr` 警示。
+- convert 启动时若环境未显式设置 `DOCLING_NUM_THREADS` / `OMP_NUM_THREADS`，按物理核
+  （`psutil.cpu_count(logical=False)`）钳制到 `[2, 8]` 后写入 `DOCLING_NUM_THREADS`
+  （须在 import docling 之前）。表格结构默认 FAST，可由 `--table-mode accurate` 切回。
 - download 案首启由 `pdfparse.bootstrap@1` 补齐依赖与模型（pip + snapshot_download
   幂等，可安全重试）；运行时下载的模型落书库 `pdfparse-models/`，不打安装目录。
 - 依赖完整性以侧车根目录 `deps.ok` 标记为准（构建/bootstrap 成功才写入）——

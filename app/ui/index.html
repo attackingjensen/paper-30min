@@ -275,7 +275,7 @@
 <!-- ============ 设置弹窗 ============ -->
 <div class="modal-mask" id="modal-settings" hidden>
   <div class="modal">
-    <h3>API 设置</h3>
+    <h3>设置</h3>
     <p class="muted">填写任意 OpenAI 兼容接口（OpenAI / DeepSeek / Moonshot / 阿里云百炼 / Ollama 等）。API Key 仅保存在本机书库中，不会随导出或迁移离开这台电脑。</p>
     <label>API Base URL
       <input id="set-baseurl" placeholder="例如：https://api.deepseek.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1">
@@ -293,6 +293,14 @@
       <label class="inline">单节送读字数上限
         <input id="set-maxchars" type="number" min="2000" max="60000" step="1000">
       </label>
+    </div>
+    <div class="settings-block">
+      <h4>解析</h4>
+      <p class="muted">表格结构识别模式。FAST 更快；复杂合并单元格时精度略降。</p>
+      <div class="settings-radios" role="radiogroup" aria-label="表格模式">
+        <label class="radio"><input type="radio" name="set-table-mode" value="fast"> FAST（默认，更快）</label>
+        <label class="radio"><input type="radio" name="set-table-mode" value="accurate"> ACCURATE（复杂表格更准）</label>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="btn-test-api" type="button">测试连接</button>

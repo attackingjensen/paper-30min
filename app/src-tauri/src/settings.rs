@@ -11,7 +11,8 @@ use crate::library::Library;
 /// settings 表中模型设置（JSON 对象）与技能覆盖（JSON 对象）的键名。
 const MODEL_KEY: &str = "model";
 const SKILLS_OVERRIDES_KEY: &str = "skills.overrides";
-/// Docling 侧车设置（JSON 对象）：hfEndpoint 为模型下载端点覆盖（规格 #48 决策 3）。
+/// Docling 侧车设置（JSON 对象）：hfEndpoint 为模型下载端点覆盖（规格 #48 决策 3）；
+/// tableMode 为表格结构识别模式（规格 #74 A2 / Issue #78）。
 const PDFPARSE_KEY: &str = "pdfparse";
 
 /// UI 偏好设置（JSON 对象）：welcomeSeeded = 内置「使用说明」已播种标记（发布版首启）。
@@ -38,6 +39,7 @@ fn default_model() -> Map<String, Value> {
 fn default_pdfparse() -> Map<String, Value> {
     json!({
         "hfEndpoint": "",
+        "tableMode": "fast",
     })
     .as_object()
     .expect("默认侧车设置是对象")
@@ -80,6 +82,20 @@ fn load_pdfparse(library: &Library) -> Result<Map<String, Value>, BridgeError> {
 
 fn load_ui(library: &Library) -> Result<Map<String, Value>, BridgeError> {
     load_object(library, UI_KEY, default_ui())
+}
+
+/// pdfparse 任务的表格结构模式：仅 `fast` / `accurate`；其余（含损坏存储）回落 fast。
+pub(crate) fn pdfparse_table_mode(library: &Library) -> &'static str {
+    match load_pdfparse(library)
+        .ok()
+        .as_ref()
+        .and_then(|merged| merged.get("tableMode"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+    {
+        Some("accurate") => "accurate",
+        _ => "fast",
+    }
 }
 
 /// pdfparse 任务的 HF 端点覆盖：空串/缺省/损坏都归为 None（默认官方源+镜像回退）。
@@ -162,7 +178,8 @@ pub fn put_skills_overrides(library: &Library, input: &Value) -> Result<Value, B
     }))
 }
 
-/// 局部更新侧车设置：hfEndpoint 为空字符串（默认官方源+镜像回退）或 http(s) URL。
+/// 局部更新侧车设置：hfEndpoint 为空字符串（默认官方源+镜像回退）或 http(s) URL；
+/// tableMode 为 `fast`（默认）或 `accurate`。
 pub fn put_pdfparse(library: &Library, input: &Value) -> Result<Value, BridgeError> {
     let settings = input
         .get("settings")
@@ -182,6 +199,18 @@ pub fn put_pdfparse(library: &Library, input: &Value) -> Result<Value, BridgeErr
                 {
                     return Err(BridgeError::invalid_input(
                         "hfEndpoint 必须是 http/https 地址或空字符串",
+                    ));
+                }
+                merged.insert(field.clone(), Value::String(trimmed.to_string()));
+            }
+            "tableMode" => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| BridgeError::invalid_input("tableMode 必须是 fast 或 accurate"))?;
+                let trimmed = text.trim();
+                if trimmed != "fast" && trimmed != "accurate" {
+                    return Err(BridgeError::invalid_input(
+                        "tableMode 必须是 fast 或 accurate",
                     ));
                 }
                 merged.insert(field.clone(), Value::String(trimmed.to_string()));

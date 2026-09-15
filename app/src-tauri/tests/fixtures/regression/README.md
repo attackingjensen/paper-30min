@@ -57,6 +57,9 @@ PAPER30MIN_PDFPARSE_FIXTURES=dump PAPER30MIN_PDFPARSE_FIXTURES_DUMP_DIR=<docling
 并在升级报告中说明；版本升级的性能判定以同机 dump 前后对照为准
 （`manifest.dump.json` 的 `measuredSeconds`）。
 
+Issue #78（线程数按物理核 + TableFormer FAST）后的基线重建同一流程：同机 dump 前后对照
+`facts` 与 `timings`，用新 `measuredSeconds` 写回 `baselineSeconds`；`doclingVersion` 三处钉不动。
+
 ## 断言基线的判读
 
 - 引擎不变量（每篇必过，无需清单字段）：块级 prov 全覆盖；图/表/公式块必带

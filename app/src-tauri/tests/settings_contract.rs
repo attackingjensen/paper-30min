@@ -67,6 +67,8 @@ fn defaults_are_reported_before_any_write() {
     assert_eq!(model["maxTokens"], json!(4096));
     assert_eq!(model["maxChars"], json!(16000));
     assert_eq!(result["skillsOverrides"], json!({}));
+    assert_eq!(result["pdfparse"]["hfEndpoint"], json!(""));
+    assert_eq!(result["pdfparse"]["tableMode"], json!("fast"));
 }
 
 #[test]
@@ -250,6 +252,50 @@ fn put_pdfparse_validates_hf_endpoint() {
     assert_eq!(saved["settings"]["hfEndpoint"], json!("https://hf-mirror.com"));
     let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
     assert_eq!(loaded["pdfparse"]["hfEndpoint"], json!("https://hf-mirror.com"));
+    assert_eq!(loaded["pdfparse"]["tableMode"], json!("fast"), "局部更新不应丢掉缺省 tableMode");
+}
+
+#[test]
+fn put_pdfparse_validates_table_mode() {
+    let (registry, library, _dir) = common::env();
+    let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(loaded["pdfparse"]["tableMode"], json!("fast"));
+
+    for settings in [
+        json!({ "tableMode": "FAST" }),
+        json!({ "tableMode": "slow" }),
+        json!({ "tableMode": "" }),
+        json!({ "tableMode": 1 }),
+        json!({ "tableMode": true }),
+    ] {
+        let error = invoke_err(
+            &registry,
+            &library,
+            "settings.putPdfparse@1",
+            json!({ "settings": settings }),
+        );
+        assert_eq!(error.code, "invalid_input", "应拒绝非法 tableMode: {settings}");
+        assert!(!error.retryable);
+    }
+
+    let saved = invoke(
+        &registry,
+        &library,
+        "settings.putPdfparse@1",
+        json!({ "settings": { "tableMode": "accurate" } }),
+    );
+    assert_eq!(saved["settings"]["tableMode"], json!("accurate"));
+    assert_eq!(saved["settings"]["hfEndpoint"], json!(""));
+    let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(loaded["pdfparse"]["tableMode"], json!("accurate"));
+
+    let fast = invoke(
+        &registry,
+        &library,
+        "settings.putPdfparse@1",
+        json!({ "settings": { "tableMode": "fast" } }),
+    );
+    assert_eq!(fast["settings"]["tableMode"], json!("fast"));
 }
 
 #[test]

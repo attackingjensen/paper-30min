@@ -18,6 +18,7 @@ use paper30min_lib::tasks::{TaskRegistry, TaskStatus};
 use paper30min_lib::testkit::{wait_terminal, Collector};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -90,6 +91,7 @@ fn status_reports_sidecar_layout() {
     assert_eq!(sidecar["modelsReady"], json!(true));
     assert_eq!(sidecar["variant"], json!("bundled"));
     assert_eq!(sidecar["missingModels"], json!([]));
+    assert_eq!(sidecar["tableMode"], json!("fast"), "缺省表格模式应为 fast");
 }
 
 /// 环境变量守卫：测试结束（含 panic）时移除，避免污染同进程其他测试。
@@ -149,6 +151,12 @@ fn convert_sample_pdf_produces_docling_document() {
     assert!(timings.contains_key("table"), "timings 至少含表格");
     assert!(result["startupMs"].as_u64().is_some(), "应有 startupMs");
     assert!(result["modelLoadMs"].as_u64().is_some(), "应有 modelLoadMs");
+    assert_eq!(result["tableMode"], json!("fast"), "缺省表格模式应为 fast");
+    let threads = result["numThreads"].as_u64().expect("convert 应回显 numThreads");
+    assert!(
+        (2..=8).contains(&threads),
+        "未设环境变量时 numThreads 应钳制在 2..=8，实得 {threads}"
+    );
 
     // 块级 prov 契约（#48 用户故事 13）：文本块带 page_no + BOTTOMLEFT bbox。
     let doc: Value = serde_json::from_str(
@@ -363,4 +371,102 @@ fn convert_scanned_blank_page_marks_ocr_degraded() {
             .contains(&json!("scanned_pages_ocr")),
         "无文本层页应带降级提示: {result}"
     );
+}
+
+#[test]
+fn status_echoes_table_mode_from_settings() {
+    let (registry, library, _dir) = common::env();
+    let first = bridge::invoke(&registry, &library, "pdfparse.status@1", &json!({}))
+        .expect("pdfparse.status@1");
+    assert_eq!(first["sidecar"]["tableMode"], json!("fast"));
+
+    bridge::invoke(
+        &registry,
+        &library,
+        "settings.putPdfparse@1",
+        &json!({ "settings": { "tableMode": "accurate" } }),
+    )
+    .expect("写入 tableMode");
+    let again = bridge::invoke(&registry, &library, "pdfparse.status@1", &json!({}))
+        .expect("pdfparse.status@1");
+    assert_eq!(again["sidecar"]["tableMode"], json!("accurate"));
+}
+
+#[test]
+fn convert_echoes_accurate_table_mode_from_settings() {
+    let (registry, library, dir) = common::env();
+    if !sidecar_ready(&library) {
+        return;
+    }
+    let _guard = SIDECAR_LOCK.lock().unwrap();
+    bridge::invoke(
+        &registry,
+        &library,
+        "settings.putPdfparse@1",
+        &json!({ "settings": { "tableMode": "accurate" } }),
+    )
+    .expect("写入 tableMode");
+    let work_dir = dir.path().join("convert-accurate");
+    let (task_id, sink) = start_convert(&registry, &sample_pdf(), Some(&work_dir));
+    let status = wait_terminal(&registry, &task_id, CONVERT_TIMEOUT).expect("转换超时");
+    assert_eq!(status, TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let result = registry.get(&task_id).unwrap().result.expect("succeeded 应携带 result");
+    assert_eq!(result["tableMode"], json!("accurate"));
+}
+
+#[test]
+fn sidecar_resolves_thread_count_from_env_and_clamps() {
+    let (_registry, library, _dir) = common::env();
+    if !sidecar_ready(&library) {
+        return;
+    }
+    let status = pdfparse::status(&library);
+    let root = PathBuf::from(
+        status["sidecarRoot"]
+            .as_str()
+            .expect("侧车就绪时应有 sidecarRoot"),
+    );
+    let python_exe = root.join("python").join("python.exe");
+    let app_dir = root.join("app");
+    let code = r#"
+import json, os, sys
+sys.path.insert(0, ".")
+os.environ.pop("DOCLING_NUM_THREADS", None)
+os.environ.pop("OMP_NUM_THREADS", None)
+from pdfparse_sidecar import resolve_num_threads
+out = {
+    "clamp16": resolve_num_threads(physical_cores=16),
+    "clamp1": resolve_num_threads(physical_cores=1),
+    "clamp6": resolve_num_threads(physical_cores=6),
+}
+os.environ["DOCLING_NUM_THREADS"] = "3"
+out["env3"] = resolve_num_threads(physical_cores=16)
+os.environ.pop("DOCLING_NUM_THREADS", None)
+os.environ["OMP_NUM_THREADS"] = "4"
+out["omp4"] = resolve_num_threads(physical_cores=16)
+print(json.dumps(out))
+"#;
+    let output = Command::new(&python_exe)
+        .arg("-c")
+        .arg(code)
+        .current_dir(&app_dir)
+        .env("PYTHONUTF8", "1")
+        .output()
+        .expect("调用侧车 Python");
+    assert!(
+        output.status.success(),
+        "resolve_num_threads 脚本失败: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+        panic!(
+            "stdout 不是 JSON: {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    assert_eq!(parsed["clamp16"], json!(8));
+    assert_eq!(parsed["clamp1"], json!(2));
+    assert_eq!(parsed["clamp6"], json!(6));
+    assert_eq!(parsed["env3"], json!(3));
+    assert_eq!(parsed["omp4"], json!(4));
 }

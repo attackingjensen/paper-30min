@@ -46,6 +46,47 @@ FORMULA_FOLDER = "docling-project--CodeFormulaV2"
 HF_OFFICIAL = "https://huggingface.co"
 HF_MIRROR = "https://hf-mirror.com"
 
+THREAD_MIN = 2
+THREAD_MAX = 8
+
+
+def _explicit_thread_env():
+    """环境已显式给出合法线程数时返回该整数，否则 None。"""
+    for key in ("DOCLING_NUM_THREADS", "OMP_NUM_THREADS"):
+        raw = os.environ.get(key)
+        if raw is None or not str(raw).strip():
+            continue
+        try:
+            return int(str(raw).strip())
+        except ValueError:
+            continue
+    return None
+
+
+def resolve_num_threads(physical_cores=None):
+    """解析 Docling 线程数：显式环境变量优先；否则物理核钳制到 [2, 8]。"""
+    explicit = _explicit_thread_env()
+    if explicit is not None:
+        return explicit
+    cores = physical_cores
+    if cores is None:
+        import psutil
+
+        cores = psutil.cpu_count(logical=False)
+    try:
+        cores = int(cores)
+    except (TypeError, ValueError):
+        cores = THREAD_MIN
+    return max(THREAD_MIN, min(THREAD_MAX, cores))
+
+
+def apply_thread_env():
+    """未设线程环境变量时按物理核写入 DOCLING_NUM_THREADS。须在 import docling 之前调用。"""
+    n = resolve_num_threads()
+    if _explicit_thread_env() is None:
+        os.environ["DOCLING_NUM_THREADS"] = str(n)
+    return n
+
 # 布局模型固定到验证当天的快照（#46 回归所用版本）；TableFormer 由 docling 2.126
 # 自身钉在 docling-models v2.3.0。
 LAYOUT_REPO = "docling-project/docling-layout-heron"
@@ -320,6 +361,9 @@ def cmd_convert(args):
         )
         return 0
 
+    num_threads = apply_thread_env()
+    table_mode = args.table_mode
+
     # 离线运行：模型全部来自 artifacts 目录，禁止任何 HF 网络访问。
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -327,7 +371,12 @@ def cmd_convert(args):
     emit_progress("startup")
     try:
         from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
+        from docling.datamodel.pipeline_options import (
+            AcceleratorOptions,
+            PdfPipelineOptions,
+            RapidOcrOptions,
+            TableFormerMode,
+        )
         from docling.datamodel.settings import settings
         from docling.document_converter import DocumentConverter, PdfFormatOption
     except ImportError as err:
@@ -348,7 +397,9 @@ def cmd_convert(args):
         # 同一套 torch 依赖；onnxruntime 不随包）。
         do_ocr=bool(ocr_pages),
         ocr_options=RapidOcrOptions(backend="torch"),
+        accelerator_options=AcceleratorOptions(num_threads=num_threads),
     )
+    pipeline_options.table_structure_options.mode = TableFormerMode(table_mode)
     try:
         converter = DocumentConverter(
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
@@ -387,6 +438,8 @@ def cmd_convert(args):
         "ocrPages": ocr_pages,
         "warnings": warnings,
         "timings": timings,
+        "tableMode": table_mode,
+        "numThreads": num_threads,
     }
     write_result(out_dir, payload)
     return 0
@@ -740,6 +793,12 @@ def main(argv=None):
         "--endpoint",
         default=os.environ.get("HF_ENDPOINT") or None,
         help="HF 下载端点（默认官方源，失败自动回退 hf-mirror）",
+    )
+    parser.add_argument(
+        "--table-mode",
+        choices=["fast", "accurate"],
+        default="fast",
+        help="表格结构识别模式（默认 fast）",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
