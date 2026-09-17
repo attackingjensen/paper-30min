@@ -192,6 +192,39 @@ fn configure_model(registry: &Arc<TaskRegistry>, library: &Library, base_url: &s
     .expect("写入模型设置");
 }
 
+/// 覆写某部分 L2 的 keyAssets（构造预附图表场景）。
+fn set_l2_key_assets(library: &Library, paper_id: &str, part_id: &str, key_assets: &[&str]) {
+    let mut paper = library.get_paper(paper_id).expect("读取论文");
+    let product = paper
+        .products
+        .iter_mut()
+        .find(|product| product.kind == "l2" && product.part_id == part_id)
+        .expect("l2 产物在位");
+    product.body["keyAssets"] = json!(key_assets);
+    library.put_paper(paper).expect("写回论文");
+}
+
+/// 解码 data URL 图像字节为字符串（seed_assets 写入可读测试字节）。
+fn decode_image_url(url: &str) -> String {
+    use base64::Engine;
+    let encoded = url.strip_prefix("data:image/webp;base64,").expect("data URL 前缀");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).expect("base64 解码");
+    String::from_utf8(bytes).expect("测试字节为 UTF-8")
+}
+
+/// 首条消息的图像载荷解码（断言页图 → 裁切图顺序）。
+fn first_message_image_payloads(request: &MockRequest) -> Vec<String> {
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    body["messages"][0]["content"]
+        .as_array()
+        .expect("首条消息多模态分段")
+        .iter()
+        .filter(|part| part["type"] == "image_url")
+        .filter_map(|part| part["image_url"]["url"].as_str())
+        .map(decode_image_url)
+        .collect()
+}
+
 fn configure_concurrency(registry: &Arc<TaskRegistry>, library: &Library, concurrency: u64) {
     bridge::invoke(
         registry,
@@ -654,8 +687,16 @@ fn deep_dive_tool_loop_completes_and_persists() {
     let prompt = first_content[0]["text"].as_str().unwrap();
     assert!(prompt.contains("L1 (p1)：研究背景"), "当前节原文全送且块号以 L 标注: {prompt}");
     assert!(prompt.contains("小节类型关注点") || prompt.contains("本节类型关注点"), "深挖叠加本节类型关注点");
+    // #81 配方预附：fig_1 归属 sec_2_introduction（图表清单），裁切图随首条消息附上。
+    assert!(prompt.contains("已附本节图表：- fig_1（p2）：图 1：样例架构图。"), "清单段: {prompt}");
+    assert!(prompt.contains("无需再调 get_figure"));
     let images = first_content.iter().filter(|part| part["type"] == "image_url").count();
-    assert_eq!(images, 3, "当前节页图 ±1 页（p1-2 → p1..p3）随消息附图");
+    assert_eq!(images, 4, "当前节页图 ±1 页（p1-2 → p1..p3）+ 预附 crop-fig_1");
+
+    // #81 遥测：轮数与工具调用数进 result。
+    let result = registry.get(&task_id).unwrap().result.expect("succeeded 携带 result");
+    assert_eq!(result["roundsPerSection"]["part-1"], json!(3));
+    assert_eq!(result["toolCallsPerSection"]["part-1"], json!(2));
 
     let body1: Value = serde_json::from_slice(&requests[1].body).unwrap();
     let roles: Vec<&str> = body1["messages"].as_array().unwrap().iter().filter_map(|m| m["role"].as_str()).collect();
@@ -663,6 +704,7 @@ fn deep_dive_tool_loop_completes_and_persists() {
     let observation = body1["messages"][2]["content"].as_str().unwrap();
     assert!(observation.contains("\"tool\":\"read_section\""), "观察为工具结果 JSON: {observation}");
     assert!(observation.contains("\"total\":3"), "观察含块窗口: {observation}");
+    assert!(observation.contains("\"observations\""), "多工具续回为 observations 数组（#81）");
 
     let body2: Value = serde_json::from_slice(&requests[2].body).unwrap();
     let last = body2["messages"].as_array().unwrap().last().unwrap().clone();
@@ -685,6 +727,191 @@ fn deep_dive_tool_loop_completes_and_persists() {
     );
     assert_eq!(details[0]["detail"]["stage"], json!("deep-dive"));
     assert_eq!(details[6]["detail"]["name"], json!("get_figure"));
+}
+
+// ============================================================================
+// #81：配方预附本节图表 + 一轮多工具
+// ============================================================================
+
+#[test]
+fn deep_dive_pre_attaches_section_assets() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, _hit| sse_text(DIG_MARKDOWN));
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    // part-1 的 L2 keyAssets 声明两件：fig_1（归属本节）+ tbl_1（归属 sec_3，keyAssets 可跨节）。
+    set_l2_key_assets(&library, &paper_id, "part-1", &["fig_1", "tbl_1"]);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let request = &mock.requests()[0];
+    let prompt = prompt_text(request);
+    assert!(prompt.contains("已附本节图表：- fig_1（p2）：图 1：样例架构图。"), "清单段: {prompt}");
+    assert!(prompt.contains("- tbl_1（p3）：表 1：样例结果。"), "清单段含 keyAssets 跨节条目: {prompt}");
+    assert!(prompt.contains("（以上已随消息附图，无需再调 get_figure）"), "已附无需再调提示: {prompt}");
+    // 图像顺序：页图 p1..p3 在前，预附裁切图（阅读序 fig_1 → tbl_1）在后。
+    let payloads = first_message_image_payloads(request);
+    assert_eq!(payloads, vec!["page-1", "page-2", "page-3", "crop-fig", "crop-tbl"]);
+}
+
+#[test]
+fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
+    let (registry, library, dir) = common::env();
+    let _lock = env_lock!();
+    // 批量两节：part-1 第一轮在途时删掉 crop-tbl_1 文件（preflight 已过），part-2
+    // （sec_3_method，图表清单归属 tbl_1）配方读附件时缺文件 → warning，任务仍成功。
+    let crop_path = dir
+        .path()
+        .join("attachments")
+        .join("paper-fixture")
+        .join("crop-tbl_1");
+    let mock = MockHttp::start(move |_request, hit| {
+        if hit == 1 {
+            std::fs::remove_file(&crop_path).expect("删除裁切图文件");
+        }
+        sse_text(DIG_MARKDOWN)
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1", "part-2"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let result = registry.get(&task_id).unwrap().result.expect("result");
+    let warnings = result["warnings"].as_array().cloned().unwrap();
+    assert!(
+        warnings.contains(&json!("crop_missing:crop-tbl_1")),
+        "warnings 含 crop_missing: {warnings:?}"
+    );
+    // part-2 的首条请求：tbl_1 缺附件不附图，列在「另有图表」；页图照常。
+    let requests = mock.requests();
+    let part2_prompt = prompt_text(&requests[1]);
+    assert!(
+        part2_prompt.contains("本节另有图表：tbl_1，需要时用 get_figure 调取"),
+        "缺附件条目列帽外: {part2_prompt}"
+    );
+    let payloads = first_message_image_payloads(&requests[1]);
+    assert_eq!(payloads, vec!["page-1", "page-2", "page-3"], "仅页图，无预附裁切图");
+}
+
+#[test]
+fn deep_dive_multi_tool_round_executes_all_and_feeds_observations() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    // 一轮两个工具块（get_figure + get_page_image）：都执行、各计一步；续回一条带
+    // observations 数组的用户消息，图像按工具序（裁切图 → 页图）依次附上。
+    let mock = MockHttp::start(|_request, hit| {
+        if hit == 1 {
+            sse_text(
+                "先看图和页。\n```tool\n{\"name\": \"get_figure\", \"args\": {\"fig_id\": \"fig_1\"}}\n```\n```tool\n{\"name\": \"get_page_image\", \"args\": {\"page\": 2}}\n```",
+            )
+        } else {
+            sse_text(DIG_MARKDOWN)
+        }
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let tools = events_named(&sink, "tool");
+    assert_eq!(tools.len(), 2, "两个工具块各发一条 tool 事件");
+    assert_eq!(tools[0]["step"], json!(1));
+    assert_eq!(tools[0]["name"], json!("get_figure"));
+    assert_eq!(tools[1]["step"], json!(2));
+    assert_eq!(tools[1]["name"], json!("get_page_image"));
+
+    // 下一请求：一条带 2 条观察的用户消息，图像按工具序依次附上。
+    let body1: Value = serde_json::from_slice(&mock.requests()[1].body).unwrap();
+    let roles: Vec<&str> = body1["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["role"].as_str())
+        .collect();
+    assert_eq!(roles, vec!["user", "assistant", "user"], "一轮多工具仍是一条续回消息");
+    let last = body1["messages"].as_array().unwrap().last().unwrap().clone();
+    let parts = last["content"].as_array().expect("观察消息多模态分段");
+    let observations: Value =
+        serde_json::from_str(parts[0]["text"].as_str().expect("text 段")).expect("observations JSON");
+    let entries = observations["observations"].as_array().expect("observations 数组");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["tool"], json!("get_figure"));
+    assert_eq!(entries[1]["tool"], json!("get_page_image"));
+    let image_urls: Vec<&str> = parts
+        .iter()
+        .filter(|part| part["type"] == "image_url")
+        .filter_map(|part| part["image_url"]["url"].as_str())
+        .collect();
+    assert_eq!(image_urls.len(), 2, "两件工具各附一图");
+    assert_eq!(decode_image_url(image_urls[0]), "crop-fig", "裁切图在前（get_figure 先执行）");
+    assert_eq!(decode_image_url(image_urls[1]), "page-2", "页图在后");
+    // #81 遥测：一轮 2 个调用、共 2 轮。
+    let result = registry.get(&task_id).unwrap().result.expect("result");
+    assert_eq!(result["toolCallsPerSection"]["part-1"], json!(2));
+    assert_eq!(result["roundsPerSection"]["part-1"], json!(2));
+    assert_eq!(products_of(&library, &paper_id, "dig").len(), 1);
+}
+
+#[test]
+fn deep_dive_over_limit_tool_blocks_is_parse_failure() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    // 一轮 4 个工具块 → 整轮按解析失败处理（不执行任何工具），观察说明上限；一轮后恢复。
+    let mock = MockHttp::start(move |_request, hit| {
+        if hit == 1 {
+            let blocks = "```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"样例\"}}\n```";
+            let text = (0..4).map(|_| blocks.to_string()).collect::<Vec<_>>().join("\n");
+            sse_text(&text)
+        } else {
+            sse_text(DIG_MARKDOWN)
+        }
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    // 超限整轮只计一次连续失败（连续 2 次才收尾）：下一轮恢复即证明计数为 1 而非 2。
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "一次解析失败后恢复");
+    let tools = events_named(&sink, "tool");
+    assert_eq!(tools.len(), 0, "超限轮不执行任何工具");
+    assert_eq!(mock.hits(), 2);
+    let request2: Value = serde_json::from_slice(&mock.requests()[1].body).unwrap();
+    let observation = request2["messages"][2]["content"].as_str().unwrap();
+    assert!(observation.contains("parse_failed"), "按解析失败喂回: {observation}");
+    assert!(observation.contains("一轮最多 3 个"), "错误观察说明上限: {observation}");
+    assert_eq!(products_of(&library, &paper_id, "dig").len(), 1);
 }
 
 #[test]

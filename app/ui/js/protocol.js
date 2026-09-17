@@ -13,11 +13,14 @@ export const PROTOCOL_TASKS = {
   synthesize: 'paper.synthesize@1',
 };
 export const MAX_TOOL_STEPS = 12;
+export const MAX_TOOL_CALLS_PER_ROUND = 3;
+export const MAX_ATTACHED_ASSETS = 4;
 export const MAX_PARSE_FAILURES = 2;
 export const INPUT_TOKEN_HARD_TOP = 983_616;
 export const READ_SECTION_CHAR_CAP = 8_000;
 export const SEARCH_HIT_CAP = 50;
 export const PAGE_IMAGE_TOKEN_BUDGET = 1_902;
+export const CROP_IMAGE_TOKEN_BUDGET = 1_024;
 export const TOOL_NAMES = ['read_section', 'search_paper', 'get_figure', 'get_page_image'];
 export const DEEP_DIVE_HEADERS = ['## 核心论点', '## 关键细节', '## 与全局的关系', '## 边界与存疑'];
 export const SYNTHESIZE_HEADERS = ['## 问题', '## 方法', '## 证据', '## 边界'];
@@ -205,12 +208,21 @@ export function assembleMapL1({ title, abstract, l2Entries, figures, tables } = 
   });
 }
 
-/** 深挖配方打底：L1 全带 + L2 全带 + 当前节原文全送；返回提示词与随消息附图页码（±1 页）。 */
-export function assembleDeepDive({ title, mapBody, l2Bodies, section, sectionType, pageCount } = {}) {
+/**
+ * 深挖配方打底（#81）：L1 全带 + L2 全带 + 当前节原文全送 + 本节关键图表裁切图
+ * （keyAssets ∪ 归属本节清单条目，按阅读序去重，至多 4 张附图，帽外列在清单里）。
+ * 返回提示词、随消息附图页码（±1 页）与附图裁切图 id（运行时读 crop-{id} 附件字节）。
+ */
+export function assembleDeepDive({ title, mapBody, l2Bodies, section, sectionType, pageCount, figures = [], tables = [] } = {}) {
   const sectionText = renderSectionText(section);
   const sectionPages = section.pageStart === section.pageEnd
     ? `p${section.pageStart}`
     : `p${section.pageStart}-p${section.pageEnd}`;
+  const l2 = (l2Bodies ?? []).find(body => body?.secId === section.id);
+  const candidates = sectionAssetCandidates({ section, keyAssets: l2?.keyAssets, figures, tables });
+  const attached = candidates.slice(0, MAX_ATTACHED_ASSETS);
+  const otherIds = candidates.slice(MAX_ATTACHED_ASSETS).map(entry => entry.id);
+  const attachedAssets = renderAttachedAssets(attached, otherIds);
   const prompt = composePrompt('deep-dive', {
     values: {
       title,
@@ -221,6 +233,7 @@ export function assembleDeepDive({ title, mapBody, l2Bodies, section, sectionTyp
       sectionType,
       sectionText,
       sectionPages,
+      attachedAssets,
     },
     sectionType,
   });
@@ -228,7 +241,36 @@ export function assembleDeepDive({ title, mapBody, l2Bodies, section, sectionTyp
   for (let page = Math.max(1, section.pageStart - 1); page <= Math.min(pageCount, section.pageEnd + 1); page++) {
     imagePages.push(page);
   }
-  return { prompt, imagePages };
+  return { prompt, imagePages, assetIds: attached.map(entry => entry.id) };
+}
+
+/** 本节预附图表候选：L2 keyAssets ∪ 图表清单中归属本节的条目，按阅读序（页、页内 y）去重。 */
+export function sectionAssetCandidates({ section, keyAssets = [], figures = [], tables = [] } = {}) {
+  const manifest = [...figures, ...tables];
+  const ids = [];
+  const push = id => {
+    if (typeof id === 'string' && id && !ids.includes(id)) ids.push(id);
+  };
+  for (const id of keyAssets ?? []) push(id);
+  for (const entry of manifest) {
+    if (entry.section === section?.id) push(entry.id);
+  }
+  const entries = ids.map(id => manifest.find(entry => entry.id === id)).filter(Boolean);
+  entries.sort((a, b) => (a.page - b.page) || (a.bbox?.[1] ?? 0) - (b.bbox?.[1] ?? 0));
+  return entries;
+}
+
+/** 已附本节图表清单段（与 Rust render_attached_assets 同形态）：无可附图表时为「（无）」。 */
+function renderAttachedAssets(attached, otherIds) {
+  if (!attached.length && !otherIds.length) return '（无）';
+  const lines = attached.map(entry => `- ${entry.id}（p${entry.page}）：${entry.caption ?? '（无图注）'}`);
+  if (!attached.length) {
+    lines.push(`（本节另有图表：${otherIds.join('、')}，需要时用 get_figure 调取）`);
+  } else {
+    const extra = otherIds.length ? `；本节另有图表：${otherIds.join('、')}，需要时用 get_figure 调取` : '';
+    lines.push(`（以上已随消息附图，无需再调 get_figure${extra}）`);
+  }
+  return lines.join('\n');
 }
 
 /** 复述稿的深挖材料拼装：按节阅读顺序排列，标注部分身份与节标题（与 Rust render_dig_blob 同形态）。 */
@@ -292,45 +334,69 @@ function validateToolArgs(name, args) {
   }
 }
 
-/**
- * 解析一轮模型输出：无 ```tool 围栏 → {type:'final', text}；有围栏解析为工具调用
- * {type:'call', name, args}；围栏未闭合 / JSON 非法 / 缺 name / args 非对象 / 未知工具 /
- * 参数形状非法 → {type:'error', message}（由调用方喂回模型并计入连续失败）。
- */
-export function parseToolCallBlock(text) {
-  const start = String(text ?? '').indexOf('```tool');
-  if (start === -1) return { type: 'final', text: String(text ?? '').trim() };
-  const afterMarker = text.slice(start + '```tool'.length).replace(/^[ \t]+/, '').replace(/^\n/, '');
-  const end = afterMarker.indexOf('```');
-  if (end === -1) return { type: 'error', message: '工具调用块围栏未闭合（缺少收尾的 ```）' };
-  const content = afterMarker.slice(0, end).trim();
+/** 解析单个 ```tool 围栏内容为 {name, args}（JSON 对象校验，失败 throw）。 */
+function parseOneToolCall(content) {
   let value;
   try {
     value = JSON.parse(content);
   } catch (err) {
-    return { type: 'error', message: `工具调用块 JSON 解析失败: ${err.message}` };
+    throw new Error(`工具调用块 JSON 解析失败: ${err.message}`);
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { type: 'error', message: '工具调用块必须是一个 JSON 对象' };
+    throw new Error('工具调用块必须是一个 JSON 对象');
   }
   const name = typeof value.name === 'string' ? value.name.trim() : '';
-  if (!name) return { type: 'error', message: '工具调用块缺少字符串字段 name' };
+  if (!name) throw new Error('工具调用块缺少字符串字段 name');
   if (!TOOL_NAMES.includes(name)) {
-    return { type: 'error', message: `未知工具 ${name}（可用：${TOOL_NAMES.join(', ')}）` };
+    throw new Error(`未知工具 ${name}（可用：${TOOL_NAMES.join(', ')}）`);
   }
   let args = {};
   if (value.args != null) {
     if (typeof value.args !== 'object' || Array.isArray(value.args)) {
-      return { type: 'error', message: '工具调用块的 args 必须是对象' };
+      throw new Error('工具调用块的 args 必须是对象');
     }
     args = value.args;
   }
-  try {
-    validateToolArgs(name, args);
-  } catch (err) {
-    return { type: 'error', message: err.message };
+  validateToolArgs(name, args);
+  return { name, args };
+}
+
+/**
+ * 解析一轮模型输出（#81：一轮可携带多个调用块）：无 ```tool 围栏 → {type:'final', text}；
+ * 有围栏解析为一轮全部工具调用 {type:'calls', calls:[{name, args}]}（顺序保留，至多 3 个）。
+ * 数量超上限、围栏未闭合 / JSON 非法 / 缺 name / args 非对象 / 未知工具 / 参数形状非法 →
+ * {type:'error', message}（指明第几个块；由调用方喂回模型并计入连续失败）。
+ */
+export function parseToolCallBlocks(text) {
+  const blocks = [];
+  let rest = String(text ?? '');
+  while (true) {
+    const start = rest.indexOf('```tool');
+    if (start === -1) break;
+    const afterMarker = rest.slice(start + '```tool'.length).replace(/^[ \t]+/, '').replace(/^\n/, '');
+    const end = afterMarker.indexOf('```');
+    if (end === -1) {
+      return { type: 'error', message: `第 ${blocks.length + 1} 个工具调用块围栏未闭合（缺少收尾的 \`\`\`）` };
+    }
+    blocks.push(afterMarker.slice(0, end).trim());
+    rest = afterMarker.slice(end + 3);
   }
-  return { type: 'call', name, args };
+  if (!blocks.length) return { type: 'final', text: String(text ?? '').trim() };
+  if (blocks.length > MAX_TOOL_CALLS_PER_ROUND) {
+    return {
+      type: 'error',
+      message: `一轮最多 ${MAX_TOOL_CALLS_PER_ROUND} 个工具调用块，本轮输出 ${blocks.length} 个；请按需要一次发齐至多 ${MAX_TOOL_CALLS_PER_ROUND} 个调用`,
+    };
+  }
+  const calls = [];
+  for (const [index, content] of blocks.entries()) {
+    try {
+      calls.push(parseOneToolCall(content));
+    } catch (err) {
+      return { type: 'error', message: `第 ${index + 1} 个工具调用块解析失败：${err.message}` };
+    }
+  }
+  return { type: 'calls', calls };
 }
 
 // ---------- 出处指针解析与校验（统一语法：(p5) / (fig_3) / (tbl_2) / (L12-18) / (sec_2:L30-34)） ----------

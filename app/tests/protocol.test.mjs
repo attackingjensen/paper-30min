@@ -10,12 +10,13 @@ import path from 'node:path';
 
 import { initSkills, loadSkills } from '../ui/js/skills.js';
 import {
-  MAX_TOOL_STEPS, MAX_PARSE_FAILURES, INPUT_TOKEN_HARD_TOP,
+  MAX_TOOL_STEPS, MAX_TOOL_CALLS_PER_ROUND, MAX_ATTACHED_ASSETS, MAX_PARSE_FAILURES,
+  INPUT_TOKEN_HARD_TOP, CROP_IMAGE_TOKEN_BUDGET,
   estimateTextTokens, l2Sections, contentSections, partIdForSection, sectionForPart,
-  renderSectionText, renderPaperText, renderAssetList,
+  renderSectionText, renderPaperText, renderAssetList, sectionAssetCandidates,
   assembleMapL2, validateL2Output, mergeL2ShardOutputs, assembleMapL1,
   assembleDeepDive, renderDigBlob, assembleSynthesize,
-  parseToolCallBlock, parseRefs, validateRefs, validateProduct,
+  parseToolCallBlocks, parseRefs, validateRefs, validateProduct,
 } from '../ui/js/protocol.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -40,8 +41,11 @@ await loadSkills();
 
 test('协议常量与 Rust 侧锚定', () => {
   assert.equal(MAX_TOOL_STEPS, 12);
+  assert.equal(MAX_TOOL_CALLS_PER_ROUND, 3);
+  assert.equal(MAX_ATTACHED_ASSETS, 4);
   assert.equal(MAX_PARSE_FAILURES, 2);
   assert.equal(INPUT_TOKEN_HARD_TOP, 983_616);
+  assert.equal(CROP_IMAGE_TOKEN_BUDGET, 1_024);
 });
 
 test('estimateTextTokens 与 Rust estimate_text_tokens 同式', () => {
@@ -142,21 +146,63 @@ test('建图调用②装配：L2 + 图表清单 + 摘要', () => {
   assert.ok(prompt.includes('tbl_1'));
 });
 
-test('深挖配方打底：常驻上下文 + 页图 ±1 页', () => {
+test('深挖配方打底：常驻上下文 + 页图 ±1 页 + 预附本节图表', () => {
   const section = fixture.sections[1];
-  const { prompt, imagePages } = assembleDeepDive({
+  const l2Bodies = [{ secId: 'sec_2_introduction', keyAssets: ['fig_1', 'tbl_1'] }];
+  const { prompt, imagePages, assetIds } = assembleDeepDive({
     title: 'T', mapBody: { problem: { text: 'p', refs: [] } },
-    l2Bodies: [{ secId: 'sec_2_introduction' }], section, sectionType: 'introduction', pageCount: 3,
+    l2Bodies, section, sectionType: 'introduction', pageCount: 3,
+    figures: fixture.figures, tables: fixture.tables,
   });
   assert.ok(prompt.includes('L2 (p2)：[图 fig_1]'), '当前节原文全送');
   assert.ok(prompt.includes('"problem"'), 'L1 常驻');
   assert.ok(prompt.includes('本节类型关注点（引言）'), '叠加本节类型关注点');
   assert.deepEqual(imagePages, [1, 2, 3], '当前节页图 ±1 页');
+  // 预附图表（#81）：keyAssets ∪ 归属本节清单条目，去重后 [fig_1, tbl_1]（阅读序 p2 → p3）。
+  assert.deepEqual(assetIds, ['fig_1', 'tbl_1'], '帽内附图 id（运行时读 crop-{id} 字节）');
+  assert.ok(prompt.includes('已附本节图表：- fig_1（p2）：图 1：样例架构图。'), '清单段含附图条目');
+  assert.ok(prompt.includes('无需再调 get_figure）'), '清单段提示已附无需再调');
+  assert.ok(!prompt.includes('{attachedAssets}'), '占位符无残留');
+  // 无候选时渲染为（无）。
+  const bare = assembleDeepDive({
+    title: 'T', mapBody: {}, l2Bodies: [], section, sectionType: 'introduction', pageCount: 3,
+  });
+  assert.ok(bare.prompt.includes('已附本节图表：（无）'));
+  assert.deepEqual(bare.assetIds, []);
   // 页边界收敛：末节 p3-3 → p2..p3。
   const tail = assembleDeepDive({
     title: 'T', mapBody: {}, l2Bodies: [], section: fixture.sections[3], sectionType: 'part', pageCount: 3,
+    figures: fixture.figures, tables: fixture.tables,
   });
   assert.deepEqual(tail.imagePages, [2, 3]);
+});
+
+test('预附图表候选：阅读序排序、归属过滤与帽切分', () => {
+  const section = { id: 'sec_2_introduction' };
+  const entry = (id, page, y, owned) => ({
+    id, page, bbox: [0, y, 100, y + 50], section: owned ? 'sec_2_introduction' : 'sec_3_method',
+    caption: `${id} 注`,
+  });
+  const figures = [
+    entry('fig_a', 2, 300, true),
+    entry('fig_b', 1, 80, true),
+    entry('fig_c', 2, 50, true),
+    entry('fig_d', 3, 100, true),
+    entry('fig_e', 3, 400, true),
+    entry('fig_x', 1, 10, false),
+  ];
+  // keyAssets 重复与清单外 id（防御性跳过）。
+  const candidates = sectionAssetCandidates({
+    section, keyAssets: ['fig_e', 'fig_e', 'fig_9'], figures, tables: [],
+  });
+  assert.deepEqual(candidates.map(e => e.id), ['fig_b', 'fig_c', 'fig_a', 'fig_d', 'fig_e'], '按阅读序（页、y）去重；他节条目不进候选');
+  const { assetIds, prompt } = assembleDeepDive({
+    title: 'T', mapBody: {}, l2Bodies: [{ secId: 'sec_2_introduction', keyAssets: ['fig_e'] }],
+    section: { id: 'sec_2_introduction', title: 'S', pageStart: 1, pageEnd: 2, blocks: [] },
+    sectionType: 'part', pageCount: 3, figures, tables: [],
+  });
+  assert.deepEqual(assetIds, ['fig_b', 'fig_c', 'fig_a', 'fig_d'], '至多 4 张附图');
+  assert.ok(prompt.includes('本节另有图表：fig_e，需要时用 get_figure 调取'), '帽外列在清单: ' + prompt.slice(prompt.indexOf('已附本节图表')));
 });
 
 test('综合装配：深挖材料按节阅读顺序排列', () => {
@@ -179,21 +225,40 @@ test('综合装配：深挖材料按节阅读顺序排列', () => {
   assert.ok(prompt.includes('引言深挖'));
 });
 
-test('工具调用块解析与 Rust parse_round_output 同规则', () => {
-  // 合法调用
+test('工具调用块解析与 Rust parse_round_output 同规则（一轮多工具）', () => {
+  // 单个合法调用
   assert.deepEqual(
-    parseToolCallBlock('先取证。\n```tool\n{"name": "read_section", "args": {"sec_id": "sec_3_method", "offset": 1}}\n```'),
-    { type: 'call', name: 'read_section', args: { sec_id: 'sec_3_method', offset: 1 } },
+    parseToolCallBlocks('先取证。\n```tool\n{"name": "read_section", "args": {"sec_id": "sec_3_method", "offset": 1}}\n```'),
+    { type: 'calls', calls: [{ name: 'read_section', args: { sec_id: 'sec_3_method', offset: 1 } }] },
   );
+  // 一轮多个合法调用（顺序保留）
+  const multi = parseToolCallBlocks(
+    '先读节再看图。\n```tool\n{"name": "read_section", "args": {"sec_id": "sec_3_method"}}\n```\n说明。\n```tool\n{"name": "get_figure", "args": {"fig_id": "fig_1"}}\n```',
+  );
+  assert.deepEqual(multi.calls.map(call => call.name), ['read_section', 'get_figure']);
   // 无围栏 → final
-  assert.deepEqual(parseToolCallBlock('## 核心论点\n……'), { type: 'final', text: '## 核心论点\n……' });
+  assert.deepEqual(parseToolCallBlocks('## 核心论点\n……'), { type: 'final', text: '## 核心论点\n……' });
+  // 数量超上限（4 个）→ 整轮解析失败
+  const over = parseToolCallBlocks(
+    Array.from({ length: 4 }, () => '```tool\n{"name": "search_paper", "args": {"pattern": "x"}}\n```').join('\n'),
+  );
+  assert.equal(over.type, 'error');
+  assert.match(over.message, /一轮最多 3 个工具调用块，本轮输出 4 个/);
+  // 任一块失败整轮失败，指明第几个块
+  const secondBad = parseToolCallBlocks(
+    '```tool\n{"name": "search_paper", "args": {"pattern": "x"}}\n```\n```tool\n{bad}\n```',
+  );
+  assert.equal(secondBad.type, 'error');
+  assert.match(secondBad.message, /第 2 个工具调用块解析失败：.*JSON 解析失败/);
   // 各类解析失败
-  assert.equal(parseToolCallBlock('```tool\n{"name": "get_figure"').type, 'error');
-  assert.match(parseToolCallBlock('```tool\n{bad}\n```').message, /JSON 解析失败/);
-  assert.match(parseToolCallBlock('```tool\n{"name": "hack", "args": {}}\n```').message, /未知工具/);
-  assert.match(parseToolCallBlock('```tool\n{"name": "get_figure", "args": {}}\n```').message, /fig_id/);
-  assert.match(parseToolCallBlock('```tool\n{"name": "search_paper", "args": "x"}\n```').message, /args 必须是对象/);
-  assert.match(parseToolCallBlock('```tool\n{"name": "read_section", "args": {"sec_id": "s", "offset": 0}}\n```').message, /offset/);
+  const unclosed = parseToolCallBlocks('```tool\n{"name": "get_figure"');
+  assert.equal(unclosed.type, 'error');
+  assert.match(unclosed.message, /第 1 个工具调用块围栏未闭合/);
+  assert.match(parseToolCallBlocks('```tool\n{bad}\n```').message, /JSON 解析失败/);
+  assert.match(parseToolCallBlocks('```tool\n{"name": "hack", "args": {}}\n```').message, /未知工具/);
+  assert.match(parseToolCallBlocks('```tool\n{"name": "get_figure", "args": {}}\n```').message, /fig_id/);
+  assert.match(parseToolCallBlocks('```tool\n{"name": "search_paper", "args": "x"}\n```').message, /args 必须是对象/);
+  assert.match(parseToolCallBlocks('```tool\n{"name": "read_section", "args": {"sec_id": "s", "offset": 0}}\n```').message, /offset/);
 });
 
 test('出处指针解析：四种统一语法', () => {

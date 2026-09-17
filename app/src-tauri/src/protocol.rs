@@ -1,12 +1,13 @@
 //! 三阶段协议任务（Issue #65，规格 #55 §任务种类与编排 / §四件工具契约 / §建图编排）：
 //! `paper.build-map@1`（块模型门禁 → 调用① L2 全覆盖 → 调用② L1 合成）、
-//! `paper.deep-dive@1`（页图/裁切图齐备检查 + 配方打底 + 文本协议工具循环，单节与批量同构 partIds[]）、
+//! `paper.deep-dive@1`（页图/裁切图齐备检查 + 配方打底并预附本节图表 + 文本协议工具循环，单节与批量同构 partIds[]）、
 //! `paper.synthesize@1`（L1 + 全部 L2 + 已有深挖 → 复述稿）。
 //!
 //! 关键语义（规格 #55 决策 1–5、10–15、20–21）：
 //! - 工具调用走文本协议：模型输出中的 ```tool 围栏块（一个 JSON 对象 {name, args}），
 //!   Rust 解析、执行（四件工具皆为纯数据读：块模型 JSON / 清单 / 附件），结果作为新一轮
-//!   上下文续上；无工具调用块即完成。步数上限 12，连续 2 次解析失败按失败收尾。
+//!   上下文续上；无工具调用块即完成。一轮至多 3 个围栏块（#81 修订决策 5：一轮多工具，
+//!   续回 {"observations":[...]} 一条用户消息）；步数上限 12，连续 2 次解析失败按失败收尾。
 //! - 取消 = 当前步完成后停止（轮边界检查点，不中断在途模型轮）；已产出内容按中断部分
 //!   结果语义落库：深挖逐节完成即落库（完整结果计 analysis 打卡），建图在调用①后、
 //!   调用②前/中被取消时，已完成的 L2 分片以 `partial: true` 标记落库并计 partial 打卡。
@@ -32,7 +33,7 @@ use crate::error::BridgeError;
 use crate::library::{ActivityDayDto, Library, PaperDto, ProductDto};
 use crate::model;
 use crate::pdfassets;
-use crate::pdfmap::{MappedPaper, Section, SectionRole};
+use crate::pdfmap::{AssetEntry, MappedPaper, Section, SectionRole};
 use crate::settings;
 use crate::tasks::{self, run_with_retry, Progress, RunContext};
 
@@ -42,6 +43,11 @@ pub const TASK_SYNTHESIZE: &str = "paper.synthesize@1";
 
 /// 深挖工具循环的步数上限（一次工具调用 = 一步）。契约测试锚定，保持 pub。
 pub const MAX_TOOL_STEPS: u32 = 12;
+/// 一轮最多携带的工具调用块数（#81：超出整轮按解析失败处理）。契约测试锚定，保持 pub。
+pub const MAX_TOOL_CALLS_PER_ROUND: usize = 3;
+/// 深挖配方预附本节图表的张数上限（#81：超出部分列在清单里提示 get_figure）。
+/// 契约测试锚定，保持 pub。
+pub const MAX_ATTACHED_ASSETS: usize = 4;
 /// 文本协议解析失败的连续容忍次数（工具调用块解析 / 阶段输出校验共用）。
 pub(crate) const MAX_PARSE_FAILURES: u32 = 2;
 /// 任一调用装配后的输入 token 硬顶（#38 实测，不截断、报错拒绝）。
@@ -52,8 +58,10 @@ pub(crate) const READ_SECTION_CHAR_CAP: usize = 8_000;
 pub(crate) const READ_SECTION_MAX_LIMIT: u32 = 100;
 /// search_paper 命中上限；超帽按节轮转采样并置 truncated。
 pub(crate) const SEARCH_HIT_CAP: usize = 50;
-/// 页图 token 预算（#38 实测 1224×1584 @scale=2）；裁切图也按页图预算计（保守高估）。
+/// 页图 token 预算（#38 实测 1224×1584 @scale=2）；工具循环内裁切图也按页图预算计（保守高估）。
 pub(crate) const PAGE_IMAGE_TOKEN_BUDGET: u64 = 1_902;
+/// 裁切图 token 预算（#81：配方预附图表的初始估算用，区别于页图 1902）。
+pub(crate) const CROP_IMAGE_TOKEN_BUDGET: u64 = 1_024;
 
 /// 章节类型受控词表（建图调用①打标取值域，与 skills/section-focus.json 键一致）。
 pub(crate) const SECTION_TYPES: [&str; 5] = ["abstract", "introduction", "method", "experiments", "part"];
@@ -411,6 +419,78 @@ fn render_l2_blob(bodies: &[Value]) -> String {
     serde_json::to_string_pretty(&Value::Array(bodies.to_vec())).unwrap_or_else(|_| "[]".to_string())
 }
 
+// ============================================================================
+// 深挖配方预附图表（#81）：本节 L2 keyAssets ∪ 图表清单中归属本节的条目，
+// 按阅读序去重；至多 MAX_ATTACHED_ASSETS 张随首条消息附图（页图之后）。
+// ============================================================================
+
+/// 本节预附图表候选：keyAssets ∪ 归属本节清单条目，按阅读序（页、页内纵向位置）排序去重。
+/// keyAssets 中清单外的 id 跳过（建图校验已过滤，防御性忽略）。
+fn section_asset_candidates<'a>(
+    mapped: &'a MappedPaper,
+    section: &Section,
+    key_assets: &[String],
+) -> Vec<&'a AssetEntry> {
+    let manifest: Vec<&AssetEntry> = mapped.figures.iter().chain(mapped.tables.iter()).collect();
+    let mut ids: Vec<String> = Vec::new();
+    for id in key_assets.iter().cloned().chain(
+        manifest
+            .iter()
+            .filter(|entry| entry.section.as_deref() == Some(section.id.as_str()))
+            .map(|entry| entry.id.clone()),
+    ) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let mut entries: Vec<&AssetEntry> = ids
+        .iter()
+        .filter_map(|id| manifest.iter().find(|entry| entry.id == *id).copied())
+        .collect();
+    entries.sort_by(|a, b| {
+        (a.page, a.bbox[1])
+            .partial_cmp(&(b.page, b.bbox[1]))
+            .expect("bbox 纵向坐标为有限值")
+    });
+    entries
+}
+
+/// 预附图表的帽内 / 帽外切分：帽内随消息附图，帽外列在清单里提示可用 get_figure。
+fn plan_attached_assets<'a>(candidates: &[&'a AssetEntry]) -> (Vec<&'a AssetEntry>, Vec<&'a AssetEntry>) {
+    let split = candidates.len().min(MAX_ATTACHED_ASSETS);
+    (candidates[..split].to_vec(), candidates[split..].to_vec())
+}
+
+/// 已附本节图表清单段（deep-dive 提示词 {attachedAssets} 的值）：附图条目 +「无需再调
+/// get_figure」提示；帽外与缺附件条目列为「另有图表」。无可附图表时渲染为「（无）」。
+fn render_attached_assets(attached: &[&AssetEntry], others: &[String]) -> String {
+    if attached.is_empty() && others.is_empty() {
+        return "（无）".to_string();
+    }
+    let mut lines: Vec<String> = attached
+        .iter()
+        .map(|entry| {
+            format!(
+                "- {}（p{}）：{}",
+                entry.id,
+                entry.page,
+                entry.caption.as_deref().unwrap_or("（无图注）")
+            )
+        })
+        .collect();
+    if attached.is_empty() {
+        lines.push(format!("（本节另有图表：{}，需要时用 get_figure 调取）", others.join("、")));
+    } else {
+        let extra = if others.is_empty() {
+            String::new()
+        } else {
+            format!("；本节另有图表：{}，需要时用 get_figure 调取", others.join("、"))
+        };
+        lines.push(format!("（以上已随消息附图，无需再调 get_figure{extra}）"));
+    }
+    lines.join("\n")
+}
+
 fn render_map_blob(map_body: &Value) -> String {
     serde_json::to_string_pretty(map_body).unwrap_or_else(|_| "{}".to_string())
 }
@@ -475,21 +555,34 @@ fn persist_products(
 enum RoundParse {
     /// 无工具调用块：输出即最终产物文本。
     Final(String),
-    /// 合法工具调用。
-    ToolCall { name: String, args: Map<String, Value> },
+    /// 一轮的全部合法工具调用（顺序保留，至多 MAX_TOOL_CALLS_PER_ROUND 个）。
+    ToolCalls(Vec<ToolCall>),
 }
 
-/// 提取 ```tool 围栏块内容；无围栏返回 None，围栏未闭合返回 Some(Err)。
-fn extract_tool_block(text: &str) -> Option<Result<&str, String>> {
-    let start = text.find("```tool")?;
-    let after = &text[start + "```tool".len()..];
-    // 信息串 "tool" 后允许空白再换行；内容到下一个 ``` 为止。
-    let after = after.trim_start_matches([' ', '\t']);
-    let after = after.strip_prefix('\n').unwrap_or(after);
-    match after.find("```") {
-        Some(end) => Some(Ok(after[..end].trim())),
-        None => Some(Err("工具调用块围栏未闭合（缺少收尾的 ```）".to_string())),
+/// 单个工具调用（一个 ```tool 围栏内的 {name, args}）。
+#[derive(Debug, PartialEq)]
+struct ToolCall {
+    name: String,
+    args: Map<String, Value>,
+}
+
+/// 提取全部 ```tool 围栏块内容（顺序保留）；无围栏返回空，任一围栏未闭合返回 Err
+/// （指明第几个块）。
+fn extract_tool_blocks(text: &str) -> Result<Vec<&str>, String> {
+    let mut blocks = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("```tool") {
+        // 信息串 "tool" 后允许空白再换行；内容到下一个 ``` 为止，收尾后继续找其余围栏。
+        let after = &rest[start + "```tool".len()..];
+        let after = after.trim_start_matches([' ', '\t']);
+        let after = after.strip_prefix('\n').unwrap_or(after);
+        let end = after.find("```").ok_or_else(|| {
+            format!("第 {} 个工具调用块围栏未闭合（缺少收尾的 ```）", blocks.len() + 1)
+        })?;
+        blocks.push(after[..end].trim());
+        rest = &after[end + 3..];
     }
+    Ok(blocks)
 }
 
 fn validate_tool_args(name: &str, args: &Map<String, Value>) -> Result<(), String> {
@@ -534,14 +627,8 @@ fn validate_tool_args(name: &str, args: &Map<String, Value>) -> Result<(), Strin
     Ok(())
 }
 
-/// 解析一轮输出：无 ```tool 围栏 → Final；有围栏则解析为工具调用。
-/// 解析失败（围栏未闭合 / JSON 非法 / 缺 name / args 非对象 / 未知工具 / 参数形状非法）
-/// 返回 Err(错误观察文案)，由调用方喂回模型并计入连续失败。
-fn parse_round_output(text: &str) -> Result<RoundParse, String> {
-    let Some(block) = extract_tool_block(text) else {
-        return Ok(RoundParse::Final(text.trim().to_string()));
-    };
-    let content = block?;
+/// 解析单个 ```tool 围栏内容为工具调用（JSON 对象 {name, args} 校验）。
+fn parse_tool_call(content: &str) -> Result<ToolCall, String> {
     let value: Value = serde_json::from_str(content)
         .map_err(|err| format!("工具调用块 JSON 解析失败: {err}"))?;
     let object = value
@@ -565,10 +652,36 @@ fn parse_round_output(text: &str) -> Result<RoundParse, String> {
         Some(_) => return Err("工具调用块的 args 必须是对象".to_string()),
     };
     validate_tool_args(name, &args)?;
-    Ok(RoundParse::ToolCall {
+    Ok(ToolCall {
         name: name.to_string(),
         args,
     })
+}
+
+/// 解析一轮输出：无 ```tool 围栏 → Final；有围栏则逐块解析为一轮全部工具调用
+/// （顺序保留）。数量超上限或任一块解析失败（围栏未闭合 / JSON 非法 / 缺 name /
+/// args 非对象 / 未知工具 / 参数形状非法）返回 Err(错误观察文案，指明第几个块)，
+/// 由调用方喂回模型并计入连续失败。
+fn parse_round_output(text: &str) -> Result<RoundParse, String> {
+    let blocks = extract_tool_blocks(text)?;
+    if blocks.is_empty() {
+        return Ok(RoundParse::Final(text.trim().to_string()));
+    }
+    if blocks.len() > MAX_TOOL_CALLS_PER_ROUND {
+        return Err(format!(
+            "一轮最多 {} 个工具调用块，本轮输出 {} 个；请按需要一次发齐至多 {} 个调用",
+            MAX_TOOL_CALLS_PER_ROUND,
+            blocks.len(),
+            MAX_TOOL_CALLS_PER_ROUND
+        ));
+    }
+    let mut calls = Vec::with_capacity(blocks.len());
+    for (index, content) in blocks.iter().enumerate() {
+        let call = parse_tool_call(content)
+            .map_err(|detail| format!("第 {} 个工具调用块解析失败：{detail}", index + 1))?;
+        calls.push(call);
+    }
+    Ok(RoundParse::ToolCalls(calls))
 }
 
 // ============================================================================
@@ -600,6 +713,24 @@ fn read_attachment_bytes(library: &Library, paper_id: &str, attachment_id: &str)
         .read_range(paper_id, attachment_id, 0, attachment.size as u64)
         .ok()?;
     Some(bytes)
+}
+
+/// 读附件字节；缺失返回 None 并按 `{prefix}:{asset_id}` 记 warning
+/// （页图 / 预附裁切图共用：缺附件跳过，文本层是忠实性构造保证）。
+fn read_attachment_or_warn(
+    library: &Library,
+    paper_id: &str,
+    asset_id: &str,
+    warning_prefix: &str,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<u8>> {
+    match read_attachment_bytes(library, paper_id, asset_id) {
+        Some(bytes) => Some(bytes),
+        None => {
+            warnings.push(format!("{warning_prefix}:{asset_id}"));
+            None
+        }
+    }
 }
 
 fn exec_read_section(mapped: &MappedPaper, args: &Map<String, Value>) -> ToolOutcome {
@@ -1802,12 +1933,12 @@ fn run_validated_call<T>(
         if ctx.cancel_checkpoint().is_err() {
             return Err(Halt::Cancelled);
         }
-        let failure: Option<String> = match extract_tool_block(&round.text) {
-            Some(Ok(_)) => Some(format!(
+        let failure: Option<String> = match extract_tool_blocks(&round.text) {
+            Ok(blocks) if !blocks.is_empty() => Some(format!(
                 "{stage_label}阶段不调用任何工具：不要输出工具调用块（```tool 围栏），{output_hint}"
             )),
-            Some(Err(detail)) => Some(detail),
-            None => match validate(round.text.trim()) {
+            Err(detail) => Some(detail),
+            Ok(_) => match validate(round.text.trim()) {
                 Ok(value) => return Ok(value),
                 Err(detail) => Some(detail),
             },
@@ -1951,15 +2082,23 @@ fn tool_event_detail(
     detail
 }
 
-/// 单节深挖：初始上下文 = L1 全带 + L2 全带 + 当前节原文全送 + 当前节页图 ±1；
-/// 循环至无工具调用块（完成）/ 步数上限 / 连续解析失败 / 取消。
+/// 单节深挖的完成产物与遥测（#81：轮数 / 工具调用数进 result 供前后对照）。
+struct DiveOutcome {
+    markdown: String,
+    rounds: u64,
+    tool_calls: u64,
+}
+
+/// 单节深挖：初始上下文 = L1 全带 + L2 全带 + 当前节原文全送 + 当前节页图 ±1 +
+/// 本节关键图表裁切图（至多 MAX_ATTACHED_ASSETS 张，#81）；循环至无工具调用块
+/// （完成）/ 步数上限 / 连续解析失败 / 取消；一轮可携带至多 3 个工具调用块。
 fn dive_section(
     ctx: &RunContext,
     env: &ProtocolEnv,
     part_id: &str,
     section: &Section,
     warnings: &mut Vec<String>,
-) -> Result<String, Halt> {
+) -> Result<DiveOutcome, Halt> {
     let l2_bodies: Vec<Value> = env
         .paper
         .products
@@ -1970,17 +2109,61 @@ fn dive_section(
     let map_body = product_body(&env.paper, "map", "")
         .cloned()
         .ok_or_else(|| Halt::Failed(map_required_error()))?;
-    let section_type = product_body(&env.paper, "l2", part_id)
+    let l2_body = product_body(&env.paper, "l2", part_id).cloned();
+    let section_type = l2_body
+        .as_ref()
         .and_then(|body| body.get("type"))
         .and_then(Value::as_str)
         .unwrap_or("part")
         .to_string();
+    let key_assets: Vec<String> = l2_body
+        .as_ref()
+        .and_then(|body| body.get("keyAssets"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     let section_text = render_section_text(section);
     let section_pages = if section.page_start == section.page_end {
         format!("p{}", section.page_start)
     } else {
         format!("p{}-p{}", section.page_start, section.page_end)
     };
+    // 配方预附本节图表（#81）：帽内候选附裁切图，帽外与缺附件条目列在清单里。
+    let candidates = section_asset_candidates(&env.mapped, section, &key_assets);
+    let (planned, overflow) = plan_attached_assets(&candidates);
+    // 当前节页图 ±1 页随消息附图；附件缺失跳过并记 warning（文本层是忠实性构造保证，
+    // 页图是补充通道）。
+    let mut images: Vec<Vec<u8>> = Vec::new();
+    let mut page_images = 0_u64;
+    let first = section.page_start.saturating_sub(1).max(1);
+    let last = (section.page_end + 1).min(env.mapped.page_count);
+    for page in first..=last {
+        let asset_id = pdfassets::page_attachment_id(page);
+        if let Some(bytes) =
+            read_attachment_or_warn(&ctx.library, &env.paper.id, &asset_id, "page_image_missing", warnings)
+        {
+            images.push(bytes);
+            page_images += 1;
+        }
+    }
+    // 预附裁切图在页图之后；缺附件跳过并记 warning（get_figure 会如实报 asset_missing）。
+    let mut attached_entries: Vec<&AssetEntry> = Vec::new();
+    let mut other_ids: Vec<String> = overflow.iter().map(|entry| entry.id.clone()).collect();
+    for entry in &planned {
+        let crop_asset_id = pdfassets::crop_attachment_id(&entry.id);
+        match read_attachment_or_warn(&ctx.library, &env.paper.id, &crop_asset_id, "crop_missing", warnings) {
+            Some(bytes) => {
+                attached_entries.push(entry);
+                images.push(bytes);
+            }
+            None => other_ids.push(entry.id.clone()),
+        }
+    }
     let prompt = env.skills.compose(
         STAGE_DEEP_DIVE,
         &[
@@ -1992,27 +2175,20 @@ fn dive_section(
             ("sectionType", section_type.as_str()),
             ("sectionText", section_text.as_str()),
             ("sectionPages", section_pages.as_str()),
+            ("attachedAssets", render_attached_assets(&attached_entries, &other_ids).as_str()),
         ],
         &section_type,
     )?;
-    // 当前节页图 ±1 页随消息附图；附件缺失跳过并记 warning（文本层是忠实性构造保证，
-    // 页图是补充通道）。
-    let mut images: Vec<Vec<u8>> = Vec::new();
-    let first = section.page_start.saturating_sub(1).max(1);
-    let last = (section.page_end + 1).min(env.mapped.page_count);
-    for page in first..=last {
-        let asset_id = pdfassets::page_attachment_id(page);
-        match read_attachment_bytes(&ctx.library, &env.paper.id, &asset_id) {
-            Some(bytes) => images.push(bytes),
-            None => warnings.push(format!("page_image_missing:{asset_id}")),
-        }
-    }
-    let estimated = estimate_text_tokens(&prompt) + images.len() as u64 * PAGE_IMAGE_TOKEN_BUDGET;
+    // 硬顶估算：文本 + 页图（1902/张）+ 预附裁切图（1024/张，#81）。
+    let estimated = estimate_text_tokens(&prompt)
+        + page_images * PAGE_IMAGE_TOKEN_BUDGET
+        + attached_entries.len() as u64 * CROP_IMAGE_TOKEN_BUDGET;
     check_hard_top(estimated, "深挖初始配方").map_err(Halt::Failed)?;
 
     let mut messages = vec![user_message(prompt.clone(), images)];
-    // 首条消息的 text 段即配方提示词；图像为当前节页图 ±1 页。
+    // 首条消息的 text 段即配方提示词；图像为当前节页图 ±1 页 + 预附裁切图。
     let mut steps = 0_u32;
+    let mut tool_calls = 0_u64;
     let mut consecutive_failures = 0_u32;
     let mut round_no = 0_u32;
     let round_meta = RoundCtx {
@@ -2055,14 +2231,20 @@ fn dive_section(
                 messages.push(user_message(
                     error_observation(
                         "parse_failed",
-                        format!("{detail}。请按纪律重新输出：一轮一个 ```tool 围栏块（一个 JSON 对象），或不带工具调用块直接给出四段式深挖结果。"),
+                        format!("{detail}。请按纪律重新输出：一轮至多三个 ```tool 围栏块（各为一个 JSON 对象），或不带工具调用块直接给出四段式深挖结果。"),
                     ).to_string(),
                     Vec::new(),
                 ));
             }
             Ok(RoundParse::Final(text)) => {
                 match validate_markdown_headers(&text, &DEEP_DIVE_HEADERS) {
-                    Ok(()) => return Ok(text),
+                    Ok(()) => {
+                        return Ok(DiveOutcome {
+                            markdown: text,
+                            rounds: round_no as u64,
+                            tool_calls,
+                        })
+                    }
                     Err(detail) => {
                         consecutive_failures += 1;
                         if consecutive_failures >= MAX_PARSE_FAILURES {
@@ -2083,7 +2265,7 @@ fn dive_section(
                     }
                 }
             }
-            Ok(RoundParse::ToolCall { name, args }) => {
+            Ok(RoundParse::ToolCalls(calls)) => {
                 consecutive_failures = 0;
                 if steps >= MAX_TOOL_STEPS {
                     return Err(Halt::Failed(BridgeError::new(
@@ -2095,11 +2277,40 @@ fn dive_section(
                         true,
                     )));
                 }
-                steps += 1;
-                let outcome = execute_tool(&ctx.library, &env.paper.id, &env.mapped, &name, &args);
-                ctx.emit_detail("tool", tool_event_detail(steps, part_id, &section.id, &name, &args, &outcome));
+                // 顺序执行本轮全部调用：各发一条 tool 事件、各计一步；执行到步数上限后
+                // 剩余块不执行并在观察中说明（#81）。
+                let mut observations: Vec<Value> = Vec::new();
+                let mut observation_images: Vec<Vec<u8>> = Vec::new();
+                let mut unexecuted = 0_usize;
+                for call in &calls {
+                    if steps >= MAX_TOOL_STEPS {
+                        unexecuted += 1;
+                        continue;
+                    }
+                    steps += 1;
+                    tool_calls += 1;
+                    let outcome =
+                        execute_tool(&ctx.library, &env.paper.id, &env.mapped, &call.name, &call.args);
+                    ctx.emit_detail(
+                        "tool",
+                        tool_event_detail(steps, part_id, &section.id, &call.name, &call.args, &outcome),
+                    );
+                    observations.push(outcome.observation);
+                    observation_images.extend(outcome.images);
+                }
+                // 续回一条用户消息：{"observations": [obs1, obs2, ...]}，图像按工具序依次附上。
                 messages.push(json!({ "role": "assistant", "content": round.text }));
-                messages.push(user_message(outcome.observation.to_string(), outcome.images));
+                let mut payload = Map::new();
+                payload.insert("observations".to_string(), Value::Array(observations));
+                if unexecuted > 0 {
+                    payload.insert(
+                        "note".to_string(),
+                        json!(format!(
+                            "已达步数上限 {MAX_TOOL_STEPS}，本轮剩余 {unexecuted} 个工具调用未执行；请基于已有取证直接输出四段式深挖结果"
+                        )),
+                    );
+                }
+                messages.push(user_message(Value::Object(payload).to_string(), observation_images));
             }
         }
     }
@@ -2147,6 +2358,9 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
     let total = targets.len() as u64;
     let mut completed: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = env.mapped.warnings.clone();
+    // #81 遥测：逐节轮数与工具调用数进 result，供改动前后对照（配合 round 事件）。
+    let mut rounds_per_section: Map<String, Value> = Map::new();
+    let mut tool_calls_per_section: Map<String, Value> = Map::new();
     for (index, (part_id, section)) in targets.iter().enumerate() {
         if ctx.cancel_checkpoint().is_err() {
             // 批量取消：不再推进下一节；已完成节的产物已逐节落库保留。
@@ -2163,15 +2377,17 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
                 "total": total,
             }),
         );
-        let markdown = dive_section(ctx, &env, part_id, section, &mut warnings)?;
+        let outcome = dive_section(ctx, &env, part_id, section, &mut warnings)?;
         // 逐节完成逐节落库（完整结果计 analysis 打卡）。
         persist_products(
             &ctx.library,
             paper_id,
-            vec![("dig".to_string(), (*part_id).clone(), json!(markdown))],
+            vec![("dig".to_string(), (*part_id).clone(), json!(outcome.markdown))],
             Some("analysis"),
         )?;
         completed.push((*part_id).clone());
+        rounds_per_section.insert((*part_id).clone(), json!(outcome.rounds));
+        tool_calls_per_section.insert((*part_id).clone(), json!(outcome.tool_calls));
         ctx.push_progress(Progress {
             done: index as u64 + 1,
             total,
@@ -2180,6 +2396,8 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
     Ok(json!({
         "paperId": paper_id,
         "completed": completed,
+        "roundsPerSection": Value::Object(rounds_per_section),
+        "toolCallsPerSection": Value::Object(tool_calls_per_section),
         "warnings": warnings,
     }))
 }
@@ -2408,12 +2626,48 @@ mod tests {
         let text = "先取图。\n```tool\n{\"name\": \"get_figure\", \"args\": {\"fig_id\": \"fig_1\"}}\n```\n";
         let parsed = parse_round_output(text).expect("合法调用块");
         match parsed {
-            RoundParse::ToolCall { name, args } => {
-                assert_eq!(name, "get_figure");
-                assert_eq!(args["fig_id"], json!("fig_1"));
+            RoundParse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "get_figure");
+                assert_eq!(calls[0].args["fig_id"], json!("fig_1"));
             }
             other => panic!("应解析为工具调用: {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_block_parse_accepts_multiple_calls_in_order() {
+        let text = "先读节再看图。\n```tool\n{\"name\": \"read_section\", \"args\": {\"sec_id\": \"sec_3_method\"}}\n```\n中间说明。\n```tool\n{\"name\": \"get_figure\", \"args\": {\"fig_id\": \"fig_1\"}}\n```";
+        let parsed = parse_round_output(text).expect("多个合法调用块");
+        match parsed {
+            RoundParse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].name, "read_section");
+                assert_eq!(calls[1].name, "get_figure");
+            }
+            other => panic!("应解析为多工具调用: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_block_parse_rejects_over_limit_round() {
+        let mut text = String::from("一次发太多。\n");
+        for _ in 0..4 {
+            text.push_str("```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"x\"}}\n```\n");
+        }
+        let error = parse_round_output(&text).expect_err("4 个调用块应整轮拒绝");
+        assert!(error.contains("一轮最多 3 个"), "超限文案: {error}");
+    }
+
+    #[test]
+    fn tool_block_parse_reports_failing_block_index() {
+        let text = "```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"x\"}}\n```\n```tool\n{不是 json}\n```";
+        let error = parse_round_output(text).expect_err("任一块失败整轮失败");
+        assert!(error.contains("第 2 个"), "应指明失败块序号: {error}");
+        // 第二个围栏未闭合同样定位到块。
+        let text = "```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"x\"}}\n```\n```tool\n{\"name\": \"hack\"";
+        let error = parse_round_output(text).expect_err("未闭合围栏报错");
+        assert!(error.contains("第 2 个"), "未闭合围栏也指明块序号: {error}");
     }
 
     #[test]
@@ -2603,5 +2857,54 @@ a", &DEEP_DIVE_HEADERS).is_err());
             shards.iter().map(|shard| shard[0].id.as_str()).collect::<Vec<_>>(),
             sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>()
         );
+    }
+
+    fn asset(id: &str, page: u32, y: f64, section: Option<&str>) -> AssetEntry {
+        AssetEntry {
+            id: id.to_string(),
+            number: id.trim_start_matches("fig_").trim_start_matches("tbl_").to_string(),
+            caption: Some(format!("{id} 图注")),
+            page,
+            bbox: [0.0, y, 100.0, y + 50.0],
+            section: section.map(str::to_string),
+            references: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn attached_assets_union_order_dedup_and_cap() {
+        let mut mapped = sample_mapped();
+        // 追加构造候选：fig_3(p1) fig_1(p2,y0) fig_2(p2,y300) tbl_1(p3,清单) fig_4(p3,y200)；
+        // fig_5 归属 sec_3，用于验证归属过滤。
+        mapped.figures.push(asset("fig_2", 2, 300.0, Some("sec_2_introduction")));
+        mapped.figures.push(asset("fig_3", 1, 80.0, Some("sec_2_introduction")));
+        mapped.figures.push(asset("fig_4", 3, 200.0, Some("sec_2_introduction")));
+        mapped.figures.push(asset("fig_5", 1, 40.0, Some("sec_3_method")));
+        let sec2 = &mapped.sections[1];
+        // keyAssets 允许指向他节条目（tbl_1 归属 sec_3）、重复与清单外 id（防御性跳过）。
+        let key_assets = vec![
+            "tbl_1".to_string(),
+            "fig_1".to_string(),
+            "tbl_1".to_string(),
+            "fig_9".to_string(),
+        ];
+        let candidates = section_asset_candidates(&mapped, sec2, &key_assets);
+        let ids: Vec<&str> = candidates.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["fig_3", "fig_1", "fig_2", "tbl_1", "fig_4"],
+            "按阅读序（页、页内 y）去重；归属他节的 fig_5 不进候选"
+        );
+        assert!(!ids.contains(&"fig_9"), "清单外 id 跳过");
+        // 帽切分：前 4 附图，其余列清单。
+        let (attached, overflow) = plan_attached_assets(&candidates);
+        assert_eq!(attached.len(), MAX_ATTACHED_ASSETS);
+        assert_eq!(overflow.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["fig_4"]);
+        // 渲染：附图条目 + 帽外提示；两个空集 → （无）。
+        let others: Vec<String> = overflow.iter().map(|e| e.id.clone()).collect();
+        let text = render_attached_assets(&attached, &others);
+        assert!(text.contains("- fig_3（p1）：fig_3 图注"), "清单段: {text}");
+        assert!(text.contains("（以上已随消息附图，无需再调 get_figure；本节另有图表：fig_4，需要时用 get_figure 调取）"));
+        assert_eq!(render_attached_assets(&[], &[]), "（无）");
     }
 }
