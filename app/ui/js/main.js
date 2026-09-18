@@ -45,10 +45,13 @@ import {
   userBindingView,
 } from './qa.js';
 import {
+  deepDiveRunState,
+  deepDiveStatusLine,
   fmtDate,
   libraryMapState,
   notesMarkdown,
   ratingText,
+  synthesizeRunState,
   taskDetailModel,
   taskKindLabel,
 } from './present.js';
@@ -667,6 +670,31 @@ function diveRunningDetail(paperId) {
   return openProtocolTaskMeta(paperId, PROTOCOL_TASKS.deepDive)?.meta.lastDetail || null;
 }
 
+/** #80：深挖运行态（轮次/工具/字数/预览），由会话登记的实时事件流归约；无运行任务为 null。 */
+function diveLiveState(paperId, partId) {
+  const open = openProtocolTaskMeta(paperId, PROTOCOL_TASKS.deepDive);
+  if (!open) return null;
+  return deepDiveRunState(open.meta.runEvents, partId, open.meta.status);
+}
+
+/** #80：复述稿运行态（预览全文与字数）。 */
+function synthLiveState(paperId) {
+  const open = openProtocolTaskMeta(paperId, PROTOCOL_TASKS.synthesize);
+  if (!open) return null;
+  return synthesizeRunState(open.meta.runEvents, open.meta.status);
+}
+
+/** #80：登记运行态事件（round-start / tool / round / preview），有界保留。 */
+function pushRunEvent(meta, event) {
+  if (!event?.detail) return false;
+  meta.runEvents ??= [];
+  meta.runEvents.push({ event: event.event, detail: event.detail });
+  if (meta.runEvents.length > SESSION_STEPS_CAP) {
+    meta.runEvents.splice(0, meta.runEvents.length - SESSION_STEPS_CAP);
+  }
+  return true;
+}
+
 function citeChipHtml(raw) {
   const safe = escapeTemplate(raw);
   return `<button type="button" class="cite-chip" data-cite="${safe}">${safe}</button>`;
@@ -720,6 +748,7 @@ function renderMapPage() {
     products: current.products,
     mapped: currentMapped,
     synthesizing: isSynthesizingPaper(current.id),
+    synthLive: synthLiveState(current.id),
   });
   const empty = '<p class="muted">（尚未生成）</p>';
   const contributions = page.contributions.length
@@ -738,7 +767,13 @@ function renderMapPage() {
   let retell = `<p class="muted">手动触发 · 输入 = L1 + 全部 L2 + 已有深挖 · 未深挖节将标注「未经深挖核验」</p>`;
   if (page.retell.state === 'running') {
     const thinking = protocolThinkingText(current.id, PROTOCOL_TASKS.synthesize);
-    retell += `<p>正在生成复述稿${thinking ? ` · ${escapeTemplate(thinking)}` : ''}</p><button class="btn small" type="button" data-action="cancel-synth">取消</button>`;
+    const live = page.retell.live;
+    const received = live?.receivedChars > 0 ? `已收到 ${live.receivedChars} 字` : '';
+    const statusLine = ['正在生成复述稿', received, thinking].filter(Boolean).join(' · ');
+    retell += `<p>${escapeTemplate(statusLine)}</p><button class="btn small" type="button" data-action="cancel-synth">取消</button>`;
+    if (live?.previewText) {
+      retell += `<div class="dig-head"><span class="chip">${escapeTemplate(COPY.livePreview)}</span></div><div class="md retell-preview"></div>`;
+    }
   } else if (page.retell.state === 'done') {
     retell += `<div class="md retell-body"></div><div class="dig-head"><button class="btn small" type="button" data-action="resynthesize">${escapeTemplate(page.retell.primaryLabel)}</button></div>`;
   } else {
@@ -756,6 +791,10 @@ function renderMapPage() {
   `;
   const retellBody = body.querySelector('.retell-body');
   if (retellBody && page.retell.body) renderCitedMarkdownInto(retellBody, page.retell.body);
+  const retellPreview = body.querySelector('.retell-preview');
+  if (retellPreview && page.retell.live?.previewText) {
+    renderCitedMarkdownInto(retellPreview, page.retell.live.previewText);
+  }
 }
 
 function renderSectionPage() {
@@ -768,6 +807,7 @@ function renderSectionPage() {
     runningDetail: diveRunningDetail(current.id),
     citeFocus: reader.citeFocus,
     prerenderReady: prerenderAssetsReady(currentMapped, currentAttachmentIds),
+    runState: diveLiveState(current.id, reader.sectionId),
   });
   const paper = current;
   const busy = isDeepDivingPaper(current.id) && model.deepDive.state !== 'running';
@@ -788,11 +828,15 @@ function renderSectionPage() {
     dig += `<div class="dig-empty muted">${escapeTemplate(model.deepDive.hint)}</div>`;
   } else if (model.deepDive.state === 'running') {
     const thinking = protocolThinkingText(current.id, PROTOCOL_TASKS.deepDive, reader.sectionId);
-    const progress = thinking
-      ? `${model.deepDive.progressText} · ${thinking}`
-      : model.deepDive.progressText;
+    const live = model.deepDive.live;
+    const statusLine = live ? deepDiveStatusLine(live) : '';
+    const progress = [model.deepDive.progressText, statusLine, thinking].filter(Boolean).join(' · ');
     dig += `<div class="dig-empty"><p>${escapeTemplate(progress)}</p>
       <button class="btn small" type="button" data-action="cancel-dig">取消</button></div>`;
+    if (live?.previewText) {
+      dig += `<div class="dig-head"><span class="chip">${escapeTemplate(COPY.livePreview)}</span></div>
+        <div class="dig-result md dig-preview"></div>`;
+    }
   } else if (model.deepDive.state === 'done') {
     dig += `<div class="dig-head"><span class="chip">L3 深挖结果</span><span style="flex:1"></span>
       <button class="btn small" type="button" data-action="redig"${model.deepDive.primaryDisabled ? ' disabled' : ''}>${escapeTemplate(model.deepDive.primaryLabel)}</button>
@@ -831,8 +875,14 @@ function renderSectionPage() {
     : '';
   const body = $('#section-page-body');
   body.innerHTML = `${l2}${dig}${figs}${foot}${legacy}`;
-  const result = body.querySelector('.dig-result');
-  if (result && model.deepDive.body) renderCitedMarkdownInto(result, model.deepDive.body);
+  // 预览容器也带 .dig-result 类：运行中优先渲染预览（#80），避免被旧产物覆盖。
+  const preview = body.querySelector('.dig-preview');
+  if (preview && model.deepDive.live?.previewText) {
+    renderCitedMarkdownInto(preview, model.deepDive.live.previewText);
+  } else {
+    const result = body.querySelector('.dig-result');
+    if (result && model.deepDive.body) renderCitedMarkdownInto(result, model.deepDive.body);
+  }
   const legacyBody = body.querySelector('.legacy-body');
   if (legacyBody) renderCitedMarkdownInto(legacyBody, model.legacyAnalysis.text);
   fillCropImages(body, paper).then(() => {
@@ -1272,6 +1322,7 @@ async function startSynthesize(overwriteConfirmed) {
     meta = {
       kind: PROTOCOL_TASKS.synthesize,
       input,
+      runEvents: [],
       retry: () => startSynthesize(true),
     };
     registerSessionTask(taskId, meta);
@@ -1279,7 +1330,13 @@ async function startSynthesize(overwriteConfirmed) {
     toast('已开始生成复述稿');
     const { status, error } = await trackTask(bridge, taskId, {
       onEvent: event => {
-        if (applyThinkingEvent(meta, event) && current?.id === paperId) renderMapTab();
+        if (event.event === 'preview') {
+          // #80：复述稿流式预览驱动地图页「生成中」正文。
+          pushRunEvent(meta, event);
+          if (current?.id === paperId) renderMapTab();
+        } else if (applyThinkingEvent(meta, event) && current?.id === paperId) {
+          renderMapTab();
+        }
       },
     });
     meta.status = status;
@@ -1331,6 +1388,7 @@ async function startDeepDive(paperId, partIds) {
       input,
       lastDetail: null,
       steps: [],
+      runEvents: [],
       retry: () => startDeepDive(paperId, partIds),
     };
     registerSessionTask(taskId, meta);
@@ -1345,6 +1403,13 @@ async function startDeepDive(paperId, partIds) {
           // 取证轨迹逐步累积，任务中心步骤流与「取证轨迹 →」回看共用（#56 决策 13）。
           meta.steps.push(event.detail);
           if (meta.steps.length > SESSION_STEPS_CAP) meta.steps.splice(0, meta.steps.length - SESSION_STEPS_CAP);
+          pushRunEvent(meta, event);
+          if (current?.id === paperId) renderMapTab();
+        } else if (event.event === 'round-start' || event.event === 'round' || event.event === 'preview') {
+          // #80：轮次进度与最终稿预览驱动节页运行态（状态行 + 生成中预览正文）。
+          pushRunEvent(meta, event);
+          applyThinkingEvent(meta, event);
+          if (current?.id === paperId) renderMapTab();
         } else if (applyThinkingEvent(meta, event) && current?.id === paperId) {
           renderMapTab();
         }
@@ -3206,8 +3271,9 @@ function renderTaskList(tasks) {
     }
     row.appendChild(progress);
 
-    // 协议任务附加区（#56 决策 13 / #75）：建图 = 阶段流 + 穿插轮次；深挖 = 逐节子进度
+    // 协议任务附加区（#56 决策 13 / #75 / #80）：建图 = 阶段流 + 穿插轮次；深挖 = 逐节子进度
     // （批量）+ 轨迹流（工具步与模型轮按 details 原序）；解析 = 计时拆分。
+    // liveLine 是最新一轮次进度摘要（round-start / round-progress）。
     // 数据来自任务快照 details，缺登记时自动降级。
     const detail = taskDetailModel({ task, meta });
     for (const chips of [detail.stageFlow, detail.shardFlow].filter(Boolean)) {
@@ -3227,6 +3293,12 @@ function renderTaskList(tasks) {
       const { index, total, title } = detail.subProgress;
       sub.textContent = `逐节推进：第 ${index}/${total} 节${title ? ` · ${title}` : ''}`;
       row.appendChild(sub);
+    }
+    if (detail.liveLine) {
+      const live = document.createElement('div');
+      live.className = 'task-sub-progress task-live';
+      live.textContent = detail.liveLine;
+      row.appendChild(live);
     }
     if (detail.trace?.length) {
       const hasTools = detail.trace.some(item => item.kind === 'tool');

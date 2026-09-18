@@ -715,18 +715,23 @@ fn deep_dive_tool_loop_completes_and_persists() {
     // 深挖中间轮不产生对外 chunk（决策 4）。
     assert!(sink.events().iter().all(|event| event.event != "chunk"), "深挖无对外 chunk");
 
-    // 快照 details 日志：阶段、正文开始与工具轨迹随快照可回看——JS 订阅建立前发出的
-    // 事件不经通道重放，任务中心以快照日志为完整源（#72 走查实测订阅窗口丢事件后的补齐）。
-    // 每轮正文开始发 content（清思考态），协议轮仍不对外发 chunk。
+    // 快照 details 日志：阶段、轮次开始（#80）、正文开始与工具轨迹随快照可回看——JS 订阅
+    // 建立前发出的事件不经通道重放，任务中心以快照日志为完整源（#72 走查实测订阅窗口丢事件
+    // 后的补齐）。每轮正文开始发 content（清思考态），协议轮仍不对外发 chunk；最终轮的
+    // preview（#80）在日志中按瞬态事件只留最新一条。
     let snapshot = registry.get(&task_id).expect("任务快照");
     let details = snapshot.details.expect("快照携带 details 日志");
     let events: Vec<&str> = details.iter().filter_map(|d| d["event"].as_str()).collect();
     assert_eq!(
         events,
-        vec!["stage", "content", "round", "tool", "content", "round", "tool", "content", "round"]
+        vec!["stage", "round-start", "content", "round", "tool",
+             "round-start", "content", "round", "tool",
+             "round-start", "content", "preview", "round"]
     );
     assert_eq!(details[0]["detail"]["stage"], json!("deep-dive"));
-    assert_eq!(details[6]["detail"]["name"], json!("get_figure"));
+    assert_eq!(details[1]["detail"]["round"], json!(1), "round-start 轮号从 1 起");
+    assert_eq!(details[8]["detail"]["name"], json!("get_figure"));
+    assert_eq!(details[11]["detail"]["text"], json!(DIG_MARKDOWN.trim()), "preview 携带最终稿全文");
 }
 
 // ============================================================================
@@ -1552,4 +1557,252 @@ fn synthesize_emits_thinking_then_content_and_round_reasoning_ms() {
     let elapsed = rounds[0]["elapsedMs"].as_u64().unwrap();
     assert!(reasoning > 0);
     assert!(ttft.saturating_add(reasoning) <= elapsed);
+}
+
+// ============================================================================
+// #80：深挖轮次进度与最终稿预览（round-start / preview / round-progress）
+// ============================================================================
+
+/// SSE 响应：多段 content 载荷 + 结束帧 + [DONE]（模拟最终稿分段到达）。
+fn sse_segments(segments: &[String], delay: Duration) -> MockResponse {
+    let mut payloads: Vec<String> = segments
+        .iter()
+        .map(|segment| json!({"choices": [{"delta": {"content": segment}}]}).to_string())
+        .collect();
+    payloads.push(json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}).to_string());
+    payloads.push("[DONE]".to_string());
+    MockResponse::sse(payloads, delay)
+}
+
+/// 按字符数切成三段（字符边界切分，不破坏 UTF-8）。
+fn split3(text: &str) -> [String; 3] {
+    let chars: Vec<char> = text.chars().collect();
+    let third = chars.len() / 3;
+    [
+        chars[..third].iter().collect(),
+        chars[third..2 * third].iter().collect(),
+        chars[2 * third..].iter().collect(),
+    ]
+}
+
+/// 按字符数对半切（字符边界）。
+fn split_in_two(text: &str) -> [String; 2] {
+    let chars: Vec<char> = text.chars().collect();
+    let mid = chars.len() / 2;
+    [chars[..mid].iter().collect(), chars[mid..].iter().collect()]
+}
+
+#[test]
+fn deep_dive_final_round_streams_markdown_preview() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    // 最终稿分 3 段返回（段间隔远小于 500ms 节流窗：验证节流生效 + 收尾补发累计全文）。
+    let segments = split3(DIG_MARKDOWN);
+    let mock = MockHttp::start(move |_request, hit| match hit {
+        1 => sse_text("先读方法节。\n```tool\n{\"name\": \"read_section\", \"args\": {\"sec_id\": \"sec_3_method\", \"offset\": 1, \"limit\": 10}}\n```"),
+        _ => sse_segments(&segments, Duration::from_millis(1)),
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    // 每轮开工发 round-start：轮号递增、携带上下文 token 估算。
+    let starts = events_named(&sink, "round-start");
+    assert_eq!(starts.len(), 2, "两轮各发一条 round-start: {starts:?}");
+    assert_eq!(starts[0]["stage"], json!("deep-dive"));
+    assert_eq!(starts[0]["partId"], json!("part-1"));
+    assert_eq!(starts[0]["round"], json!(1));
+    assert_eq!(starts[1]["round"], json!(2));
+    assert!(starts[0]["contextTokensEstimated"].as_u64().unwrap() > 0);
+
+    // 预览：工具轮（未以首标题开头）不产生 preview；最终轮 ≥1 条且最后一条 = 累计全文。
+    let previews = events_named(&sink, "preview");
+    assert!(!previews.is_empty(), "最终稿应产生 preview 事件");
+    for preview in &previews {
+        assert_eq!(preview["stage"], json!("deep-dive"));
+        assert_eq!(preview["partId"], json!("part-1"));
+        let text = preview["text"].as_str().expect("本用例 preview 均为文本");
+        assert!(text.trim_start().starts_with("## 核心论点"), "预览以首固定标题开头: {text}");
+        assert!(!text.contains("```tool"), "预览不含工具围栏: {text}");
+    }
+    assert_eq!(previews.last().unwrap()["text"], json!(DIG_MARKDOWN.trim()), "最后一条 preview 等于最终产物");
+
+    let digs = products_of(&library, &paper_id, "dig");
+    assert_eq!(digs.len(), 1);
+    assert_eq!(digs[0].body.as_str().unwrap(), DIG_MARKDOWN.trim(), "产物与预览全文一致");
+}
+
+#[test]
+fn deep_dive_tool_fence_mid_round_clears_preview() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    // 第 1 轮以最终稿标题开头、中途转工具调用：预览先出，出现 ```tool 即以 text:null 清空。
+    let mock = MockHttp::start(|_request, hit| match hit {
+        1 => sse_segments(
+            &[
+                "## 核心论点\n已有初步判断，先取证确认。\n".to_string(),
+                "```tool\n{\"name\": \"read_section\", \"args\": {\"sec_id\": \"sec_3_method\", \"offset\": 1, \"limit\": 10}}\n```".to_string(),
+            ],
+            Duration::from_millis(1),
+        ),
+        _ => sse_text(DIG_MARKDOWN),
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let previews = events_named(&sink, "preview");
+    let null_at = previews
+        .iter()
+        .position(|preview| preview["text"].is_null())
+        .expect("出现工具围栏应发 text:null 清空: {previews:?}");
+    assert!(null_at > 0, "清空前已有文本预览: {previews:?}");
+    assert!(
+        previews[..null_at]
+            .iter()
+            .all(|preview| preview["text"].as_str().unwrap().starts_with("## 核心论点")),
+        "清空前的预览均以首标题开头: {previews:?}"
+    );
+    assert_eq!(
+        previews.last().unwrap()["text"],
+        json!(DIG_MARKDOWN.trim()),
+        "新一轮最终稿预览覆盖清空态"
+    );
+}
+
+#[test]
+fn deep_dive_preview_resumes_after_mid_round_retry() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    // 第 1 次尝试：以最终稿标题开头 → 出预览 → 转工具围栏清空 → 断连（retryable）。
+    // 重试的第 2 次尝试返回干净最终稿：预览状态必须随新尝试复位，不能卡在清空态。
+    let mock = MockHttp::start(|_request, hit| match hit {
+        1 => MockResponse::sse_aborted(
+            vec![
+                json!({"choices": [{"delta": {"content": "## 核心论点\n先取证确认。"}}]}).to_string(),
+                json!({"choices": [{"delta": {"content": "```tool\n{\"name\": \"read_section\", \"args\": {\"sec_id\": \"sec_3_method\", \"offset\": 1, \"limit\": 5}}\n```"}}]}).to_string(),
+            ],
+            Duration::from_millis(1),
+        ),
+        _ => sse_text(DIG_MARKDOWN),
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(mock.hits(), 2, "断连后应重试一次");
+
+    let previews = events_named(&sink, "preview");
+    assert!(previews.iter().any(|p| p["text"].is_null()), "首次尝试的工具围栏应清空: {previews:?}");
+    assert_eq!(
+        previews.last().unwrap()["text"],
+        json!(DIG_MARKDOWN.trim()),
+        "重试后预览恢复并等于最终产物: {previews:?}"
+    );
+}
+
+#[test]
+fn build_map_emits_round_progress_heartbeats_without_preview() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    // 响应两段切分、段间隔超过 1s 心跳窗：每片应出现 2 条递增的 round-progress。
+    let mock = MockHttp::start(|request, _hit| {
+        let prompt = prompt_text(request);
+        let ids = l2_sec_ids_in_prompt(&prompt);
+        let text = match ids.first() {
+            Some(sec_id) => l2_json_for_sec(sec_id),
+            None => map_response(),
+        };
+        let halves = split_in_two(&text);
+        sse_segments(&halves, Duration::from_millis(1_300))
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let progress = events_named(&sink, "round-progress");
+    assert!(progress.len() >= 4, "三节 L2 + 调用② 各有心跳: {progress:?}");
+    for event in &progress {
+        assert!(matches!(event["stage"].as_str(), Some("map-l2") | Some("map-l1")));
+        assert!(event["receivedChars"].as_u64().unwrap() > 0);
+        assert!(event["elapsedMs"].is_u64());
+    }
+    let l2: Vec<&Value> = progress.iter().filter(|event| event["stage"] == json!("map-l2")).collect();
+    assert!(!l2.is_empty() && l2.iter().all(|event| event["shard"].is_u64()), "L2 心跳带 shard: {l2:?}");
+    // 同一 (stage, shard) 键内 receivedChars 严格递增。
+    let mut last_by_key: std::collections::HashMap<(String, Option<u64>), u64> = std::collections::HashMap::new();
+    for event in &progress {
+        let key = (
+            event["stage"].as_str().unwrap().to_string(),
+            event["shard"].as_u64(),
+        );
+        let chars = event["receivedChars"].as_u64().unwrap();
+        if let Some(prev) = last_by_key.insert(key, chars) {
+            assert!(chars > prev, "同一键内 receivedChars 单调递增: {progress:?}");
+        }
+    }
+    // JSON 阶段不发 preview；round-start 是深挖专属事件。
+    assert!(events_named(&sink, "preview").is_empty(), "建图无 preview");
+    assert!(events_named(&sink, "round-start").is_empty(), "建图无 round-start");
+}
+
+#[test]
+fn synthesize_streams_markdown_preview() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let segments = split3(RETELL_MARKDOWN);
+    let mock = MockHttp::start(move |_request, _hit| sse_segments(&segments, Duration::from_millis(1)));
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let previews = events_named(&sink, "preview");
+    assert!(!previews.is_empty(), "复述稿应产生 preview 事件");
+    for preview in &previews {
+        assert_eq!(preview["stage"], json!("synthesize"));
+        assert!(preview.get("partId").is_none(), "复述稿无 partId: {preview:?}");
+        let text = preview["text"].as_str().expect("复述稿 preview 均为文本");
+        assert!(text.trim_start().starts_with("## 问题"), "预览以首固定标题开头: {text}");
+    }
+    assert_eq!(previews.last().unwrap()["text"], json!(RETELL_MARKDOWN.trim()), "最后一条 preview 等于最终产物");
+    // Markdown 阶段不发 JSON 心跳；round-start 是深挖专属事件。
+    assert!(events_named(&sink, "round-progress").is_empty());
+    assert!(events_named(&sink, "round-start").is_empty());
+    let retells = products_of(&library, &paper_id, "retell");
+    assert_eq!(retells[0].body.as_str().unwrap(), RETELL_MARKDOWN.trim());
 }

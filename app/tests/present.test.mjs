@@ -7,9 +7,14 @@ import {
   NOTES_FORMAT_NOTE,
   buildMapStageFlow,
   convertTimingRows,
+  deepDiveRunState,
+  deepDiveStatusLine,
   libraryMapState,
   notesMarkdown,
+  roundProgressView,
+  roundStartView,
   roundView,
+  synthesizeRunState,
   taskDetailModel,
   taskKindLabel,
   toolStepView,
@@ -385,4 +390,144 @@ test('导出笔记：无块模型时按精读部分顺序与标签组织节区�
   assert.match(md, /### 第 2 部分 · Method\n\n\*\*薄摘要\*\*：只有方法节有摘要。/);
   // part-1 无产物不列
   assert.ok(!md.includes('### 第 1 部分'));
+});
+
+// ---------------- #80：任务事件 → 节页/地图页运行态归约 ----------------
+
+const DD_EVENTS = [
+  { event: 'round-start', detail: { stage: 'deep-dive', partId: 'part-1', round: 1, contextTokensEstimated: 9000 } },
+  { event: 'tool', detail: { step: 1, partId: 'part-1', secId: 'sec_2', name: 'read_section', args: { sec_id: 'sec_3' }, ok: true } },
+  { event: 'round', detail: { stage: 'deep-dive', partId: 'part-1', round: 1, receivedChars: 120 } },
+];
+
+test('深挖运行态：round-start 开轮、tool 记当前工具、round 记上轮字数', () => {
+  const state = deepDiveRunState(DD_EVENTS, 'part-1', 'running');
+  assert.equal(state.round, 1);
+  assert.equal(state.currentTool?.name, 'read_section');
+  assert.deepEqual(state.currentTool?.args, { sec_id: 'sec_3' });
+  assert.equal(state.receivedChars, 120);
+  assert.equal(state.previewText, null);
+});
+
+test('深挖运行态：新一轮重置工具与字数，preview 推进预览正文与字数', () => {
+  const state = deepDiveRunState([
+    ...DD_EVENTS,
+    { event: 'round-start', detail: { stage: 'deep-dive', partId: 'part-1', round: 2, contextTokensEstimated: 9500 } },
+    { event: 'preview', detail: { stage: 'deep-dive', partId: 'part-1', text: '## 核心论点\n甲' } },
+    { event: 'preview', detail: { stage: 'deep-dive', partId: 'part-1', text: '## 核心论点\n甲乙' } },
+  ], 'part-1', 'running');
+  assert.equal(state.round, 2);
+  assert.equal(state.currentTool, null, '新一轮清空工具态');
+  assert.equal(state.previewText, '## 核心论点\n甲乙');
+  assert.equal(state.receivedChars, '## 核心论点\n甲乙'.length);
+});
+
+test('深挖运行态：preview text:null 清空预览', () => {
+  const state = deepDiveRunState([
+    { event: 'round-start', detail: { partId: 'part-1', round: 1 } },
+    { event: 'preview', detail: { partId: 'part-1', text: '## 核心论点\n甲' } },
+    { event: 'preview', detail: { partId: 'part-1', text: null } },
+  ], 'part-1', 'running');
+  assert.equal(state.previewText, null);
+});
+
+test('深挖运行态：批量时忽略其他节的事件', () => {
+  const state = deepDiveRunState([
+    { event: 'round-start', detail: { partId: 'part-1', round: 1 } },
+    { event: 'round-start', detail: { partId: 'part-2', round: 3 } },
+    { event: 'preview', detail: { partId: 'part-2', text: '## 核心论点\n别节' } },
+    { event: 'tool', detail: { partId: 'part-2', name: 'get_figure', args: { fig_id: 'fig_1' } } },
+  ], 'part-1', 'running');
+  assert.equal(state.round, 1);
+  assert.equal(state.currentTool, null);
+  assert.equal(state.previewText, null);
+});
+
+test('深挖运行态：乱序 round-start 回退被忽略，重复事件幂等', () => {
+  const state = deepDiveRunState([
+    { event: 'round-start', detail: { partId: 'part-1', round: 2 } },
+    { event: 'preview', detail: { partId: 'part-1', text: '## 核心论点\n甲' } },
+    { event: 'round-start', detail: { partId: 'part-1', round: 1 } },
+    { event: 'preview', detail: { partId: 'part-1', text: '## 核心论点\n甲' } },
+  ], 'part-1', 'running');
+  assert.equal(state.round, 2);
+  assert.equal(state.previewText, '## 核心论点\n甲');
+});
+
+test('深挖运行态：任务终态清理；无事件为 null', () => {
+  for (const status of ['succeeded', 'failed', 'cancelled']) {
+    assert.equal(deepDiveRunState(DD_EVENTS, 'part-1', status), null, status);
+  }
+  assert.equal(deepDiveRunState([], 'part-1', 'running'), null);
+  assert.equal(deepDiveRunState(null, 'part-1', 'running'), null);
+});
+
+test('深挖状态行：第 n 轮 · 正在调用工具 · 已收到 x 字', () => {
+  assert.equal(deepDiveStatusLine(null), '');
+  assert.equal(deepDiveStatusLine({ round: 1 }), '第 1 轮');
+  assert.equal(
+    deepDiveStatusLine({ round: 2, currentTool: { name: 'read_section', args: { sec_id: 'sec_3' } } }),
+    '第 2 轮 · 正在调用 read_section(sec_3)',
+  );
+  assert.equal(deepDiveStatusLine({ round: 2, receivedChars: 1234 }), '第 2 轮 · 已收到 1234 字');
+  assert.equal(
+    deepDiveStatusLine({ round: 3, currentTool: { name: 'get_figure', args: { fig_id: 'fig_1' } }, receivedChars: 56 }),
+    '第 3 轮 · 正在调用 get_figure(fig_1) · 已收到 56 字',
+  );
+});
+
+test('复述稿运行态：preview 推进、null 清空、终态清理', () => {
+  const events = [
+    { event: 'preview', detail: { stage: 'synthesize', text: '## 问题\n甲' } },
+    { event: 'preview', detail: { stage: 'synthesize', text: '## 问题\n甲乙' } },
+  ];
+  const state = synthesizeRunState(events, 'running');
+  assert.equal(state.previewText, '## 问题\n甲乙');
+  assert.equal(state.receivedChars, '## 问题\n甲乙'.length);
+  const cleared = synthesizeRunState([...events, { event: 'preview', detail: { stage: 'synthesize', text: null } }], 'running');
+  assert.equal(cleared.previewText, null);
+  assert.equal(synthesizeRunState(events, 'succeeded'), null);
+  assert.equal(synthesizeRunState(events, 'failed'), null);
+});
+
+test('任务中心摘要行：round-start / round-progress 摘要', () => {
+  assert.equal(
+    roundStartView({ round: 3, contextTokensEstimated: 12000 }).text,
+    '第 3 轮开始 · 上下文约 12000 token',
+  );
+  assert.equal(roundStartView({ round: 1 }).text, '第 1 轮开始');
+  assert.equal(
+    roundProgressView({ stage: 'map-l2', shard: 2, receivedChars: 3456, elapsedMs: 12300 }).text,
+    '分片 2 · 已收到 3456 字 · 12.3 s',
+  );
+  assert.equal(roundProgressView({ stage: 'map-l1', receivedChars: 100, elapsedMs: 500 }).text, '已收到 100 字 · 0.5 s');
+});
+
+test('任务中心：liveLine 取最新 round-start / round-progress，成功终态不显示', () => {
+  const dd = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    details: [
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', index: 1, total: 1 } },
+      { event: 'round-start', detail: { stage: 'deep-dive', partId: 'part-1', round: 1, contextTokensEstimated: 9000 } },
+      { event: 'tool', detail: { step: 1, partId: 'part-1', name: 'read_section', args: { sec_id: 'sec_3' }, ok: true } },
+      { event: 'round-start', detail: { stage: 'deep-dive', partId: 'part-1', round: 2, contextTokensEstimated: 9800 } },
+    ],
+  });
+  assert.equal(taskDetailModel({ task: dd }).liveLine, '第 2 轮开始 · 上下文约 9800 token');
+
+  const bm = taskSnapshot({
+    details: [
+      { event: 'stage', detail: { stage: 'map-l2', shard: 1, shards: 2, secId: 'sec_1', shardStatus: 'running' } },
+      { event: 'round-progress', detail: { stage: 'map-l2', shard: 1, receivedChars: 800, elapsedMs: 2100 } },
+      { event: 'round-progress', detail: { stage: 'map-l2', shard: 1, receivedChars: 1600, elapsedMs: 4200 } },
+    ],
+  });
+  assert.equal(taskDetailModel({ task: bm }).liveLine, '分片 1 · 已收到 1600 字 · 4.2 s');
+
+  const done = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    status: 'succeeded',
+    details: [{ event: 'round-start', detail: { partId: 'part-1', round: 1 } }],
+  });
+  assert.equal(taskDetailModel({ task: done }).liveLine, undefined);
 });

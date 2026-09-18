@@ -106,6 +106,9 @@ pub struct TaskSnapshot {
 /// 500 条覆盖十余节的批量深挖全程，超出丢最旧。
 pub(crate) const SNAPSHOT_DETAILS_CAP: usize = 500;
 
+/// 高频瞬态 detail 事件（#80）：在快照日志里按（事件, partId, shard）只留最新一条。
+const TRANSIENT_DETAIL_EVENTS: [&str; 2] = ["preview", "round-progress"];
+
 /// 任务事件出口。生产环境由 Tauri 事件通道实现，测试用收集器实现，
 /// 使任务引擎不依赖 AppHandle 即可完整测试。
 pub trait EventSink: Send + Sync {
@@ -791,6 +794,8 @@ impl TaskRegistry {
     /// 事件名是事件流契约的一部分（规格 #55 决策 28）。
     /// detail 同时 append 进快照的有界日志：JS 订阅建立前发出的事件不经通道重放，
     /// 任务中心轮询快照即可拿到完整阶段/轨迹（#72 走查发现订阅窗口丢事件）。
+    /// 高频瞬态事件（preview / round-progress，#80）在日志里按（事件, partId, shard）
+    /// 只留最新一条，避免流式预览挤占容量顶掉早期阶段/轨迹事件；实时事件流仍逐条推送。
     fn push_detail(
         &self,
         task_id: &str,
@@ -805,11 +810,26 @@ impl TaskRegistry {
             let Some(entry) = entries.get_mut(task_id) else {
                 return;
             };
+            let record = json!({ "event": event, "detail": detail.clone() });
             let log = entry.snapshot.details.get_or_insert_with(Vec::new);
-            log.push(json!({ "event": event, "detail": detail.clone() }));
-            if log.len() > SNAPSHOT_DETAILS_CAP {
-                let overflow = log.len() - SNAPSHOT_DETAILS_CAP;
-                log.drain(..overflow);
+            let replaced = TRANSIENT_DETAIL_EVENTS.contains(&event)
+                && match log.iter_mut().rev().find(|item| {
+                    item.get("event").and_then(Value::as_str) == Some(event)
+                        && item.get("detail").and_then(|d| d.get("partId")) == detail.get("partId")
+                        && item.get("detail").and_then(|d| d.get("shard")) == detail.get("shard")
+                }) {
+                    Some(existing) => {
+                        *existing = record.clone();
+                        true
+                    }
+                    None => false,
+                };
+            if !replaced {
+                log.push(record);
+                if log.len() > SNAPSHOT_DETAILS_CAP {
+                    let overflow = log.len() - SNAPSHOT_DETAILS_CAP;
+                    log.drain(..overflow);
+                }
             }
             entry.snapshot.updated_at = now_iso();
             entry.snapshot.clone()

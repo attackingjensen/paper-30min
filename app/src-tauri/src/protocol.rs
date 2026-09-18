@@ -28,6 +28,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::error::BridgeError;
 use crate::library::{ActivityDayDto, Library, PaperDto, ProductDto};
@@ -84,6 +85,11 @@ const SYNTHESIZE_HEADERS: [&str; 4] = ["## 问题", "## 方法", "## 证据", "#
 /// 协议轮次的最小 max_tokens 下限（settings 值更低时抬到该下限，防 JSON/长文截断）。
 const MIN_MAX_TOKENS: u64 = 8_192;
 const MIN_MAX_TOKENS_LONG: u64 = 16_384;
+
+/// preview 事件节流（#80）：Markdown 输出阶段两条流式预览的最小间隔。
+const PREVIEW_THROTTLE_MS: u128 = 500;
+/// round-progress 心跳间隔（#80）：JSON 输出阶段两条进度事件的最小间隔。
+const ROUND_PROGRESS_INTERVAL_MS: u128 = 1_000;
 
 /// 测试挂钩：经环境变量下调输入硬顶（生产缺省 DEFAULT_*）。
 const HARD_TOP_ENV: &str = "PAPER30MIN_PROTOCOL_HARD_TOP";
@@ -1012,12 +1018,124 @@ fn emit_round(ctx: &RunContext, meta: &RoundCtx, round: u32, output: &RoundOutpu
     ctx.emit_detail("round", detail);
 }
 
-fn chat_round(
+/// Markdown 输出阶段的流式预览策略（#80）：累计文本 trim_start 后以阶段首固定标题
+/// 开头且不含工具围栏 → 按 ≥PREVIEW_THROTTLE_MS 节流发 preview detail（累计全文）；
+/// 已出预览的轮一旦出现 ```tool 立即发 text: null 清空并停止本轮预览。
+/// 预览是瞬态进度信号，不触碰「中间轮不产生 chunk」的决策 4。
+struct MarkdownPreview {
+    first_heading: &'static str,
+    last_emit: Option<Instant>,
+    started: bool,
+    cleared: bool,
+    last_sent: Option<String>,
+}
+
+impl MarkdownPreview {
+    fn new(first_heading: &'static str) -> Self {
+        Self { first_heading, last_emit: None, started: false, cleared: false, last_sent: None }
+    }
+
+    fn on_delta(&mut self, ctx: &RunContext, meta: &RoundCtx, text: &str) {
+        let trimmed = text.trim_start();
+        if self.cleared {
+            // 已清空但累计文本不再含工具围栏 = 重试后新一次尝试（累计从头再来）：复位重开预览。
+            if trimmed.contains("```tool") {
+                return;
+            }
+            self.cleared = false;
+            self.started = false;
+            self.last_emit = None;
+            self.last_sent = None;
+        }
+        if trimmed.contains("```tool") {
+            if self.started {
+                Self::emit(ctx, meta, Value::Null);
+            }
+            self.cleared = true;
+            return;
+        }
+        if !trimmed.starts_with(self.first_heading) {
+            return;
+        }
+        self.started = true;
+        let now = Instant::now();
+        if self
+            .last_emit
+            .is_some_and(|last| now.duration_since(last).as_millis() < PREVIEW_THROTTLE_MS)
+        {
+            return;
+        }
+        self.last_emit = Some(now);
+        self.last_sent = Some(text.to_string());
+        Self::emit(ctx, meta, json!(text));
+    }
+
+    /// 轮末收尾：本轮出过预览且累计全文尚未送达时补发全量（节流窗内末段不丢）。
+    fn flush(&mut self, ctx: &RunContext, meta: &RoundCtx, full_text: &str) {
+        if !self.started || self.cleared || self.last_sent.as_deref() == Some(full_text) {
+            return;
+        }
+        self.last_sent = Some(full_text.to_string());
+        Self::emit(ctx, meta, json!(full_text));
+    }
+
+    fn emit(ctx: &RunContext, meta: &RoundCtx, text: Value) {
+        let mut detail = json!({ "stage": meta.stage, "text": text });
+        if let Some(part_id) = meta.part_id {
+            detail["partId"] = json!(part_id);
+        }
+        ctx.emit_detail("preview", detail);
+    }
+}
+
+/// JSON 输出阶段的进度心跳策略（#80）：每 ≥ROUND_PROGRESS_INTERVAL_MS 发一条
+/// round-progress detail（receivedChars / elapsedMs），不发 preview。
+#[derive(Default)]
+struct RoundHeartbeat {
+    last_emit: Option<Instant>,
+}
+
+impl RoundHeartbeat {
+    fn on_delta(&mut self, ctx: &RunContext, meta: &RoundCtx, text: &str, elapsed_ms: u64) {
+        let now = Instant::now();
+        if self
+            .last_emit
+            .is_some_and(|last| now.duration_since(last).as_millis() < ROUND_PROGRESS_INTERVAL_MS)
+        {
+            return;
+        }
+        self.last_emit = Some(now);
+        let mut detail = json!({
+            "stage": meta.stage,
+            "receivedChars": text.chars().count() as u64,
+            "elapsedMs": elapsed_ms,
+        });
+        if let Some(shard) = meta.shard {
+            detail["shard"] = json!(shard);
+        }
+        if let Some(part_id) = meta.part_id {
+            detail["partId"] = json!(part_id);
+        }
+        ctx.emit_detail("round-progress", detail);
+    }
+}
+
+/// 阶段输出形态（#80）：决定协议轮挂哪种流式进度策略。
+#[derive(Clone, Copy)]
+enum StageOutput {
+    /// JSON 输出（建图两调用）：只发 round-progress 心跳。
+    Json,
+    /// Markdown 输出（深挖循环每轮 / 复述稿）：流式预览，元素为阶段首固定标题。
+    Markdown(&'static str),
+}
+
+fn chat_round<F: FnMut(&str, u64)>(
     ctx: &RunContext,
     env: &ProtocolEnv,
     meta: &RoundCtx,
     messages: &[Value],
     max_tokens: u64,
+    mut on_progress: Option<&mut F>,
 ) -> Result<RoundOutput, BridgeError> {
     ctx.cancel_checkpoint()?;
     let model = env.model_for(meta.stage);
@@ -1033,12 +1151,15 @@ fn chat_round(
         &stage_extra_body,
     );
     let mut saw_content = false;
+    let mut accumulated = String::new();
+    let round_start = Instant::now();
     let completion = model::chat_completions(
         &env.config.api_key,
         &env.endpoint,
         &body,
         std::time::Duration::from_secs(600),
-        |_| {
+        |delta| {
+            accumulated.push_str(delta);
             if !saw_content {
                 saw_content = true;
                 let mut detail = json!({ "stage": meta.stage });
@@ -1046,6 +1167,10 @@ fn chat_round(
                     detail["partId"] = json!(part_id);
                 }
                 ctx.emit_detail("content", detail);
+            }
+            // 可选的增量回调（#80）：携带累计文本与本轮已用毫秒，由调用方决定发什么事件。
+            if let Some(callback) = on_progress.as_deref_mut() {
+                callback(&accumulated, round_start.elapsed().as_millis() as u64);
             }
             Ok(())
         },
@@ -1077,14 +1202,18 @@ fn chat_round(
 
 /// 单轮模型调用（带统一重试）：retryable 失败按 3 次尝试重试（协议轮不产生对外 chunk，
 /// 重发无重复推送问题）。Err(()) 表示终态已由重试机器处理（failed 或 cancelled）。
-fn chat_round_retried(
+/// on_progress 跨尝试复用：重试时累计文本从头再来，策略状态（节流窗等）由调用方持有。
+fn chat_round_retried<F: FnMut(&str, u64)>(
     ctx: &RunContext,
     env: &ProtocolEnv,
     meta: &RoundCtx,
     messages: &[Value],
     max_tokens: u64,
+    mut on_progress: Option<&mut F>,
 ) -> Result<RoundOutput, ()> {
-    run_with_retry(ctx, |ctx| chat_round(ctx, env, meta, messages, max_tokens))
+    run_with_retry(ctx, |ctx| {
+        chat_round(ctx, env, meta, messages, max_tokens, on_progress.as_deref_mut())
+    })
 }
 
 // ============================================================================
@@ -1909,6 +2038,7 @@ fn run_validated_call<T>(
     prompt: String,
     max_tokens: u64,
     meta: RoundCtx<'_>,
+    output: StageOutput,
     mut validate: impl FnMut(&str) -> Result<T, String>,
 ) -> Result<T, Halt> {
     let mut messages = vec![json!({ "role": "user", "content": prompt })];
@@ -1918,14 +2048,27 @@ fn run_validated_call<T>(
         if ctx.cancel_checkpoint().is_err() {
             return Err(Halt::Cancelled);
         }
-        let round = chat_round_retried(
-            ctx,
-            env,
-            &meta,
-            &messages,
-            max_tokens,
-        )
-        .map_err(|_| Halt::Handled)?;
+        // 流式进度策略（#80）：JSON 阶段发 round-progress 心跳；Markdown 阶段发 preview 预览。
+        let round = match output {
+            StageOutput::Json => {
+                let mut heartbeat = RoundHeartbeat::default();
+                let mut on_progress =
+                    |text: &str, elapsed_ms: u64| heartbeat.on_delta(ctx, &meta, text, elapsed_ms);
+                chat_round_retried(ctx, env, &meta, &messages, max_tokens, Some(&mut on_progress))
+                    .map_err(|_| Halt::Handled)?
+            }
+            StageOutput::Markdown(first_heading) => {
+                let mut preview = MarkdownPreview::new(first_heading);
+                let round = {
+                    let mut on_progress =
+                        |text: &str, _elapsed_ms: u64| preview.on_delta(ctx, &meta, text);
+                    chat_round_retried(ctx, env, &meta, &messages, max_tokens, Some(&mut on_progress))
+                        .map_err(|_| Halt::Handled)?
+                };
+                preview.flush(ctx, &meta, round.text.trim());
+                round
+            }
+        };
         round_no += 1;
         emit_round(ctx, &meta, round_no, &round);
         // 轮后检查点：在途轮完成时已有取消请求 → 停止且不消费本轮输出（决策 3：
@@ -1978,6 +2121,7 @@ fn run_json_call<T>(
         prompt,
         max_tokens,
         meta,
+        StageOutput::Json,
         |text| {
             let value = extract_json_object(text)?;
             validate(&value)
@@ -2202,15 +2346,35 @@ fn dive_section(
         if ctx.cancel_checkpoint().is_err() {
             return Err(Halt::Cancelled);
         }
-        check_hard_top(estimate_messages_tokens(&messages), "深挖工具循环").map_err(Halt::Failed)?;
-        let round = chat_round_retried(
-            ctx,
-            env,
-            &round_meta,
-            &messages,
-            env.stage_max_tokens(MIN_MAX_TOKENS),
-        )
-        .map_err(|_| Halt::Handled)?;
+        let context_tokens = estimate_messages_tokens(&messages);
+        check_hard_top(context_tokens, "深挖工具循环").map_err(Halt::Failed)?;
+        // 轮次进度（#80）：每轮开工发 round-start，前端据此显示「第 n 轮 · 上下文约 x token」。
+        ctx.emit_detail(
+            "round-start",
+            json!({
+                "stage": STAGE_DEEP_DIVE,
+                "partId": part_id,
+                "round": round_no + 1,
+                "contextTokensEstimated": context_tokens,
+            }),
+        );
+        // 深挖每一轮都挂流式预览（#80）：以四段式首标题开头的轮按节流发 preview，
+        // 转工具调用的轮以 text: null 清空；中间轮仍不产生对外 chunk（决策 4）。
+        // 轮末 flush 用 trim 后文本，与校验/落库消费的文本一致（最后一条预览 = 产物）。
+        let mut preview = MarkdownPreview::new(DEEP_DIVE_HEADERS[0]);
+        let round = {
+            let mut on_progress = |text: &str, _elapsed_ms: u64| preview.on_delta(ctx, &round_meta, text);
+            chat_round_retried(
+                ctx,
+                env,
+                &round_meta,
+                &messages,
+                env.stage_max_tokens(MIN_MAX_TOKENS),
+                Some(&mut on_progress),
+            )
+            .map_err(|_| Halt::Handled)?
+        };
+        preview.flush(ctx, &round_meta, round.text.trim());
         round_no += 1;
         emit_round(ctx, &round_meta, round_no, &round);
         // 轮后检查点：在途轮完成时已有取消请求 → 停止，不执行工具、不消费输出。
@@ -2498,6 +2662,7 @@ fn synthesize_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) 
             shard: None,
             sec_id: None,
         },
+        StageOutput::Markdown(SYNTHESIZE_HEADERS[0]),
         |text| {
             validate_markdown_headers(text, &SYNTHESIZE_HEADERS).map(|_| text.to_string())
         },

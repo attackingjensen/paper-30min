@@ -26,6 +26,7 @@ export const COPY = {
   greyDive: '本节不参与 L2 / 深挖',
   overwriteDive: '重新深挖将覆盖本节已有结果。继续吗？',
   overwriteRetell: '重新生成将覆盖现有复述稿。继续吗？',
+  livePreview: '生成中',
 };
 
 const TREE_GREY_ROLES = new Set(['references', 'acknowledgments']);
@@ -123,6 +124,7 @@ export function deepDiveZone({
   runningDetail = null,
   grey = false,
   prerenderReady = true,
+  runState = null,
 } = {}) {
   if (grey) {
     return {
@@ -156,6 +158,8 @@ export function deepDiveZone({
       needsOverwriteConfirm: false,
       progressText,
       traceLabel: null,
+      // #80：由任务事件归约的实时运行态 { round, currentTool, receivedChars, previewText }。
+      live: runState,
     };
   }
   if (typeof dig?.body === 'string' && dig.body.trim()) {
@@ -190,7 +194,7 @@ function textWithRefs(entry) {
   return { text: typeof entry.text === 'string' ? entry.text : '', refs };
 }
 
-export function mapPageModel({ products = [], mapped = null, synthesizing = false } = {}) {
+export function mapPageModel({ products = [], mapped = null, synthesizing = false, synthLive = null } = {}) {
   const body = productOf(products, 'map')?.body;
   const map = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
   const retell = productOf(products, 'retell');
@@ -225,6 +229,8 @@ export function mapPageModel({ products = [], mapped = null, synthesizing = fals
       primaryLabel: retellState === 'done' ? COPY.resynthesize : COPY.synthesize,
       needsOverwriteConfirm: retellState === 'done',
       canCancel: retellState === 'running',
+      // #80：复述稿流式预览运行态 { receivedChars, previewText }（running 时有值）。
+      live: retellState === 'running' ? synthLive : null,
     },
   };
 }
@@ -258,6 +264,7 @@ export function sectionPageModel({
   runningDetail = null,
   citeFocus = null,
   prerenderReady = true,
+  runState = null,
 } = {}) {
   const section = resolveSection(mapped, partId);
   const grey = !!(section && TREE_GREY_ROLES.has(section.role));
@@ -276,7 +283,7 @@ export function sectionPageModel({
         pages: l2Ok.pages && typeof l2Ok.pages === 'object' ? l2Ok.pages : null,
       }
       : null,
-    deepDive: deepDiveZone({ partId, products, runningPartIds, runningDetail, grey, prerenderReady }),
+    deepDive: deepDiveZone({ partId, products, runningPartIds, runningDetail, grey, prerenderReady, runState }),
     figures: grey ? [] : sectionFigures(mapped, partId),
     marked: paper?.readMarks?.[partId] != null,
     showMark: !grey && (partId === 'abstract' || /^part-\d+$/.test(partId)),

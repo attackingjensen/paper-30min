@@ -336,6 +336,9 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .dig-zone h4:first-child { margin-top: 0; }
 .dig-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .dig-empty { text-align: center; padding: 12px 8px; }
+/* #80：流式预览（生成中）—— 弱化边框与透明度，与落库产物区分 */
+.dig-preview, .retell-preview { border: 1px dashed var(--border); border-radius: 8px; padding: 10px 12px; opacity: .85; }
+.task-live { color: var(--accent); }
 .fig-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
 .fig-box { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #eef0f4; }
 .fig-box.is-locate { outline: 2px solid var(--accent); }

@@ -8,8 +8,12 @@
 // - 工具轨迹事件 detail = { step, partId, secId, name, args, ok, result?, error? }
 // - 模型轮事件 detail = { stage, round, ttftMs, elapsedMs, receivedChars,
 //   partId?, shard?, promptTokens?, completionTokens?, cachedTokens?, reasoningTokens? }
+// - 轮次开始事件 detail = { stage, partId, round, contextTokensEstimated }（#80，深挖每轮）
+// - 流式预览事件 detail = { stage, partId?, text }（#80，Markdown 阶段累计全文；text=null 清空）
+// - 轮次进度心跳 detail = { stage, shard?, partId?, receivedChars, elapsedMs }（#80，JSON 阶段）
 // tasks.list@1 快照的 details 字段是有界日志（[{event, detail}]，容量 500）：
 // JS 订阅建立前发出的 detail 事件不经通道重放，任务中心以快照日志为完整源；
+// preview / round-progress 是高频瞬态事件，日志里同键只留最新一条（#80）。
 // 会话任务登记（main.js sessionTasks）作无 details 时的回退。
 //
 // 消费方：本模块测试 + main.js（书库卡片 / 任务中心 / 导出笔记）。
@@ -234,6 +238,8 @@ export function taskDetailModel({ task = {}, meta = null } = {}) {
     if (stageFlow) out.stageFlow = stageFlow;
     const shardFlow = l2ShardFlow({ details, status: task.status, error: task.error });
     if (shardFlow) out.shardFlow = shardFlow;
+    const liveLine = liveLineOf(details, task.status);
+    if (liveLine) out.liveLine = liveLine;
     const trace = traceItems(details);
     if (trace.length) out.trace = trace;
     return out;
@@ -255,6 +261,8 @@ export function taskDetailModel({ task = {}, meta = null } = {}) {
       out.steps = steps;
       out.stepsTotal = steps.length;
     }
+    const liveLine = liveLineOf(details, task.status);
+    if (liveLine) out.liveLine = liveLine;
     const trace = traceItems(details);
     if (trace.length) out.trace = trace;
     return out;
@@ -274,6 +282,118 @@ function traceItems(details) {
     else if (entry?.event === 'tool') items.push({ kind: 'tool', ...toolStepView(entry.detail) });
   }
   return items;
+}
+
+// ---------------- #80：轮次进度与最终稿预览 ----------------
+
+const LIVE_TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
+
+/** 工具调用短标签：「name(目标)」，目标文本复用工具步呈现表。 */
+export function toolCallLabel(detail = {}) {
+  const name = String(detail.name || '');
+  const args = detail.args && typeof detail.args === 'object' ? detail.args : {};
+  const format = TOOL_STEP_FORMAT[name];
+  const target = format ? format.target(args) : '';
+  return target ? `${name}(${target})` : (name || '未知工具');
+}
+
+/**
+ * 深挖运行态归约（#80）：detail 事件序列 → { round, currentTool, receivedChars, previewText }。
+ * 只消费本 partId 的 round-start / tool / round / preview；终态返回 null（预览由产物或错误替换）。
+ * 容错：重复事件幂等；轮号回退的乱序 round-start 忽略；事件缺失时可由 tool/round/preview 起步。
+ */
+export function deepDiveRunState(details, partId, status) {
+  if (LIVE_TERMINAL.has(status)) return null;
+  const want = String(partId ?? '');
+  let state = null;
+  const ensure = () => (state ??= { round: null, currentTool: null, receivedChars: 0, previewText: null });
+  for (const entry of details ?? []) {
+    const detail = entry?.detail;
+    if (!detail || String(detail.partId ?? '') !== want) continue;
+    if (entry.event === 'round-start') {
+      const round = Number(detail.round);
+      if (!Number.isFinite(round)) continue;
+      if (state && Number.isFinite(state.round) && round < state.round) continue;
+      state = { round, currentTool: null, receivedChars: 0, previewText: null };
+    } else if (entry.event === 'tool') {
+      ensure().currentTool = {
+        name: String(detail.name || ''),
+        args: detail.args && typeof detail.args === 'object' ? detail.args : {},
+      };
+    } else if (entry.event === 'round') {
+      const chars = Number(detail.receivedChars);
+      if (Number.isFinite(chars)) ensure().receivedChars = chars;
+    } else if (entry.event === 'preview') {
+      if (typeof detail.text === 'string') {
+        const current = ensure();
+        current.previewText = detail.text;
+        current.receivedChars = detail.text.length;
+      } else if (detail.text === null) {
+        ensure().previewText = null;
+      }
+    }
+  }
+  return state;
+}
+
+/** 深挖状态行：「第 n 轮 · 正在调用 name(目标) · 已收到 x 字」（缺项省略）。 */
+export function deepDiveStatusLine(state) {
+  if (!state) return '';
+  const parts = [];
+  if (Number.isFinite(state.round)) parts.push(`第 ${state.round} 轮`);
+  if (state.currentTool) parts.push(`正在调用 ${toolCallLabel(state.currentTool)}`);
+  const chars = Number(state.receivedChars);
+  if (Number.isFinite(chars) && chars > 0) parts.push(`已收到 ${chars} 字`);
+  return parts.join(' · ');
+}
+
+/**
+ * 复述稿运行态归约（#80）：preview 事件序列 → { receivedChars, previewText }；
+ * text=null 清空预览；终态返回 null（预览由产物或错误替换）。
+ */
+export function synthesizeRunState(details, status) {
+  if (LIVE_TERMINAL.has(status)) return null;
+  let state = null;
+  for (const entry of details ?? []) {
+    if (entry?.event !== 'preview') continue;
+    const detail = entry.detail;
+    if (!detail) continue;
+    if (typeof detail.text === 'string') {
+      state = { receivedChars: detail.text.length, previewText: detail.text };
+    } else if (detail.text === null && state) {
+      state.previewText = null;
+    }
+  }
+  return state;
+}
+
+/** round-start 摘要行（#80）：「第 n 轮开始 · 上下文约 x token」。 */
+export function roundStartView(detail = {}) {
+  const round = Number(detail.round);
+  let text = `第 ${Number.isFinite(round) ? round : '?'} 轮开始`;
+  const tokens = Number(detail.contextTokensEstimated);
+  if (Number.isFinite(tokens) && tokens > 0) text += ` · 上下文约 ${tokens} token`;
+  return { text };
+}
+
+/** round-progress 摘要行（#80）：「分片 n · 已收到 x 字 · y s」（无分片时省略前缀）。 */
+export function roundProgressView(detail = {}) {
+  const parts = [];
+  const shard = Number(detail.shard);
+  if (Number.isFinite(shard)) parts.push(`分片 ${shard}`);
+  const chars = Number(detail.receivedChars);
+  parts.push(`已收到 ${Number.isFinite(chars) ? chars : '?'} 字 · ${formatSeconds(detail.elapsedMs)} s`);
+  return { text: parts.join(' · ') };
+}
+
+/** 轮次进度摘要行选择（#80）：取最新一条 round-start / round-progress；成功终态不再显示。 */
+function liveLineOf(details, status) {
+  if (status === 'succeeded') return null;
+  for (let i = details.length - 1; i >= 0; i--) {
+    if (details[i]?.event === 'round-start') return roundStartView(details[i].detail).text;
+    if (details[i]?.event === 'round-progress') return roundProgressView(details[i].detail).text;
+  }
+  return null;
 }
 
 function formatSeconds(ms) {
