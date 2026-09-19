@@ -20,11 +20,12 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::BridgeError;
 use crate::library::Library;
-use crate::tasks::{run_with_retry, Progress, RunContext, CANCEL_SENTINEL};
+use crate::tasks::{cancel_sentinel_error, run_with_retry, Progress, RunContext, CANCEL_SENTINEL};
 
 pub const TASK_CONVERT: &str = "pdfparse.convert@1";
 pub const TASK_BOOTSTRAP: &str = "pdfparse.bootstrap@1";
@@ -53,8 +54,11 @@ const STDERR_TAIL_LIMIT: usize = 4096;
 const STDOUT_LINE_LIMIT: usize = 200;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// 进程协议行前缀（与 pdfparse_sidecar.py 对齐）。
-const PROGRESS_PREFIX: &str = "PDFPARSE_PROGRESS ";
-const RESULT_PREFIX: &str = "PDFPARSE_RESULT ";
+pub(crate) const PROGRESS_PREFIX: &str = "PDFPARSE_PROGRESS ";
+pub(crate) const RESULT_PREFIX: &str = "PDFPARSE_RESULT ";
+/// 常驻模式 READY 行前缀（Issue #84）。
+pub(crate) const READY_PREFIX: &str = "PDFPARSE_READY ";
+pub(crate) const STDERR_TAIL: usize = STDERR_TAIL_LIMIT;
 
 #[derive(Debug, Clone)]
 pub struct SidecarLayout {
@@ -219,9 +223,18 @@ pub(crate) struct ChildHarness {
 }
 
 pub(crate) fn base_command(layout: &SidecarLayout, hf_endpoint: Option<&str>) -> Command {
+    base_command_script(layout, &layout.app_script, hf_endpoint)
+}
+
+/// 侧车命令基底：脚本路径可覆盖（常驻池的 serve 入口测试钩子用，见 pdfpool）。
+pub(crate) fn base_command_script(
+    layout: &SidecarLayout,
+    script: &Path,
+    hf_endpoint: Option<&str>,
+) -> Command {
     let mut command = Command::new(&layout.python_exe);
     command
-        .arg(&layout.app_script)
+        .arg(script)
         .env("PYTHONUTF8", "1")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         // 嵌入版不带用户级 site（见 build_sidecar.py），双保险。
@@ -447,9 +460,11 @@ fn sidecar_startup_timings(harness: &ChildHarness) -> (Option<u64>, Option<u64>)
 /// pdfparse.convert@1：单篇 PDF → DoclingDocument JSON。
 /// 输入: { pdfPath?, paperId?, workDir?, formulaEnrichment? }（pdfPath 缺省 = paperId 论文的 pdf 附件）
 /// 结果: { doclingJsonPath, workDir, pages, elapsedMs, wallClockMs,
-///         doclingVersion, ocrPages, warnings, timings, startupMs, modelLoadMs,
-///         tableMode, numThreads, blockModelAssetId?, mappingWarnings? }
+///         doclingVersion, ocrPages, warnings, timings, startupMs, modelLoadMs?,
+///         tableMode, numThreads, resident, blockModelAssetId?, mappingWarnings? }
 /// 带 paperId 时转换成功后立即映射并落 blockmodel.json（#76）。
+/// #84 起优先走常驻侧车池（resident: true，模型只加载一次）；常驻不可用时回退
+/// 一次一进程（resident: false，warnings 记 sidecar_resident_fallback）。
 /// 不做自动重试：转换动辄数分钟，失败后由用户显式重试（retryable 标记保留）。
 pub(crate) fn run_convert(
     ctx: &RunContext,
@@ -496,7 +511,66 @@ fn convert_once(
         .map_err(|err| BridgeError::internal(format!("解析工作目录创建失败: {err}")))?;
 
     let table_mode = crate::settings::pdfparse_table_mode(&ctx.library);
-    let mut command = base_command(&layout, configured_hf_endpoint(ctx).as_deref());
+    let started = Instant::now();
+    let idle_timeout = crate::settings::pdfparse_idle_shutdown(&ctx.library);
+    match ctx.registry.sidecar_pool().convert(
+        ctx,
+        &layout,
+        pdf_path,
+        &out_dir,
+        formula_enrichment,
+        table_mode,
+        configured_hf_endpoint(ctx).as_deref(),
+        idle_timeout,
+    ) {
+        crate::pdfpool::PoolOutcome::Completed {
+            mut payload,
+            startup_ms,
+            model_load_ms,
+        } => {
+            finalize_convert_payload(
+                &mut payload,
+                &out_dir,
+                started,
+                true,
+                startup_ms,
+                model_load_ms,
+            );
+            if let Some(paper_id) = paper_id {
+                persist_convert_block_model(ctx, paper_id, &mut payload)?;
+            }
+            ctx.succeed(Some(payload));
+            Ok(())
+        }
+        crate::pdfpool::PoolOutcome::Failed(error) => Err(error),
+        crate::pdfpool::PoolOutcome::Cancelled => Err(cancel_sentinel_error()),
+        crate::pdfpool::PoolOutcome::Fallback => convert_oneshot(
+            ctx,
+            &layout,
+            pdf_path,
+            &out_dir,
+            formula_enrichment,
+            paper_id,
+            table_mode,
+            started,
+        ),
+    }
+}
+
+/// 一次一进程路径（#57 原实现；#84 起作为常驻不可用时的回退，结果记
+/// resident: false 并附 sidecar_resident_fallback 警示）。
+#[allow(clippy::too_many_arguments)]
+fn convert_oneshot(
+    ctx: &RunContext,
+    layout: &SidecarLayout,
+    pdf_path: &Path,
+    out_dir: &Path,
+    formula_enrichment: bool,
+    paper_id: Option<&str>,
+    table_mode: &str,
+    started: Instant,
+) -> Result<(), BridgeError> {
+    let mut command = base_command(layout, configured_hf_endpoint(ctx).as_deref());
     command
         .arg("--models-dir")
         .arg(&layout.models_dir)
@@ -506,31 +580,18 @@ fn convert_once(
         .arg("--pdf")
         .arg(pdf_path)
         .arg("--out-dir")
-        .arg(&out_dir);
+        .arg(out_dir);
     if formula_enrichment {
         command.arg("--formula-enrichment");
     }
     let mut harness = spawn_child(command)?;
-    let started = Instant::now();
     let exit_code = wait_child(ctx, &mut harness)?;
 
-    match read_sidecar_result(&out_dir, &harness) {
+    match read_sidecar_result(out_dir, &harness) {
         Some(result) if result.ok => {
             let mut payload = result.payload;
-            if let Value::Object(ref mut map) = payload {
-                map.insert("workDir".to_string(), json!(out_dir.to_string_lossy()));
-                map.insert(
-                    "wallClockMs".to_string(),
-                    json!(started.elapsed().as_millis() as u64),
-                );
-                let (startup_ms, model_load_ms) = sidecar_startup_timings(&harness);
-                if let Some(ms) = startup_ms {
-                    map.insert("startupMs".to_string(), json!(ms));
-                }
-                if let Some(ms) = model_load_ms {
-                    map.insert("modelLoadMs".to_string(), json!(ms));
-                }
-            }
+            let (startup_ms, model_load_ms) = sidecar_startup_timings(&harness);
+            finalize_convert_payload(&mut payload, out_dir, started, false, startup_ms, model_load_ms);
             if let Some(paper_id) = paper_id {
                 persist_convert_block_model(ctx, paper_id, &mut payload)?;
             }
@@ -540,6 +601,67 @@ fn convert_once(
         Some(result) => Err(map_failure(&result, &harness)),
         None => Err(crashed_error(exit_code, &harness)),
     }
+}
+
+/// 两条路径共用的结果载荷收尾：workDir / wallClockMs / resident / 启动拆分遥测；
+/// 回退路径（resident = false）附 sidecar_resident_fallback 警示。
+/// startupMs 对常驻命中为 0、对触发加载的常驻请求为加载耗时（规格 #74 §A3：0 或预热耗时）。
+fn finalize_convert_payload(
+    payload: &mut Value,
+    out_dir: &Path,
+    started: Instant,
+    resident: bool,
+    startup_ms: Option<u64>,
+    model_load_ms: Option<u64>,
+) {
+    let Value::Object(map) = payload else {
+        return;
+    };
+    map.insert("workDir".to_string(), json!(out_dir.to_string_lossy()));
+    map.insert(
+        "wallClockMs".to_string(),
+        json!(started.elapsed().as_millis() as u64),
+    );
+    map.insert("resident".to_string(), json!(resident));
+    if let Some(ms) = startup_ms {
+        map.insert("startupMs".to_string(), json!(ms));
+    }
+    if let Some(ms) = model_load_ms {
+        map.insert("modelLoadMs".to_string(), json!(ms));
+    }
+    if !resident {
+        let warnings = map
+            .entry("warnings".to_string())
+            .or_insert_with(|| json!([]));
+        if let Some(list) = warnings.as_array_mut() {
+            list.push(json!(crate::pdfpool::FALLBACK_WARNING));
+        }
+    }
+}
+
+/// 应用启动预热（Issue #84）：侧车就绪且设置 pdfparse.warmStart 开启时，后台拉起
+/// 常驻进程并发送 warm 触发模型加载；预热失败只记日志（首个解析任务按需冷启或回退）。
+pub fn warm_resident_sidecar(registry: &Arc<crate::tasks::TaskRegistry>, library: &Arc<Library>) {
+    if !crate::settings::pdfparse_warm_start(library) {
+        return;
+    }
+    let status = status(library);
+    if !status
+        .get("ready")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let Some(layout) = resolve_sidecar(library.root()) else {
+        return;
+    };
+    registry.sidecar_pool().warm(
+        &layout,
+        crate::settings::pdfparse_hf_endpoint(library).as_deref(),
+        crate::settings::pdfparse_table_mode(library),
+        crate::settings::pdfparse_idle_shutdown(library),
+    );
 }
 
 /// 转换成功后把块模型落入该书库附件；映射失败按 block_model_invalid 使任务失败

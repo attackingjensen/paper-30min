@@ -339,6 +339,11 @@
         <label class="radio"><input type="radio" name="set-table-mode" value="fast"> FAST（默认，更快）</label>
         <label class="radio"><input type="radio" name="set-table-mode" value="accurate"> ACCURATE（复杂表格更准）</label>
       </div>
+      <label class="radio"><input type="checkbox" id="set-warm-start"> 常驻解析进程：启动时预热模型，第二篇起免去解析启动等待</label>
+      <label>空闲释放（分钟）
+        <input type="number" id="set-idle-minutes" min="1" max="240" step="1">
+      </label>
+      <p class="muted" id="set-sidecar-state">常驻侧车状态：…</p>
     </div>
     <div class="modal-actions">
       <button class="btn" id="btn-test-api" type="button">测试连接</button>

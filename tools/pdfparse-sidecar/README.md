@@ -9,9 +9,16 @@ Issue [#57](https://github.com/attackingjensen/paper-30min/issues/57) /
 取消 = 终止子进程。`render` 子命令（Issue #59）另承担页图与图表裁切预渲染
 （scale=2 webp），由 `pdfassets.prerender@1` 任务驱动。
 
+`serve` 子命令（Issue #84，规格 #74 §A3）是常驻模式：Rust 常驻侧车池
+（`app/src-tauri/src/pdfpool.rs`）懒启动单个 serve 进程，convert/prerender 优先
+走池；应用启动时按设置 `pdfparse.warmStart`（默认开）预热模型；空闲超过
+`pdfparse.idleShutdownMinutes`（默认 10 分钟）自动释放；常驻不可用（spawn 失败 /
+READY 超时 / 协议破裂）自动回退一次一进程，任务结果 warnings 记
+`sidecar_resident_fallback`，连续 2 次回退后本会话停用常驻。
+
 ## 文件
 
-- `pdfparse_sidecar.py` — 侧车程序（convert / render / bootstrap / prefetch-models / selfcheck）。
+- `pdfparse_sidecar.py` — 侧车程序（convert / render / bootstrap / prefetch-models / selfcheck / serve）。
 - `requirements-sidecar.txt` — 钉版依赖清单（与 #46 验证 venv 逐版一致；升级 Docling
   须回归夹具全绿，见 #60）。
 - `build_sidecar.py` — 构建脚本，产物落 `app/src-tauri/sidecar/pdfparse/`。
@@ -57,6 +64,33 @@ result.json（逐件 width/height/bytes + `skippedCrops`）。裁切框钳制到
 完全页外记 skippedCrops 不编造（#48 §诚实档）。渲染只用 pypdfium2 + Pillow，
 不要求模型权重，也不校验模型目录。错误码同上加 `job_invalid` / `render_failed`。
 
+### serve 子命令（常驻模式，#84）
+
+启动后立即输出一行 `PDFPARSE_READY {"pid":…}`（模型加载推迟到首个 convert/warm），
+随后从 stdin 逐行读 JSON 请求 `{"id", "op", ...}`：
+
+- `ping` → `{ok: true, pid, loadedConverters}`。
+- `warm` → 提前加载默认键（tableMode、doOcr=false）的模型，结果带 `warmedMs`。
+- `convert` → 参数同 convert 子命令（`pdf` / `outDir` / `formulaEnrichment`，另可携带
+  `tableMode` / `modelsDir` 覆盖全局值）；同一时刻最多一个，其余排队。
+  `DocumentConverter` 按 (modelsDir, tableMode, doOcr, formulaEnrichment) 键缓存。
+- `render` → 参数同 render 子命令；每请求一个独立线程，可与 convert 并行。
+- `cancel` → `{"id", "op": "cancel", "target": <请求 id>}` 置目标取消标志
+  （即发即弃，无回执）；convert 在 Docling 内不可中断，render 在页边界响应。
+- `shutdown` → 回执 `{ok: true}` 后以退出码 0 退出；stdin EOF 同样退出。
+
+进度/结果行沿用 `PDFPARSE_PROGRESS` / `PDFPARSE_RESULT` 前缀，载荷增加 `id`；
+convert/render 仍写 `<out-dir>/result.json`。单请求失败写 `ok:false` 结果并继续
+服务；分发层未捕获异常写 stderr 并以退出码 2 退出。
+
+注意（Windows）：任一线程阻塞于 stdin 管道读期间，其他线程的 DLL 加载
+（torch/pypdfium2 import）会停滞，因此 serve 在 Windows 用 PeekNamedPipe 轮询
+stdin 代替阻塞读（见 `_stdin_lines_nt`）。
+
+Rust 侧回退/测试钩子环境变量：`PAPER30MIN_PDFPARSE_SERVE`（serve 入口脚本覆盖，
+指向不存在路径可伪造常驻不可用）、`PAPER30MIN_PDFPARSE_IDLE_SECS`（空闲释放秒级
+覆盖，默认走设置 `pdfparse.idleShutdownMinutes`）。
+
 ## 运行期语义
 
 - convert 全程 `HF_HUB_OFFLINE=1`，模型只从 artifacts 目录取；唯一在线例外是
@@ -82,6 +116,7 @@ result.json（逐件 width/height/bytes + `skippedCrops`）。裁切框钳制到
 cd app/src-tauri
 cargo test --test pdfparse_contract            # 常规（状态/成功/错误/取消，约 1 分钟）
 cargo test --test pdfassets_contract           # 页图/裁切预渲染（#59，约 5 秒）
+cargo test --test pdfparse_resident            # 常驻侧车（#84：serve 协议/二次免启动/回退/取消/空闲释放，约 3 分钟）
 PAPER30MIN_PDFPARSE_SLOW=1 cargo test --test pdfparse_contract   # 含 OCR 慢测试（约 4 分钟）
 # 踩坑论文集回归夹具（#60）：版本锁定 + 基线断言 + 性能门禁，约 15–25 分钟
 PAPER30MIN_PDFPARSE_FIXTURES=1 cargo test --test pdfparse_regression -- --nocapture

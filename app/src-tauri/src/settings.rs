@@ -12,7 +12,8 @@ use crate::library::Library;
 const MODEL_KEY: &str = "model";
 const SKILLS_OVERRIDES_KEY: &str = "skills.overrides";
 /// Docling 侧车设置（JSON 对象）：hfEndpoint 为模型下载端点覆盖（规格 #48 决策 3）；
-/// tableMode 为表格结构识别模式（规格 #74 A2 / Issue #78）。
+/// tableMode 为表格结构识别模式（规格 #74 A2 / Issue #78）；warmStart 为常驻侧车
+/// 启动预热开关、idleShutdownMinutes 为空闲释放分钟数（规格 #74 A3 / Issue #84）。
 const PDFPARSE_KEY: &str = "pdfparse";
 
 /// UI 偏好设置（JSON 对象）：welcomeSeeded = 内置「使用说明」已播种标记（发布版首启）。
@@ -23,6 +24,11 @@ const PROTOCOL_KEY: &str = "protocol";
 pub(crate) const DEFAULT_PROTOCOL_CONCURRENCY: u64 = 3;
 pub(crate) const MIN_PROTOCOL_CONCURRENCY: u64 = 1;
 pub(crate) const MAX_PROTOCOL_CONCURRENCY: u64 = 6;
+
+/// 常驻侧车空闲释放分钟数（Issue #84）：默认 10，允许 1–240。
+pub(crate) const DEFAULT_IDLE_SHUTDOWN_MINUTES: u64 = 10;
+pub(crate) const MIN_IDLE_SHUTDOWN_MINUTES: u64 = 1;
+pub(crate) const MAX_IDLE_SHUTDOWN_MINUTES: u64 = 240;
 
 /// maxTokens 设置上限：settings 校验与协议任务的 stage 下限提升共用同一上限
 /// （协议任务把配置值抬到阶段下限时也不越过此上限）。
@@ -49,6 +55,8 @@ fn default_pdfparse() -> Map<String, Value> {
     json!({
         "hfEndpoint": "",
         "tableMode": "fast",
+        "warmStart": true,
+        "idleShutdownMinutes": DEFAULT_IDLE_SHUTDOWN_MINUTES,
     })
     .as_object()
     .expect("默认侧车设置是对象")
@@ -129,6 +137,36 @@ pub(crate) fn pdfparse_hf_endpoint(library: &Library) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// 常驻侧车启动预热开关（Issue #84）：缺省/损坏都按开处理。
+pub(crate) fn pdfparse_warm_start(library: &Library) -> bool {
+    load_pdfparse(library)
+        .ok()
+        .as_ref()
+        .and_then(|merged| merged.get("warmStart"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// 常驻侧车空闲释放阈值：默认 10 分钟，设置可配 1–240 分钟；
+/// 环境变量 PAPER30MIN_PDFPARSE_IDLE_SECS 提供秒级覆盖（契约测试钩子）。
+pub(crate) fn pdfparse_idle_shutdown(library: &Library) -> std::time::Duration {
+    if let Ok(raw) = std::env::var(crate::pdfpool::IDLE_SECS_ENV) {
+        if let Ok(secs) = raw.trim().parse::<u64>() {
+            if secs > 0 {
+                return std::time::Duration::from_secs(secs);
+            }
+        }
+    }
+    let minutes = load_pdfparse(library)
+        .ok()
+        .as_ref()
+        .and_then(|merged| merged.get("idleShutdownMinutes"))
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_IDLE_SHUTDOWN_MINUTES)
+        .clamp(MIN_IDLE_SHUTDOWN_MINUTES, MAX_IDLE_SHUTDOWN_MINUTES);
+    std::time::Duration::from_secs(minutes * 60)
 }
 
 pub fn get(library: &Library) -> Result<Value, BridgeError> {
@@ -225,7 +263,8 @@ pub fn put_skills_overrides(library: &Library, input: &Value) -> Result<Value, B
 }
 
 /// 局部更新侧车设置：hfEndpoint 为空字符串（默认官方源+镜像回退）或 http(s) URL；
-/// tableMode 为 `fast`（默认）或 `accurate`。
+/// tableMode 为 `fast`（默认）或 `accurate`；warmStart 为常驻预热开关（默认开）；
+/// idleShutdownMinutes 为常驻空闲释放分钟数（默认 10，1–240）（#84）。
 pub fn put_pdfparse(library: &Library, input: &Value) -> Result<Value, BridgeError> {
     let settings = input
         .get("settings")
@@ -260,6 +299,23 @@ pub fn put_pdfparse(library: &Library, input: &Value) -> Result<Value, BridgeErr
                     ));
                 }
                 merged.insert(field.clone(), Value::String(trimmed.to_string()));
+            }
+            "warmStart" => {
+                if !value.is_boolean() {
+                    return Err(BridgeError::invalid_input("warmStart 必须是布尔值"));
+                }
+                merged.insert(field.clone(), value.clone());
+            }
+            "idleShutdownMinutes" => {
+                let number = value.as_u64().ok_or_else(|| {
+                    BridgeError::invalid_input("idleShutdownMinutes 必须是正整数")
+                })?;
+                if !(MIN_IDLE_SHUTDOWN_MINUTES..=MAX_IDLE_SHUTDOWN_MINUTES).contains(&number) {
+                    return Err(BridgeError::invalid_input(format!(
+                        "idleShutdownMinutes 必须在 {MIN_IDLE_SHUTDOWN_MINUTES}..={MAX_IDLE_SHUTDOWN_MINUTES} 之间"
+                    )));
+                }
+                merged.insert(field.clone(), json!(number));
             }
             // 未知字段忽略，不写入存储，避免污染设置对象。
             _ => continue,

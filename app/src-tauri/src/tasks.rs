@@ -18,6 +18,11 @@ pub(crate) const MAX_ATTEMPTS: u32 = 3;
 /// cancelled 终态；它不会作为任务错误暴露给前端。
 pub(crate) const CANCEL_SENTINEL: &str = "__cancelled__";
 
+/// 构造取消哨兵错误（非重试任务的取消检查点与常驻池取消结局共用）。
+pub(crate) fn cancel_sentinel_error() -> BridgeError {
+    BridgeError::new(CANCEL_SENTINEL, "任务已取消", false)
+}
+
 /// 模型调用缺省采样参数：settings 与任务输入均未给出时使用（protocol 任务同源复用）。
 pub(crate) const DEFAULT_TEMPERATURE: f64 = 0.3;
 pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
@@ -607,6 +612,8 @@ pub struct TaskRegistry {
     next_id: AtomicU64,
     /// 书库句柄：网络类任务运行器读设置、写附件元数据时使用。
     library: Arc<Library>,
+    /// 常驻解析侧车池（#84）：与注册表同生命周期，注册表 drop 时回收子进程。
+    sidecar_pool: Arc<crate::pdfpool::SidecarPool>,
 }
 
 impl TaskRegistry {
@@ -615,7 +622,13 @@ impl TaskRegistry {
             entries: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(0),
             library,
+            sidecar_pool: crate::pdfpool::SidecarPool::new(),
         })
+    }
+
+    /// 常驻解析侧车池（convert/prerender 任务与 pdfparse.status@1 共用）。
+    pub fn sidecar_pool(&self) -> &Arc<crate::pdfpool::SidecarPool> {
+        &self.sidecar_pool
     }
 
     pub fn start(

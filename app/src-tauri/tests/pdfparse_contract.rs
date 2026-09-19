@@ -22,7 +22,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// 侧车转换夹具共用一把锁：docling 模型加载吃内存与 CPU，串行防抖动。
+/// 侧车转换夹具共用一把锁：docling 模型加载吃内存与 CPU，串行防抖动；同时互斥
+/// 进程级环境变量（PAPER30MIN_PDFPARSE_HOME 等）的读写——sidecar_ready 读环境变量，
+/// 须在锁内调用（评审发现的既有竞态）。
 static SIDECAR_LOCK: Mutex<()> = Mutex::new(());
 
 const CONVERT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -128,10 +130,10 @@ fn convert_without_deps_reports_bootstrap_required() {
 #[test]
 fn convert_sample_pdf_produces_docling_document() {
     let (registry, library, dir) = common::env();
+    let _guard = SIDECAR_LOCK.lock().unwrap();
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
     let work_dir = dir.path().join("convert-ok");
     let (task_id, sink) = start_convert(&registry, &sample_pdf(), Some(&work_dir));
 
@@ -189,10 +191,10 @@ fn convert_missing_pdf_fails_with_structured_error() {
 #[test]
 fn convert_corrupt_pdf_fails_with_structured_error() {
     let (registry, library, dir) = common::env();
+    let _guard = SIDECAR_LOCK.lock().unwrap();
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
     let work_dir = dir.path().join("convert-corrupt");
     let (task_id, _sink) = start_convert(&registry, &fixture("pdfparse_corrupt.pdf"), Some(&work_dir));
 
@@ -208,10 +210,10 @@ fn convert_corrupt_pdf_fails_with_structured_error() {
 #[test]
 fn convert_cancel_terminates_subprocess() {
     let (registry, library, dir) = common::env();
+    let _guard = SIDECAR_LOCK.lock().unwrap();
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
     let work_dir = dir.path().join("convert-cancel");
     let (task_id, _sink) = start_convert(&registry, &sample_pdf(), Some(&work_dir));
 
@@ -282,10 +284,10 @@ fn convert_rejects_unsafe_paper_id() {
 #[test]
 fn convert_with_paper_id_persists_block_model_attachment() {
     let (registry, library, _dir) = common::env();
+    let _guard = SIDECAR_LOCK.lock().unwrap();
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
     bridge::invoke(
         &registry,
         &library,
@@ -352,10 +354,10 @@ fn convert_scanned_blank_page_marks_ocr_degraded() {
         return;
     }
     let (registry, library, dir) = common::env();
+    let _guard = SIDECAR_LOCK.lock().unwrap();
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
     let work_dir = dir.path().join("convert-ocr");
     let (task_id, sink) = start_convert(&registry, &fixture("pdfparse_scanned_blank.pdf"), Some(&work_dir));
 
@@ -395,10 +397,10 @@ fn status_echoes_table_mode_from_settings() {
 #[test]
 fn convert_echoes_accurate_table_mode_from_settings() {
     let (registry, library, dir) = common::env();
+    let _guard = SIDECAR_LOCK.lock().unwrap();
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
     bridge::invoke(
         &registry,
         &library,
@@ -417,6 +419,8 @@ fn convert_echoes_accurate_table_mode_from_settings() {
 #[test]
 fn sidecar_resolves_thread_count_from_env_and_clamps() {
     let (_registry, library, _dir) = common::env();
+    // sidecar_ready 读进程级 SIDECAR_HOME_ENV，须与改环境变量的用例互斥。
+    let _guard = SIDECAR_LOCK.lock().unwrap();
     if !sidecar_ready(&library) {
         return;
     }

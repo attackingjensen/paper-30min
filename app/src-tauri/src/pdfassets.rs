@@ -19,11 +19,13 @@
 //! 其图直链"用到才下载落附件"由既有 files.download@1 承载（流式 + sha256 +
 //! 任务生命周期），本模块不重复实现。
 //!
-//! 渲染由侧车 `render` 子进程执行（pypdfium2 + Pillow，随包依赖；不需要布局/
-//! OCR 模型，门禁只看 deps_ready）。取消 = 终止子进程：渲染阶段产物只落工作
-//! 目录，子进程失败/被取消时不落任何附件；落库阶段逐件提交（中断会留下部分
-//! 附件），但附件 ID 从内容派生且重跑幂等覆盖，配合深挖 preflight 的齐备性
-//! 检查可自愈（#48 §诚实档 16 的"不留半成品"由齐备性门禁兜底）。
+//! 渲染由侧车 `render` 子命令执行（pypdfium2 + Pillow，随包依赖；不需要布局/
+//! OCR 模型，门禁只看 deps_ready）。#84 起优先走常驻侧车池（与 convert 复用同一
+//! 进程、可并行）；常驻不可用时回退一次一进程。取消 = 终止渲染（常驻路径 2 秒
+//! 宽限后 kill 进程）：渲染阶段产物只落工作目录，失败/被取消时不落任何附件；
+//! 落库阶段逐件提交（中断会留下部分附件），但附件 ID 从内容派生且重跑幂等覆盖，
+//! 配合深挖 preflight 的齐备性检查可自愈（#48 §诚实档 16 的"不留半成品"由齐备性
+//! 门禁兜底）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,7 +37,7 @@ use crate::files;
 use crate::library::Library;
 use crate::pdfmap::{BlockKind, MappedPaper};
 use crate::pdfparse;
-use crate::tasks::{Progress, RunContext, CANCEL_SENTINEL};
+use crate::tasks::{cancel_sentinel_error, Progress, RunContext, CANCEL_SENTINEL};
 
 pub const TASK_PRERENDER: &str = "pdfassets.prerender@1";
 
@@ -253,7 +255,7 @@ struct RenderPayload {
 /// 输入: { paperId, scope?, doclingJsonPath?, pdfPath? }
 /// （scope 默认 all；all/crops 需要 doclingJsonPath；pdfPath 缺省 = 论文的 pdf 附件）。
 /// 结果: { paperId, scope, pageAssets[], crops[], skippedCrops[], warnings[],
-///         blockModelAssetId?, elapsedMs, renderMs, encodeMs }
+///         resident, blockModelAssetId?, elapsedMs, renderMs, encodeMs }
 /// 不做自动重试（与 convert 一致：渲染失败由用户显式重试）。
 pub(crate) fn run_prerender(
     ctx: &RunContext,
@@ -338,28 +340,29 @@ fn prerender_once(
     std::fs::write(&job_path, &job_json)
         .map_err(|err| BridgeError::internal(format!("渲染作业写入失败: {err}")))?;
 
-    let mut command = pdfparse::base_command(&layout, None);
-    command
-        .arg("--models-dir")
-        .arg(&layout.models_dir)
-        .arg("render")
-        .arg("--pdf")
-        .arg(pdf_path)
-        .arg("--out-dir")
-        .arg(&out_dir)
-        .arg("--job")
-        .arg(&job_path);
-    let mut harness = pdfparse::spawn_child(command)?;
-    let exit_code = pdfparse::wait_child(ctx, &mut harness)?;
-
-    let result = pdfparse::read_sidecar_result(&out_dir, &harness);
-    let result = match result {
-        Some(result) if result.ok => result,
-        Some(result) => return Err(pdfparse::map_failure(&result, &harness)),
-        None => return Err(pdfparse::crashed_error(exit_code, &harness)),
+    // #84：优先走常驻侧车池（与 convert 并行复用同一进程）；常驻不可用时回退
+    // 一次一进程（warnings 记 sidecar_resident_fallback）。
+    let table_mode = crate::settings::pdfparse_table_mode(&ctx.library);
+    let idle_timeout = crate::settings::pdfparse_idle_shutdown(&ctx.library);
+    let (payload_value, resident) = match ctx.registry.sidecar_pool().render(
+        ctx,
+        &layout,
+        pdf_path,
+        &out_dir,
+        &job_path,
+        table_mode,
+        idle_timeout,
+    ) {
+        crate::pdfpool::PoolOutcome::Completed { payload, .. } => (payload, true),
+        crate::pdfpool::PoolOutcome::Failed(error) => return Err(error),
+        crate::pdfpool::PoolOutcome::Cancelled => return Err(cancel_sentinel_error()),
+        crate::pdfpool::PoolOutcome::Fallback => (
+            render_oneshot(ctx, &layout, pdf_path, &out_dir, &job_path)?,
+            false,
+        ),
     };
     ctx.cancel_checkpoint()?;
-    let payload: RenderPayload = serde_json::from_value(result.payload).map_err(|err| {
+    let payload: RenderPayload = serde_json::from_value(payload_value).map_err(|err| {
         BridgeError::new(
             "sidecar_result_invalid",
             format!("渲染结果形状不符: {err}"),
@@ -447,6 +450,9 @@ fn prerender_once(
         .map(|mapped| mapped.warnings.clone())
         .unwrap_or_default();
     warnings.extend(payload.warnings);
+    if !resident {
+        warnings.push(crate::pdfpool::FALLBACK_WARNING.to_string());
+    }
     let mut result = json!({
         "paperId": paper_id,
         "scope": scope.as_str(),
@@ -455,6 +461,7 @@ fn prerender_once(
         "crops": crops,
         "skippedCrops": payload.skipped_crops,
         "warnings": warnings,
+        "resident": resident,
         "elapsedMs": started.elapsed().as_millis() as u64,
         "renderMs": payload.render_ms.unwrap_or(0),
         "encodeMs": payload.encode_ms.unwrap_or(0),
@@ -464,6 +471,35 @@ fn prerender_once(
     }
     ctx.succeed(Some(result));
     Ok(())
+}
+
+/// 一次一进程渲染路径（#59 原实现；#84 起作为常驻不可用时的回退）。
+fn render_oneshot(
+    ctx: &RunContext,
+    layout: &pdfparse::SidecarLayout,
+    pdf_path: &Path,
+    out_dir: &Path,
+    job_path: &Path,
+) -> Result<Value, BridgeError> {
+    let mut command = pdfparse::base_command(layout, None);
+    command
+        .arg("--models-dir")
+        .arg(&layout.models_dir)
+        .arg("render")
+        .arg("--pdf")
+        .arg(pdf_path)
+        .arg("--out-dir")
+        .arg(out_dir)
+        .arg("--job")
+        .arg(job_path);
+    let mut harness = pdfparse::spawn_child(command)?;
+    let exit_code = pdfparse::wait_child(ctx, &mut harness)?;
+
+    match pdfparse::read_sidecar_result(out_dir, &harness) {
+        Some(result) if result.ok => Ok(result.payload),
+        Some(result) => Err(pdfparse::map_failure(&result, &harness)),
+        None => Err(pdfparse::crashed_error(exit_code, &harness)),
+    }
 }
 
 /// 按 scope 解析块模型：pages 不需要；crops 先读附件、缺失则重映射 docling；all 始终重映射。

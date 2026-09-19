@@ -2943,17 +2943,45 @@ async function openSettingsModal() {
   refreshSettingsDerived();
   let tableMode = 'fast';
   let concurrency = 3;
+  let warmStart = true;
+  let idleMinutes = 10;
   try {
     const all = await bridge.invoke('settings.get@1');
     if (all?.pdfparse?.tableMode === 'accurate') tableMode = 'accurate';
     const n = Number(all?.protocol?.concurrency);
     if (Number.isFinite(n)) concurrency = n;
+    if (typeof all?.pdfparse?.warmStart === 'boolean') warmStart = all.pdfparse.warmStart;
+    const m = Number(all?.pdfparse?.idleShutdownMinutes);
+    if (Number.isFinite(m) && m >= 1 && m <= 240) idleMinutes = m;
   } catch (_) { /* 读失败时保持缺省 */ }
   $$('input[name="set-table-mode"]').forEach(el => {
     el.checked = el.value === tableMode;
   });
   $('#set-protocol-concurrency').value = String(concurrency);
+  $('#set-warm-start').checked = warmStart;
+  $('#set-idle-minutes').value = String(idleMinutes);
+  $('#set-sidecar-state').textContent = '常驻侧车状态：…';
+  refreshSidecarState();
   $('#modal-settings').hidden = false;
+}
+
+const SIDECAR_STATE_LABELS = {
+  not_started: '未启动',
+  warming: '预热中',
+  ready: '就绪',
+  released: '已释放（空闲超时）',
+  disabled: '已停用（常驻不可用，回退一次一进程）',
+};
+
+async function refreshSidecarState() {
+  try {
+    const status = await bridge.invoke('pdfparse.status@1', {});
+    const state = status?.sidecar?.resident?.state;
+    $('#set-sidecar-state').textContent =
+      '常驻侧车状态：' + (SIDECAR_STATE_LABELS[state] || state || '未知');
+  } catch (_) {
+    $('#set-sidecar-state').textContent = '常驻侧车状态：读取失败';
+  }
 }
 
 function collectSettingsForm() {
@@ -2992,8 +3020,18 @@ async function saveSettings() {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 6) {
     throw new Error('协议并发须为 1–6 的整数');
   }
+  const idleMinutes = Math.round(Number($('#set-idle-minutes').value));
+  if (!Number.isInteger(idleMinutes) || idleMinutes < 1 || idleMinutes > 240) {
+    throw new Error('空闲释放须为 1–240 的整数分钟');
+  }
   await model.saveSettings(collectSettingsForm());
-  await bridge.invoke('settings.putPdfparse@1', { settings: { tableMode: selectedTableMode() } });
+  await bridge.invoke('settings.putPdfparse@1', {
+    settings: {
+      tableMode: selectedTableMode(),
+      warmStart: $('#set-warm-start').checked,
+      idleShutdownMinutes: idleMinutes,
+    },
+  });
   await bridge.invoke('settings.putProtocol@1', { settings: { concurrency } });
   $('#modal-settings').hidden = true;
   refreshLibrary();

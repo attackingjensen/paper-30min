@@ -9,6 +9,7 @@ pub mod net;
 pub mod pdfassets;
 pub mod pdfmap;
 pub mod pdfparse;
+pub mod pdfpool;
 pub mod protocol;
 pub mod settings;
 pub mod skills;
@@ -146,8 +147,12 @@ pub fn run() {
         .setup(|app| {
             let root = app.path().app_data_dir()?;
             let library = Arc::new(Library::open(&root)?);
+            let registry = TaskRegistry::new(Arc::clone(&library));
+            // 常驻解析侧车启动预热（#84）：侧车就绪且设置开启时后台拉起并加载模型，
+            // 第二篇及以后的论文解析免去启动等待；失败只记日志。
+            pdfparse::warm_resident_sidecar(&registry, &library);
             app.manage(AppState {
-                registry: TaskRegistry::new(Arc::clone(&library)),
+                registry,
                 library,
                 force_close: AtomicBool::new(false),
             });

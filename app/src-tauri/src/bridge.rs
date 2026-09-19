@@ -219,10 +219,20 @@ pub fn invoke(
         "settings.putPdfparse@1" => crate::settings::put_pdfparse(library, input),
         "settings.putProtocol@1" => crate::settings::put_protocol(library, input),
         "settings.putUi@1" => crate::settings::put_ui(library, input),
-        "pdfparse.status@1" => Ok(json!({
-            "schemaVersion": BRIDGE_SCHEMA_VERSION,
-            "sidecar": crate::pdfparse::status(library),
-        })),
+        "pdfparse.status@1" => {
+            let mut sidecar = crate::pdfparse::status(library);
+            // 常驻侧车状态（#84）：未启动 / 预热中 / 就绪 / 已释放 / 已停用。
+            if let Value::Object(map) = &mut sidecar {
+                map.insert(
+                    "resident".to_string(),
+                    registry.sidecar_pool().status_json(),
+                );
+            }
+            Ok(json!({
+                "schemaVersion": BRIDGE_SCHEMA_VERSION,
+                "sidecar": sidecar,
+            }))
+        }
         "skills.list@1" => Ok(json!({
             "schemaVersion": BRIDGE_SCHEMA_VERSION,
             "skills": crate::skills::list_skills(),

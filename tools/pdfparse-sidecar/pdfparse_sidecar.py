@@ -12,6 +12,13 @@
 - 退出码：0 = 结果已按协议产出（含 ok:false 的可归类失败）；2 = 侧车自身崩溃，
   此时 result.json 可能缺失，由 Rust 侧映射为 sidecar_crashed 并附 stderr 尾部。
 
+`serve` 子命令（Issue #84，规格 #74 §A3）是常驻模式：启动后发一行
+`PDFPARSE_READY {"pid":…}`，随后从 stdin 逐行读 JSON 请求 `{id, op, ...}`
+（op ∈ ping / warm / convert / render / cancel / shutdown），进度与结果行的
+载荷带 `id`；convert/warm 串行于单 worker，render 每请求一线程可与 convert 并行；
+`DocumentConverter` 按 (modelsDir, tableMode, doOcr, formulaEnrichment) 键缓存，
+模型只加载一次（warm 提前加载默认键）。
+
 结构化错误码（与 Rust pdfparse.rs 对齐）：
     pdf_not_found / pdf_open_failed / conversion_failed / deps_missing /
     model_missing / model_download_failed / bootstrap_failed
@@ -24,9 +31,11 @@ import argparse
 import json
 import math
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -182,11 +191,16 @@ def summarize_pipeline_timings(timings):
     return {key: round(value, 3) for key, value in buckets.items()}
 
 
-def write_result(out_dir, payload):
+def write_result_file(out_dir, payload):
+    """只写 result.json，不打印（serve 模式复用：打印由调用方带 id 完成）。"""
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     target = out_path / "result.json"
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_result(out_dir, payload):
+    write_result_file(out_dir, payload)
     print(f"PDFPARSE_RESULT {json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 
@@ -308,67 +322,9 @@ def scan_textless_pages(pdf_path):
     return textless, total
 
 
-def cmd_convert(args):
-    started = time.perf_counter()
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = Path(args.pdf)
-    if not pdf_path.is_file():
-        write_result(
-            out_dir,
-            error_payload("pdf_not_found", f"PDF 文件不存在: {pdf_path}", False),
-        )
-        return 0
-
-    models_dir = Path(args.models_dir)
-    required = list(REQUIRED_MODEL_FILES)
-    if args.formula_enrichment:
-        required += FORMULA_MODEL_FILES
-    missing = missing_models(models_dir, required)
-    if missing and args.formula_enrichment and missing == FORMULA_MODEL_FILES:
-        # 唯一允许在线补模型的路径：用户显式开启了公式 enrichment。
-        try:
-            download_formula_model(models_dir, endpoint=args.endpoint)
-        except Exception as err:  # noqa: BLE001
-            write_result(
-                out_dir,
-                error_payload(
-                    "model_download_failed",
-                    f"公式模型下载失败: {err}",
-                    True,
-                ),
-            )
-            return 0
-        missing = missing_models(models_dir, required)
-    if missing:
-        write_result(
-            out_dir,
-            error_payload(
-                "model_missing",
-                "模型工件缺失: " + ", ".join(missing),
-                False,
-                missing=missing,
-            ),
-        )
-        return 0
-
-    try:
-        ocr_pages, page_count = scan_textless_pages(pdf_path)
-    except Exception as err:  # noqa: BLE001 - 打开失败（含加密/损坏）
-        write_result(
-            out_dir,
-            error_payload("pdf_open_failed", f"PDF 打开失败: {err}", False),
-        )
-        return 0
-
-    num_threads = apply_thread_env()
-    table_mode = args.table_mode
-
-    # 离线运行：模型全部来自 artifacts 目录，禁止任何 HF 网络访问。
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
-    emit_progress("startup")
+def load_converter(models_dir, table_mode, do_ocr, formula_enrichment, num_threads, emit):
+    """构建 DocumentConverter（首次调用触发模型加载）。返回 (converter, error_payload|None)。"""
+    emit("startup")
     try:
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import (
@@ -380,22 +336,18 @@ def cmd_convert(args):
         from docling.datamodel.settings import settings
         from docling.document_converter import DocumentConverter, PdfFormatOption
     except ImportError as err:
-        write_result(
-            out_dir,
-            error_payload("deps_missing", f"侧车依赖不完整: {err}", False),
-        )
-        return 0
+        return None, error_payload("deps_missing", f"侧车依赖不完整: {err}", False)
 
     settings.debug.profile_pipeline_timings = True
 
     pipeline_options = PdfPipelineOptions(
         artifacts_path=models_dir,
-        do_formula_enrichment=args.formula_enrichment,
+        do_formula_enrichment=formula_enrichment,
         # 规格 #48 决策 1：OCR 仅对无文本层页触发。全部页面有文本层时整个 OCR
         # 阶段关闭（默认的 pdf-aware 模式会对插图位图区域做 OCR，CPU 上每页数十秒，
         # 而产物用不上）；存在无文本层页才启用（RapidOCR torch 后端与布局模型共用
         # 同一套 torch 依赖；onnxruntime 不随包）。
-        do_ocr=bool(ocr_pages),
+        do_ocr=do_ocr,
         ocr_options=RapidOcrOptions(backend="torch"),
         accelerator_options=AcceleratorOptions(num_threads=num_threads),
     )
@@ -405,12 +357,76 @@ def cmd_convert(args):
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
         )
     except Exception as err:  # noqa: BLE001
-        write_result(
-            out_dir,
-            error_payload("conversion_failed", f"管线初始化失败: {err}", True),
+        return None, error_payload("conversion_failed", f"管线初始化失败: {err}", True)
+    emit("models_loaded")
+    return converter, None
+
+
+def convert_document(pdf_path, out_dir, models_dir, table_mode, formula_enrichment, endpoint,
+                     converter_cache=None, emit=emit_progress, cancel_event=None):
+    """convert 核心：返回结构化 payload（成功或 ok:false），不落盘不打印。
+
+    converter_cache 为 None 时（CLI 一次一进程）每次新建 converter；serve 模式传入
+    字典按 (modelsDir, tableMode, doOcr, formulaEnrichment) 键缓存（规格 #74 A3 的
+    (tableMode, doOcr) 键加上两个同样改变管线形态的维度），模型只加载一次。
+    """
+    started = time.perf_counter()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = Path(pdf_path)
+    if not pdf_path.is_file():
+        return error_payload("pdf_not_found", f"PDF 文件不存在: {pdf_path}", False)
+
+    if not models_dir:
+        return error_payload("model_missing", "未指定模型目录", False)
+    models_dir = Path(models_dir)
+    required = list(REQUIRED_MODEL_FILES)
+    if formula_enrichment:
+        required += FORMULA_MODEL_FILES
+    missing = missing_models(models_dir, required)
+    if missing and formula_enrichment and missing == FORMULA_MODEL_FILES:
+        # 唯一允许在线补模型的路径：用户显式开启了公式 enrichment。
+        try:
+            download_formula_model(models_dir, endpoint=endpoint)
+        except Exception as err:  # noqa: BLE001
+            return error_payload(
+                "model_download_failed",
+                f"公式模型下载失败: {err}",
+                True,
+            )
+        missing = missing_models(models_dir, required)
+    if missing:
+        return error_payload(
+            "model_missing",
+            "模型工件缺失: " + ", ".join(missing),
+            False,
+            missing=missing,
         )
-        return 0
-    emit_progress("models_loaded")
+
+    try:
+        ocr_pages, page_count = scan_textless_pages(pdf_path)
+    except Exception as err:  # noqa: BLE001 - 打开失败（含加密/损坏）
+        return error_payload("pdf_open_failed", f"PDF 打开失败: {err}", False)
+
+    if cancel_event is not None and cancel_event.is_set():
+        return error_payload("cancelled", "请求已取消", False)
+
+    num_threads = apply_thread_env()
+
+    # 离线运行：模型全部来自 artifacts 目录，禁止任何 HF 网络访问。
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+    cache_key = (str(models_dir), table_mode, bool(ocr_pages), bool(formula_enrichment))
+    converter = converter_cache.get(cache_key) if converter_cache is not None else None
+    if converter is None:
+        converter, error = load_converter(
+            models_dir, table_mode, bool(ocr_pages), formula_enrichment, num_threads, emit
+        )
+        if error is not None:
+            return error
+        if converter_cache is not None:
+            converter_cache[cache_key] = converter
 
     try:
         conversion = converter.convert(str(pdf_path))
@@ -419,17 +435,13 @@ def cmd_convert(args):
         timings = summarize_pipeline_timings(getattr(conversion, "timings", None))
     except Exception as err:  # noqa: BLE001
         detail = traceback.format_exc()[-1500:]
-        write_result(
-            out_dir,
-            error_payload("conversion_failed", f"PDF 转换失败: {err}", True, detail=detail),
-        )
-        return 0
+        return error_payload("conversion_failed", f"PDF 转换失败: {err}", True, detail=detail)
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     warnings = []
     if ocr_pages:
         warnings.append("scanned_pages_ocr")
-    payload = {
+    return {
         "ok": True,
         "doclingJsonPath": str(docling_json),
         "pages": page_count,
@@ -441,36 +453,26 @@ def cmd_convert(args):
         "tableMode": table_mode,
         "numThreads": num_threads,
     }
-    write_result(out_dir, payload)
+
+
+def cmd_convert(args):
+    payload = convert_document(
+        args.pdf,
+        args.out_dir,
+        args.models_dir,
+        args.table_mode,
+        args.formula_enrichment,
+        args.endpoint,
+    )
+    write_result(args.out_dir, payload)
     return 0
 
 
-def cmd_render(args):
-    """页图与图表裁切预渲染（Issue #59，规格 #48 §双通道资产）。
-
-    job JSON（--job）：{"scale": 2, "quality": 86, "pages": [1, 2, ...],
-    "crops": [{"id": "fig_3", "page": 7, "bbox": [x, y, w, h]}]}；
-    bbox 为 pdf.js 视口坐标（左上原点，scale=2），与 pypdfium2 同 scale
-    渲染位图的像素坐标系一致，直接作裁切框。裁切框钳制到页边界；
-    完全落在页外（钳制后 < 2px）记 skippedCrops，不编造产物（#48 §诚实档 15）。
-
-    产物：<out-dir>/pages/page-{n}.webp、<out-dir>/crops/{id}.webp。
-    渲染只用 pypdfium2 + Pillow，不需要布局/OCR 模型；逐页渲染，
-    crops 按页分组与页图共享同一次渲染（内存峰值 = 一页位图）。
-    """
-    started = time.perf_counter()
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = Path(args.pdf)
-    if not pdf_path.is_file():
-        write_result(
-            out_dir,
-            error_payload("pdf_not_found", f"PDF 文件不存在: {pdf_path}", False),
-        )
-        return 0
-
+def parse_render_job(job_path):
+    """解析渲染作业 JSON。返回 (job_fields, error_payload|None)；job_fields 含
+    scale/quality/pages_listed/crops（pages_listed 为 None 表示渲染全部页）。"""
     try:
-        job = json.loads(Path(args.job).read_text(encoding="utf-8"))
+        job = json.loads(Path(job_path).read_text(encoding="utf-8"))
         scale = float(job.get("scale", 2.0))
         quality = int(job.get("quality", 86))
         if "pages" not in job or job["pages"] is None:
@@ -495,17 +497,38 @@ def cmd_render(args):
             if not re.fullmatch(r"[A-Za-z0-9._-]+", crop["id"]) or ".." in crop["id"]:
                 raise ValueError(f"裁切 id 不是合法标识: {crop['id']}")
     except (OSError, ValueError, KeyError, TypeError) as err:
-        write_result(out_dir, error_payload("job_invalid", f"渲染作业无效: {err}", False))
-        return 0
+        return None, error_payload("job_invalid", f"渲染作业无效: {err}", False)
+    return {
+        "scale": scale,
+        "quality": quality,
+        "pages_listed": pages_listed,
+        "crops": crops,
+    }, None
+
+
+def render_document(pdf_path, out_dir, job, emit=emit_progress, cancel_event=None):
+    """render 核心：返回结构化 payload（成功或 ok:false），不落盘不打印。
+
+    job 为 parse_render_job 的返回。cancel_event 在页边界检查（页图 + 该页裁切
+    是一个渲染批次），命中即返回 cancelled 错误载荷，已写出的页图保留在 out_dir
+    （Rust 侧取消路径只认任务终态，不读取部分产物）。
+    """
+    started = time.perf_counter()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = Path(pdf_path)
+    if not pdf_path.is_file():
+        return error_payload("pdf_not_found", f"PDF 文件不存在: {pdf_path}", False)
+
+    scale = job["scale"]
+    quality = job["quality"]
+    pages_listed = job["pages_listed"]
+    crops = job["crops"]
 
     try:
         import pypdfium2 as pdfium
     except ImportError as err:
-        write_result(
-            out_dir,
-            error_payload("deps_missing", f"侧车依赖不完整: {err}", False),
-        )
-        return 0
+        return error_payload("deps_missing", f"侧车依赖不完整: {err}", False)
 
     crops_by_page = {}
     for crop in crops:
@@ -535,18 +558,16 @@ def cmd_render(args):
             pages_wanted = set(pages)
             missing = [p for p in render_pages if p < 1 or p > page_count]
             if missing:
-                write_result(
-                    out_dir,
-                    error_payload(
-                        "job_invalid",
-                        f"渲染页码越界（PDF 共 {page_count} 页）: {missing}",
-                        False,
-                    ),
+                return error_payload(
+                    "job_invalid",
+                    f"渲染页码越界（PDF 共 {page_count} 页）: {missing}",
+                    False,
                 )
-                return 0
             planned = len(pages_wanted) + len(crops)
             done = 0
             for page_no in render_pages:
+                if cancel_event is not None and cancel_event.is_set():
+                    return error_payload("cancelled", "请求已取消", False)
                 page = doc[page_no - 1]
                 try:
                     render_started = time.perf_counter()
@@ -570,7 +591,7 @@ def cmd_render(args):
                         )
                         done += 1
                         if planned:
-                            emit_progress("render", done, planned)
+                            emit("render", done, planned)
                     for crop in crops_by_page.get(page_no, []):
                         x, y, crop_w, crop_h = crop["bbox"]
                         left = max(0, min(width, round(x)))
@@ -582,7 +603,7 @@ def cmd_render(args):
                             warnings.append(f"crop_skipped:{crop['id']}")
                             done += 1
                             if planned:
-                                emit_progress("render", done, planned)
+                                emit("render", done, planned)
                             continue
                         cropped = img.crop((left, top, right, bottom))
                         target = crops_dir / f"{crop['id']}.webp"
@@ -601,32 +622,324 @@ def cmd_render(args):
                         )
                         done += 1
                         if planned:
-                            emit_progress("render", done, planned)
+                            emit("render", done, planned)
                 finally:
                     page.close()
     except Exception as err:  # noqa: BLE001 - pypdfium2 打开/渲染失败统一归类
         detail = traceback.format_exc()[-1500:]
-        write_result(
-            out_dir,
-            error_payload("render_failed", f"页图渲染失败: {err}", True, detail=detail),
-        )
-        return 0
+        return error_payload("render_failed", f"页图渲染失败: {err}", True, detail=detail)
 
-    write_result(
-        out_dir,
-        {
-            "ok": True,
-            "scale": scale,
-            "quality": quality,
-            "pages": result_pages,
-            "crops": result_crops,
-            "skippedCrops": skipped,
-            "warnings": warnings,
-            "elapsedMs": int((time.perf_counter() - started) * 1000),
-            "renderMs": render_ms,
-            "encodeMs": encode_ms,
-        },
-    )
+    return {
+        "ok": True,
+        "scale": scale,
+        "quality": quality,
+        "pages": result_pages,
+        "crops": result_crops,
+        "skippedCrops": skipped,
+        "warnings": warnings,
+        "elapsedMs": int((time.perf_counter() - started) * 1000),
+        "renderMs": render_ms,
+        "encodeMs": encode_ms,
+    }
+
+
+def cmd_render(args):
+    """页图与图表裁切预渲染（Issue #59，规格 #48 §双通道资产）。
+
+    job JSON（--job）：{"scale": 2, "quality": 86, "pages": [1, 2, ...],
+    "crops": [{"id": "fig_3", "page": 7, "bbox": [x, y, w, h]}]}；
+    bbox 为 pdf.js 视口坐标（左上原点，scale=2），与 pypdfium2 同 scale
+    渲染位图的像素坐标系一致，直接作裁切框。裁切框钳制到页边界；
+    完全落在页外（钳制后 < 2px）记 skippedCrops，不编造产物（#48 §诚实档 15）。
+
+    产物：<out-dir>/pages/page-{n}.webp、<out-dir>/crops/{id}.webp。
+    渲染只用 pypdfium2 + Pillow，不需要布局/OCR 模型；逐页渲染，
+    crops 按页分组与页图共享同一次渲染（内存峰值 = 一页位图）。
+    """
+    job, error = parse_render_job(args.job)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not Path(args.pdf).is_file():
+        write_result(out_dir, error_payload("pdf_not_found", f"PDF 文件不存在: {args.pdf}", False))
+        return 0
+    if error is not None:
+        write_result(out_dir, error)
+        return 0
+    payload = render_document(args.pdf, args.out_dir, job)
+    write_result(args.out_dir, payload)
+    return 0
+
+
+class _ServeServer:
+    """常驻模式请求分发（Issue #84，规格 #74 §A3）。
+
+    stdin 逐行读 JSON 请求 {"id", "op", ...}，op ∈ ping / warm / convert / render /
+    cancel / shutdown；输出沿用 PDFPARSE_PROGRESS / PDFPARSE_RESULT 前缀，载荷带 id。
+    convert 与 warm 经单 worker 串行（同一时刻最多一个 convert，其余排队；
+    DocumentConverter 缓存只被该 worker 触碰）；render 每请求一个线程，可与 convert
+    并行（只用 pypdfium2 + Pillow）。
+    """
+
+    def __init__(self, args):
+        self.default_models_dir = args.models_dir
+        self.default_table_mode = args.table_mode
+        self.endpoint = args.endpoint
+        self.converters = {}
+        self.print_lock = threading.Lock()
+        self.cancel_flags = {}
+        self.cancel_lock = threading.Lock()
+        self.convert_queue = queue.Queue()
+        self.worker = threading.Thread(target=self._convert_worker, daemon=True)
+        self.worker.start()
+
+    def _print_line(self, line):
+        with self.print_lock:
+            print(line, flush=True)
+
+    def _emit_progress(self, req_id, stage, done=0, total=0):
+        line = json.dumps(
+            {"id": req_id, "stage": stage, "done": done, "total": total},
+            ensure_ascii=False,
+        )
+        self._print_line(f"PDFPARSE_PROGRESS {line}")
+
+    def emit_result(self, req_id, payload, out_dir=None):
+        payload = dict(payload)
+        payload["id"] = req_id
+        # result.json 继续落盘（诊断与契约一致性），stdout 行才是在位协议出口。
+        if out_dir:
+            write_result_file(out_dir, payload)
+        self._print_line(f"PDFPARSE_RESULT {json.dumps(payload, ensure_ascii=False)}")
+
+    def _cancel_event(self, req_id):
+        with self.cancel_lock:
+            return self.cancel_flags.setdefault(req_id, threading.Event())
+
+    def handle(self, request):
+        """返回 False 表示收到 shutdown，主循环退出。"""
+        req_id = request.get("id")
+        op = request.get("op")
+        if op == "ping":
+            self.emit_result(
+                req_id,
+                {"ok": True, "pid": os.getpid(), "loadedConverters": len(self.converters)},
+            )
+            return True
+        if op == "warm":
+            self.convert_queue.put(("warm", request))
+            return True
+        if op == "convert":
+            self.convert_queue.put(("convert", request))
+            return True
+        if op == "render":
+            thread = threading.Thread(target=self._run_render, args=(request,), daemon=True)
+            thread.start()
+            return True
+        if op == "cancel":
+            # cancel {id}：id 即目标请求（规格 #74 §A3）；即发即弃，无回执
+            #（Rust 侧 2 秒未收到目标请求的结果即 kill 整个进程）。
+            target = request.get("id")
+            if target is not None:
+                self._cancel_event(target).set()
+            return True
+        if op == "shutdown":
+            self.emit_result(req_id, {"ok": True, "pid": os.getpid()})
+            return False
+        self.emit_result(req_id, error_payload("request_invalid", f"未知 op: {op}", False))
+        return True
+
+    def _convert_worker(self):
+        while True:
+            item = self.convert_queue.get()
+            if item is None:
+                return
+            kind, request = item
+            req_id = request.get("id")
+            cancel_event = self._cancel_event(req_id)
+            try:
+                if kind == "warm":
+                    self._run_warm(request)
+                else:
+                    self._run_convert(request, cancel_event)
+            except Exception as err:  # noqa: BLE001 - 单请求失败不影响服务
+                self.emit_result(
+                    req_id,
+                    error_payload(
+                        "conversion_failed",
+                        f"请求处理失败: {err}",
+                        True,
+                        detail=traceback.format_exc()[-1500:],
+                    ),
+                )
+            finally:
+                with self.cancel_lock:
+                    self.cancel_flags.pop(req_id, None)
+
+    def _emitter(self, req_id):
+        def emit(stage, done=0, total=0):
+            self._emit_progress(req_id, stage, done, total)
+
+        return emit
+
+    def _run_convert(self, request, cancel_event):
+        req_id = request.get("id")
+        out_dir = request.get("outDir")
+        payload = convert_document(
+            request.get("pdf"),
+            out_dir,
+            request.get("modelsDir") or self.default_models_dir,
+            request.get("tableMode") or self.default_table_mode,
+            bool(request.get("formulaEnrichment")),
+            self.endpoint,
+            converter_cache=self.converters,
+            emit=self._emitter(req_id),
+            cancel_event=cancel_event,
+        )
+        self.emit_result(req_id, payload, out_dir=out_dir)
+
+    def _run_warm(self, request):
+        """预热：提前触发默认键 (tableMode, doOcr=False) 的模型加载。"""
+        req_id = request.get("id")
+        started = time.perf_counter()
+        models_dir = request.get("modelsDir") or self.default_models_dir
+        table_mode = request.get("tableMode") or self.default_table_mode
+        if not models_dir:
+            self.emit_result(req_id, error_payload("model_missing", "未指定模型目录", False))
+            return
+        missing = missing_models(Path(models_dir), REQUIRED_MODEL_FILES)
+        if missing:
+            self.emit_result(
+                req_id,
+                error_payload(
+                    "model_missing", "模型工件缺失: " + ", ".join(missing), False, missing=missing
+                ),
+            )
+            return
+        # 与 convert 一致的离线语义：模型只从 artifacts 目录取。
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        cache_key = (str(models_dir), table_mode, False, False)
+        if cache_key not in self.converters:
+            converter, error = load_converter(
+                Path(models_dir),
+                table_mode,
+                False,
+                False,
+                resolve_num_threads(),
+                self._emitter(req_id),
+            )
+            if error is not None:
+                self.emit_result(req_id, error)
+                return
+            self.converters[cache_key] = converter
+        self.emit_result(
+            req_id,
+            {"ok": True, "pid": os.getpid(), "warmedMs": int((time.perf_counter() - started) * 1000)},
+        )
+
+    def _run_render(self, request):
+        req_id = request.get("id")
+        out_dir = request.get("outDir")
+        cancel_event = self._cancel_event(req_id)
+        try:
+            job, error = parse_render_job(request.get("job"))
+            if error is None:
+                payload = render_document(
+                    request.get("pdf"),
+                    out_dir,
+                    job,
+                    emit=self._emitter(req_id),
+                    cancel_event=cancel_event,
+                )
+            else:
+                payload = error
+            self.emit_result(req_id, payload, out_dir=out_dir)
+        except Exception as err:  # noqa: BLE001 - 单请求失败不影响服务
+            self.emit_result(
+                req_id,
+                error_payload(
+                    "render_failed",
+                    f"渲染请求处理失败: {err}",
+                    True,
+                    detail=traceback.format_exc()[-1500:],
+                ),
+            )
+        finally:
+            with self.cancel_lock:
+                self.cancel_flags.pop(req_id, None)
+
+
+def _stdin_lines_nt():
+    """Windows：PeekNamedPipe 轮询 + 只读已到字节，替代阻塞式 readline。
+
+    实测（#84）：Windows 上任一线程阻塞于 stdin 管道的 ReadFile 期间，其他线程
+    的 DLL 加载（torch / pypdfium2 import）会停滞直到该读返回。常驻模式的 convert
+    worker 正是在服务循环阻塞读 stdin 时加载模型，因此必须改为「探测有字节才读」。
+    """
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+    buf = b""
+    while True:
+        avail = wintypes.DWORD(0)
+        if not kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None):
+            # 管道对端关闭（EOF）
+            if buf:
+                yield buf.decode("utf-8", errors="replace")
+            return
+        if avail.value:
+            data = os.read(sys.stdin.fileno(), min(avail.value, 65536))
+            if not data:
+                if buf:
+                    yield buf.decode("utf-8", errors="replace")
+                return
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                yield line.decode("utf-8", errors="replace")
+        else:
+            time.sleep(0.05)
+
+
+def _stdin_lines():
+    if os.name == "nt":
+        yield from _stdin_lines_nt()
+    else:
+        yield from sys.stdin
+
+
+def cmd_serve(args):
+    """常驻模式（Issue #84）：启动后立即发 PDFPARSE_READY，随后逐行处理 stdin 请求。
+
+    模型加载推迟到首个 convert / warm 请求；READY 只代表协议就绪。请求处理中的
+    未捕获异常由 _ServeServer 兜成 ok:false 结果；分发层自身的未捕获异常写 stderr
+    并以退出码 2 退出（Rust 侧按侧车崩溃处理并回退一次一进程）。
+    """
+    apply_thread_env()
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    server = _ServeServer(args)
+    print(f"PDFPARSE_READY {json.dumps({'pid': os.getpid()})}", flush=True)
+    try:
+        for line in _stdin_lines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+            except ValueError:
+                request = None
+            if not isinstance(request, dict):
+                server.emit_result(
+                    None, error_payload("request_invalid", "请求行不是合法 JSON 对象", False)
+                )
+                continue
+            if not server.handle(request):
+                return 0
+    except Exception:  # noqa: BLE001 - 分发层崩溃：写 stderr + 退出码 2
+        traceback.print_exc()
+        return 2
     return 0
 
 
@@ -826,9 +1139,12 @@ def main(argv=None):
     p_boot.add_argument("--manifest-dir", required=True, help="result.json 写入目录")
     p_boot.add_argument("--pip-index-url", default=os.environ.get("PIP_INDEX_URL") or None)
 
+    sub.add_parser("serve", help="常驻模式：stdin/stdout JSON 行协议（#84）")
+
     args = parser.parse_args(argv)
-    # render/selfcheck 不触碰模型：render 只用 pypdfium2 + Pillow。
-    if not args.models_dir and args.command not in ("render", "selfcheck"):
+    # render/selfcheck/serve 不触碰模型：render 只用 pypdfium2 + Pillow；serve 的模型
+    # 目录随请求携带（缺省回退全局 --models-dir）。
+    if not args.models_dir and args.command not in ("render", "selfcheck", "serve"):
         out_dir = getattr(args, "out_dir", None) or getattr(args, "manifest_dir", None) or "."
         write_result(out_dir, error_payload("model_missing", "未指定模型目录", False))
         return 0
@@ -842,6 +1158,8 @@ def main(argv=None):
         return cmd_prefetch_models(args)
     if args.command == "bootstrap":
         return cmd_bootstrap(args)
+    if args.command == "serve":
+        return cmd_serve(args)
     return 2
 
 
