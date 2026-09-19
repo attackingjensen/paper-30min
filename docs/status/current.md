@@ -1,12 +1,12 @@
 # 项目当前状态
 
-> 更新时间：2026-09-18
+> 更新时间：2026-09-19
 
 ## 当前阶段
 
 Paper30Min 是「论文精读」专精 agent harness：帮助用户高效读完一篇完整论文。Windows 正式客户端 **1.0.0** 已发布（[GitHub Release](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0)）；`steven123397/dev` 与 `main` 同源，当前协作走 `dev`，不创建合入 `main` 的 PR，也不因零散感受新建打磨类 Issue。
 
-Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。当前工作是性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）：v1.0 反馈解析、建图、深挖都太慢。已完成 #75–#78、#82；[#79](https://github.com/attackingjensen/paper-30min/issues/79)、[#80](https://github.com/attackingjensen/paper-30min/issues/80)（深挖轮次进度与最终稿预览）与 [#81](https://github.com/attackingjensen/paper-30min/issues/81)（深挖减轮：配方预附本节图表 + 一轮多工具）契约与实现均已落地，真实窗口对照待作者点验（走查归 [#85](https://github.com/attackingjensen/paper-30min/issues/85)）；[#83](https://github.com/attackingjensen/paper-30min/issues/83)（批量深挖有界并发）、[#84](https://github.com/attackingjensen/paper-30min/issues/84)（常驻解析侧车）与 [#86](https://github.com/attackingjensen/paper-30min/issues/86)（可空 temperature 与 400 自动卸参数）实现已落地、契约测试全绿，真实窗口对照同样归 #85。**下一步是 [#85](https://github.com/attackingjensen/paper-30min/issues/85)（性能对照走查）**。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
+Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）实施链 **#75–#84、#86 全部完成**；对照走查 [#85](https://github.com/attackingjensen/paper-30min/issues/85) 的取数部分已完成（[走查记录](../draft/2026-09-19-issue85-walkthrough.md)：同机 v1.0.0 基线 vs 优化后，3 篇夹具全链 8.0–8.4×，建图 5.7–9.3×、全部深挖 9.3–16.1×、单节深挖 3.8–5.0×、解析脚本级 1.07–1.95×，遥测含轮数 / token / 缓存命中），**剩余工作是 #85 的真实窗口 9 项点验（作者执行，清单在走查记录 D 节）**，点验通过后 #74 收口。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
 
 ## 已具备能力
 
@@ -36,14 +36,14 @@ Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专�
 | [#76](https://github.com/attackingjensen/paper-30min/issues/76) | 建图只等块模型 | 已完成 |
 | [#77](https://github.com/attackingjensen/paper-30min/issues/77) | 页图与解析并行 | 已完成 |
 | [#78](https://github.com/attackingjensen/paper-30min/issues/78) | 物理核线程、TableFormer FAST、回归基线 | 已完成 |
-| [#79](https://github.com/attackingjensen/paper-30min/issues/79) | 节薄摘要按节分片并有界并发 | 实现已落地，待真实窗口 |
-| [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 实现已落地，待真实窗口 |
-| [#81](https://github.com/attackingjensen/paper-30min/issues/81) | 深挖减轮：预附图表与一轮多工具 | 实现已落地，待真实窗口 |
+| [#79](https://github.com/attackingjensen/paper-30min/issues/79) | 节薄摘要按节分片并有界并发 | 已完成 |
+| [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 已完成 |
+| [#81](https://github.com/attackingjensen/paper-30min/issues/81) | 深挖减轮：预附图表与一轮多工具 | 已完成 |
 | [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型与思考默认（协议关、问答开） | 已完成 |
-| [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 实现已落地，待真实窗口 |
-| [#84](https://github.com/attackingjensen/paper-30min/issues/84) | 常驻侧车 | 实现已落地，待真实窗口 |
-| [#86](https://github.com/attackingjensen/paper-30min/issues/86) | 可空 temperature 与 400 自动卸参数 | 实现已落地，待真实窗口 |
-| [#85](https://github.com/attackingjensen/paper-30min/issues/85) | 性能对照走查与状态同步 | 待开始（依赖全部） |
+| [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 已完成 |
+| [#84](https://github.com/attackingjensen/paper-30min/issues/84) | 常驻侧车 | 已完成 |
+| [#86](https://github.com/attackingjensen/paper-30min/issues/86) | 可空 temperature 与 400 自动卸参数 | 已完成 |
+| [#85](https://github.com/attackingjensen/paper-30min/issues/85) | 性能对照走查与状态同步 | 对照取数完成；真实窗口 9 项点验待作者 |
 
 ## 工程验证
 
@@ -60,6 +60,8 @@ Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专�
 - 安装包覆盖升级、干净账户安装和卸载验收未做（原 #32 范围，规格已随定性转变关闭）。
 - 批量「全部深挖」重跑已有结果的节没有覆盖确认（单节「重新深挖」有）。
 - 「编辑原文」入口暂不提供；公式密集样例由 #60 回归覆盖。
+- 常驻侧车池在长任务间隔后疑似重启子进程（#85 走查发现 1/2：一次未复现的整体回退 + 每篇解析重付 ~5.5 s 模型加载，侧车隔离实验证明保温能力正常，疑点在池层）。
+- A1 解析计时探针在表密集论文上开销显著（2106 对照：开 102 s / 关 66 s），叠加连跑热节流可击穿 #78 性能门禁；#85 走查按机制以 `PAPER30MIN_PDFPARSE_PERF_FACTOR=2.0` 放宽通过，探针按需化与回归锁容毒待后续票。
 
 ## 权威来源
 
