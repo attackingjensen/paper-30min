@@ -1155,11 +1155,14 @@ fn chat_round<F: FnMut(&str, u64)>(
     let mut saw_content = false;
     let mut accumulated = String::new();
     let round_start = Instant::now();
-    let completion = model::chat_completions(
-        &env.config.api_key,
+    // 统一发送缝（#86）：400 命中已知参数时自动卸参数重发一次，并记端点能力缓存。
+    let completion = model::chat_completions_compat(
+        ctx,
+        &env.config,
         &env.endpoint,
         &body,
         std::time::Duration::from_secs(600),
+        Some(meta.stage),
         |delta| {
             accumulated.push_str(delta);
             if !saw_content {
@@ -1504,7 +1507,8 @@ struct ProtocolEnv {
     skills: SkillSet,
     config: model::ModelConfig,
     endpoint: String,
-    temperature: f64,
+    /// 设置解析后的温度；None = 请求体不携带（#86：留空用端点默认）。
+    temperature: Option<f64>,
     /// settings 的 maxTokens 配置值（读一次，各阶段按下限抬升后使用）。
     max_tokens: u64,
     extra_body: Map<String, Value>,
@@ -1560,11 +1564,8 @@ fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError
         .library
         .get_setting("model")?
         .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-    let temperature = stored
-        .as_ref()
-        .and_then(|value| value.get("temperature"))
-        .and_then(Value::as_f64)
-        .unwrap_or(tasks::DEFAULT_TEMPERATURE);
+    // temperature（#86）：显式 null = 不发送；缺省/损坏 = 内置缺省 0.3。
+    let temperature = settings::stored_temperature(stored.as_ref());
     let max_tokens = stored
         .as_ref()
         .and_then(|value| value.get("maxTokens"))

@@ -56,6 +56,22 @@ export function extraBodyPreview(extraBody = {}, stageExtraBody = {}) {
   return preview;
 }
 
+/** 温度输入框 → 设置值（#86）：空串 = null（不发送，用端点默认）；否则须为 0–2 数值。 */
+export function parseTemperatureInput(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < 0 || value > 2) {
+    throw new Error('温度须为 0–2 的数值，或留空使用端点默认');
+  }
+  return value;
+}
+
+/** 设置值 → 温度输入框文本（#86）：null/缺省 → 空串（占位符显示「端点默认」）。 */
+export function formatTemperatureInput(value) {
+  return value === null || value === undefined ? '' : String(value);
+}
+
 /** 思考心跳 → 面板状态：收到 thinking 则激活，正文/轮次结束清除。 */
 export function reduceThinkingStatus(events = []) {
   let current = null;
@@ -159,6 +175,7 @@ async function runBridgeTask(kind, input, { signal, onChunk, onEvent, retry } = 
 /**
  * 调用模型对话。chunk 事件携带增量文本，按到达顺序拼接即全文；
  * 每收到一片以当前全文调用 onDelta(full)。temperature/maxTokens 取缓存设置。
+ * temperature 为 null（设置留空）时显式传给 Rust，请求体不携带该键（#86）。
  * retry 供调用方传入「重试」闭包（任务中心对可重试失败任务渲染按钮时调用）。
  * 未配置模型时任务直接 failed（error.code = 'model_not_configured'），按失败语义抛出。
  */

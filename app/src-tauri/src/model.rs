@@ -5,6 +5,7 @@
 use reqwest::blocking::{Client, Response};
 use reqwest::Url;
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -254,12 +255,14 @@ const PROTECTED_BODY_KEYS: [&str; 3] = ["model", "messages", "stream"];
 const THINKING_HEARTBEAT: Duration = Duration::from_secs(1);
 
 /// 组装 chat 请求体。流式时附 `stream_options.include_usage`（OpenAI 兼容端点在
-/// `stream: false` 时拒收该字段，故非流式不加）。随后按
+/// `stream: false` 时拒收该字段，故非流式不加）。temperature 为 None 时不携带该键
+///（#86：留空 = 用端点默认）。随后按
 /// 内建阶段默认 → extraBody → stageExtraBody[stage] 浅合并；`null` 删键。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn chat_request_body(
     model: &str,
     messages: &[Value],
-    temperature: f64,
+    temperature: Option<f64>,
     max_tokens: u64,
     stream: bool,
     stage: Option<&str>,
@@ -269,10 +272,12 @@ pub(crate) fn chat_request_body(
     let mut body = json!({
         "model": model,
         "messages": messages,
-        "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": stream,
     });
+    if let Some(temperature) = temperature {
+        body["temperature"] = json!(temperature);
+    }
     if stream {
         body["stream_options"] = json!({ "include_usage": true });
     }
@@ -505,6 +510,286 @@ where
     read_sse_completion(response, started, on_delta, between_reads, on_thinking)
 }
 
+// ============================================================================
+// 400 自动卸参数（Issue #86，规格 #74 §E3）
+// ============================================================================
+
+/// 已知会被部分端点（OpenAI 推理系列、部分中转站）拒收的请求参数名。
+const KNOWN_DROP_PARAMS: [&str; 10] = [
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "max_completion_tokens",
+    "stream_options",
+    "enable_thinking",
+    "reasoning_effort",
+    "thinking_budget",
+    "presence_penalty",
+    "frequency_penalty",
+];
+
+/// 端点参数能力的进程级记忆：确认被拒的参数集 + max_tokens 改名方向。
+/// 键 = (baseUrl, model)。不持久化：重启后代价 = 一次 400 往返。
+#[derive(Debug, Default)]
+struct ParamCaps {
+    dropped: Vec<String>,
+    /// 该端点要求的长度上限字段名；Unknown = 未改名过。
+    max_tokens_style: MaxTokensStyle,
+}
+
+/// max_tokens 改名方向（规格 #74 §E3：防互相打转，最多换一次）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum MaxTokensStyle {
+    #[default]
+    Unknown,
+    /// 该端点要 max_completion_tokens（OpenAI 推理系列）。
+    Completion,
+    /// 该端点要回 max_tokens。
+    Plain,
+}
+
+fn param_caps_cache() -> &'static Mutex<HashMap<(String, String), ParamCaps>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), ParamCaps>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 从 model_http_error 识别被拒的已知参数：HTTP 400 且错误体 error.param 命中已知
+/// 参数名，或 error.message 按词边界命中（error.code 为 unsupported_parameter /
+/// unsupported_value / invalid_request_error 的情形均被这两条覆盖——前两者本来就
+/// 靠 param/message 定位参数）。不命中 → None（不卸参数、不重发）。
+fn rejected_params_of(error: &BridgeError) -> Option<Vec<String>> {
+    if error.code != "model_http_error" {
+        return None;
+    }
+    let details = error.details.as_ref()?;
+    if details.get("httpStatus").and_then(Value::as_u64) != Some(400) {
+        return None;
+    }
+    let body = details.get("upstreamBody").and_then(Value::as_str)?;
+    detect_rejected_params(body)
+}
+
+fn detect_rejected_params(body: &str) -> Option<Vec<String>> {
+    let mut found: Vec<String> = Vec::new();
+    // 结构化路径：error.param 命中已知参数名。
+    let parsed = serde_json::from_str::<Value>(body).ok();
+    let error = parsed.as_ref().and_then(|value| value.get("error"));
+    if let Some(param) = error.and_then(|error| error.get("param")).and_then(Value::as_str) {
+        if KNOWN_DROP_PARAMS.contains(&param) {
+            found.push(param.to_string());
+        }
+    }
+    // 词边界路径：error.message；错误体不是 JSON/无 error 对象时退到响应原文
+    //（部分中转站 400 返回纯文本）。按非 [A-Za-z0-9_] 切词后整词比对
+    //（max_tokens 不误中 max_completion_tokens）。
+    let message = error
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or(body);
+    for token in message.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+        if KNOWN_DROP_PARAMS.contains(&token) && !found.iter().any(|p| p == token) {
+            found.push(token.to_string());
+        }
+    }
+    if found.is_empty() {
+        None
+    } else {
+        Some(found)
+    }
+}
+
+/// 一次卸参数动作：删除的参数 + 至多一次 max_tokens ↔ max_completion_tokens 改名。
+#[derive(Debug)]
+struct DropAction {
+    dropped: Vec<String>,
+    renamed: Option<(String, String)>,
+}
+
+impl DropAction {
+    fn describe(&self) -> String {
+        let mut parts: Vec<String> = self.dropped.clone();
+        if let Some((from, to)) = &self.renamed {
+            parts.push(format!("{from}→{to}"));
+        }
+        parts.join(", ")
+    }
+}
+
+/// 按被拒参数调整请求体：max_tokens 被拒 → 改名 max_completion_tokens（OpenAI 推理
+/// 系列规则）；max_completion_tokens 被拒 → 改回 max_tokens（防互相打转，一次调整
+/// 最多换一次）；其余参数直接删除。请求体不含被拒参数（如已被 extraBody 删键）→ None。
+fn adjust_body_for_rejected(body: &Value, rejected: &[String]) -> Option<(Value, DropAction)> {
+    let mut map = body.as_object()?.clone();
+    let mut dropped = Vec::new();
+    let mut renamed = None;
+    for param in rejected {
+        let rename_target = match param.as_str() {
+            "max_tokens" if renamed.is_none() && !map.contains_key("max_completion_tokens") => {
+                Some("max_completion_tokens")
+            }
+            "max_completion_tokens" if renamed.is_none() && !map.contains_key("max_tokens") => {
+                Some("max_tokens")
+            }
+            _ => None,
+        };
+        match rename_target {
+            Some(target) if map.contains_key(param.as_str()) => {
+                let value = map.remove(param.as_str()).expect("参数在体中");
+                map.insert(target.to_string(), value);
+                renamed = Some((param.clone(), target.to_string()));
+            }
+            _ => {
+                // 本轮改名目标不再删：错误 message 常含建议写法（"Use max_completion_tokens
+                // instead"），词边界会把它一并匹配进来，但它不是被拒参数本身。
+                if renamed.as_ref().is_some_and(|(_, to)| to == param) {
+                    continue;
+                }
+                if map.remove(param.as_str()).is_some() {
+                    dropped.push(param.clone());
+                }
+            }
+        }
+    }
+    if dropped.is_empty() && renamed.is_none() {
+        return None;
+    }
+    Some((Value::Object(map), DropAction { dropped, renamed }))
+}
+
+/// 发送前按缓存的端点能力卸参数（后续轮不再白跑一次 400）。
+fn apply_cached_caps(cache_key: &(String, String), body: &Value) -> Value {
+    let cache = param_caps_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(caps) = cache.get(cache_key) else {
+        return body.clone();
+    };
+    let Some(map) = body.as_object().cloned() else {
+        return body.clone();
+    };
+    let mut map = map;
+    for param in &caps.dropped {
+        map.remove(param);
+    }
+    match caps.max_tokens_style {
+        MaxTokensStyle::Completion => {
+            if let Some(value) = map.remove("max_tokens") {
+                map.insert("max_completion_tokens".to_string(), value);
+            }
+        }
+        MaxTokensStyle::Plain => {
+            if let Some(value) = map.remove("max_completion_tokens") {
+                map.insert("max_tokens".to_string(), value);
+            }
+        }
+        MaxTokensStyle::Unknown => {}
+    }
+    Value::Object(map)
+}
+
+/// 重发成功后记住端点能力（进程级）。
+fn remember_caps(cache_key: &(String, String), action: &DropAction) {
+    let mut cache = param_caps_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let caps = cache.entry(cache_key.clone()).or_default();
+    for param in &action.dropped {
+        if !caps.dropped.contains(param) {
+            caps.dropped.push(param.clone());
+        }
+    }
+    if let Some((_, to)) = &action.renamed {
+        caps.max_tokens_style = if to == "max_completion_tokens" {
+            MaxTokensStyle::Completion
+        } else {
+            MaxTokensStyle::Plain
+        };
+    }
+}
+
+/// chat 发送的统一入口（协议轮 chat_round 与 model.chat@1 共用，规格 #74 §E3）：
+/// 先按进程级端点能力缓存卸参数；发出后若遇 HTTP 400 且错误体命中已知参数，
+/// 调整请求体并立即重发一次（不消耗任务重试额度——400 时尚未产出任何 chunk，
+/// 不触碰「已产出 chunk 不再自动重试」门槛）。重发仍失败按现状报错，错误信息附
+/// 「已尝试去掉：…」。model.test@1 不走此路径（连接测试如实暴露端点行为）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chat_completions_compat<D, C, T>(
+    ctx: &RunContext,
+    config: &ModelConfig,
+    endpoint: &str,
+    body: &Value,
+    timeout: Duration,
+    stage: Option<&str>,
+    mut on_delta: D,
+    mut between_reads: C,
+    mut on_thinking: T,
+) -> Result<ChatCompletion, BridgeError>
+where
+    D: FnMut(&str) -> Result<(), BridgeError>,
+    C: FnMut() -> Result<(), BridgeError>,
+    T: FnMut(u64, u64) -> Result<(), BridgeError> + Send,
+{
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(&config.model)
+        .to_string();
+    let cache_key = (config.base_url.clone(), model);
+    let body = apply_cached_caps(&cache_key, body);
+    let first = chat_completions(
+        &config.api_key,
+        endpoint,
+        &body,
+        timeout,
+        &mut on_delta,
+        &mut between_reads,
+        &mut on_thinking,
+    );
+    let Err(error) = first else {
+        return first;
+    };
+    let Some(rejected) = rejected_params_of(&error) else {
+        return Err(error);
+    };
+    let Some((adjusted, action)) = adjust_body_for_rejected(&body, &rejected) else {
+        return Err(error);
+    };
+    ctx.cancel_checkpoint()?;
+    // 首次卸参数：detail 事件进快照日志（任务中心「端点不支持 temperature，已自动
+    // 去掉」），任务级警示进快照 warnings。
+    let mut detail = json!({
+        "kind": "param_dropped",
+        "params": action.dropped,
+    });
+    if let Some(stage) = stage {
+        detail["stage"] = json!(stage);
+    }
+    if let Some((from, to)) = &action.renamed {
+        detail["renamed"] = json!({ from: to });
+    }
+    ctx.emit_detail("param_dropped", detail);
+    for param in &action.dropped {
+        ctx.push_warning(format!("param_dropped:{param}"));
+    }
+    if let Some((from, to)) = &action.renamed {
+        ctx.push_warning(format!("param_renamed:{from}:{to}"));
+    }
+    match chat_completions(
+        &config.api_key,
+        endpoint,
+        &adjusted,
+        timeout,
+        &mut on_delta,
+        &mut between_reads,
+        &mut on_thinking,
+    ) {
+        Ok(completion) => {
+            remember_caps(&cache_key, &action);
+            Ok(completion)
+        }
+        Err(mut error) => {
+            error.message = format!("{}（已尝试去掉：{}）", error.message, action.describe());
+            Err(error)
+        }
+    }
+}
+
 /// 从 settings 表读取的模型连接配置。
 /// temperature/maxTokens 不在此承载：它们的优先级解析（任务输入 > settings 存储 >
 /// 内置缺省 0.3/4096）在 tasks.rs 的 plan_model_chat 完成，chat 请求体直接用解析结果。
@@ -574,7 +859,12 @@ pub(crate) fn http_status_error(code: &str, status: u16, body: &str, model_endpo
     } else {
         format!("API 请求失败（HTTP {status}）：{excerpt}{hint}")
     };
-    BridgeError::new(code, message, retryable).with_details(json!({ "httpStatus": status }))
+    let mut details = json!({ "httpStatus": status });
+    if status == 400 {
+        // 原始错误体（截断）：#86 的 400 卸参数识别需要 error.param/code/message。
+        details["upstreamBody"] = json!(truncate_chars(body.trim(), 2000));
+    }
+    BridgeError::new(code, message, retryable).with_details(details)
 }
 
 /// 连接失败、超时等网络层错误统一映射为可重试错误。
@@ -630,13 +920,15 @@ fn truncate_chars(value: &str, max: usize) -> String {
 /// SSE 增量逐块发 chunk（chunk=增量本身，不累积），非流式发单个 chunk。
 /// 成功终态 result 携带 usage 与 ttftMs/elapsedMs（#75）。
 /// 可选 `stage` 决定内建思考默认与阶段模型；未传 stage 时只应用 extraBody。
+/// temperature 为 None 时请求体不带该键（#86：设置留空 / 输入显式 null = 不发送）。
+/// 发送走 chat_completions_compat：400 命中已知参数时自动卸参数重发一次（#86）。
 /// 自动重试只在「尚未发出任何内容 chunk」时允许：一旦已产出 chunk，重发请求会把
 /// 已发出的增量再推一遍，前端按到达顺序拼接即出现重复前缀；此后失败直接 failed
 ///（错误保留 retryable，UI 手动重试是新任务，从干净状态开始）。
 pub(crate) fn run_chat(
     ctx: &RunContext,
     messages: &[Value],
-    temperature: f64,
+    temperature: Option<f64>,
     max_tokens: u64,
     stream: bool,
     stage: Option<&str>,
@@ -686,11 +978,13 @@ fn chat_once(
 ) -> Result<ChatCompletion, BridgeError> {
     ctx.cancel_checkpoint()?;
     let mut chunk_count: u64 = 0;
-    chat_completions(
-        &config.api_key,
+    chat_completions_compat(
+        ctx,
+        config,
         endpoint,
         body,
         CHAT_TOTAL_TIMEOUT,
+        stage,
         |delta| {
             chunk_count += 1;
             chunk_emitted.store(true, Ordering::SeqCst);

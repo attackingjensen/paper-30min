@@ -54,6 +54,7 @@ import {
   synthesizeRunState,
   taskDetailModel,
   taskKindLabel,
+  warningText,
 } from './present.js';
 
 const bridge = createBridge(window.__TAURI__);
@@ -2930,7 +2931,7 @@ async function openSettingsModal() {
   $('#set-baseurl').value = s.baseUrl;
   $('#set-apikey').value = s.apiKey;
   $('#set-model').value = s.model;
-  $('#set-temp').value = s.temperature;
+  $('#set-temp').value = model.formatTemperatureInput(s.temperature);
   $('#set-maxchars').value = s.maxChars;
   $('#api-test-result').textContent = '';
   settingsStageExtraDraft = { ...(s.stageExtraBody || {}) };
@@ -2989,7 +2990,7 @@ function collectSettingsForm() {
   s.baseUrl = $('#set-baseurl').value.trim();
   s.apiKey = $('#set-apikey').value.trim();
   s.model = $('#set-model').value.trim();
-  s.temperature = parseFloat($('#set-temp').value) || 0.3;
+  s.temperature = model.parseTemperatureInput($('#set-temp').value);
   s.maxChars = parseInt($('#set-maxchars').value, 10) || 16000;
   const stageModels = {};
   stageModelInputs().forEach(input => {
@@ -3423,6 +3424,18 @@ function renderTaskList(tasks) {
         table.appendChild(line);
       }
       row.appendChild(table);
+    }
+
+    // 任务级警示（#86 卸参数提示等）：快照 warnings，终态也保留显示。
+    if (Array.isArray(task.warnings) && task.warnings.length) {
+      const box = document.createElement('div');
+      box.className = 'task-warnings';
+      for (const w of task.warnings) {
+        const line = document.createElement('div');
+        line.textContent = warningText(w);
+        box.appendChild(line);
+      }
+      row.appendChild(box);
     }
 
     if (task.status === 'failed' && task.error) {

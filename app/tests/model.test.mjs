@@ -7,6 +7,7 @@ import {
   initModel, initSettings, loadSettings, saveSettings, settingsReady,
   chat, testConnection, DEFAULT_SETTINGS,
   isReasoningFamily, mergeExtraBody, extraBodyPreview, reduceThinkingStatus, thinkingStatusText,
+  parseTemperatureInput, formatTemperatureInput,
 } from '../ui/js/model.js';
 
 function createFakeBridge({ settings } = {}) {
@@ -244,4 +245,19 @@ test('思考心跳归约：thinking 激活，chunk/round/content 清除', () => 
   assert.equal(reduceThinkingStatus([thinking, { event: 'chunk', chunk: '答' }]), null);
   assert.equal(reduceThinkingStatus([thinking, { event: 'round', detail: { round: 1 } }]), null);
   assert.equal(reduceThinkingStatus([thinking, { event: 'content', detail: { stage: 'synthesize' } }]), null);
+});
+
+test('温度输入框读写（#86）：空串 ↔ null，越界与非数值抛错', () => {
+  assert.equal(parseTemperatureInput(''), null);
+  assert.equal(parseTemperatureInput('   '), null);
+  assert.equal(parseTemperatureInput('0.7'), 0.7);
+  assert.equal(parseTemperatureInput('0'), 0);
+  assert.equal(parseTemperatureInput('2'), 2);
+  assert.throws(() => parseTemperatureInput('high'), /0–2/);
+  assert.throws(() => parseTemperatureInput('2.5'), /0–2/);
+  assert.throws(() => parseTemperatureInput('-0.1'), /0–2/);
+  assert.equal(formatTemperatureInput(null), '');
+  assert.equal(formatTemperatureInput(undefined), '');
+  assert.equal(formatTemperatureInput(0.3), '0.3');
+  assert.equal(formatTemperatureInput(0), '0');
 });

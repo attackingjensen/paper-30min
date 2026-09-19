@@ -6,7 +6,7 @@
 
 Paper30Min 是「论文精读」专精 agent harness：帮助用户高效读完一篇完整论文。Windows 正式客户端 **1.0.0** 已发布（[GitHub Release](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0)）；`steven123397/dev` 与 `main` 同源，当前协作走 `dev`，不创建合入 `main` 的 PR，也不因零散感受新建打磨类 Issue。
 
-Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。当前工作是性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）：v1.0 反馈解析、建图、深挖都太慢。已完成 #75–#78、#82；[#79](https://github.com/attackingjensen/paper-30min/issues/79)、[#80](https://github.com/attackingjensen/paper-30min/issues/80)（深挖轮次进度与最终稿预览）与 [#81](https://github.com/attackingjensen/paper-30min/issues/81)（深挖减轮：配方预附本节图表 + 一轮多工具）契约与实现均已落地，真实窗口对照待作者点验（走查归 [#85](https://github.com/attackingjensen/paper-30min/issues/85)）；[#83](https://github.com/attackingjensen/paper-30min/issues/83)（批量深挖有界并发）与 [#84](https://github.com/attackingjensen/paper-30min/issues/84)（常驻解析侧车）实现已落地、契约测试全绿，真实窗口对照同样归 #85。**下一步是 [#86](https://github.com/attackingjensen/paper-30min/issues/86)**。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
+Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。当前工作是性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）：v1.0 反馈解析、建图、深挖都太慢。已完成 #75–#78、#82；[#79](https://github.com/attackingjensen/paper-30min/issues/79)、[#80](https://github.com/attackingjensen/paper-30min/issues/80)（深挖轮次进度与最终稿预览）与 [#81](https://github.com/attackingjensen/paper-30min/issues/81)（深挖减轮：配方预附本节图表 + 一轮多工具）契约与实现均已落地，真实窗口对照待作者点验（走查归 [#85](https://github.com/attackingjensen/paper-30min/issues/85)）；[#83](https://github.com/attackingjensen/paper-30min/issues/83)（批量深挖有界并发）、[#84](https://github.com/attackingjensen/paper-30min/issues/84)（常驻解析侧车）与 [#86](https://github.com/attackingjensen/paper-30min/issues/86)（可空 temperature 与 400 自动卸参数）实现已落地、契约测试全绿，真实窗口对照同样归 #85。**下一步是 [#85](https://github.com/attackingjensen/paper-30min/issues/85)（性能对照走查）**。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
 
 ## 已具备能力
 
@@ -22,7 +22,7 @@ Tauri + Rust + 原生 JavaScript，SQLite 本地书库。支持本地 PDF、arXi
 
 导入后页图预渲染与解析并行，解析完成后补渲染图表裁切图；解析完成即可建图。解析默认 TableFormer FAST、线程按物理核钳制到 2–8，设置可切回 ACCURATE。解析侧车常驻：应用启动时预热模型（默认开，可关），第二篇及以后论文解析免去启动等待；页图渲染复用同一进程并与解析并行；空闲超时（默认 10 分钟，可配 1–240）自动释放，常驻不可用自动回退一次一进程。深挖在页图与裁切图齐备前禁用。
 
-协议四阶段默认关闭思考，问答默认开启并显示思考心跳；可按阶段指定模型名与请求体附加参数。模型由 Rust 调用，API Key 只留本机。任务中心覆盖排队到重试，关窗可等待或停止。笔记导出以协议产物为正源。视觉为 soft-ui 皮肤。
+协议四阶段默认关闭思考，问答默认开启并显示思考心跳；可按阶段指定模型名与请求体附加参数。温度设置可留空表示不发送；端点拒收 temperature/max_tokens 等参数时自动卸参数重发一次并按端点记住，任务中心可见提示。模型由 Rust 调用，API Key 只留本机。任务中心覆盖排队到重试，关窗可等待或停止。笔记导出以协议产物为正源。视觉为 soft-ui 皮肤。
 
 Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专项验收。侧车子进程 Windows 控制台黑窗已修（`CREATE_NO_WINDOW`），随下一补丁发布。
 
@@ -42,7 +42,7 @@ Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专�
 | [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型与思考默认（协议关、问答开） | 已完成 |
 | [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 实现已落地，待真实窗口 |
 | [#84](https://github.com/attackingjensen/paper-30min/issues/84) | 常驻侧车 | 实现已落地，待真实窗口 |
-| [#86](https://github.com/attackingjensen/paper-30min/issues/86) | 可空 temperature 与 400 自动卸参数 | 待开始 |
+| [#86](https://github.com/attackingjensen/paper-30min/issues/86) | 可空 temperature 与 400 自动卸参数 | 实现已落地，待真实窗口 |
 | [#85](https://github.com/attackingjensen/paper-30min/issues/85) | 性能对照走查与状态同步 | 待开始（依赖全部） |
 
 ## 工程验证

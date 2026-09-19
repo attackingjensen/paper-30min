@@ -102,6 +102,17 @@ fn put_model_merges_partial_updates_onto_stored_values() {
 
     let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
     assert_eq!(loaded["model"], updated["settings"]);
+
+    // #86：temperature 允许 null（请求体不发送，用端点默认），并随存储往返。
+    let nulled = invoke(
+        &registry,
+        &library,
+        "settings.putModel@1",
+        json!({ "settings": { "temperature": null } }),
+    );
+    assert_eq!(nulled["settings"]["temperature"], json!(null));
+    let loaded = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(loaded["model"]["temperature"], json!(null), "null 应随存储往返");
 }
 
 #[test]

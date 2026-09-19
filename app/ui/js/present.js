@@ -73,6 +73,16 @@ export function taskKindLabel(kind, input = {}) {
   return bare || '未知任务';
 }
 
+/** 任务级警示（快照 warnings）→ 任务中心可读文案（#86 卸参数；未知编码原文显示）。 */
+export function warningText(warning) {
+  const w = String(warning || '');
+  let m = w.match(/^param_dropped:(.+)$/);
+  if (m) return `端点不支持 ${m[1]}，已自动去掉`;
+  m = w.match(/^param_renamed:([^:]+):(.+)$/);
+  if (m) return `端点要求以 ${m[2]} 传递长度上限，已自动改名（原 ${m[1]}）`;
+  return w;
+}
+
 // ---------------- 任务中心协议呈现（决策 13） ----------------
 
 /** 建图内部阶段序（与 Rust 发射顺序一致）。 */

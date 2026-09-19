@@ -128,6 +128,17 @@ pub(crate) fn pdfparse_table_mode(library: &Library) -> &'static str {
     }
 }
 
+/// 存储的 temperature 设置解析（#86）：显式 null = 不发送（请求体不带该键）；
+/// 缺省/损坏 = 内置缺省 0.3。tasks.rs（model.chat@1 计划）与 protocol.rs
+///（协议轮环境）共用同一解析，输入级显式 null 覆盖在 tasks.rs 计划层完成。
+pub(crate) fn stored_temperature(stored: Option<&Value>) -> Option<f64> {
+    match stored.and_then(|value| value.get("temperature")) {
+        None => Some(crate::tasks::DEFAULT_TEMPERATURE),
+        Some(Value::Null) => None,
+        Some(value) => Some(value.as_f64().unwrap_or(crate::tasks::DEFAULT_TEMPERATURE)),
+    }
+}
+
 /// pdfparse 任务的 HF 端点覆盖：空串/缺省/损坏都归为 None（默认官方源+镜像回退）。
 pub(crate) fn pdfparse_hf_endpoint(library: &Library) -> Option<String> {
     let merged = load_pdfparse(library).ok()?;
@@ -206,11 +217,16 @@ pub fn put_model(library: &Library, input: &Value) -> Result<Value, BridgeError>
                 }
             }
             "temperature" => {
+                // #86：null = 请求体不发送 temperature（用端点默认）；数值须在 0..=2。
+                if value.is_null() {
+                    merged.insert(field.clone(), Value::Null);
+                    continue;
+                }
                 let number = value
                     .as_f64()
-                    .ok_or_else(|| BridgeError::invalid_input("temperature 必须是数值"))?;
+                    .ok_or_else(|| BridgeError::invalid_input("temperature 必须是数值或 null"))?;
                 if !(0.0..=2.0).contains(&number) {
-                    return Err(BridgeError::invalid_input("temperature 必须在 0..=2 之间"));
+                    return Err(BridgeError::invalid_input("temperature 必须在 0..=2 之间或为 null"));
                 }
             }
             "maxTokens" | "maxChars" => {

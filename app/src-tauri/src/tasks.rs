@@ -88,6 +88,7 @@ pub struct TaskEvent {
 /// `result` 与 TaskEvent 同义：succeeded 终态的结果载荷，缺省不序列化。
 /// `details` 是领域 detail 事件（阶段/工具轨迹）的有界日志：JS 订阅建立前发出的
 /// detail 事件不经事件通道重放，任务中心以快照日志为准回看（#55 追加补齐，#72 走查发现）。
+/// `warnings` 是任务级警示（#86 卸参数提示等），缺省不序列化。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSnapshot {
@@ -103,6 +104,8 @@ pub struct TaskSnapshot {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -139,7 +142,7 @@ enum TaskPlan {
     },
     ModelChat {
         messages: Vec<Value>,
-        temperature: f64,
+        temperature: Option<f64>,
         max_tokens: u64,
         stream: bool,
         stage: Option<String>,
@@ -505,22 +508,24 @@ fn plan_model_chat(input: &Value, library: &Library) -> Result<TaskPlan, BridgeE
         checked.push(json!({ "role": role, "content": content }));
     }
     // 设置内容损坏时按内建缺省处理，与 settings.get@1 的合并语义一致。
+    // temperature 三级解析（#86）：任务输入显式 null = 不发送；输入缺省取 settings；
+    // settings 显式 null = 不发送；settings 缺省/损坏 = 内置缺省 0.3。
     let stored = library
         .get_setting("model")?
         .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-    let stored_temperature = stored
-        .as_ref()
-        .and_then(|value| value.get("temperature"))
-        .and_then(Value::as_f64);
+    let stored_temperature = crate::settings::stored_temperature(stored.as_ref());
     let stored_max_tokens = stored
         .as_ref()
         .and_then(|value| value.get("maxTokens"))
         .and_then(Value::as_u64);
     let temperature = match input.get("temperature") {
-        None | Some(Value::Null) => stored_temperature.unwrap_or(DEFAULT_TEMPERATURE),
-        Some(value) => value
-            .as_f64()
-            .ok_or_else(|| BridgeError::invalid_input("temperature 必须是数值"))?,
+        None => stored_temperature,
+        Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_f64()
+                .ok_or_else(|| BridgeError::invalid_input("temperature 必须是数值或 null"))?,
+        ),
     };
     let max_tokens = match input.get("maxTokens") {
         None | Some(Value::Null) => stored_max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
@@ -653,6 +658,7 @@ impl TaskRegistry {
                 error: None,
                 result: None,
                 details: None,
+                warnings: None,
                 created_at: now.clone(),
                 updated_at: now,
             },
@@ -761,6 +767,23 @@ impl TaskRegistry {
                 .get(task_id)
                 .map_or(false, |entry| entry.cancel.load(Ordering::SeqCst))
         })
+    }
+
+    /// 追加任务级警示（快照 warnings；任务中心轮询快照可见，如 #86 卸参数提示）。
+    /// 同一警示去重：多轮卸同一参数只显示一条提示。
+    pub(crate) fn push_warning(&self, task_id: &str, warning: String) {
+        let Ok(mut entries) = self.entries.lock() else {
+            return;
+        };
+        let Some(entry) = entries.get_mut(task_id) else {
+            return;
+        };
+        let warnings = entry.snapshot.warnings.get_or_insert_with(Vec::new);
+        if warnings.contains(&warning) {
+            return;
+        }
+        warnings.push(warning);
+        entry.snapshot.updated_at = now_iso();
     }
 
     /// 状态变化：更新快照并发 status 事件。
@@ -970,6 +993,11 @@ impl RunContext {
     pub(crate) fn emit_detail(&self, event: &'static str, detail: Value) {
         self.registry
             .push_detail(&self.task_id, &self.sink, event, detail);
+    }
+
+    /// 任务级警示（#86）：进快照 warnings，任务中心轮询可见。
+    pub(crate) fn push_warning(&self, warning: String) {
+        self.registry.push_warning(&self.task_id, warning);
     }
 
     /// 直接置 failed 终态（不可重试的错误或未配置等情况）。

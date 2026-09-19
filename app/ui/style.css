@@ -204,6 +204,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   100% { margin-left: 100%; }
 }
 .task-error { color: var(--danger); font-size: 12.5px; }
+.task-warnings { color: var(--warn); font-size: 12.5px; margin-top: 4px; }
 
 /* 协议任务附加区（#56 决策 13）：建图阶段流 / 深挖逐节子进度 / 工具步骤流 */
 .task-stage-flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

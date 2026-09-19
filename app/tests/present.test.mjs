@@ -13,6 +13,7 @@ import {
   libraryMapState,
   notesMarkdown,
   roundProgressView,
+  warningText,
   roundStartView,
   roundView,
   synthesizeRunState,
@@ -672,4 +673,13 @@ test('任务中心：liveLine 取最新 round-start / round-progress，成功终
     details: [{ event: 'round-start', detail: { partId: 'part-1', round: 1 } }],
   });
   assert.equal(taskDetailModel({ task: done }).liveLine, undefined);
+});
+
+test('任务警示文案（#86）：卸参数与改名映射为可读提示，未知编码原文显示', () => {
+  assert.equal(warningText('param_dropped:temperature'), '端点不支持 temperature，已自动去掉');
+  assert.equal(
+    warningText('param_renamed:max_tokens:max_completion_tokens'),
+    '端点要求以 max_completion_tokens 传递长度上限，已自动改名（原 max_tokens）',
+  );
+  assert.equal(warningText('scanned_pages_ocr'), 'scanned_pages_ocr');
 });

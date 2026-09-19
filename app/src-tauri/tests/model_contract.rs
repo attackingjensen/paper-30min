@@ -850,3 +850,340 @@ fn chat_ignores_reasoning_content_and_emits_thinking_then_content() {
         "首字时延应落在首个推理增量，思考时长为推理→正文，二者之和不超过总时长"
     );
 }
+
+// ---------- #86：可空 temperature 与 400 自动卸参数 ----------
+
+/// 设置 temperature=null → 请求体不带该键；任务输入显式 null 覆盖 settings 值同义。
+#[test]
+fn chat_omits_temperature_when_null() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        sse_chat(vec![json!({"choices": [{"delta": {"content": "好"}}]}).to_string()])
+    });
+    bridge::invoke(
+        &registry,
+        &library,
+        "settings.putModel@1",
+        &json!({ "settings": {
+            "baseUrl": mock.url(""), "apiKey": "sk-test", "model": "gpt-smoke",
+            "temperature": null,
+        } }),
+    )
+    .expect("settings 应接受 temperature: null");
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+
+    // 任务输入显式 null：即使 settings 有值也不发送。
+    bridge::invoke(
+        &registry,
+        &library,
+        "settings.putModel@1",
+        &json!({ "settings": { "temperature": 0.7 } }),
+    )
+    .expect("写入 temperature");
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }], "temperature": null }),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    for (index, request) in requests.iter().enumerate() {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert!(
+            body.get("temperature").is_none(),
+            "第 {} 个请求不应携带 temperature: {body}",
+            index + 1
+        );
+    }
+}
+
+/// mock 端点对含 temperature 的请求回 400（error.param 命中），否则正常 SSE：
+/// 任务成功；mock 收到 2 个请求，第二个不含 temperature；快照 details 含
+/// param_dropped 事件、warnings 含 param_dropped:temperature；同一进程内后续
+/// 任务直接不带 temperature（端点能力缓存生效，mock 只再多收 1 个请求）。
+#[test]
+fn chat_drops_rejected_temperature_once_and_remembers() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|request, _hit| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        if body.get("temperature").is_some() {
+            return MockResponse::json(
+                400,
+                json!({ "error": { "param": "temperature", "code": "unsupported_parameter",
+                    "message": "Unsupported parameter: temperature" } }),
+            );
+        }
+        sse_chat(vec![json!({"choices": [{"delta": {"content": "好"}}]}).to_string()])
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let sink = Collector::new();
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            sink,
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "卸参数后应成功");
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2, "首发 400 + 卸参数重发一次");
+    let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(first.get("temperature").is_some(), "首发应带 temperature");
+    let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert!(second.get("temperature").is_none(), "重发不应带 temperature");
+
+    let snapshot = registry.get(&task_id).unwrap();
+    let details = snapshot.details.clone().unwrap_or_default();
+    let drop_event = details
+        .iter()
+        .find(|entry| entry["event"] == json!("param_dropped"))
+        .expect("details 应含 param_dropped 事件");
+    assert!(
+        drop_event["detail"]["params"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("temperature")),
+        "param_dropped 应列出 temperature: {drop_event}"
+    );
+    let warnings = snapshot.warnings.expect("快照应带 warnings");
+    assert!(
+        warnings.contains(&"param_dropped:temperature".to_string()),
+        "warnings 应含 param_dropped:temperature: {warnings:?}"
+    );
+
+    // 端点能力缓存：第二个任务不再白跑 400，请求直接不含 temperature。
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3, "缓存生效后每轮只发 1 个请求");
+    let third: Value = serde_json::from_slice(&requests[2].body).unwrap();
+    assert!(third.get("temperature").is_none(), "缓存命中应预先卸掉 temperature");
+}
+
+/// max_tokens 被拒 → 改名为 max_completion_tokens 重发（OpenAI 推理系列规则）。
+#[test]
+fn chat_renames_rejected_max_tokens() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|request, _hit| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        if body.get("max_tokens").is_some() {
+            return MockResponse::json(
+                400,
+                json!({ "error": { "param": "max_tokens", "code": "unsupported_parameter",
+                    "message": "Unsupported parameter: max_tokens. Use max_completion_tokens instead." } }),
+            );
+        }
+        sse_chat(vec![json!({"choices": [{"delta": {"content": "好"}}]}).to_string()])
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert!(second.get("max_tokens").is_none(), "重发不应带 max_tokens");
+    assert_eq!(
+        second["max_completion_tokens"],
+        json!(4096),
+        "max_tokens 应改名为 max_completion_tokens 且值保留"
+    );
+    let warnings = registry.get(&task_id).unwrap().warnings.unwrap_or_default();
+    assert!(
+        warnings.contains(&"param_renamed:max_tokens:max_completion_tokens".to_string()),
+        "warnings 应记改名: {warnings:?}"
+    );
+}
+
+/// 卸参数后重发仍 400 → 按现状失败（model_http_error），不再消耗重试额度（命中数 = 2）。
+#[test]
+fn chat_fails_after_unsuccessful_drop() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        MockResponse::json(
+            400,
+            json!({ "error": { "param": "temperature", "code": "unsupported_parameter",
+                "message": "Unsupported parameter: temperature" } }),
+        )
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
+    assert_eq!(mock.hits(), 2, "首发 + 卸参数重发各一次，不重试");
+    let error = registry.get(&task_id).unwrap().error.expect("应有错误");
+    assert_eq!(error.code, "model_http_error");
+    assert!(
+        error.message.contains("已尝试去掉：temperature"),
+        "错误信息应附已尝试去掉的参数: {}",
+        error.message
+    );
+}
+
+/// 400 但错误体不命中任何已知参数 → 不重发（命中数 = 1），按现状失败。
+#[test]
+fn chat_does_not_resend_unrecognized_400() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        MockResponse::json(400, json!({ "error": { "message": "余额不足，请充值" } }))
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
+    assert_eq!(mock.hits(), 1, "未命中已知参数不应重发");
+    assert_eq!(
+        registry.get(&task_id).unwrap().error.unwrap().code,
+        "model_http_error"
+    );
+}
+
+/// model.test@1 不做卸参数（连接测试如实暴露端点行为）。
+#[test]
+fn test_connection_does_not_drop_params_on_400() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|request, _hit| {
+        if request.path.ends_with("/models") {
+            // /models 不可用 → 退路走最小 chat 请求。
+            return MockResponse::json(404, json!({ "error": { "message": "no such route" } }));
+        }
+        MockResponse::json(
+            400,
+            json!({ "error": { "param": "max_tokens", "code": "unsupported_parameter",
+                "message": "Unsupported parameter: max_tokens" } }),
+        )
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let task_id = registry
+        .start("model.test@1", json!({}), Collector::new())
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
+    let posts = mock
+        .requests()
+        .iter()
+        .filter(|request| request.method == "POST")
+        .count();
+    assert_eq!(posts, 1, "连接测试不卸参数不重发");
+    let error = registry.get(&task_id).unwrap().error.expect("应有错误");
+    assert_eq!(error.code, "model_http_error");
+    assert!(
+        !error.message.contains("已尝试去掉"),
+        "连接测试应如实报错: {}",
+        error.message
+    );
+}
+
+/// max_completion_tokens 被拒 → 改回 max_tokens（反向改名；经 extraBody 预置
+/// max_completion_tokens 并 null 删掉 max_tokens 来构造请求体）。
+#[test]
+fn chat_renames_rejected_max_completion_tokens_back() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|request, _hit| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        if body.get("max_completion_tokens").is_some() {
+            return MockResponse::json(
+                400,
+                json!({ "error": { "param": "max_completion_tokens",
+                    "code": "unsupported_parameter",
+                    "message": "Unsupported parameter: max_completion_tokens" } }),
+            );
+        }
+        sse_chat(vec![json!({"choices": [{"delta": {"content": "好"}}]}).to_string()])
+    });
+    bridge::invoke(
+        &registry,
+        &library,
+        "settings.putModel@1",
+        &json!({ "settings": {
+            "baseUrl": mock.url(""), "apiKey": "sk-test", "model": "gpt-smoke",
+            "extraBody": { "max_tokens": null, "max_completion_tokens": 100 },
+        } }),
+    )
+    .expect("写入模型设置");
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(first["max_completion_tokens"], json!(100));
+    assert!(first.get("max_tokens").is_none(), "extraBody null 应删键");
+    let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert!(second.get("max_completion_tokens").is_none(), "重发不应带 max_completion_tokens");
+    assert_eq!(second["max_tokens"], json!(100), "应改回 max_tokens 且值保留");
+    let warnings = registry.get(&task_id).unwrap().warnings.unwrap_or_default();
+    assert!(
+        warnings.contains(&"param_renamed:max_completion_tokens:max_tokens".to_string()),
+        "warnings 应记反向改名: {warnings:?}"
+    );
+}
+
+/// 400 错误体为纯文本（中转站常见）→ 词边界命中已知参数同样卸参数重发。
+#[test]
+fn chat_drops_param_on_plain_text_400() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|request, _hit| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        if body.get("temperature").is_some() {
+            return MockResponse::bytes(
+                400,
+                "text/plain",
+                "Bad Request: this endpoint does not accept temperature",
+            );
+        }
+        sse_chat(vec![json!({"choices": [{"delta": {"content": "好"}}]}).to_string()])
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert!(second.get("temperature").is_none(), "纯文本 400 也应识别并卸掉 temperature");
+}
