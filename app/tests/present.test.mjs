@@ -8,6 +8,7 @@ import {
   buildMapStageFlow,
   convertTimingRows,
   deepDiveRunState,
+  deepDiveSectionFlow,
   deepDiveStatusLine,
   libraryMapState,
   notesMarkdown,
@@ -195,6 +196,147 @@ test('任务中心：单节深挖不呈现逐节子进度（1/1 是噪音）', (
   const model = taskDetailModel({ task, meta });
   assert.equal(model.subProgress, undefined);
   assert.equal(model.stepsTotal, 1);
+});
+
+// ---------------- #83：批量深挖有界并发（按节分组） ----------------
+
+const QUEUED_3 = {
+  stage: 'deep-dive-queued',
+  total: 3,
+  targets: [
+    { partId: 'part-1', secId: 'sec_1', title: 'Introduction', index: 1 },
+    { partId: 'part-2', secId: 'sec_2', title: 'Method', index: 2 },
+    { partId: 'part-3', secId: 'sec_3', title: 'Experiments', index: 3 },
+  ],
+};
+
+test('任务中心：批量深挖按节分组状态流（排队 / 第 n 轮 / 完成）', () => {
+  const task = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    status: 'running',
+    progress: { done: 1, total: 3 },
+    details: [
+      { event: 'stage', detail: QUEUED_3 },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', secId: 'sec_1', title: 'Introduction', index: 1, total: 3 } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-2', secId: 'sec_2', title: 'Method', index: 2, total: 3 } },
+      { event: 'round-start', detail: { partId: 'part-2', round: 2, stage: 'deep-dive' } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', secId: 'sec_1', title: 'Introduction', index: 1, total: 3, sectionStatus: 'done' } },
+    ],
+  });
+  const model = taskDetailModel({ task, meta: null });
+  assert.equal(model.subProgress, undefined, '有 queued 事件时不再用逐节子进度');
+  const flow = model.sectionFlow;
+  assert.deepEqual(flow.map(item => item.state), ['done', 'current', 'queued']);
+  assert.equal(flow[0].label, '1. Introduction · 完成');
+  assert.equal(flow[1].label, '2. Method · 第 2 轮');
+  assert.equal(flow[2].label, '3. Experiments · 排队');
+});
+
+test('任务中心：批量深挖失败节标红（sectionStatus 与 failedSections 双通道）', () => {
+  const task = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    status: 'failed',
+    error: { code: 'protocol_deep_dive_failed', details: { failedSections: [{ partId: 'part-2', code: 'step_limit_exceeded' }] } },
+    details: [
+      { event: 'stage', detail: { stage: 'deep-dive-queued', total: 2, targets: [
+        { partId: 'part-1', secId: 'sec_1', title: 'Introduction', index: 1 },
+        { partId: 'part-2', secId: 'sec_2', title: 'Method', index: 2 },
+      ] } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', index: 1, total: 2 } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', index: 1, total: 2, sectionStatus: 'done' } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-2', index: 2, total: 2 } },
+    ],
+  });
+  const model = taskDetailModel({ task, meta: null });
+  assert.deepEqual(model.sectionFlow.map(item => item.state), ['done', 'failed']);
+  assert.equal(model.sectionFlow[1].label, '2. Method · 失败');
+});
+
+test('任务中心：deepDiveSectionFlow 在成功终态与无 queued 事件时回退', () => {
+  assert.equal(deepDiveSectionFlow({ details: [{ event: 'stage', detail: QUEUED_3 }], status: 'succeeded' }), null);
+  assert.equal(deepDiveSectionFlow({ details: [], status: 'running' }), null);
+  assert.equal(deepDiveSectionFlow({}), null);
+});
+
+test('任务中心：批量深挖轨迹按节分栏', () => {
+  const task = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    status: 'running',
+    details: [
+      { event: 'stage', detail: QUEUED_3 },
+      { event: 'round', detail: { partId: 'part-1', round: 1, ttftMs: 100, elapsedMs: 200 } },
+      { event: 'tool', detail: { partId: 'part-2', step: 1, name: 'get_figure', args: { fig_id: 'fig_1' }, ok: true, result: { page: 2 } } },
+      { event: 'tool', detail: { partId: 'part-1', step: 1, name: 'read_section', args: { sec_id: 'sec_1' }, ok: true, result: { blocks: 3, total: 3 } } },
+    ],
+  });
+  const model = taskDetailModel({ task, meta: null });
+  assert.equal(model.trace, undefined, '批量不再平铺');
+  assert.equal(model.sectionTraces.length, 2, 'part-3 无轨迹不出栏');
+  assert.equal(model.sectionTraces[0].title, 'Introduction');
+  assert.deepEqual(model.sectionTraces[0].items.map(item => item.kind), ['round', 'tool']);
+  assert.equal(model.sectionTraces[0].toolCount, 1);
+  assert.equal(model.sectionTraces[1].title, 'Method');
+  assert.equal(model.sectionTraces[1].items[0].text, '第 1 步 · get_figure(fig_1) → p2 裁切图');
+});
+
+test('任务中心：单节深挖带 queued 事件时不呈现状态流、轨迹平铺', () => {
+  const task = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    status: 'running',
+    details: [
+      { event: 'stage', detail: { stage: 'deep-dive-queued', total: 1, targets: [{ partId: 'part-1', secId: 'sec_1', title: 'Introduction', index: 1 }] } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', secId: 'sec_1', title: 'Introduction', index: 1, total: 1 } },
+      { event: 'round', detail: { partId: 'part-1', round: 1, ttftMs: 100, elapsedMs: 200 } },
+    ],
+  });
+  const model = taskDetailModel({ task, meta: null });
+  assert.equal(model.subProgress, undefined);
+  assert.equal(model.sectionFlow, undefined, '单节一行状态流是噪音，不呈现');
+  assert.equal(model.sectionTraces, undefined, '单节不分栏');
+  assert.equal(model.trace.length, 1);
+});
+
+test('任务中心：批量深挖成功终态不回落逐节子进度，轨迹仍按节分栏', () => {
+  const task = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    status: 'succeeded',
+    progress: { done: 2, total: 2 },
+    details: [
+      { event: 'stage', detail: { stage: 'deep-dive-queued', total: 2, targets: [
+        { partId: 'part-1', secId: 'sec_1', title: 'Introduction', index: 1 },
+        { partId: 'part-2', secId: 'sec_2', title: 'Method', index: 2 },
+      ] } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', index: 1, total: 2 } },
+      { event: 'tool', detail: { partId: 'part-1', step: 1, name: 'read_section', args: { sec_id: 'sec_1' }, ok: true, result: { blocks: 3, total: 3 } } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', index: 1, total: 2, sectionStatus: 'done' } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-2', index: 2, total: 2 } },
+      { event: 'round', detail: { partId: 'part-2', round: 1, ttftMs: 100, elapsedMs: 200 } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-2', index: 2, total: 2, sectionStatus: 'done' } },
+    ],
+  });
+  const model = taskDetailModel({ task, meta: null });
+  assert.equal(model.sectionFlow, undefined, '成功终态不显示状态流（与建图片流一致）');
+  assert.equal(model.subProgress, undefined, '成功终态不回落到完成顺序的逐节子进度');
+  assert.equal(model.sectionTraces.length, 2, '终态轨迹仍按节分栏');
+  assert.equal(model.sectionTraces[0].title, 'Introduction');
+  assert.equal(model.sectionTraces[1].title, 'Method');
+});
+
+test('任务中心：已取消的批量深挖在飞节标「已取消」，未开工节保持排队', () => {
+  const task = taskSnapshot({
+    kind: 'paper.deep-dive@1',
+    status: 'cancelled',
+    details: [
+      { event: 'stage', detail: QUEUED_3 },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', index: 1, total: 3 } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-1', index: 1, total: 3, sectionStatus: 'done' } },
+      { event: 'stage', detail: { stage: 'deep-dive', partId: 'part-2', index: 2, total: 3 } },
+    ],
+  });
+  const model = taskDetailModel({ task, meta: null });
+  assert.deepEqual(model.sectionFlow.map(item => item.state), ['done', 'current', 'queued']);
+  assert.equal(model.sectionFlow[1].label, '2. Method · 已取消');
+  assert.equal(model.sectionFlow[2].label, '3. Experiments · 排队');
 });
 
 test('任务中心：综合为普通任务；会话登记缺失时降级为空模型', () => {

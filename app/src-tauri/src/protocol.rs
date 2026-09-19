@@ -70,6 +70,8 @@ pub(crate) const SECTION_TYPES: [&str; 5] = ["abstract", "introduction", "method
 const STAGE_MAP_L2: &str = "map-l2";
 const STAGE_MAP_L1: &str = "map-l1";
 const STAGE_DEEP_DIVE: &str = "deep-dive";
+/// 批量深挖开工事件（#83）：开工前列出全部目标，任务中心据此预先画出每节一行。
+const STAGE_DEEP_DIVE_QUEUED: &str = "deep-dive-queued";
 const STAGE_SYNTHESIZE: &str = "synthesize";
 
 const TOOL_READ_SECTION: &str = "read_section";
@@ -1662,7 +1664,7 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
     });
     let completed_count = AtomicU64::new(0);
     let concurrency = settings::protocol_concurrency(&ctx.library) as usize;
-    let outcome = run_bounded(ctx, &items, concurrency, |ctx, (index, section)| {
+    let outcome = run_bounded(ctx, &items, concurrency, true, |ctx, (index, section)| {
         let shard_no = *index as u64 + 1;
         let sec_id = section.id.as_str();
         ctx.emit_detail(
@@ -1747,7 +1749,10 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
             }
             Err(other) => Err(other),
         }
-    });
+    },
+        // 建图的落库在收尾统一进行（partial / 全量），收集侧无需逐项动作。
+        |_, _| Ok(()),
+    );
 
     let mut warnings = warnings.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
     if !outcome.failed.is_empty() {
@@ -1937,24 +1942,30 @@ impl From<BridgeError> for Halt {
     }
 }
 
-/// 有界并发运行器（#79 引入，#83 批量深挖复用）：最多 N 个工作线程从共享队列取项；
-/// 任一项 Failed 或取消检查点命中时置停止标志，其余线程完成当前项后不再取新项。
+/// 有界并发运行器（#79 引入，#83 批量深挖复用）：最多 N 个工作线程从共享队列取项。
+/// 完成项经通道交回调用线程（收集侧），由 on_complete 单线程消化（如逐节落库），
+/// 避免整记录读改写竞态；on_complete 失败视为该项交付失败：置停止标志并按失败项记录。
+/// stop_on_failure = true 时任一项 Failed 即置停止标志；false 时记录失败、继续其余项。
+/// 取消检查点命中或 Halt::Handled（重试机器已置终态）时总是停止：在飞项完成后不再取新项。
 struct BoundedOutcome<T> {
     completed: Vec<(usize, T)>,
     failed: Vec<(usize, BridgeError)>,
     stopped: bool,
 }
 
-fn run_bounded<T, I, F>(
+fn run_bounded<T, I, F, C>(
     ctx: &RunContext,
     items: &[I],
     concurrency: usize,
+    stop_on_failure: bool,
     work: F,
+    mut on_complete: C,
 ) -> BoundedOutcome<T>
 where
     I: Sync,
     T: Send,
     F: Fn(&RunContext, &I) -> Result<T, Halt> + Sync,
+    C: FnMut(usize, &T) -> Result<(), BridgeError>,
 {
     let n = items.len();
     if n == 0 {
@@ -1967,12 +1978,16 @@ where
     let workers = concurrency.max(1).min(n);
     let queue = Mutex::new((0..n).collect::<VecDeque<usize>>());
     let stop = AtomicBool::new(false);
-    let completed = Mutex::new(Vec::<(usize, T)>::new());
     let failed = Mutex::new(Vec::<(usize, BridgeError)>::new());
+    let (sender, receiver) = std::sync::mpsc::channel::<(usize, T)>();
+    let mut completed = Vec::<(usize, T)>::new();
 
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| loop {
+            let sender = sender.clone();
+            // 共享状态以引用进入 move 闭包（引用是 Copy），仅 sender 克隆按值移动。
+            let (queue, stop, failed, work) = (&queue, &stop, &failed, &work);
+            scope.spawn(move || loop {
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
@@ -1991,12 +2006,14 @@ where
                     }
                 };
                 match work(ctx, &items[index]) {
-                    Ok(value) => completed
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .push((index, value)),
+                    // 接收侧在作用域汇合前一直存活，发送不会失败；即使失败也只是丢结果。
+                    Ok(value) => {
+                        let _ = sender.send((index, value));
+                    }
                     Err(Halt::Failed(error)) => {
-                        stop.store(true, Ordering::SeqCst);
+                        if stop_on_failure {
+                            stop.store(true, Ordering::SeqCst);
+                        }
                         failed
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2008,17 +2025,30 @@ where
                 }
             });
         }
+        drop(sender);
+        // 收集侧（调用线程，与工作线程并行）：逐项消化完成结果。
+        while let Ok((index, value)) = receiver.recv() {
+            match on_complete(index, &value) {
+                Ok(()) => completed.push((index, value)),
+                Err(error) => {
+                    stop.store(true, Ordering::SeqCst);
+                    failed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push((index, error));
+                }
+            }
+        }
     });
 
-    let mut completed = completed
+    completed.sort_by_key(|(index, _)| *index);
+    let mut failed = failed
         .into_inner()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    completed.sort_by_key(|(index, _)| *index);
+    failed.sort_by_key(|(index, _)| *index);
     BoundedOutcome {
         completed,
-        failed: failed
-            .into_inner()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        failed,
         stopped: stop.load(Ordering::SeqCst),
     }
 }
@@ -2488,6 +2518,30 @@ fn map_required_error() -> BridgeError {
     )
 }
 
+/// 深挖逐节阶段事件（#83）：开工事件不带 sectionStatus（沿用串行版形状），
+/// 收尾事件带 done / failed，任务中心按 partId 归组各节状态。
+fn emit_dive_stage(
+    ctx: &RunContext,
+    part_id: &str,
+    section: &Section,
+    index: usize,
+    total: u64,
+    section_status: Option<&str>,
+) {
+    let mut detail = json!({
+        "stage": STAGE_DEEP_DIVE,
+        "partId": part_id,
+        "secId": section.id,
+        "title": section.title,
+        "index": index as u64 + 1,
+        "total": total,
+    });
+    if let Some(status) = section_status {
+        detail["sectionStatus"] = json!(status);
+    }
+    ctx.emit_detail("stage", detail);
+}
+
 fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Result<Value, Halt> {
     if ctx.cancel_checkpoint().is_err() {
         return Err(Halt::Cancelled);
@@ -2498,7 +2552,7 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
     }
     preflight_visual_assets(ctx, paper_id, &env.mapped)?;
     // partIds 校验与节映射：未知部分 / 无法映射 / 缺薄摘要都在开工前拒绝（错误即指令）。
-    let mut targets: Vec<(&String, &Section)> = Vec::with_capacity(part_ids.len());
+    let mut targets: Vec<(usize, &String, &Section)> = Vec::with_capacity(part_ids.len());
     for part_id in part_ids {
         if !env.paper.parts.iter().any(|part| part.id == *part_id) {
             return Err(Halt::Failed(BridgeError::invalid_input(format!(
@@ -2517,45 +2571,131 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
                 false,
             )));
         }
-        targets.push((part_id, section));
+        targets.push((targets.len(), part_id, section));
     }
     let total = targets.len() as u64;
+    // #83：开工时列出全部目标，任务中心据此预先画出每节一行。
+    ctx.emit_detail(
+        "stage",
+        json!({
+            "stage": STAGE_DEEP_DIVE_QUEUED,
+            "total": total,
+            "targets": targets
+                .iter()
+                .map(|(index, part_id, section)| json!({
+                    "partId": part_id,
+                    "secId": section.id,
+                    "title": section.title,
+                    "index": *index as u64 + 1,
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    );
+    ctx.push_progress(Progress { done: 0, total });
+    // #83：批量深挖经有界并发运行器推进（并发上限同建图 protocol.concurrency）。
+    // 工作线程只产出 Markdown；落库与进度推进由运行器收集侧单线程完成（persist_products
+    // 是整记录读改写，多线程并发会产生覆盖竞态）。单节失败只记录不停机（#83 行为变更：
+    // 原串行版任一节失败即中止批量），收尾统一在 details 列出 failedSections。
+    let warnings = Mutex::new(env.mapped.warnings.clone());
+    let concurrency = settings::protocol_concurrency(&ctx.library) as usize;
+    // 进度计数只被收集侧单线程推进，普通计数器即可。
+    let mut done_count = 0_u64;
+    let outcome = run_bounded(
+        ctx,
+        &targets,
+        concurrency,
+        false,
+        |ctx, &(index, part_id, section)| {
+            emit_dive_stage(ctx, part_id, section, index, total, None);
+            let mut local_warnings = Vec::new();
+            match dive_section(ctx, &env, part_id, section, &mut local_warnings) {
+                Ok(outcome) => {
+                    warnings
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend(local_warnings);
+                    Ok(outcome)
+                }
+                Err(Halt::Failed(error)) => {
+                    // 失败即时可见：任务中心按节标红；不停止其他节。
+                    emit_dive_stage(ctx, part_id, section, index, total, Some("failed"));
+                    Err(Halt::Failed(error))
+                }
+                Err(other) => Err(other),
+            }
+        },
+        |index, outcome| {
+            let (index, part_id, section) = targets[index];
+            // 逐节完成逐节落库（完整结果计 analysis 打卡）。
+            persist_products(
+                &ctx.library,
+                paper_id,
+                vec![("dig".to_string(), part_id.clone(), json!(outcome.markdown))],
+                Some("analysis"),
+            )?;
+            emit_dive_stage(ctx, part_id, section, index, total, Some("done"));
+            done_count += 1;
+            ctx.push_progress(Progress {
+                done: done_count,
+                total,
+            });
+            Ok(())
+        },
+    );
+
+    let warnings = warnings.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 结果按节序聚合（完成顺序不必等于节序）。
     let mut completed: Vec<String> = Vec::new();
-    let mut warnings: Vec<String> = env.mapped.warnings.clone();
     // #81 遥测：逐节轮数与工具调用数进 result，供改动前后对照（配合 round 事件）。
     let mut rounds_per_section: Map<String, Value> = Map::new();
     let mut tool_calls_per_section: Map<String, Value> = Map::new();
-    for (index, (part_id, section)) in targets.iter().enumerate() {
-        if ctx.cancel_checkpoint().is_err() {
-            // 批量取消：不再推进下一节；已完成节的产物已逐节落库保留。
-            return Err(Halt::Cancelled);
-        }
-        ctx.emit_detail(
-            "stage",
-            json!({
-                "stage": STAGE_DEEP_DIVE,
-                "partId": part_id,
-                "secId": section.id,
-                "title": section.title,
-                "index": index as u64 + 1,
-                "total": total,
-            }),
-        );
-        let outcome = dive_section(ctx, &env, part_id, section, &mut warnings)?;
-        // 逐节完成逐节落库（完整结果计 analysis 打卡）。
-        persist_products(
-            &ctx.library,
-            paper_id,
-            vec![("dig".to_string(), (*part_id).clone(), json!(outcome.markdown))],
-            Some("analysis"),
-        )?;
+    for (index, dive) in &outcome.completed {
+        let (_, part_id, _) = targets[*index];
         completed.push((*part_id).clone());
-        rounds_per_section.insert((*part_id).clone(), json!(outcome.rounds));
-        tool_calls_per_section.insert((*part_id).clone(), json!(outcome.tool_calls));
-        ctx.push_progress(Progress {
-            done: index as u64 + 1,
-            total,
-        });
+        rounds_per_section.insert((*part_id).clone(), json!(dive.rounds));
+        tool_calls_per_section.insert((*part_id).clone(), json!(dive.tool_calls));
+    }
+    if outcome.stopped && ctx.registry.cancel_requested(&ctx.task_id) {
+        // 协作停止（取消优先于失败收尾：用户取消时，已记录的失败节不再报告）。
+        // 已完成节的产物均已逐节落库保留。
+        return Err(Halt::Cancelled);
+    }
+    if !outcome.failed.is_empty() {
+        // 单节深挖：错误原样传播（行为与串行版一致，保留 step_limit_exceeded 等错误码）。
+        if targets.len() == 1 {
+            let (_, error) = outcome.failed.into_iter().next().expect("failed 非空");
+            return Err(Halt::Failed(error));
+        }
+        let failed_sections: Vec<Value> = outcome
+            .failed
+            .iter()
+            .map(|(index, error)| {
+                let (_, part_id, section) = targets[*index];
+                json!({
+                    "partId": part_id,
+                    "secId": section.id,
+                    "code": error.code,
+                    "message": error.message,
+                })
+            })
+            .collect();
+        let names = failed_sections
+            .iter()
+            .filter_map(|item| item["partId"].as_str())
+            .collect::<Vec<_>>()
+            .join("、");
+        return Err(Halt::Failed(
+            BridgeError::new(
+                "protocol_deep_dive_failed",
+                format!("深挖有 {} 节未通过：{names}；已完成节的产物已保留。", failed_sections.len()),
+                outcome.failed.iter().any(|(_, error)| error.retryable),
+            )
+            .with_details(json!({ "failedSections": failed_sections })),
+        ));
+    }
+    if outcome.stopped {
+        // Handled（重试机器已置终态）→ 不再发事件。
+        return Err(Halt::Handled);
     }
     Ok(json!({
         "paperId": paper_id,

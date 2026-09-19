@@ -6,7 +6,7 @@
 
 Paper30Min 是「论文精读」专精 agent harness：帮助用户高效读完一篇完整论文。Windows 正式客户端 **1.0.0** 已发布（[GitHub Release](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0)）；`steven123397/dev` 与 `main` 同源，当前协作走 `dev`，不创建合入 `main` 的 PR，也不因零散感受新建打磨类 Issue。
 
-Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。当前工作是性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）：v1.0 反馈解析、建图、深挖都太慢。已完成 #75–#78、#82；[#79](https://github.com/attackingjensen/paper-30min/issues/79)、[#80](https://github.com/attackingjensen/paper-30min/issues/80)（深挖轮次进度与最终稿预览）与 [#81](https://github.com/attackingjensen/paper-30min/issues/81)（深挖减轮：配方预附本节图表 + 一轮多工具）契约与实现均已落地，真实窗口对照待作者点验（走查归 [#85](https://github.com/attackingjensen/paper-30min/issues/85)）。**下一步是 [#83](https://github.com/attackingjensen/paper-30min/issues/83)**（批量深挖有界并发，依赖 #79 / #80 均已落地）或 [#84](https://github.com/attackingjensen/paper-30min/issues/84) / [#86](https://github.com/attackingjensen/paper-30min/issues/86)。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
+Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。当前工作是性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）：v1.0 反馈解析、建图、深挖都太慢。已完成 #75–#78、#82；[#79](https://github.com/attackingjensen/paper-30min/issues/79)、[#80](https://github.com/attackingjensen/paper-30min/issues/80)（深挖轮次进度与最终稿预览）与 [#81](https://github.com/attackingjensen/paper-30min/issues/81)（深挖减轮：配方预附本节图表 + 一轮多工具）契约与实现均已落地，真实窗口对照待作者点验（走查归 [#85](https://github.com/attackingjensen/paper-30min/issues/85)）；[#83](https://github.com/attackingjensen/paper-30min/issues/83)（批量深挖有界并发）实现已落地、契约测试全绿，真实窗口对照同样归 #85。**下一步是 [#84](https://github.com/attackingjensen/paper-30min/issues/84) / [#86](https://github.com/attackingjensen/paper-30min/issues/86)**。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
 
 ## 已具备能力
 
@@ -18,7 +18,7 @@ Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35)
 
 Tauri + Rust + 原生 JavaScript，SQLite 本地书库。支持本地 PDF、arXiv、示例导入，以及浏览器整库预检后迁移。首次空书库播种一份可删除的「使用说明」（不计打卡）。
 
-阅读是四 tab（地图 / 原文 / 提问 / 回想卡片）与地图页 ⇄ 节页两层导航。建图生成阅读地图与全部节薄摘要；深挖按节取证，配方预附本节关键图表裁切图、一轮可发至多三个工具调用；复述稿手动触发。深挖进行中节页实时显示「第 n 轮 · 正在调用工具 · 已收到 x 字」，最终四段式结果与复述稿在生成中流式预览（标「生成中」），任务成功后由落库产物替换；建图 JSON 阶段发接收进度心跳。提问支持 @节、原文选中片段与建图门禁。出处按文本块 / 图表 / 页三分定位。节树与 PDF 对照可调宽、可收起。任务往返书库 / 任务中心 / 阅读页不取消。
+阅读是四 tab（地图 / 原文 / 提问 / 回想卡片）与地图页 ⇄ 节页两层导航。建图生成阅读地图与全部节薄摘要；深挖按节取证，配方预附本节关键图表裁切图、一轮可发至多三个工具调用；复述稿手动触发。批量深挖多节有界并发推进（上限同建图的协议并发设置），开工即列出全部目标，任务中心按节显示排队 / 轮次 / 完成 / 失败并分栏轨迹，节页各自显示本节运行态；单节失败不停机、收尾汇总失败节，取消后在飞节轮边界收尾、未开始节不再启动。深挖进行中节页实时显示「第 n 轮 · 正在调用工具 · 已收到 x 字」，最终四段式结果与复述稿在生成中流式预览（标「生成中」），任务成功后由落库产物替换；建图 JSON 阶段发接收进度心跳。提问支持 @节、原文选中片段与建图门禁。出处按文本块 / 图表 / 页三分定位。节树与 PDF 对照可调宽、可收起。任务往返书库 / 任务中心 / 阅读页不取消。
 
 导入后页图预渲染与解析并行，解析完成后补渲染图表裁切图；解析完成即可建图。解析默认 TableFormer FAST、线程按物理核钳制到 2–8，设置可切回 ACCURATE。深挖在页图与裁切图齐备前禁用。
 
@@ -40,7 +40,7 @@ Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专�
 | [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 实现已落地，待真实窗口 |
 | [#81](https://github.com/attackingjensen/paper-30min/issues/81) | 深挖减轮：预附图表与一轮多工具 | 实现已落地，待真实窗口 |
 | [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型与思考默认（协议关、问答开） | 已完成 |
-| [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 待开始（依赖 #79、#80） |
+| [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 实现已落地，待真实窗口 |
 | [#84](https://github.com/attackingjensen/paper-30min/issues/84) | 常驻侧车 | 待开始 |
 | [#86](https://github.com/attackingjensen/paper-30min/issues/86) | 可空 temperature 与 400 自动卸参数 | 待开始 |
 | [#85](https://github.com/attackingjensen/paper-30min/issues/85) | 性能对照走查与状态同步 | 待开始（依赖全部） |

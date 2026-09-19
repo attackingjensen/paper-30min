@@ -235,6 +235,38 @@ fn configure_concurrency(registry: &Arc<TaskRegistry>, library: &Library, concur
     .expect("写入并发设置");
 }
 
+/// 已建图状态（四节版）：map + 四节 l2 产物（在三节版基础上补 part-3）。
+fn seed_built_products_four(library: &Library, paper_id: &str) {
+    seed_built_products(library, paper_id);
+    let mut paper = library.get_paper(paper_id).expect("读取论文");
+    paper.products.push(ProductDto {
+        kind: "l2".to_string(),
+        part_id: "part-3".to_string(),
+        body: json!({
+            "secId": "sec_4_experiments",
+            "title": "sec_4_experiments",
+            "type": "experiments",
+            "gist": "sec_4_experiments 主旨",
+            "points": [{"text": "要点", "refs": ["(p1)"]}],
+            "keyAssets": [],
+            "pages": {"start": 3, "end": 3},
+        }),
+        updated_at: "2026-09-11T00:00:00Z".to_string(),
+    });
+    library.put_paper(paper).expect("写入产物");
+}
+
+/// 深挖提示词中的节判别：配方首行「节 id：{sectionId}」（并发用例按请求体区分节）。
+fn dive_sec_id_in_prompt(prompt: &str) -> Option<String> {
+    let marker = "节 id：";
+    let at = prompt.find(marker)?;
+    let id: String = prompt[at + marker.len()..]
+        .chars()
+        .take_while(|c| *c != '，' && !c.is_whitespace())
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
 fn prompt_text(request: &MockRequest) -> String {
     let body: Value = serde_json::from_slice(&request.body).unwrap_or(json!({}));
     match &body["messages"][0]["content"] {
@@ -658,13 +690,22 @@ fn deep_dive_tool_loop_completes_and_persists() {
     assert_eq!(tools[1]["name"], json!("get_figure"));
     assert_eq!(tools[1]["result"]["cropAssetId"], json!("crop-fig_1"));
 
-    // 逐节子进度阶段事件。
+    // 阶段事件：开工前列出全部目标的 deep-dive-queued（#83）+ 本节开工 + 本节完成。
     let stages = events_named(&sink, "stage");
-    assert_eq!(stages.len(), 1);
-    assert_eq!(stages[0]["partId"], json!("part-1"));
-    assert_eq!(stages[0]["secId"], json!("sec_2_introduction"));
-    assert_eq!(stages[0]["index"], json!(1));
+    assert_eq!(stages.len(), 3, "queued + 开工 + 完成: {stages:?}");
+    assert_eq!(stages[0]["stage"], json!("deep-dive-queued"));
     assert_eq!(stages[0]["total"], json!(1));
+    assert_eq!(
+        stages[0]["targets"],
+        json!([{ "partId": "part-1", "secId": "sec_2_introduction", "title": "Introduction", "index": 1 }])
+    );
+    assert_eq!(stages[1]["stage"], json!("deep-dive"));
+    assert_eq!(stages[1]["partId"], json!("part-1"));
+    assert_eq!(stages[1]["secId"], json!("sec_2_introduction"));
+    assert_eq!(stages[1]["index"], json!(1));
+    assert_eq!(stages[1]["total"], json!(1));
+    assert_eq!(stages[2]["partId"], json!("part-1"));
+    assert_eq!(stages[2]["sectionStatus"], json!("done"));
 
     // 深挖产物落库（Markdown 字符串）+ analysis 打卡；产物保留出处指针（EXTRACTED 纪律）。
     let digs = products_of(&library, &paper_id, "dig");
@@ -724,14 +765,16 @@ fn deep_dive_tool_loop_completes_and_persists() {
     let events: Vec<&str> = details.iter().filter_map(|d| d["event"].as_str()).collect();
     assert_eq!(
         events,
-        vec!["stage", "round-start", "content", "round", "tool",
+        vec!["stage", "stage", "round-start", "content", "round", "tool",
              "round-start", "content", "round", "tool",
-             "round-start", "content", "preview", "round"]
+             "round-start", "content", "preview", "round", "stage"]
     );
-    assert_eq!(details[0]["detail"]["stage"], json!("deep-dive"));
-    assert_eq!(details[1]["detail"]["round"], json!(1), "round-start 轮号从 1 起");
-    assert_eq!(details[8]["detail"]["name"], json!("get_figure"));
-    assert_eq!(details[11]["detail"]["text"], json!(DIG_MARKDOWN.trim()), "preview 携带最终稿全文");
+    assert_eq!(details[0]["detail"]["stage"], json!("deep-dive-queued"), "开工前列出全部目标（#83）");
+    assert_eq!(details[1]["detail"]["stage"], json!("deep-dive"));
+    assert_eq!(details[2]["detail"]["round"], json!(1), "round-start 轮号从 1 起");
+    assert_eq!(details[9]["detail"]["name"], json!("get_figure"));
+    assert_eq!(details[12]["detail"]["text"], json!(DIG_MARKDOWN.trim()), "preview 携带最终稿全文");
+    assert_eq!(details[14]["detail"]["sectionStatus"], json!("done"), "收尾标记本节完成");
 }
 
 // ============================================================================
@@ -774,6 +817,7 @@ fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
     let _lock = env_lock!();
     // 批量两节：part-1 第一轮在途时删掉 crop-tbl_1 文件（preflight 已过），part-2
     // （sec_3_method，图表清单归属 tbl_1）配方读附件时缺文件 → warning，任务仍成功。
+    // #83 并发改造后本用例以并发上限 1 固定节序（命中序 ↔ 节序的假设只在串行下成立）。
     let crop_path = dir
         .path()
         .join("attachments")
@@ -790,6 +834,7 @@ fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
     seed_assets(&library, &paper_id);
     seed_built_products(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
+    configure_concurrency(&registry, &library, 1);
 
     let (task_id, sink) = start_task(
         &registry,
@@ -1032,11 +1077,13 @@ fn deep_dive_invalid_address_is_error_observation_not_parse_failure() {
 fn deep_dive_cancel_stops_batch_and_preserves_completed() {
     let (registry, library, _dir) = common::env();
     let _lock = env_lock!();
-    // 第二节第一轮挂起，直到测试置位放行门闩（取消请求已发出）。
+    // #83 并发版：abstract 立即完成；part-1 / part-2 的首轮挂起在门闩上，直到取消后放行；
+    // part-3 排在队列里，取消后不应再启动（无请求、无阶段事件）。
     let gate = Arc::new(AtomicBool::new(false));
     let gate_in_mock = Arc::clone(&gate);
-    let mock = MockHttp::start(move |_request, hit| {
-        if hit == 1 {
+    let mock = MockHttp::start(move |request, _hit| {
+        let prompt = prompt_text(request);
+        if dive_sec_id_in_prompt(&prompt).as_deref() == Some("sec_1_abstract") {
             return sse_text(DIG_MARKDOWN);
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -1046,35 +1093,194 @@ fn deep_dive_cancel_stops_batch_and_preserves_completed() {
         }
         sse_text("```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"方法\"}}\n```")
     });
-    let paper_id = seed_paper(&library);
-    seed_block_model(&library, &paper_id);
+    let paper_id = seed_four_section_paper(&library);
     seed_assets(&library, &paper_id);
-    seed_built_products(&library, &paper_id);
+    seed_built_products_four(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
+    configure_concurrency(&registry, &library, 2);
 
     let (task_id, sink) = start_task(
         &registry,
         protocol::TASK_DEEP_DIVE,
-        json!({ "paperId": paper_id, "partIds": ["part-1", "part-2"] }),
+        json!({ "paperId": paper_id, "partIds": ["abstract", "part-1", "part-2", "part-3"] }),
     );
-    // 等第二节的第一轮请求确实在途（命中数到 2）再取消：请求卡在 mock 侧门闩上，
-    // 取消 → 门闩放行 → 在途轮完成 → 轮后检查点收敛为 Cancelled（确定性，无竞态）。
+    // 等在飞两节（part-1 / part-2）的首轮请求确实在途（命中数到 3 = abstract 已完成 +
+    // 两节在飞）再取消：请求卡在 mock 侧门闩上，取消 → 门闩放行 → 在途轮完成 →
+    // 轮后检查点收敛为 Cancelled（确定性，无竞态）。
     let deadline = std::time::Instant::now() + TIMEOUT;
-    while mock.hits() < 2 {
-        assert!(std::time::Instant::now() < deadline, "应先推进到第二节的第一轮");
+    while mock.hits() < 3 {
+        assert!(std::time::Instant::now() < deadline, "应先推进到两节在飞");
         std::thread::sleep(Duration::from_millis(5));
     }
     registry.request_cancel(&task_id).expect("请求取消");
     gate.store(true, Ordering::SeqCst);
 
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Cancelled);
-    // 取消 = 当前步完成后停止：第二节的在途轮完成后即停（不执行其工具调用、不消费输出），不再推进。
+    // 取消 = 当前步完成后停止：在飞节在途轮完成后即停（不执行其工具调用、不消费输出），
+    // 队列中的 part-3 不再启动。
     let tools = events_named(&sink, "tool");
     assert_eq!(tools.len(), 0, "取消后不再执行在途轮请求的工具");
     let digs = products_of(&library, &paper_id, "dig");
     assert_eq!(digs.len(), 1, "已完成的节保留（不白跑）");
-    assert_eq!(digs[0].part_id, "part-1");
-    assert_eq!(mock.hits(), 2, "取消后不再推进下一节");
+    assert_eq!(digs[0].part_id, "abstract");
+    assert_eq!(mock.hits(), 3, "取消后不再启动新节、不再推进新轮");
+    let stages = events_named(&sink, "stage");
+    assert!(
+        stages.iter().all(|d| d["partId"] != json!("part-3")),
+        "part-3 从未开工: {stages:?}"
+    );
+}
+
+// ============================================================================
+// #83：批量深挖有界并发
+// ============================================================================
+
+#[test]
+fn deep_dive_batch_runs_with_bounded_inflight() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let in_flight = Arc::new(AtomicU64::new(0));
+    let max_in_flight = Arc::new(AtomicU64::new(0));
+    let mock = MockHttp::start({
+        let in_flight = Arc::clone(&in_flight);
+        let max_in_flight = Arc::clone(&max_in_flight);
+        move |_request, _hit| {
+            let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            max_in_flight.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(80));
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            sse_text(DIG_MARKDOWN)
+        }
+    });
+    let paper_id = seed_four_section_paper(&library);
+    seed_assets(&library, &paper_id);
+    seed_built_products_four(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+    configure_concurrency(&registry, &library, 2);
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1", "part-2", "part-3"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) <= 2,
+        "同时在飞深挖请求数 ≤ 2，实际 {}",
+        max_in_flight.load(Ordering::SeqCst)
+    );
+    assert!(max_in_flight.load(Ordering::SeqCst) >= 2, "并发上限 2 时应真正并行");
+    assert_eq!(mock.hits(), 3, "每节一轮最终稿");
+
+    // 三节全部落库（完成顺序不必等于节序，按集合断言）。
+    let digs = products_of(&library, &paper_id, "dig");
+    let mut dug: Vec<&str> = digs.iter().map(|p| p.part_id.as_str()).collect();
+    dug.sort_unstable();
+    assert_eq!(dug, vec!["part-1", "part-2", "part-3"]);
+
+    // 进度 done 递增到 3。
+    let progresses: Vec<u64> = sink
+        .events()
+        .iter()
+        .filter_map(|event| event.progress.as_ref().map(|p| p.done))
+        .collect();
+    assert!(!progresses.is_empty());
+    for window in progresses.windows(2) {
+        assert!(window[1] >= window[0], "进度 done 应单调递增: {progresses:?}");
+    }
+    let last = sink.events().iter().rev().find_map(|event| event.progress.clone()).expect("应有进度");
+    assert_eq!((last.done, last.total), (3, 3));
+
+    // 开工事件列出全部目标；每节的 stage 事件按 partId 可区分（开工 + 完成各一条）。
+    let stages = events_named(&sink, "stage");
+    let queued = stages.iter().find(|d| d["stage"] == json!("deep-dive-queued")).expect("开工事件");
+    assert_eq!(queued["total"], json!(3));
+    let targets = queued["targets"].as_array().expect("targets 列表");
+    assert_eq!(targets.len(), 3);
+    assert_eq!(targets[0]["partId"], json!("part-1"));
+    assert_eq!(targets[2]["secId"], json!("sec_4_experiments"));
+    for (index, (part_id, sec_id)) in [
+        ("part-1", "sec_2_introduction"),
+        ("part-2", "sec_3_method"),
+        ("part-3", "sec_4_experiments"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let events: Vec<&Value> = stages
+            .iter()
+            .filter(|d| d["stage"] == json!("deep-dive") && d["partId"] == json!(part_id))
+            .collect();
+        assert_eq!(events.len(), 2, "{part_id} 开工 + 完成各一条: {stages:?}");
+        assert_eq!(events[0]["index"], json!(index as u64 + 1));
+        assert_eq!(events[0]["total"], json!(3));
+        assert_eq!(events[0]["secId"], json!(sec_id));
+        assert_eq!(events[1]["sectionStatus"], json!("done"));
+    }
+
+    // #81 遥测随批量结果聚合（completed 按节序，与完成顺序无关）。
+    let result = registry.get(&task_id).unwrap().result.expect("succeeded 携带 result");
+    assert_eq!(result["completed"], json!(["part-1", "part-2", "part-3"]));
+    assert_eq!(result["roundsPerSection"]["part-3"], json!(1));
+    assert_eq!(result["toolCallsPerSection"]["part-1"], json!(0));
+}
+
+#[test]
+fn deep_dive_batch_section_failure_does_not_stop_others() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    // part-2（sec_3_method）永远要求继续搜索 → 步数上限失败；其余节正常完成。
+    let mock = MockHttp::start(|request, _hit| {
+        let prompt = prompt_text(request);
+        if dive_sec_id_in_prompt(&prompt).as_deref() == Some("sec_3_method") {
+            return sse_text("继续搜。\n```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"样例\"}}\n```");
+        }
+        sse_text(DIG_MARKDOWN)
+    });
+    let paper_id = seed_four_section_paper(&library);
+    seed_assets(&library, &paper_id);
+    seed_built_products_four(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+    configure_concurrency(&registry, &library, 2);
+
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1", "part-2", "part-3"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed, "事件流: {:?}", sink.events());
+    let error = registry.get(&task_id).unwrap().error.unwrap();
+    assert_eq!(error.code, "protocol_deep_dive_failed");
+    assert!(error.retryable, "步数上限可重试 → 批量失败同样可重试");
+    let failed = error.details.expect("failedSections")["failedSections"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["partId"], json!("part-2"));
+    assert_eq!(failed[0]["secId"], json!("sec_3_method"));
+    assert_eq!(failed[0]["code"], json!("step_limit_exceeded"));
+
+    // 其余节照常完成并落库（记录失败、继续，不停机）。
+    let digs = products_of(&library, &paper_id, "dig");
+    let mut dug: Vec<&str> = digs.iter().map(|p| p.part_id.as_str()).collect();
+    dug.sort_unstable();
+    assert_eq!(dug, vec!["part-1", "part-3"]);
+    let stages = events_named(&sink, "stage");
+    let failed_events: Vec<&Value> = stages
+        .iter()
+        .filter(|d| d["sectionStatus"] == json!("failed"))
+        .collect();
+    assert_eq!(failed_events.len(), 1);
+    assert_eq!(failed_events[0]["partId"], json!("part-2"));
+    assert_eq!(
+        stages
+            .iter()
+            .filter(|d| d["sectionStatus"] == json!("done"))
+            .count(),
+        2,
+        "其余两节完成事件"
+    );
 }
 
 #[test]

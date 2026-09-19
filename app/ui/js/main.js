@@ -666,8 +666,11 @@ function mappingProgressOf(paperId) {
   return null;
 }
 
-function diveRunningDetail(paperId) {
-  return openProtocolTaskMeta(paperId, PROTOCOL_TASKS.deepDive)?.meta.lastDetail || null;
+function diveRunningDetail(paperId, partId) {
+  const open = openProtocolTaskMeta(paperId, PROTOCOL_TASKS.deepDive);
+  if (!open) return null;
+  // #83：批量在飞时各节页取本节的开工事件（i/n 序号）；无登记时回退最后一条。
+  return open.meta.stageByPart?.[String(partId)] || open.meta.lastDetail || null;
 }
 
 /** #80：深挖运行态（轮次/工具/字数/预览），由会话登记的实时事件流归约；无运行任务为 null。 */
@@ -804,7 +807,7 @@ function renderSectionPage() {
     products: current.products,
     paper: current,
     runningPartIds: runningDeepDivePartIds(sessionTaskList(), current.id),
-    runningDetail: diveRunningDetail(current.id),
+    runningDetail: diveRunningDetail(current.id, reader.sectionId),
     citeFocus: reader.citeFocus,
     prerenderReady: prerenderAssetsReady(currentMapped, currentAttachmentIds),
     runState: diveLiveState(current.id, reader.sectionId),
@@ -1398,6 +1401,11 @@ async function startDeepDive(paperId, partIds) {
       onEvent: event => {
         if (event.event === 'stage' && event.detail) {
           meta.lastDetail = event.detail;
+          // #83：批量在飞时节页按 partId 取本节的开工事件（完成/失败事件不覆盖，
+          // 节页运行态由 #80 的 runState 归约负责）。
+          if (event.detail.partId && !event.detail.sectionStatus) {
+            (meta.stageByPart ??= {})[String(event.detail.partId)] = event.detail;
+          }
           if (current?.id === paperId) renderMapTab();
         } else if (event.event === 'tool' && event.detail) {
           // 取证轨迹逐步累积，任务中心步骤流与「取证轨迹 →」回看共用（#56 决策 13）。
@@ -3194,6 +3202,20 @@ function setTasksPolling(on) {
   }
 }
 
+/** 轨迹行渲染：工具步与模型轮穿插（任务中心平铺与按节分栏共用，#83）。 */
+function appendTraceItems(list, items) {
+  for (const item of items) {
+    const line = document.createElement('div');
+    if (item.kind === 'tool') {
+      line.className = item.ok ? 'task-tool' : 'task-tool fail';
+    } else {
+      line.className = item.reasoning ? 'task-round reasoning' : 'task-round';
+    }
+    line.textContent = item.text;
+    list.appendChild(line);
+  }
+}
+
 function renderTaskList(tasks) {
   const wrap = $('#task-list');
   wrap.innerHTML = '';
@@ -3276,7 +3298,7 @@ function renderTaskList(tasks) {
     // liveLine 是最新一轮次进度摘要（round-start / round-progress）。
     // 数据来自任务快照 details，缺登记时自动降级。
     const detail = taskDetailModel({ task, meta });
-    for (const chips of [detail.stageFlow, detail.shardFlow].filter(Boolean)) {
+    for (const chips of [detail.stageFlow, detail.shardFlow, detail.sectionFlow].filter(Boolean)) {
       const flow = document.createElement('div');
       flow.className = 'task-stage-flow';
       for (const item of chips) {
@@ -3300,7 +3322,25 @@ function renderTaskList(tasks) {
       live.textContent = detail.liveLine;
       row.appendChild(live);
     }
-    if (detail.trace?.length) {
+    if (detail.sectionTraces?.length) {
+      // #83：批量深挖轨迹按节分栏（节序沿用 queued 目标序）。
+      for (const section of detail.sectionTraces) {
+        const hasTools = section.toolCount > 0;
+        const wrap = document.createElement('div');
+        wrap.className = hasTools ? 'task-steps' : 'task-rounds';
+        const head = document.createElement('div');
+        head.className = hasTools ? 'task-steps-head' : 'task-rounds-head';
+        head.textContent = hasTools
+          ? `${section.title} · 取证轨迹（共 ${section.toolCount} 步）`
+          : `${section.title} · 模型轮`;
+        wrap.appendChild(head);
+        const list = document.createElement('div');
+        list.className = 'task-trace';
+        appendTraceItems(list, section.items);
+        wrap.appendChild(list);
+        row.appendChild(wrap);
+      }
+    } else if (detail.trace?.length) {
       const hasTools = detail.trace.some(item => item.kind === 'tool');
       const wrap = document.createElement('div');
       wrap.className = hasTools ? 'task-steps' : 'task-rounds';
@@ -3311,16 +3351,7 @@ function renderTaskList(tasks) {
       wrap.appendChild(head);
       const list = document.createElement('div');
       list.className = 'task-trace';
-      for (const item of detail.trace) {
-        const line = document.createElement('div');
-        if (item.kind === 'tool') {
-          line.className = item.ok ? 'task-tool' : 'task-tool fail';
-        } else {
-          line.className = item.reasoning ? 'task-round reasoning' : 'task-round';
-        }
-        line.textContent = item.text;
-        list.appendChild(line);
-      }
+      appendTraceItems(list, detail.trace);
       wrap.appendChild(list);
       row.appendChild(wrap);
     } else if (detail.steps?.length) {

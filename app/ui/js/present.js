@@ -144,6 +144,87 @@ export function l2ShardFlow({ details = [], status = 'running', error = null } =
   });
 }
 
+const SECTION_STATE_LABEL = { queued: '排队', current: '进行中', done: '完成', failed: '失败' };
+
+/** 批量深挖开工目标列表（#83 的 deep-dive-queued 事件）；无该事件（#83 前的任务）为 null。 */
+function deepDiveQueuedTargets(details) {
+  for (let i = details.length - 1; i >= 0; i--) {
+    const entry = details[i];
+    const targets = entry?.detail?.targets;
+    if (entry?.event === 'stage' && entry.detail?.stage === 'deep-dive-queued' && Array.isArray(targets) && targets.length) {
+      return targets;
+    }
+  }
+  return null;
+}
+
+/**
+ * 批量深挖各节状态流（#83）：deep-dive-queued 事件列出全部目标（开工即画出 N 行），
+ * 再按 partId 归约各节开工 / 完成 / 失败（sectionStatus 与 error.details.failedSections），
+ * 运行中节附「第 n 轮」（复用 #80 的按 partId 运行态归约）；已取消任务的在飞节标「已取消」。
+ * 返回 [{ key, partId, title, label, state }]；无 queued 事件（旧任务）为 null；
+ * 成功终态不再显示（与 l2ShardFlow 一致）。
+ */
+export function deepDiveSectionFlow({ details = [], status = 'running', error = null } = {}) {
+  if (status === 'succeeded') return null;
+  const targets = deepDiveQueuedTargets(details);
+  if (!targets) return null;
+  const latest = new Map();
+  for (const entry of details) {
+    const detail = entry?.detail;
+    if (entry?.event !== 'stage' || detail?.stage !== 'deep-dive' || !detail?.partId) continue;
+    latest.set(String(detail.partId), detail);
+  }
+  const failedIds = new Set(
+    (error?.details?.failedSections ?? []).map(item => String(item?.partId || '')).filter(Boolean),
+  );
+  const terminalFail = status === 'failed';
+  return targets.map((target, position) => {
+    const partId = String(target?.partId ?? '');
+    const title = typeof target?.title === 'string' && target.title ? target.title : partId;
+    const index = Number.isFinite(Number(target?.index)) ? Number(target.index) : position + 1;
+    const stage = latest.get(partId);
+    let state = 'queued';
+    if (failedIds.has(partId) || stage?.sectionStatus === 'failed') state = 'failed';
+    else if (stage?.sectionStatus === 'done') state = 'done';
+    else if (stage) state = terminalFail ? 'failed' : 'current';
+    let stateLabel = SECTION_STATE_LABEL[state] || state;
+    if (state === 'current') {
+      if (status === 'cancelled') {
+        stateLabel = '已取消';
+      } else {
+        const run = deepDiveRunState(details, partId, status);
+        if (Number.isFinite(run?.round)) stateLabel = `第 ${run.round} 轮`;
+      }
+    }
+    return { key: partId || `section-${index}`, partId, title, label: `${index}. ${title} · ${stateLabel}`, state };
+  });
+}
+
+/**
+ * 批量深挖轨迹按节分栏（#83）：round / tool 按 partId 归位，节序沿用 queued 目标序；
+ * 只保留有轨迹的节。targets 为 deep-dive-queued 事件的目标列表。
+ * 返回 [{ key, title, items, toolCount }]。
+ */
+function traceItemsBySection(details, targets) {
+  const groups = new Map(targets.map(target => [String(target?.partId ?? ''), []]));
+  for (const entry of details) {
+    const partId = String(entry?.detail?.partId ?? '');
+    const group = groups.get(partId);
+    if (!group) continue;
+    if (entry.event === 'round') group.push({ kind: 'round', ...roundView(entry.detail) });
+    else if (entry.event === 'tool') group.push({ kind: 'tool', ...toolStepView(entry.detail) });
+  }
+  return targets
+    .map((target, position) => {
+      const partId = String(target?.partId ?? '');
+      const title = typeof target?.title === 'string' && target.title ? target.title : partId;
+      return { key: partId || `section-${position}`, title, items: groups.get(partId) ?? [] };
+    })
+    .filter(section => section.items.length)
+    .map(section => ({ ...section, toolCount: section.items.filter(item => item.kind === 'tool').length }));
+}
+
 /** 四件取证工具的步骤呈现：目标文本 + 结果摘要同表登记（新增工具只动这一张表）。 */
 const TOOL_STEP_FORMAT = {
   read_section: {
@@ -246,13 +327,23 @@ export function taskDetailModel({ task = {}, meta = null } = {}) {
   }
   if (bare === 'paper.deep-dive') {
     const out = {};
-    const detail = lastDetailOf(details, 'stage');
-    const index = Number(detail?.index);
-    const total = Number(detail?.total);
-    // 逐节子进度只在批量时呈现（单节的 1/1 是噪音）；批量判定取阶段事件的 total，
-    // 不依赖会话登记的 input.partIds（订阅前丢失场景下仍正确）。
-    if (Number.isFinite(index) && Number.isFinite(total) && total > 1) {
-      out.subProgress = { index, total, title: typeof detail.title === 'string' ? detail.title : '' };
+    // #83：deep-dive-queued 事件驱动的按节分组；无该事件的旧任务回退串行呈现
+    // （逐节子进度取最后一条开工 stage 的 index/total）。
+    const targets = deepDiveQueuedTargets(details);
+    const batch = (targets?.length ?? 0) > 1;
+    const sectionFlow = deepDiveSectionFlow({ details, status: task.status, error: task.error });
+    // 单节不呈现状态流（一行是噪音，与 #83 前的单节呈现一致）。
+    if (batch && sectionFlow) {
+      out.sectionFlow = sectionFlow;
+    } else if (!targets) {
+      const detail = lastDetailOf(details, 'stage');
+      const index = Number(detail?.index);
+      const total = Number(detail?.total);
+      // 逐节子进度只在批量时呈现（单节的 1/1 是噪音）；批量判定取阶段事件的 total，
+      // 不依赖会话登记的 input.partIds（订阅前丢失场景下仍正确）。
+      if (Number.isFinite(index) && Number.isFinite(total) && total > 1) {
+        out.subProgress = { index, total, title: typeof detail.title === 'string' ? detail.title : '' };
+      }
     }
     const steps = details
       .filter(entry => entry?.event === 'tool')
@@ -263,8 +354,14 @@ export function taskDetailModel({ task = {}, meta = null } = {}) {
     }
     const liveLine = liveLineOf(details, task.status);
     if (liveLine) out.liveLine = liveLine;
-    const trace = traceItems(details);
-    if (trace.length) out.trace = trace;
+    // 轨迹：批量按节分栏（含终态回看），单节（或旧任务）保持平铺。
+    if (batch) {
+      const sectionTraces = traceItemsBySection(details, targets);
+      if (sectionTraces.length) out.sectionTraces = sectionTraces;
+    } else {
+      const trace = traceItems(details);
+      if (trace.length) out.trace = trace;
+    }
     return out;
   }
   if (bare === 'paper.synthesize') {
