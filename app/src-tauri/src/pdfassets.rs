@@ -255,7 +255,9 @@ struct RenderPayload {
 /// 输入: { paperId, scope?, doclingJsonPath?, pdfPath? }
 /// （scope 默认 all；all/crops 需要 doclingJsonPath；pdfPath 缺省 = 论文的 pdf 附件）。
 /// 结果: { paperId, scope, pageAssets[], crops[], skippedCrops[], warnings[],
-///         resident, blockModelAssetId?, elapsedMs, renderMs, encodeMs }
+///         resident, sidecarPid?, sidecarReused?, sidecarFallback?,
+///         blockModelAssetId?, elapsedMs, renderMs, encodeMs }
+///（#88：常驻命中带 sidecarPid/sidecarReused；回退带 sidecarFallback 诊断与原因码警示）
 /// 不做自动重试（与 convert 一致：渲染失败由用户显式重试）。
 pub(crate) fn run_prerender(
     ctx: &RunContext,
@@ -344,7 +346,7 @@ fn prerender_once(
     // 一次一进程（warnings 记 sidecar_resident_fallback）。
     let table_mode = crate::settings::pdfparse_table_mode(&ctx.library);
     let idle_timeout = crate::settings::pdfparse_idle_shutdown(&ctx.library);
-    let (payload_value, resident) = match ctx.registry.sidecar_pool().render(
+    let (payload_value, resident, sidecar, fallback) = match ctx.registry.sidecar_pool().render(
         ctx,
         &layout,
         pdf_path,
@@ -353,12 +355,19 @@ fn prerender_once(
         table_mode,
         idle_timeout,
     ) {
-        crate::pdfpool::PoolOutcome::Completed { payload, .. } => (payload, true),
+        crate::pdfpool::PoolOutcome::Completed {
+            payload,
+            pid,
+            reused,
+            ..
+        } => (payload, true, Some((pid, reused)), None),
         crate::pdfpool::PoolOutcome::Failed(error) => return Err(error),
         crate::pdfpool::PoolOutcome::Cancelled => return Err(cancel_sentinel_error()),
-        crate::pdfpool::PoolOutcome::Fallback => (
+        crate::pdfpool::PoolOutcome::Fallback(info) => (
             render_oneshot(ctx, &layout, pdf_path, &out_dir, &job_path)?,
             false,
+            None,
+            Some(info),
         ),
     };
     ctx.cancel_checkpoint()?;
@@ -466,6 +475,11 @@ fn prerender_once(
         "renderMs": payload.render_ms.unwrap_or(0),
         "encodeMs": payload.encode_ms.unwrap_or(0),
     });
+    // #88：常驻进程身份与回退诊断（与 convert 载荷共用收尾，同名同形）。
+    crate::pdfpool::apply_sidecar_identity(&mut result, sidecar);
+    if let Some(info) = fallback.as_ref() {
+        info.apply_to_payload(&mut result);
+    }
     if let Some(id) = blockmodel_id {
         result["blockModelAssetId"] = json!(id);
     }

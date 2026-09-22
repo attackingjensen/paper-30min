@@ -10,6 +10,11 @@
 //! 连续 2 次回退后本会话（本注册表）停用常驻。空闲超时（设置
 //! `pdfparse.idleShutdownMinutes`，默认 10 分钟）后发 `shutdown` 并回收，下次请求
 //! 重新启动。应用启动预热见 `pdfparse::warm_resident_sidecar`。
+//!
+//! 可观测性（Issue #88）：常驻命中的任务载荷记 `sidecarPid` 与 `sidecarReused`
+//! （是否复用已存活进程），跨任务保温可直接用 pid 证明；回退时 `FallbackInfo`
+//! 携带原因码（warnings 追加 `sidecar_fallback_reason:<code>`）与人读细节，进程
+//! 死亡时并入池捕获的 stderr 尾巴，现场定位「为何回退」不再靠猜。
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -37,6 +42,8 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const WARM_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_CONSECUTIVE_FALLBACKS: u32 = 2;
+/// 死亡回退诊断等待 stderr 读线程收口的上限（#88；正常进程已死时毫秒级）。
+const STDERR_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// 常驻侧车状态（设置面板「解析」区展示）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,17 +67,98 @@ impl ResidentState {
     }
 }
 
-/// 池请求的结局：Completed 携带侧车成功载荷与启动拆分遥测；Failed 是侧车归类的
-/// 业务失败（ok:false，不触发回退）；Fallback 由调用方走一次一进程；Cancelled
-/// 由任务层切换 cancelled 终态。
+/// 回退到一次一进程的原因（Issue #88 可观测性）：`code` 稳定可机器匹配（任务
+/// warnings 追加 `sidecar_fallback_reason:<code>`）；`detail` 与 `stderr_tail`
+/// 是人读诊断，并入任务载荷 `sidecarFallback` 对象。
+#[derive(Debug, Clone)]
+pub struct FallbackInfo {
+    pub code: &'static str,
+    pub detail: Option<String>,
+    pub stderr_tail: Option<String>,
+}
+
+impl FallbackInfo {
+    pub fn new(code: &'static str) -> Self {
+        Self {
+            code,
+            detail: None,
+            stderr_tail: None,
+        }
+    }
+
+    pub fn with_detail(mut self, detail: String) -> Self {
+        self.detail = Some(detail);
+        self
+    }
+
+    pub fn with_stderr_tail(mut self, tail: Option<String>) -> Self {
+        self.stderr_tail = tail.filter(|tail| !tail.trim().is_empty());
+        self
+    }
+
+    /// warnings 追加行：原因码（跟随 sidecar_resident_fallback 之后）。
+    pub fn reason_warning(&self) -> String {
+        format!("sidecar_fallback_reason:{}", self.code)
+    }
+
+    /// 任务载荷诊断对象：{ reason, detail?, stderrTail? }。
+    pub fn to_json(&self) -> Value {
+        let mut object = serde_json::Map::new();
+        object.insert("reason".to_string(), json!(self.code));
+        if let Some(detail) = self.detail.as_deref() {
+            object.insert("detail".to_string(), json!(detail));
+        }
+        if let Some(tail) = self.stderr_tail.as_deref() {
+            object.insert("stderrTail".to_string(), json!(tail));
+        }
+        Value::Object(object)
+    }
+
+    /// 回退诊断写入任务载荷（convert / prerender 共用，#88）：warnings 在
+    /// sidecar_resident_fallback 之外追加原因码行，detail 与 stderr 尾巴并入
+    /// sidecarFallback 对象——「池为何回退」一眼定位。
+    pub(crate) fn apply_to_payload(&self, payload: &mut Value) {
+        let Value::Object(map) = payload else {
+            return;
+        };
+        if let Some(list) = map
+            .entry("warnings".to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+        {
+            list.push(json!(self.reason_warning()));
+        }
+        map.insert("sidecarFallback".to_string(), self.to_json());
+    }
+}
+
+/// 常驻进程身份写入任务载荷（convert / prerender 共用，#88）：sidecarPid 与
+/// sidecarReused——跨任务保温可直接用同一 pid 证明。
+pub(crate) fn apply_sidecar_identity(payload: &mut Value, identity: Option<(u32, bool)>) {
+    let Value::Object(map) = payload else {
+        return;
+    };
+    if let Some((pid, reused)) = identity {
+        map.insert("sidecarPid".to_string(), json!(pid));
+        map.insert("sidecarReused".to_string(), json!(reused));
+    }
+}
+
+/// 池请求的结局：Completed 携带侧车成功载荷、启动拆分遥测与常驻进程身份
+/// （#88：pid + 是否复用）；Failed 是侧车归类的业务失败（ok:false，不触发回退）；
+/// Fallback 由调用方走一次一进程并携带回退原因；Cancelled 由任务层切换终态。
 pub enum PoolOutcome {
     Completed {
         payload: Value,
         startup_ms: Option<u64>,
         model_load_ms: Option<u64>,
+        /// 服务本次请求的常驻进程 pid（跨任务保温的证据，#88 验收）。
+        pid: u32,
+        /// true = 复用已在位进程（本次请求未触发 spawn）；false = 本次新拉起。
+        reused: bool,
     },
     Failed(BridgeError),
-    Fallback,
+    Fallback(FallbackInfo),
     Cancelled,
 }
 
@@ -86,6 +174,8 @@ struct ReaderShared {
     ready: Mutex<Option<Result<u32, String>>>,
     ready_cv: Condvar,
     broken: AtomicBool,
+    /// 首个破裂原因（EOF / 协议行不可解析），供回退诊断引用（#88）。
+    broken_reason: Mutex<Option<String>>,
 }
 
 impl ReaderShared {
@@ -95,12 +185,27 @@ impl ReaderShared {
             ready: Mutex::new(None),
             ready_cv: Condvar::new(),
             broken: AtomicBool::new(false),
+            broken_reason: Mutex::new(None),
         }
+    }
+
+    /// 首个破裂原因（EOF / 协议行不可解析），供回退诊断引用（#88）。
+    fn broken_reason(&self) -> Option<String> {
+        self.broken_reason
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 协议破裂或 EOF：唤醒 READY 等待者，并把全部在途请求标为 Died。
     fn mark_broken(&self, reason: String) {
         self.broken.store(true, Ordering::SeqCst);
+        {
+            let mut slot = self.broken_reason.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                *slot = Some(reason.clone());
+            }
+        }
         {
             let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
             if ready.is_none() {
@@ -178,9 +283,42 @@ fn reader_loop(stdout: impl Read, shared: Arc<ReaderShared>) {
     shared.mark_broken("常驻侧车 stdout 已关闭".to_string());
 }
 
-fn spawn_stderr_tail(stderr: impl Read + Send + 'static) -> Arc<Mutex<String>> {
-    let tail = Arc::new(Mutex::new(String::new()));
-    let writer = Arc::clone(&tail);
+/// stderr 尾巴句柄：读线程收口（EOF/错误）后置位 `done`。进程死亡与 stdout EOF
+/// 触发的回退诊断之间没有顺序保证，取尾巴前有限等待收口，避免竞态漏掉遗言（#88）。
+#[derive(Clone)]
+struct StderrHandle {
+    tail: Arc<Mutex<String>>,
+    done: Arc<AtomicBool>,
+}
+
+impl StderrHandle {
+    /// 等待读线程收口后取尾巴（进程已死时用；空尾巴归一为 None）。
+    fn settled(&self, timeout: Duration) -> Option<String> {
+        let deadline = Instant::now() + timeout;
+        while !self.done.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.current()
+    }
+
+    /// 立即取当前尾巴（进程仍存活时用；空尾巴归一为 None）。
+    fn current(&self) -> Option<String> {
+        let tail = self.tail.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if tail.trim().is_empty() {
+            None
+        } else {
+            Some(tail)
+        }
+    }
+}
+
+fn spawn_stderr_tail(stderr: impl Read + Send + 'static) -> StderrHandle {
+    let handle = StderrHandle {
+        tail: Arc::new(Mutex::new(String::new())),
+        done: Arc::new(AtomicBool::new(false)),
+    };
+    let writer = Arc::clone(&handle.tail);
+    let done = Arc::clone(&handle.done);
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
         let mut buf = [0_u8; 2048];
@@ -198,16 +336,21 @@ fn spawn_stderr_tail(stderr: impl Read + Send + 'static) -> Arc<Mutex<String>> {
                 }
             }
         }
+        done.store(true, Ordering::SeqCst);
     });
-    tail
+    handle
 }
 
 struct ResidentChild {
     child: Child,
     stdin: ChildStdin,
     shared: Arc<ReaderShared>,
-    stderr_tail: Arc<Mutex<String>>,
+    stderr: StderrHandle,
     pid: u32,
+}
+
+fn child_alive(child: &mut ResidentChild) -> bool {
+    !child.shared.broken.load(Ordering::SeqCst) && matches!(child.child.try_wait(), Ok(None))
 }
 
 impl ResidentChild {
@@ -333,8 +476,17 @@ impl SidecarPool {
                     false,
                     Some(WARM_TIMEOUT),
                 );
-                if !matches!(outcome, PoolOutcome::Completed { .. }) {
-                    eprintln!("[pdfpool] 常驻侧车预热未生效（忽略，首个解析任务按需冷启或回退）");
+                match &outcome {
+                    PoolOutcome::Completed { .. } => {}
+                    PoolOutcome::Fallback(info) => eprintln!(
+                        "[pdfpool] 常驻侧车预热回退（{}{}，忽略，首个解析任务按需冷启或回退）",
+                        info.code,
+                        info.detail
+                            .as_deref()
+                            .map(|detail| format!(": {detail}"))
+                            .unwrap_or_default()
+                    ),
+                    _ => eprintln!("[pdfpool] 常驻侧车预热未生效（忽略，首个解析任务按需冷启或回退）"),
                 }
             });
     }
@@ -412,14 +564,18 @@ impl SidecarPool {
         overall_timeout: Option<Duration>,
     ) -> PoolOutcome {
         if self.resident_state() == ResidentState::Disabled {
-            return PoolOutcome::Fallback;
+            return PoolOutcome::Fallback(FallbackInfo::new("disabled"));
         }
-        if self.ensure_child(layout, hf_endpoint, table_mode).is_err() {
-            if count_fallback {
-                self.note_fallback();
+        // #88 复用判定：ensure_child 直接报告是否由本次调用拉起进程（无观察竞态）。
+        let mut reused = match self.ensure_child(layout, hf_endpoint, table_mode) {
+            Ok(spawned) => !spawned,
+            Err(reason) => {
+                if count_fallback {
+                    self.note_fallback();
+                }
+                return PoolOutcome::Fallback(FallbackInfo::new("spawn_failed").with_detail(reason));
             }
-            return PoolOutcome::Fallback;
-        }
+        };
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         let mut request = fields;
         request["id"] = json!(id);
@@ -428,17 +584,30 @@ impl SidecarPool {
         // 注册在途请求并写入 stdin；与空闲看门狗的 shutdown 互斥（同一把 state 锁）。
         // 若 ensure 之后 child 恰被看门狗回收，重新拉起重试一次。
         let mut respawned = false;
-        loop {
+        let pid = loop {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let Some(child) = state.child.as_mut() else {
                 drop(state);
-                if respawned || self.ensure_child(layout, hf_endpoint, table_mode).is_err() {
+                let reason = if respawned {
+                    Some("重拉后进程再次被回收".to_string())
+                } else {
+                    match self.ensure_child(layout, hf_endpoint, table_mode) {
+                        Ok(spawned) => {
+                            respawned = true;
+                            reused = !spawned;
+                            None
+                        }
+                        Err(reason) => Some(reason),
+                    }
+                };
+                if let Some(reason) = reason {
                     if count_fallback {
                         self.note_fallback();
                     }
-                    return PoolOutcome::Fallback;
+                    return PoolOutcome::Fallback(
+                        FallbackInfo::new("spawn_failed").with_detail(reason),
+                    );
                 }
-                respawned = true;
                 continue;
             };
             let line = match serde_json::to_string(&request) {
@@ -450,21 +619,37 @@ impl SidecarPool {
                 }
             };
             if !child.send_request(id, &line, tx) {
+                let stderr = child.stderr.clone();
                 drop(state);
                 self.kill_child();
                 if count_fallback {
                     self.note_fallback();
                 }
-                return PoolOutcome::Fallback;
+                return PoolOutcome::Fallback(
+                    FallbackInfo::new("stdin_write_failed")
+                        .with_stderr_tail(stderr.settled(STDERR_SETTLE_TIMEOUT)),
+                );
             }
-            break;
-        }
-        self.wait_result(id, &rx, ctx, idle_timeout, count_fallback, overall_timeout)
+            break child.pid;
+        };
+        self.wait_result(
+            id,
+            pid,
+            reused,
+            &rx,
+            ctx,
+            idle_timeout,
+            count_fallback,
+            overall_timeout,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn wait_result(
         &self,
         id: u64,
+        pid: u32,
+        reused: bool,
         rx: &mpsc::Receiver<PoolEvent>,
         ctx: Option<&RunContext>,
         idle_timeout: Duration,
@@ -494,18 +679,20 @@ impl SidecarPool {
                     }
                     // 业务失败（ok:false）同样证明常驻链路可用：计空闲起点、清回退计数。
                     self.note_request_end(idle_timeout);
-                    return self.map_result(value, &stage_log);
+                    return self.map_result(value, &stage_log, pid, reused);
                 }
                 Ok(PoolEvent::Died) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.remove_pending(id);
                     if cancel_sent_at.is_some() {
                         return PoolOutcome::Cancelled;
                     }
+                    // 诊断须在回收前取：进程收走后再拿不到破裂原因与 stderr 尾巴。
+                    let diagnostics = self.death_diagnostics();
                     self.reap_dead_child();
                     if count_fallback {
                         self.note_fallback();
                     }
-                    return PoolOutcome::Fallback;
+                    return PoolOutcome::Fallback(diagnostics);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Some(sent_at) = cancel_sent_at {
@@ -521,7 +708,10 @@ impl SidecarPool {
                         if submitted.elapsed() >= limit {
                             self.remove_pending(id);
                             self.kill_child();
-                            return PoolOutcome::Fallback;
+                            return PoolOutcome::Fallback(
+                                FallbackInfo::new("warm_timeout")
+                                    .with_detail(format!("{} 秒内未收到结果", limit.as_secs())),
+                            );
                         }
                     }
                     if let Some(ctx) = ctx {
@@ -537,7 +727,14 @@ impl SidecarPool {
 
     /// 结果载荷 → 结局。startupMs：常驻命中（无模型加载阶段）为 0；本次请求触发
     /// 加载时为加载段耗时（预热耗时，规格 #74 §A3），不含排队等待。modelLoadMs 同源。
-    fn map_result(&self, value: Value, stage_log: &[(String, Instant)]) -> PoolOutcome {
+    /// pid/reused 为进程身份遥测（#88）。
+    fn map_result(
+        &self,
+        value: Value,
+        stage_log: &[(String, Instant)],
+        pid: u32,
+        reused: bool,
+    ) -> PoolOutcome {
         if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             let startup_at = stage_log.iter().find(|(stage, _)| stage == "startup");
             let loaded_at = stage_log.iter().find(|(stage, _)| stage == "models_loaded");
@@ -551,6 +748,8 @@ impl SidecarPool {
                 payload: value,
                 startup_ms: Some(load_ms.unwrap_or(0)),
                 model_load_ms: load_ms,
+                pid,
+                reused,
             };
         }
         let error = value.get("error").cloned().unwrap_or(Value::Null);
@@ -574,18 +773,42 @@ impl SidecarPool {
         PoolOutcome::Failed(mapped)
     }
 
+    /// 进程死亡回退的诊断（#88）：破裂原因（EOF / 协议行不可解析）+ stderr 尾巴。
+    /// 须在 reap_dead_child 之前调用；进程已死时等待 stderr 读线程收口（有界 1s），
+    /// 仍存活（仅协议破裂）时直接取当前尾巴。
+    fn death_diagnostics(&self) -> FallbackInfo {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(child) = state.child.as_mut() else {
+            return FallbackInfo::new("process_died");
+        };
+        let info = FallbackInfo::new("process_died").with_detail(
+            child
+                .shared
+                .broken_reason()
+                .unwrap_or_else(|| "常驻进程死亡（原因未知）".to_string()),
+        );
+        let gone = !child_alive(child);
+        let stderr = child.stderr.clone();
+        drop(state);
+        if gone {
+            info.with_stderr_tail(stderr.settled(STDERR_SETTLE_TIMEOUT))
+        } else {
+            info.with_stderr_tail(stderr.current())
+        }
+    }
+
+    /// 确保有存活常驻进程；Ok(true) = 本次调用新拉起了进程，Ok(false) = 复用在位
+    /// 进程（#88 复用判定以此为准，无观察竞态）。Err 携带 spawn/READY 失败原因。
     fn ensure_child(
         &self,
         layout: &SidecarLayout,
         hf_endpoint: Option<&str>,
         table_mode: &str,
-    ) -> Result<(), ()> {
+    ) -> Result<bool, String> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(child) = state.child.as_mut() {
-            let alive = !child.shared.broken.load(Ordering::SeqCst)
-                && matches!(child.child.try_wait(), Ok(None));
-            if alive {
-                return Ok(());
+            if child_alive(child) {
+                return Ok(false);
             }
             reap_child(state.child.take().expect("child 在位"));
         }
@@ -597,11 +820,11 @@ impl SidecarPool {
                 state.child = Some(child);
                 // 注意：回退计数只在常驻请求成功服务时清零（note_request_end）；
                 // 进程能拉起不代表协议可用，spawn 成功不清零（#84 评审）。
-                Ok(())
+                Ok(true)
             }
-            Err(()) => {
+            Err(reason) => {
                 self.set_status(ResidentState::NotStarted);
-                Err(())
+                Err(reason)
             }
         }
     }
@@ -681,7 +904,7 @@ impl SidecarPool {
         state
             .child
             .as_ref()
-            .and_then(|child| child.stderr_tail.lock().ok().map(|tail| tail.clone()))
+            .and_then(|child| child.stderr.tail.lock().ok().map(|tail| tail.clone()))
             .unwrap_or_default()
     }
 
@@ -742,12 +965,13 @@ impl Drop for SidecarPool {
     }
 }
 
-/// 拉起常驻 serve 进程并完成 READY 握手（30s 超时）。失败即清理，由调用方回退。
+/// 拉起常驻 serve 进程并完成 READY 握手（30s 超时）。失败即清理并返回人读原因
+/// （#88：随回退诊断进任务载荷），由调用方回退。
 fn spawn_serve(
     layout: &SidecarLayout,
     hf_endpoint: Option<&str>,
     table_mode: &str,
-) -> Result<ResidentChild, ()> {
+) -> Result<ResidentChild, String> {
     let script = std::env::var(SERVE_ENTRY_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -762,7 +986,9 @@ fn spawn_serve(
         .arg("serve")
         .stdin(Stdio::piped());
     let mut child = command.spawn().map_err(|err| {
-        eprintln!("[pdfpool] 常驻侧车启动失败: {err}");
+        let reason = format!("常驻侧车启动失败: {err}");
+        eprintln!("[pdfpool] {reason}");
+        reason
     })?;
     let shared = Arc::new(ReaderShared::new());
     let stdout = child.stdout.take().expect("已配置 piped stdout");
@@ -771,7 +997,7 @@ fn spawn_serve(
         std::thread::spawn(move || reader_loop(stdout, shared));
     }
     let stderr = child.stderr.take().expect("已配置 piped stderr");
-    let stderr_tail = spawn_stderr_tail(stderr);
+    let stderr = spawn_stderr_tail(stderr);
     let stdin = child.stdin.take().expect("已配置 piped stdin");
 
     let deadline = Instant::now() + READY_TIMEOUT;
@@ -786,7 +1012,7 @@ fn spawn_serve(
                 eprintln!("[pdfpool] 常驻侧车 READY 超时（30s）");
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(());
+                return Err("READY 超时（30s）".to_string());
             }
             let (guard, _) = shared
                 .ready_cv
@@ -800,14 +1026,14 @@ fn spawn_serve(
             child,
             stdin,
             shared,
-            stderr_tail,
+            stderr,
             pid,
         }),
         Err(reason) => {
             eprintln!("[pdfpool] 常驻侧车 READY 前退出: {reason}");
             let _ = child.kill();
             let _ = child.wait();
-            Err(())
+            Err(format!("READY 前退出: {reason}"))
         }
     }
 }

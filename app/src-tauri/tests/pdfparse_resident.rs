@@ -1,7 +1,9 @@
-//! 常驻侧车契约测试（Issue #84，规格 #74 §A3）。
+//! 常驻侧车契约测试（Issue #84，规格 #74 §A3；可观测性 Issue #88）。
 //! 覆盖：serve 协议（READY / ping / convert 与 render 并行 / shutdown）、第二次
-//! convert 免启动（startupMs == 0 且 resident: true）、常驻不可用回退一次一进程
-//!（warnings 含 sidecar_resident_fallback）、取消 kill 常驻进程后下次请求重新拉起、
+//! convert 免启动（startupMs == 0 且 resident: true）、连续三次 convert 复用同一
+//! 进程（sidecarPid 相同、sidecarReused 递进）、常驻不可用回退一次一进程
+//!（warnings 记 sidecar_resident_fallback + 原因码）、进程中途死亡回退时并入
+//! stderr 尾巴（sidecarFallback）、取消 kill 常驻进程后下次请求重新拉起、
 //! 空闲超时自动释放。
 //!
 //! 侧车未构建时跳过并打印原因；`PAPER30MIN_PDFPARSE_REQUIRE=1` 强制要求在场。
@@ -253,8 +255,53 @@ fn resident_second_convert_has_zero_startup() {
     );
 }
 
+/// #88 验收：连续 3 次 convert 复用同一常驻进程——第 2 次起 startupMs == 0 且
+/// 无 modelLoadMs（模型不再重载），sidecarPid 三次相同，sidecarReused 依次为
+/// false / true / true（首次拉起进程，其后复用）。
+#[test]
+fn resident_three_converts_reuse_same_pid() {
+    let (registry, library, dir) = common::env();
+    if !sidecar_ready(&library) {
+        return;
+    }
+    let _guard = RESIDENT_LOCK.lock().unwrap();
+
+    let mut pids = Vec::new();
+    let mut reused = Vec::new();
+    for index in 1..=3 {
+        let task_id = start_convert(
+            &registry,
+            &sample_pdf(),
+            &dir.path().join(format!("w-conv-{index}")),
+        );
+        let status = wait_terminal(&registry, &task_id, CONVERT_TIMEOUT).expect("转换超时");
+        assert_eq!(status, TaskStatus::Succeeded, "第 {index} 次转换应成功");
+        let result = registry.get(&task_id).unwrap().result.expect("结果");
+        assert_eq!(result["resident"], json!(true), "应命中常驻: {result}");
+        pids.push(
+            result["sidecarPid"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("常驻命中应带 sidecarPid: {result}")),
+        );
+        reused.push(result["sidecarReused"].as_bool().expect("应带 sidecarReused"));
+        if index > 1 {
+            assert_eq!(
+                result["startupMs"], json!(0),
+                "第 {index} 次常驻复用不应再付模型加载: {result}"
+            );
+            assert!(
+                result.get("modelLoadMs").is_none(),
+                "第 {index} 次常驻复用不应有 modelLoadMs: {result}"
+            );
+        }
+    }
+    assert_eq!(pids[0], pids[1], "第 1/2 次应为同一常驻进程: {pids:?}");
+    assert_eq!(pids[1], pids[2], "第 2/3 次应为同一常驻进程: {pids:?}");
+    assert_eq!(reused, vec![false, true, true], "复用判定: {reused:?}");
+}
+
 /// 常驻不可用（serve 入口指向不存在的脚本）时任务仍成功，warnings 记
-/// sidecar_resident_fallback；连续 2 次回退后本会话停用常驻。
+/// sidecar_resident_fallback 与原因码 spawn_failed；连续 2 次回退后本会话停用常驻。
 #[test]
 fn resident_fallback_when_serve_entry_missing() {
     let (registry, library, dir) = common::env();
@@ -281,6 +328,18 @@ fn resident_fallback_when_serve_entry_missing() {
                 .contains(&json!(paper30min_lib::pdfpool::FALLBACK_WARNING)),
             "回退应记 sidecar_resident_fallback: {result}"
         );
+        assert!(
+            result["warnings"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("sidecar_fallback_reason:spawn_failed")),
+            "回退应记原因码（#88）: {result}"
+        );
+        assert_eq!(
+            result["sidecarFallback"]["reason"],
+            json!("spawn_failed"),
+            "载荷应带 sidecarFallback 诊断（#88）: {result}"
+        );
         let resident = resident_state(&registry, &library);
         assert_eq!(
             resident["consecutiveFallbacks"],
@@ -293,6 +352,58 @@ fn resident_fallback_when_serve_entry_missing() {
         resident["state"],
         json!("disabled"),
         "连续 2 次回退后本会话应停用常驻: {resident}"
+    );
+}
+
+/// #88：常驻进程在请求中途死亡（fake serve 收到请求即写 stderr 退出）时，任务
+/// 回退一次一进程仍成功；载荷 sidecarFallback 记 process_died 原因并并入池捕获的
+/// stderr 尾巴，warnings 记原因码——现场再遇「池为何回退」可一眼定位。
+#[test]
+fn resident_process_death_reports_stderr_tail() {
+    let (registry, library, dir) = common::env();
+    if !sidecar_ready(&library) {
+        return;
+    }
+    let _guard = RESIDENT_LOCK.lock().unwrap();
+    let fake = dir.path().join("fake-serve.py");
+    std::fs::write(
+        &fake,
+        r#"
+import json, os, sys
+print("PDFPARSE_READY " + json.dumps({"pid": os.getpid()}), flush=True)
+sys.stdin.readline()
+sys.stderr.write("fake-serve-death-marker #88\n")
+sys.stderr.flush()
+os._exit(3)
+"#,
+    )
+    .expect("写 fake serve 脚本");
+    let _env = EnvGuard(paper30min_lib::pdfpool::SERVE_ENTRY_ENV);
+    std::env::set_var(paper30min_lib::pdfpool::SERVE_ENTRY_ENV, &fake);
+
+    let task_id = start_convert(&registry, &sample_pdf(), &dir.path().join("d-conv"));
+    let status = wait_terminal(&registry, &task_id, CONVERT_TIMEOUT).expect("转换超时");
+    assert_eq!(status, TaskStatus::Succeeded, "进程死亡应回退一次一进程成功");
+    let result = registry.get(&task_id).unwrap().result.expect("结果");
+    assert_eq!(result["resident"], json!(false), "应走回退路径: {result}");
+    assert_eq!(
+        result["sidecarFallback"]["reason"],
+        json!("process_died"),
+        "应记 process_died 原因: {result}"
+    );
+    let tail = result["sidecarFallback"]["stderrTail"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        tail.contains("fake-serve-death-marker"),
+        "stderr 尾巴应并入载荷诊断: {result}"
+    );
+    assert!(
+        result["warnings"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("sidecar_fallback_reason:process_died")),
+        "warnings 应记原因码: {result}"
     );
 }
 

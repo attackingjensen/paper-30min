@@ -461,7 +461,9 @@ fn sidecar_startup_timings(harness: &ChildHarness) -> (Option<u64>, Option<u64>)
 /// 输入: { pdfPath?, paperId?, workDir?, formulaEnrichment? }（pdfPath 缺省 = paperId 论文的 pdf 附件）
 /// 结果: { doclingJsonPath, workDir, pages, elapsedMs, wallClockMs,
 ///         doclingVersion, ocrPages, warnings, timings, startupMs, modelLoadMs?,
-///         tableMode, numThreads, resident, blockModelAssetId?, mappingWarnings? }
+///         tableMode, numThreads, resident, sidecarPid?, sidecarReused?,
+///         sidecarFallback?, blockModelAssetId?, mappingWarnings? }
+///（#88：常驻命中带 sidecarPid/sidecarReused；回退带 sidecarFallback 诊断与原因码警示）
 /// 带 paperId 时转换成功后立即映射并落 blockmodel.json（#76）。
 /// #84 起优先走常驻侧车池（resident: true，模型只加载一次）；常驻不可用时回退
 /// 一次一进程（resident: false，warnings 记 sidecar_resident_fallback）。
@@ -527,6 +529,8 @@ fn convert_once(
             mut payload,
             startup_ms,
             model_load_ms,
+            pid,
+            reused,
         } => {
             finalize_convert_payload(
                 &mut payload,
@@ -535,6 +539,8 @@ fn convert_once(
                 true,
                 startup_ms,
                 model_load_ms,
+                // #88：进程身份遥测——跨任务保温可用同一 pid 直接证明。
+                Some((pid, reused)),
             );
             if let Some(paper_id) = paper_id {
                 persist_convert_block_model(ctx, paper_id, &mut payload)?;
@@ -544,7 +550,7 @@ fn convert_once(
         }
         crate::pdfpool::PoolOutcome::Failed(error) => Err(error),
         crate::pdfpool::PoolOutcome::Cancelled => Err(cancel_sentinel_error()),
-        crate::pdfpool::PoolOutcome::Fallback => convert_oneshot(
+        crate::pdfpool::PoolOutcome::Fallback(fallback) => convert_oneshot(
             ctx,
             &layout,
             pdf_path,
@@ -553,12 +559,13 @@ fn convert_once(
             paper_id,
             table_mode,
             started,
+            &fallback,
         ),
     }
 }
 
 /// 一次一进程路径（#57 原实现；#84 起作为常驻不可用时的回退，结果记
-/// resident: false 并附 sidecar_resident_fallback 警示）。
+/// resident: false 并附 sidecar_resident_fallback 警示与回退原因诊断，#88）。
 #[allow(clippy::too_many_arguments)]
 fn convert_oneshot(
     ctx: &RunContext,
@@ -569,6 +576,7 @@ fn convert_oneshot(
     paper_id: Option<&str>,
     table_mode: &str,
     started: Instant,
+    fallback: &crate::pdfpool::FallbackInfo,
 ) -> Result<(), BridgeError> {
     let mut command = base_command(layout, configured_hf_endpoint(ctx).as_deref());
     command
@@ -591,7 +599,16 @@ fn convert_oneshot(
         Some(result) if result.ok => {
             let mut payload = result.payload;
             let (startup_ms, model_load_ms) = sidecar_startup_timings(&harness);
-            finalize_convert_payload(&mut payload, out_dir, started, false, startup_ms, model_load_ms);
+            finalize_convert_payload(
+                &mut payload,
+                out_dir,
+                started,
+                false,
+                startup_ms,
+                model_load_ms,
+                None,
+            );
+            fallback.apply_to_payload(&mut payload);
             if let Some(paper_id) = paper_id {
                 persist_convert_block_model(ctx, paper_id, &mut payload)?;
             }
@@ -604,7 +621,8 @@ fn convert_oneshot(
 }
 
 /// 两条路径共用的结果载荷收尾：workDir / wallClockMs / resident / 启动拆分遥测；
-/// 回退路径（resident = false）附 sidecar_resident_fallback 警示。
+/// 常驻命中附进程身份 sidecarPid / sidecarReused（#88）；回退路径（resident =
+/// false）附 sidecar_resident_fallback 警示。
 /// startupMs 对常驻命中为 0、对触发加载的常驻请求为加载耗时（规格 #74 §A3：0 或预热耗时）。
 fn finalize_convert_payload(
     payload: &mut Value,
@@ -613,7 +631,9 @@ fn finalize_convert_payload(
     resident: bool,
     startup_ms: Option<u64>,
     model_load_ms: Option<u64>,
+    sidecar: Option<(u32, bool)>,
 ) {
+    crate::pdfpool::apply_sidecar_identity(payload, sidecar);
     let Value::Object(map) = payload else {
         return;
     };
