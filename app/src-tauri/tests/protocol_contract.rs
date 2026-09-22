@@ -73,6 +73,22 @@ fn seed_block_model(library: &Library, paper_id: &str) {
     put_attachment(library, paper_id, "blockmodel.json", "application/json", &bytes);
 }
 
+/// #87 UI 形状论文：parts 是 pdf.js 预切分的真实形状（无 abstract、节集与块模型
+/// 不对齐——这里刻意多出 part-3），复现 UI 导入后建图前的记录状态。
+fn seed_ui_shaped_paper(library: &Library) -> String {
+    let paper = PaperDto {
+        id: "paper-ui-shaped".to_string(),
+        title: "UI 导入论文：部分与块模型不对齐".to_string(),
+        parts: vec![
+            PartDto { id: "part-1".to_string(), title: Some("Introduction".to_string()), heading: Some("1 Introduction".to_string()), semantic_type: Some("introduction".to_string()), sort_order: 1 },
+            PartDto { id: "part-2".to_string(), title: Some("Method".to_string()), heading: Some("2 Method".to_string()), semantic_type: Some("method".to_string()), sort_order: 2 },
+            PartDto { id: "part-3".to_string(), title: Some("Experiments".to_string()), heading: Some("3 Experiments".to_string()), semantic_type: Some("experiments".to_string()), sort_order: 3 },
+        ],
+        ..Default::default()
+    };
+    library.put_paper(paper).expect("写入论文").id
+}
+
 fn seed_four_section_paper(library: &Library) -> String {
     let paper = PaperDto {
         id: "paper-four".to_string(),
@@ -394,6 +410,16 @@ fn products_of(library: &Library, paper_id: &str, kind: &str) -> Vec<ProductDto>
         .collect()
 }
 
+/// 已深挖部分的 partId（排序后）：批量完成顺序不定，比较前先排序。
+fn dug_part_ids(library: &Library, paper_id: &str) -> Vec<String> {
+    let mut ids: Vec<String> = products_of(library, paper_id, "dig")
+        .into_iter()
+        .map(|product| product.part_id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 // ============================================================================
 // paper.build-map@1
 // ============================================================================
@@ -596,6 +622,54 @@ fn build_map_succeeds_with_only_block_model() {
     assert_eq!(products_of(&library, &paper_id, "map").len(), 1);
     assert_eq!(products_of(&library, &paper_id, "l2").len(), 3);
     assert_eq!(mock.hits(), 4);
+}
+
+/// #87 A：UI 形状论文（pdf.js 预切分 parts）建图完成后，记录 parts 按块模型
+/// 回写为 abstract + part-N 同构形状；重跑建图幂等不变形；对齐后批量深挖跑通。
+#[test]
+fn build_map_rewrites_ui_shaped_parts_to_block_model() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|request, _hit| map_or_l2_response(request));
+    let paper_id = seed_ui_shaped_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let parts = library.get_paper(&paper_id).unwrap().parts;
+    let aligned = vec![
+        PartDto { id: "abstract".to_string(), title: Some("Abstract".to_string()), heading: None, semantic_type: Some("abstract".to_string()), sort_order: 0 },
+        PartDto { id: "part-1".to_string(), title: Some("Introduction".to_string()), heading: None, semantic_type: Some("introduction".to_string()), sort_order: 1 },
+        PartDto { id: "part-2".to_string(), title: Some("Method".to_string()), heading: None, semantic_type: Some("method".to_string()), sort_order: 2 },
+    ];
+    assert_eq!(parts, aligned, "建图后 parts 与块模型内容节同构（semanticType 取 L2 type）");
+
+    // 确认覆盖重跑：parts 已对齐则幂等，不重写也不变形。
+    let (rerun, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id, "overwriteConfirmed": true }),
+    );
+    assert_eq!(terminal(&registry, &rerun), TaskStatus::Succeeded);
+    assert_eq!(library.get_paper(&paper_id).unwrap().parts, aligned, "重跑后 parts 保持对齐");
+
+    // 全链验收：UI 导入 → 建图 → 「全部深挖」按前端 deepAllPartIds 域（含 abstract）批量跑通。
+    let dive = MockHttp::start(|_request, _hit| sse_text(DIG_MARKDOWN));
+    configure_model(&registry, &library, &dive.url(""));
+    let (dive_task, dive_sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["abstract", "part-1", "part-2"] }),
+    );
+    assert_eq!(terminal(&registry, &dive_task), TaskStatus::Succeeded, "事件流: {:?}", dive_sink.events());
+    assert_eq!(
+        dug_part_ids(&library, &paper_id),
+        vec!["abstract".to_string(), "part-1".to_string(), "part-2".to_string()],
+        "逐节落库"
+    );
 }
 
 #[test]
@@ -1310,6 +1384,54 @@ fn deep_dive_requires_map_and_known_parts() {
         .start(protocol::TASK_DEEP_DIVE, json!({ "paperId": paper_id, "partIds": [] }), Collector::new())
         .expect_err("空 partIds 应在计划阶段拒绝");
     assert_eq!(error.code, "invalid_input");
+}
+
+/// #87 B：记录 parts 与块模型不对齐的论文（如修复前已建图的 UI 导入论文，不再重跑建图），
+/// 深挖 partIds 校验域改为块模型内容节映射域——「全部深挖」目标（含 abstract、
+/// 超出记录 parts 的 part-N）直接跑通；记录外的未知部分仍 invalid_input。
+#[test]
+fn deep_dive_ui_shaped_parts_validate_against_block_model_domain() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|_request, _hit| sse_text(DIG_MARKDOWN));
+    let paper_id = seed_ui_shaped_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    seed_built_products(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+
+    // 记录 parts 无 abstract 且多出 part-3；批量目标域 = 块模型（abstract + part-1 + part-2）。
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["abstract", "part-1", "part-2"] }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let queued = events_named(&sink, "stage")
+        .into_iter()
+        .find(|detail| detail["stage"] == json!("deep-dive-queued"))
+        .expect("开工事件");
+    assert_eq!(queued["total"], json!(3), "开工前列出全部目标");
+    assert_eq!(
+        dug_part_ids(&library, &paper_id),
+        vec!["abstract".to_string(), "part-1".to_string(), "part-2".to_string()],
+        "逐节落库"
+    );
+    // 记录 parts 不被深挖改写（对齐回写只在建图缝发生）。
+    assert_eq!(library.get_paper(&paper_id).unwrap().parts.len(), 3);
+
+    // 记录内但块模型无此节（pdf.js 多节）与纯未知部分统一拒绝（错误即指令）。
+    for part_id in ["part-3", "part-9"] {
+        let (unknown, _) = start_task(
+            &registry,
+            protocol::TASK_DEEP_DIVE,
+            json!({ "paperId": paper_id, "partIds": [part_id] }),
+        );
+        assert_eq!(terminal(&registry, &unknown), TaskStatus::Failed, "{part_id} 应开工前拒绝");
+        let error = registry.get(&unknown).unwrap().error.unwrap();
+        assert_eq!(error.code, "invalid_input");
+        assert!(error.message.contains("未知的精读部分"), "错误即指令: {}", error.message);
+    }
 }
 
 // ============================================================================

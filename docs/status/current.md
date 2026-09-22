@@ -1,12 +1,12 @@
 # 项目当前状态
 
-> 更新时间：2026-09-19
+> 更新时间：2026-09-22
 
 ## 当前阶段
 
 Paper30Min 是「论文精读」专精 agent harness：帮助用户高效读完一篇完整论文。Windows 正式客户端 **1.0.0** 已发布（[GitHub Release](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0)）；`steven123397/dev` 与 `main` 同源，当前协作走 `dev`，不创建合入 `main` 的 PR，也不因零散感受新建打磨类 Issue。
 
-Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）实施链 **#75–#84、#86 全部完成**，对照走查 [#85](https://github.com/attackingjensen/paper-30min/issues/85) 已完成并关闭（[走查记录](../draft/2026-09-19-issue85-walkthrough.md)：同机 v1.0.0 基线 vs 优化后，3 篇夹具全链 8.0–8.4×；真实窗口 9 项点验 8 过 1 项被缺陷阻断）。**当前工作是 [#87](https://github.com/attackingjensen/paper-30min/issues/87)**（走查发现的阻断缺陷：UI 导入论文批量深挖必失败）。云端同步 [#25](https://github.com/attackingjensen/paper-30min/issues/25) 与 Android 阅读伴侣 [#26](https://github.com/attackingjensen/paper-30min/issues/26) 暂不实现。
+Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）实施链 **#75–#84、#86 全部完成**，对照走查 [#85](https://github.com/attackingjensen/paper-30min/issues/85) 已完成并关闭（[走查记录](../draft/2026-09-19-issue85-walkthrough.md)：同机 v1.0.0 基线 vs 优化后，3 篇夹具全链 8.0–8.4×；真实窗口 9 项点验 8 过 1 项被缺陷阻断）。走查发现的阻断缺陷 [#87](https://github.com/attackingjensen/paper-30min/issues/87) 已修复并关闭（A+B：深挖校验域改块模型内容节映射域 + 建图后按块模型回写记录 parts；[走查记录](../draft/2026-09-22-issue87-walkthrough.md)：XGBoost / NAF 两篇导入→建图→全部深挖 3/3 过，含取消保留与单节重挖）。当前无进行中工作；开口为走查已知项 [#88](https://github.com/attackingjensen/paper-30min/issues/88) / [#89](https://github.com/attackingjensen/paper-30min/issues/89) 与未来线 [#25](https://github.com/attackingjensen/paper-30min/issues/25) / [#26](https://github.com/attackingjensen/paper-30min/issues/26)。
 
 ## 已具备能力
 
@@ -40,7 +40,7 @@ Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专�
 | [#80](https://github.com/attackingjensen/paper-30min/issues/80) | 深挖轮次进度与最终稿预览 | 已完成 |
 | [#81](https://github.com/attackingjensen/paper-30min/issues/81) | 深挖减轮：预附图表与一轮多工具 | 已完成 |
 | [#82](https://github.com/attackingjensen/paper-30min/issues/82) | 分阶段模型与思考默认（协议关、问答开） | 已完成 |
-| [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 已完成 |
+| [#83](https://github.com/attackingjensen/paper-30min/issues/83) | 批量深挖有界并发 | 已完成（窗口点验由 #87 走查补齐） |
 | [#84](https://github.com/attackingjensen/paper-30min/issues/84) | 常驻侧车 | 已完成 |
 | [#86](https://github.com/attackingjensen/paper-30min/issues/86) | 可空 temperature 与 400 自动卸参数 | 已完成 |
 | [#85](https://github.com/attackingjensen/paper-30min/issues/85) | 性能对照走查与状态同步 | 已完成（窗口点验 8/9 过，1 项被 #87 阻断） |
@@ -60,10 +60,10 @@ Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专�
 - 安装包覆盖升级、干净账户安装和卸载验收未做（原 #32 范围，规格已随定性转变关闭）。
 - 批量「全部深挖」重跑已有结果的节没有覆盖确认（单节「重新深挖」有）。
 - 「编辑原文」入口暂不提供；公式密集样例由 #60 回归覆盖。
-- [#87](https://github.com/attackingjensen/paper-30min/issues/87)：UI 导入论文记录 parts 与块模型内容节不对齐，批量深挖开工即失败（#85 走查缺陷，阻断级）。
+- [#87](https://github.com/attackingjensen/paper-30min/issues/87) 已修复关闭（[走查记录](../draft/2026-09-22-issue87-walkthrough.md)）：遗留——建图对齐 parts 不迁移 readMarks，导入→解析窗口内按 pdf.js 序号记的已读完标记在对齐后改指块模型同序号节或成孤儿（不计数、不显示，历史保留）；走查新发现——块模型无 abstract 节的论文（如 NAF）进度 chip 比节树多 1（前端进度域固定补 abstract 占位，该类论文到不了「已读完」），待立后续票。
 - 瞬时失败的协议任务会让节页「进行中」与「全部深挖」禁用状态滞留至下次重渲染（#85 走查缺陷 B，低）。
-- 常驻侧车池未跨任务保温：每篇解析重付 ~5 s 模型加载，且出现过一次会话级回退停用（#85 走查发现 1/2，侧车隔离实验证明保温能力正常，疑点在池层，待查）。
-- A1 解析计时探针在表密集论文上开销显著（2106 对照：开 102 s / 关 66 s），叠加连跑热节流可击穿 #78 性能门禁；#85 走查按机制以 `PAPER30MIN_PDFPARSE_PERF_FACTOR=2.0` 放宽通过，探针按需化与回归锁容毒待后续票。
+- 常驻侧车池未跨任务保温：每篇解析重付 ~5 s 模型加载，且出现过一次会话级回退停用（#85 走查发现 1/2，侧车隔离实验证明保温能力正常，疑点在池层）——[#88](https://github.com/attackingjensen/paper-30min/issues/88) 跟踪。
+- A1 解析计时探针在表密集论文上开销显著（2106 对照：开 102 s / 关 66 s），叠加连跑热节流可击穿 #78 性能门禁；#85 走查按机制以 `PAPER30MIN_PDFPARSE_PERF_FACTOR=2.0` 放宽通过，探针按需化与回归锁容毒同票——[#89](https://github.com/attackingjensen/paper-30min/issues/89) 跟踪。
 
 ## 权威来源
 

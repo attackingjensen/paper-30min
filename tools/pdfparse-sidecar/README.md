@@ -91,6 +91,12 @@ Rust 侧回退/测试钩子环境变量：`PAPER30MIN_PDFPARSE_SERVE`（serve �
 指向不存在路径可伪造常驻不可用）、`PAPER30MIN_PDFPARSE_IDLE_SECS`（空闲释放秒级
 覆盖，默认走设置 `pdfparse.idleShutdownMinutes`）。
 
+侧车目录候选（`src/pdfparse.rs::sidecar_root_candidates` 顺序）：
+`PAPER30MIN_PDFPARSE_HOME` → 可执行文件旁的 `sidecar/pdfparse`（随包布局）→
+**编译期** `CARGO_MANIFEST_DIR/sidecar/pdfparse`。末项把构建时的仓库路径烙进二进制，
+因此在 worktree 或独立 driver 中构建时，须显式设 `PAPER30MIN_PDFPARSE_HOME`
+才能指向目标侧车（#85 的 v1.0.0 基线对照即如此）。
+
 ## 运行期语义
 
 - convert 全程 `HF_HUB_OFFLINE=1`，模型只从 artifacts 目录取；唯一在线例外是

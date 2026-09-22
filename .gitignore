@@ -17,5 +17,8 @@ paper-list/
 .DS_Store
 Thumbs.db
 
+# ZCode 会话级产物（动态工作流、草稿等），按项目本机约定不入库
+.zcode/
+
 # 回归夹具 dump 临时产物（#60）
 app/src-tauri/tests/fixtures/regression/manifest.dump.json

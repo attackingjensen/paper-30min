@@ -21,8 +21,8 @@
 //!   每轮模型调用另发 event="round"（时延与 usage）；中间轮不产生对外 chunk（决策 4）。
 //!
 //! 精读部分 ↔ 块模型节的对应约定：abstract ↔ role=Abstract 节；part-N ↔ 第 N 个内容节
-//! （role ∈ Body/Appendix，按阅读顺序）。两来源分属导入解析与 Docling 映射两条管线，
-//! 节数不一致时建图仍覆盖全部内容节，无法落键的部分记入 result.warnings 提示。
+//! （role ∈ Body/Appendix，按阅读顺序）。#87：建图完成后论文记录 parts 按此约定对齐
+//! 回写（幂等），深挖 partIds 的校验域即此映射域；导入预切分只是建图前的占位进度域。
 
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
@@ -31,7 +31,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::error::BridgeError;
-use crate::library::{ActivityDayDto, Library, PaperDto, ProductDto};
+use crate::library::{ActivityDayDto, Library, PaperDto, PartDto, ProductDto};
 use crate::model;
 use crate::pdfassets;
 use crate::pdfmap::{AssetEntry, MappedPaper, Section, SectionRole};
@@ -550,6 +550,56 @@ fn persist_products(
         }
     }
     paper.updated_at = now;
+    library.put_paper(paper)?;
+    Ok(())
+}
+
+/// #87 A：建图完成后把论文记录 parts 对齐块模型内容节（abstract + part-N，与契约
+/// 测试播种同构）。UI 导入的 pdf.js 预切分只是导入时的占位进度域（不含 abstract、
+/// 节集与块模型常不一致）；建图是权威切分，回写后深挖 / 阅读进度 / 节树引用同一
+/// 部分集合。语义类型取各节 L2 条目的 type（建图已校验 ∈ SECTION_TYPES），
+/// 缺条目的节回退 role 推导。已对齐时不写入（幂等，不推 updatedAt）。
+fn align_parts_with_block_model(
+    library: &Library,
+    paper_id: &str,
+    mapped: &MappedPaper,
+    l2_entries: &[Value],
+) -> Result<(), BridgeError> {
+    let mut type_by_sec: HashMap<&str, &str> = HashMap::new();
+    for entry in l2_entries {
+        if let (Some(sec_id), Some(section_type)) = (
+            entry.get("secId").and_then(Value::as_str),
+            entry.get("type").and_then(Value::as_str),
+        ) {
+            type_by_sec.insert(sec_id, section_type);
+        }
+    }
+    let mut parts: Vec<PartDto> = Vec::new();
+    for section in l2_sections(mapped) {
+        let Some(part_id) = part_id_for_section(mapped, section) else {
+            continue;
+        };
+        let fallback = if section.role == SectionRole::Abstract { "abstract" } else { "part" };
+        parts.push(PartDto {
+            id: part_id,
+            title: Some(section.title.clone()),
+            heading: None,
+            semantic_type: Some(
+                type_by_sec
+                    .get(section.id.as_str())
+                    .copied()
+                    .unwrap_or(fallback)
+                    .to_string(),
+            ),
+            sort_order: parts.len() as i64,
+        });
+    }
+    let mut paper = library.get_paper(paper_id)?;
+    if paper.parts == parts {
+        return Ok(());
+    }
+    paper.parts = parts;
+    paper.updated_at = now_iso();
     library.put_paper(paper)?;
     Ok(())
 }
@@ -1875,6 +1925,8 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
         warnings.push(format!("l2_unpersisted:{}", unpersisted.join(",")));
     }
     persist_products(&ctx.library, paper_id, updates, Some("analysis"))?;
+    // #87 A：地图建成后记录 parts 对齐块模型，深挖 / 阅读进度 / 节树从此同域。
+    align_parts_with_block_model(&ctx.library, paper_id, &env.mapped, &l2_entries)?;
     ctx.push_progress(Progress {
         done: total_shards as u64 + 1,
         total: total_shards as u64 + 1,
@@ -2552,17 +2604,14 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
         return Err(Halt::Failed(map_required_error()));
     }
     preflight_visual_assets(ctx, paper_id, &env.mapped)?;
-    // partIds 校验与节映射：未知部分 / 无法映射 / 缺薄摘要都在开工前拒绝（错误即指令）。
+    // partIds 校验与节映射：校验域是块模型内容节映射域（abstract + part-N，#87），
+    // 不查记录 parts——UI 导入的 pdf.js 预切分与块模型不一致时，记录 parts 会误伤合法目标。
+    // 未知部分 / 缺薄摘要都在开工前拒绝（错误即指令）。
     let mut targets: Vec<(usize, &String, &Section)> = Vec::with_capacity(part_ids.len());
     for part_id in part_ids {
-        if !env.paper.parts.iter().any(|part| part.id == *part_id) {
-            return Err(Halt::Failed(BridgeError::invalid_input(format!(
-                "未知的精读部分: {part_id}"
-            ))));
-        }
         let section = section_for_part(&env.mapped, part_id).ok_or_else(|| {
             Halt::Failed(BridgeError::invalid_input(format!(
-                "精读部分 {part_id} 没有对应的块模型节（部分集合与块模型节数不一致），无法深挖"
+                "未知的精读部分: {part_id}（不在块模型内容节范围，abstract + part-N）"
             )))
         })?;
         if product_body(&env.paper, "l2", part_id).is_none() {
