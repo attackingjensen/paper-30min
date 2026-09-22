@@ -204,3 +204,62 @@ test('trackTask：signal abort 调 tasks.cancel@1，cancelled 终态照常收尾
   bridge.emit('task-1', { event: 'status', status: 'cancelled' });
   assert.equal((await promise).status, 'cancelled');
 });
+
+// 等竞态的测试用有界等待：收尾失败时以明确的报错失败，而不是把整轮卡死。
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const withTimeout = promise => Promise.race([
+  promise,
+  sleep(200).then(() => { throw new Error('任务未在 200ms 内收尾（终态收尾丢失）'); }),
+]);
+
+// #91：瞬时失败的任务在「订阅建立」前就终态（事件不重放），若快照又在终态写入前取到，
+// 两次都错过 → 任务永不收尾，界面停在「深挖进行中」且按钮永久禁用。
+test('trackTask：任务在订阅建立前瞬时失败，由订阅建立后的快照复核收尾', async () => {
+  let releaseListen;
+  const gate = new Promise(resolve => { releaseListen = resolve; });
+  let status = 'running';
+  const bridge = {
+    async subscribe() {
+      await gate; // 监听建立有延迟（真实桥的 listen 是异步注册）
+      return () => {};
+    },
+    async invoke(command, input = {}) {
+      assert.equal(command, 'tasks.get@1');
+      // 快照读的是调用时刻的登记状态：终态写入晚于第一次快照时，第一次只能读到 running
+      return {
+        schemaVersion: 1,
+        task: {
+          taskId: input.taskId,
+          status,
+          error: status === 'failed' ? { code: 'invalid_input', message: '未知的精读部分' } : undefined,
+        },
+      };
+    },
+  };
+
+  const promise = trackTask(bridge, 'task-1', {});
+  await tick();        // 旧实现此刻已取过快照（读到 running）
+  status = 'failed';   // 订阅建立前终态：终态事件不会重放
+  releaseListen();
+
+  const outcome = await withTimeout(promise);
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.error.code, 'invalid_input');
+});
+
+// #91：终态收尾优先于回调副作用——渲染回调抛错不能让任务登记永远停在「开放」。
+test('trackTask：onEvent 抛错不阻断终态收尾', async () => {
+  const bridge = createTaskBridge();
+  const promise = trackTask(bridge, 'task-1', {
+    onEvent: () => { throw new Error('渲染炸了'); },
+  });
+  await tick();
+
+  assert.throws(
+    () => bridge.emit('task-1', { event: 'status', status: 'failed', error: { code: 'x', message: 'y' } }),
+    /渲染炸了/,
+  );
+  const outcome = await withTimeout(promise);
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.error.code, 'x');
+});

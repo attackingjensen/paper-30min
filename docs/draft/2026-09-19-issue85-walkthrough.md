@@ -167,8 +167,7 @@ round 事件汇总（`{event:"round", detail:{ttftMs, elapsedMs, promptTokens, c
   契约测试播种形状（abstract + part-N）与 UI 实际导入形状不一致，测试盲区。已立 [#87](https://github.com/attackingjensen/paper-30min/issues/87)。
 - **缺陷 B（低）**：瞬时失败的批量深挖任务导致节页「深挖进行中」与「全部深挖」禁用状态
   滞留（任务角标已无活动任务），导航后仍未即时清除，疑似 #72 修复的
-  `hasOpenProtocolTask` 对「订阅前即终态」任务仍有漏网。未立票，记在
-  `docs/status/current.md` 已知未收口项。
+  `hasOpenProtocolTask` 对「订阅前即终态」任务仍有漏网。已立 [#91](https://github.com/attackingjensen/paper-30min/issues/91)（已修复关闭——楔子在 `trackTask` 收尾时序，见 [2026-09-22 记录](2026-09-22-issue90-91-walkthrough.md)）。
 - **边界观察（低危，行为正确）**：解析/预渲染未完成时「开始建图」按钮即可点，由 preflight
   兜底报「缺少块模型」并给出可读错误，不产生错数据（D 节点验第 1 项）。是否在 UI 侧提前
   禁用属体验取舍，非缺陷，不单独立票。

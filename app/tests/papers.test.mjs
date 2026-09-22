@@ -164,6 +164,58 @@ test('readingParts：parts 中与摘要同 id 或重复的条目只计一次（�
   assert.deepEqual(papers.readingProgress(paper), { done: 0, total: 3 });
 });
 
+test('progressParts：已建图且块模型无 abstract 节时摘要占位出域（进度与节树同域，#90）', () => {
+  const paper = progressFixture();
+  paper.parts = [
+    { id: 'part-1', title: '第一章', semanticType: 'method' },
+    { id: 'part-2', title: '第二章', semanticType: 'part' },
+  ];
+  paper.products = [{ kind: 'map', partId: '', body: {}, updatedAt: 1 }];
+  // 块模型无 abstract 节：进度域 = 对齐后的 parts（节树项数），不再凭空补一个摘要占位
+  assert.deepEqual(papers.progressParts(paper).map(def => def.id), ['part-1', 'part-2']);
+  assert.deepEqual(papers.readingProgress(paper), { done: 0, total: 2 });
+  paper.readMarks = { 'part-1': 1, 'part-2': 2 };
+  assert.equal(papers.isPaperRead(paper), true);
+  // 内容域不变：原文 tab / 旧结果留存的摘要文本照旧可读，只是不再算作进度单元
+  assert.deepEqual(papers.readingParts(paper).map(def => def.id), ['abstract', 'part-1', 'part-2']);
+});
+
+test('progressParts：已建图且块模型有 abstract 节时摘要占位照旧（对齐后 parts 含 abstract）', () => {
+  const paper = progressFixture();
+  paper.parts = [
+    { id: 'abstract', title: 'Abstract', semanticType: 'abstract' },
+    { id: 'part-1', title: '第一章', semanticType: 'method' },
+  ];
+  paper.products = [{ kind: 'map', partId: '', body: {}, updatedAt: 1 }];
+  assert.deepEqual(papers.progressParts(paper).map(def => def.id), ['abstract', 'part-1']);
+  assert.deepEqual(papers.readingProgress(paper), { done: 0, total: 2 });
+  paper.readMarks = { abstract: 1, 'part-1': 2 };
+  assert.equal(papers.isPaperRead(paper), true);
+});
+
+test('progressParts：未建图沿用摘要占位（pdf.js 预切分的 parts 不含摘要）', () => {
+  const paper = progressFixture();
+  paper.products = [];
+  assert.deepEqual(papers.progressParts(paper).map(def => def.id), ['abstract', 'part-1', 'part-2']);
+  assert.deepEqual(papers.readingProgress(paper), { done: 0, total: 3 });
+  // 摘要占位是进度单元：只标正文节不算读完，标上摘要才算
+  paper.readMarks = { 'part-1': 1, 'part-2': 2 };
+  assert.equal(papers.isPaperRead(paper), false);
+  paper.readMarks.abstract = 3;
+  assert.equal(papers.isPaperRead(paper), true);
+});
+
+test('progressParts：存量论文（已建图但 parts 未对齐）由 L2 产物兜底保留摘要占位', () => {
+  const paper = progressFixture();
+  paper.products = [
+    { kind: 'map', partId: '', body: {}, updatedAt: 1 },
+    { kind: 'l2', partId: 'abstract', body: {}, updatedAt: 1 },
+    { kind: 'l2', partId: 'part-1', body: {}, updatedAt: 1 },
+  ];
+  assert.deepEqual(papers.progressParts(paper).map(def => def.id), ['abstract', 'part-1', 'part-2']);
+  // 存量未对齐记录的域仍可能不等于节树节点数（parts 与块模型不同源），另见 #92
+});
+
 // ---------------- 四写入缝的活动日行生成（规格 #51 决策 5） ----------------
 
 function parsedFixture() {

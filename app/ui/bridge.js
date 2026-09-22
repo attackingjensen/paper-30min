@@ -52,10 +52,30 @@ export function trackTask(bridge, taskId, { signal, onChunk, onStatus, onEvent }
       cleanup();
       resolve(payload);
     };
-    const handleStatus = (status, error, result) => {
-      onStatus?.(status, error, result);
-      if (isTerminalStatus(status)) settle({ status, error, result });
+    const fail = err => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
     };
+    // 终态收尾优先于回调副作用：登记条目停在「无终态」会让按钮永久禁用（#91），
+    // 故 onStatus 抛错也照常 settle（异常照旧外抛，不吞）。
+    const handleStatus = (status, error, result) => {
+      try {
+        onStatus?.(status, error, result);
+      } finally {
+        if (isTerminalStatus(status)) settle({ status, error, result });
+      }
+    };
+    // 快照复核（幂等）：订阅建立前与建立后各取一次。建立前的终态事件不重放，而建立前
+    // 取到的快照可能与终态写入竞态——瞬时失败（启动即报错）的任务会让两次都落空，
+    // 任务永不收尾、界面停在「进行中」且按钮永久禁用（#91）。建立后再取一次闭掉该窗口。
+    const reconcile = () => bridge.invoke('tasks.get@1', { taskId })
+      .then(snapshot => {
+        if (!snapshot?.task || settled) return;
+        handleStatus(snapshot.task.status, snapshot.task.error, snapshot.task.result);
+      })
+      .catch(fail);
 
     // start 返回前 signal 可能已 aborted：补发取消而不是等事件。
     if (signal?.aborted) onAbort();
@@ -63,26 +83,27 @@ export function trackTask(bridge, taskId, { signal, onChunk, onStatus, onEvent }
 
     const subscribed = bridge.subscribe(taskId, event => {
       if (settled || !event) return;
-      onEvent?.(event);
-      if (event.event === 'chunk' && typeof event.chunk === 'string') onChunk?.(event.chunk);
-      if (event.event === 'status') handleStatus(event.status, event.error, event.result);
+      try {
+        onEvent?.(event);
+        if (event.event === 'chunk' && typeof event.chunk === 'string') onChunk?.(event.chunk);
+      } finally {
+        // 终态收尾不被回调抛错阻断（#91）。
+        if (event.event === 'status') handleStatus(event.status, event.error, event.result);
+      }
     });
     // subscribe 返回退订函数（可能是 promise）；已终态时立即补退订。
-    Promise.resolve(subscribed)
-      .then(fn => {
+    const listening = Promise.resolve(subscribed).then(
+      fn => {
         unlisten = typeof fn === 'function' ? fn : null;
         if (settled && unlisten) { try { unlisten(); } catch { /* 忽略退订失败 */ } }
-      })
-      .catch(() => {});
-    // 快照复核：subscribe 前已到达终态时事件不会重放，从快照收尾。
-    bridge.invoke('tasks.get@1', { taskId })
-      .then(snapshot => {
-        if (!snapshot?.task || settled) return;
-        handleStatus(snapshot.task.status, snapshot.task.error, snapshot.task.result);
-      })
-      .catch(err => {
-        if (!settled) { settled = true; cleanup(); reject(err); }
-      });
+      },
+      // 订阅建立失败有意不 reject：快照复核仍能收尾（与快照失败不对称——那种情况没有
+      // 别的事实来源，只能 reject 交给调用方）。
+      () => {},
+    );
+
+    reconcile();
+    listening.then(reconcile);
   });
 }
 

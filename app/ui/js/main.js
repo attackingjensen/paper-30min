@@ -368,7 +368,7 @@ async function refreshLibrary() {
   for (const p of visiblePapers) {
     const card = document.createElement('div');
     card.className = 'paper-card';
-    const defs = papers.readingParts(p);
+    const defs = papers.progressParts(p);   // 进度点与进度计数同域（#90）
     const { done, total } = papers.readingProgress(p);
 
     const title = document.createElement('p');
@@ -538,6 +538,8 @@ async function openPaper(p) {
   let restored = null;
   try { restored = await store.positions.get(p.id); } catch { restored = null; }
   if (restored && current === p) {
+    // 位置校验走内容域（readingParts）是有意的：旧位置可能停在进度域之外的摘要节，
+    // 别改成 progressParts（会把这类位置判为失效）。
     const validPartIds = papers.readingParts(p).map(def => def.id);
     reader = view.applyPosition(reader, restored, { validPartIds });
     if (reader.tab === 'source' && restored.sectionId) sourceTab = restored.sectionId;
@@ -601,6 +603,7 @@ function updateReaderMeta() {
 // ---------------- 地图 tab（落地 / 地图页 / 节页内容） ----------------
 function mapNavItems() {
   if (currentMapped?.sections?.length) return view.treeItems(currentMapped);
+  // 未建图：节树与进度域同源（都走 readingParts 投影）；建图后两者改由块模型决定。
   return papers.readingParts(current).map(part => ({
     id: part.id,
     title: part.pickerLabel || part.label,

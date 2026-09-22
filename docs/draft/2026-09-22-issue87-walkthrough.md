@@ -48,7 +48,7 @@ L3 结果区与「取证轨迹 →」入口在位。单节路径未受 A+B 影�
 
 ## 走查新发现
 
-1. **无 abstract 论文的进度域多 1（低，建议后续票）**：块模型无 abstract 节的论文
+1. **无 abstract 论文的进度域多 1（低，[#90](https://github.com/attackingjensen/paper-30min/issues/90) 已修复关闭）**：块模型无 abstract 节的论文
    （NAF），进度 chip 为 0/9 而节树只有 8 项——前端进度域固定补一个 abstract 占位
    （`papers.js` `readingParts` 恒返回 `[FALLBACK_PARTS[0], ...parts]`），该占位在节树
    没有对应项、也标不上「已读完」，故这类论文永远到不了「已读完」。属既有行为，被 A
