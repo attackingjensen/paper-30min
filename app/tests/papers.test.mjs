@@ -205,15 +205,98 @@ test('progressParts：未建图沿用摘要占位（pdf.js 预切分的 parts �
   assert.equal(papers.isPaperRead(paper), true);
 });
 
-test('progressParts：存量论文（已建图但 parts 未对齐）由 L2 产物兜底保留摘要占位', () => {
+test('progressParts：存量论文（#87 前建图）进度域 = L2 产物集合，不再看未对齐的 parts（#92）', () => {
   const paper = progressFixture();
   paper.products = [
     { kind: 'map', partId: '', body: {}, updatedAt: 1 },
     { kind: 'l2', partId: 'abstract', body: {}, updatedAt: 1 },
     { kind: 'l2', partId: 'part-1', body: {}, updatedAt: 1 },
   ];
+  // L2 行与节树同属块模型域：parts 里的 part-2 在节树没有节点，不得再进进度域
+  assert.deepEqual(papers.progressParts(paper).map(def => def.id), ['abstract', 'part-1']);
+  assert.deepEqual(papers.readingProgress(paper), { done: 0, total: 2 });
+  paper.readMarks = { abstract: 1, 'part-1': 2 };
+  assert.equal(papers.isPaperRead(paper), true);
+  // 内容域不变：原文 tab 仍按记录 parts 全量投影
+  assert.deepEqual(papers.readingParts(paper).map(def => def.id), ['abstract', 'part-1', 'part-2']);
+});
+
+test('progressParts：存量 parts 域大于节树（SampleNet 形态）——多出部分出域，全部标记可达已读完（#92）', () => {
+  const paper = progressFixture();
+  paper.parts = [
+    { id: 'part-1', title: '一', semanticType: 'method' },
+    { id: 'part-2', title: '二', semanticType: 'part' },
+    { id: 'part-3', title: '三', semanticType: 'part' },
+    { id: 'part-4', title: '四', semanticType: 'experiments' },
+  ];
+  paper.products = [
+    { kind: 'map', partId: '', body: {}, updatedAt: 1 },
+    { kind: 'l2', partId: 'abstract', body: {}, updatedAt: 1 },
+    { kind: 'l2', partId: 'part-1', body: {}, updatedAt: 1 },
+  ];
+  assert.deepEqual(papers.progressParts(paper).map(def => def.id), ['abstract', 'part-1']);
+  // 域外孤儿标记不计数；域内 2 项全标即「已读完」（修复前分母是 5，永远到不了）
+  paper.readMarks = { abstract: 1, 'part-1': 2, 'part-3': 3, 'part-4': 4 };
+  assert.deepEqual(papers.readingProgress(paper), { done: 2, total: 2 });
+  assert.equal(papers.isPaperRead(paper), true);
+});
+
+test('progressParts：存量 parts 域小于节树（Zero-WAM 形态）——分母按 L2 行补齐，排序去重（#92）', () => {
+  const paper = progressFixture();
+  paper.products = [
+    { kind: 'map', partId: '', body: {}, updatedAt: 1 },
+    { kind: 'l2', partId: 'part-2', body: {}, updatedAt: 2 },
+    { kind: 'l2', partId: 'abstract', body: {}, updatedAt: 1 },
+    { kind: 'l2', partId: 'part-3', body: {}, updatedAt: 3 },
+    { kind: 'l2', partId: 'part-1', body: {}, updatedAt: 1 },
+    { kind: 'l2', partId: 'part-2', body: {}, updatedAt: 9 },
+  ];
+  // 产物行序不作保证：abstract 在前、part-N 按数字序，重复行去重
+  assert.deepEqual(
+    papers.progressParts(paper).map(def => def.id),
+    ['abstract', 'part-1', 'part-2', 'part-3'],
+  );
+  assert.deepEqual(papers.readingProgress(paper), { done: 0, total: 4 });
+});
+
+test('progressParts：partial 建图（有 l2 无 map 产物）不用 L2 域——集合不完整仍走 parts（#92 安全线）', () => {
+  const paper = progressFixture();
+  paper.products = [{ kind: 'l2', partId: 'part-1', body: {}, updatedAt: 1 }];
   assert.deepEqual(papers.progressParts(paper).map(def => def.id), ['abstract', 'part-1', 'part-2']);
-  // 存量未对齐记录的域仍可能不等于节树节点数（parts 与块模型不同源），另见 #92
+});
+
+test('progressParts：已建图但 l2 行缺失时回退 parts 域（防御不劣化，#92）', () => {
+  const paper = progressFixture();
+  paper.products = [{ kind: 'map', partId: '', body: {}, updatedAt: 1 }];
+  // 无 l2 行可依据：走 #90 既有路径（块模型无 abstract 判据同缺证据，摘要占位出域）
+  assert.deepEqual(papers.progressParts(paper).map(def => def.id), ['part-1', 'part-2']);
+});
+
+test('progressParts：已建图进度域与节树可标记节点同集合（跨模块不变量，#92）', async () => {
+  const { treeItems } = await import('../ui/js/view.js');
+  // 块模型夹具：abstract + 两个 body 节 + appendix + References 灰项。
+  // l2 行按树项 id 生成（与 Rust 建图写路径同构：逐 l2Sections 产出 partIdForSection）。
+  const mapped = {
+    sections: [
+      { id: 'sec-1', role: 'abstract', title: 'Abstract' },
+      { id: 'sec-2', role: 'body', title: 'Introduction' },
+      { id: 'sec-3', role: 'body', title: 'Method' },
+      { id: 'sec-4', role: 'appendix', title: 'Appendix' },
+      { id: 'sec-5', role: 'references', title: 'References' },
+    ],
+  };
+  const markable = treeItems(mapped).filter(item => !item.grey);
+  const paper = progressFixture();
+  // 存量形态：记录 parts 节数与块模型不符（域不得再看它）
+  paper.parts = [{ id: 'part-1', title: '旧切分一', semanticType: 'method' }];
+  paper.products = [
+    { kind: 'map', partId: '', body: {}, updatedAt: 1 },
+    ...markable.map(item => ({ kind: 'l2', partId: item.id, body: {}, updatedAt: 1 })),
+  ];
+  assert.deepEqual(papers.progressParts(paper).map(def => def.id), markable.map(item => item.id));
+  // 全部可标记节点标完即「已读完」
+  paper.readMarks = Object.fromEntries(markable.map(item => [item.id, 1]));
+  assert.equal(papers.isPaperRead(paper), true);
 });
 
 // ---------------- 四写入缝的活动日行生成（规格 #51 决策 5） ----------------

@@ -3,8 +3,9 @@
 // 移植自 public/js/papers.js，领域逻辑逐行保持；差异仅在存储缝：
 // - 存储适配器不再内置 IndexedDB 实现，Tauri 端适配器见 ./store.js；
 // - PDF 字节不随记录持久化，导出信封需要的 base64 经 init 注入的 pdfHelpers.pdfBase64 获取。
-// - 进度域（progressParts，#90）只在 app 侧：块模型无 abstract 节时摘要占位不计入进度，
-//   浏览器阅读器没有块模型与协议产物，沿用 readingParts 的投影即可，不跟进。
+// - 进度域（progressParts，#90/#92）只在 app 侧：已建图时以 L2 产物集合为域
+//   （节树同域，覆盖存量 parts 未对齐的记录）；块模型无 abstract 节时摘要占位不计入
+//   进度。浏览器阅读器没有块模型与协议产物，沿用 readingParts 的投影即可，不跟进。
 
 // ---------------- 存储缝 ----------------
 
@@ -466,31 +467,68 @@ const FALLBACK_PARTS = [
 ];
 
 /**
+ * 「已建图」判据：map 产物且 body 为对象——与 qa.js 的 hasMapProduct 同形，
+ * 本模块零依赖故内联。partial 建图不写 map 产物，不会误判。
+ */
+function hasBuiltMap(paper) {
+  const mapRow = (paper?.products ?? []).find(item => item?.kind === 'map');
+  return !!mapRow?.body && typeof mapRow.body === 'object' && !Array.isArray(mapRow.body);
+}
+
+/**
  * 摘要占位是否留在进度域（#90）。块模型没有 abstract 节时留在域里会让论文永远到不了
  * 「已读完」——占位在节树中没有对应节点、也标不上标记。判不了时一律保留：
  * - 记录没有 parts（固定四部分兜底）；
  * - 尚未建图：pdf.js 预切分的 parts 只收正文节，摘要单列在 `sections.abstract`；
  * - 已建图且对齐后的 parts 含 abstract：建图把 parts 回写为块模型同构形状（#87）；
  * - 存量论文（建图早于对齐缝落地，parts 仍是 pdf.js 形状）：由 L2 产物兜底判断。
- * 「已建图」判据与 qa.js 的 hasMapProduct 同形（map 产物且 body 为对象）——本模块零依赖，故内联。
+ * 注：已建图且 l2 行在场的论文走 l2ProgressParts（#92），本函数只兜剩余形态。
  */
 function keepsAbstractPlaceholder(paper) {
   const recordParts = paper?.parts ?? [];
   if (!recordParts.length) return true;
-  const products = paper?.products ?? [];
-  const mapRow = products.find(item => item?.kind === 'map');
-  const built = !!mapRow?.body && typeof mapRow.body === 'object' && !Array.isArray(mapRow.body);
-  if (!built) return true;
+  if (!hasBuiltMap(paper)) return true;
   if (recordParts.some(part => part?.id === 'abstract')) return true;
-  return products.some(item => item?.kind === 'l2' && item?.partId === 'abstract');
+  return (paper?.products ?? []).some(item => item?.kind === 'l2' && item?.partId === 'abstract');
+}
+
+/** 进度域排序：abstract 在前，part-N 按数字序，其余 id 按字典序殿后。 */
+function compareProgressIds(a, b) {
+  const rank = id => (id === 'abstract' ? [0, 0, id] : /^part-(\d+)$/.test(id) ? [1, Number(id.slice(5)), id] : [2, 0, id]);
+  const [ra, na, ia] = rank(a);
+  const [rb, nb, ib] = rank(b);
+  return ra - rb || na - nb || (ia < ib ? -1 : ia > ib ? 1 : 0);
+}
+
+/**
+ * 已建图论文的进度域 = L2 产物 partId 集合（#92 方向 1）。L2 行与节树同属块模型域
+ * （建图按 l2Sections 逐节产出，树项即 partIdForSection），而存量论文（#87 前建图）
+ * 的记录 parts 从未对齐、节数可多可少——分母错且域大部分标不上，永远到不了「已读完」。
+ * 安全性：map 产物只在建图成功时写入，建图成功蕴含 L2 完整（partial 无 map 产物），
+ * 不会误用偏小的集合；l2 行缺失（数据异常）时返回 null 回退 parts 域，不劣化现状。
+ * 条目只带 id（消费方=书库进度点与 readingProgress，均只用 id）：不借记录 parts 的
+ * 标题——存量论文的 part-N 与块模型 part-N 可能指向不同章节，借标题反而误导。
+ */
+function l2ProgressParts(paper) {
+  if (!hasBuiltMap(paper)) return null;
+  const ids = [...new Set(
+    (paper?.products ?? [])
+      .filter(item => item?.kind === 'l2' && typeof item?.partId === 'string' && item.partId)
+      .map(item => item.partId),
+  )].sort(compareProgressIds);
+  if (!ids.length) return null;
+  return ids.map(id => ({ id }));
 }
 
 /**
  * 阅读进度域：与节树里可标记的节点同域（References / Acknowledgments 灰项本就不参与 L2、
- * 也标不上，故不在进度域）。块模型没有 abstract 节的论文不把摘要占位计入（#90）。
+ * 也标不上，故不在进度域）。已建图时由 L2 产物集合决定（#92，覆盖存量 parts 未对齐
+ * 的记录）；其余形态下块模型没有 abstract 节的论文不把摘要占位计入（#90）。
  * 内容投影仍走 readingParts——原文 tab 的摘要文本照旧可读，只是不再算作进度单元。
  */
 export function progressParts(paper) {
+  const l2Domain = l2ProgressParts(paper);
+  if (l2Domain) return l2Domain;
   const parts = readingParts(paper);
   if (keepsAbstractPlaceholder(paper)) return parts;
   return parts.filter(part => part.id !== 'abstract');

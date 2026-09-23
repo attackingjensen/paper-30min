@@ -179,7 +179,7 @@ function cropAssetIdsForBlocks(items, mapped) {
   return ids;
 }
 
-/** 建图门禁：阅读地图产物就位才允许提问。 */
+/** 建图门禁：阅读地图产物就位才允许提问。papers.js 的 hasBuiltMap 与本判据同形（其零依赖不引本模块），改这里须同步那里。 */
 export function hasMapProduct(products) {
   return mapBodyFrom(products) != null;
 }
