@@ -9,7 +9,7 @@
 - `corpus/*.pdf` — 10 篇 arXiv CS/AI 论文（155 页，2026-09-09 下载自
   arxiv.org/pdf/<id>，#46 验证用同一批文件原样入库）。五类坑位覆盖：
   双栏 ×5、无编号/编号变体 ×4、附录 ×5、脚注密集 ×2、公式表格密集 ×3
-  （逐篇坑位与旧解析器基线症状见 #46 验证报告
+  （逐篇坑位与旧解析器基线症状见 #46 验证报告，Git 历史 35324e7 的
   `docs/background/2026-09-09-harness-validation/docling-sidecar-validation.md`）。
 - `manifest.json` — 基线清单：Docling 版本钉（与
   `tools/pdfparse-sidecar/requirements-sidecar.txt` 一致）、性能基线

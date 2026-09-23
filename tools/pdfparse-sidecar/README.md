@@ -22,7 +22,7 @@ READY 超时 / 协议破裂）自动回退一次一进程，任务结果 warning
 - `requirements-sidecar.txt` — 钉版依赖清单（与 #46 验证 venv 逐版一致；升级 Docling
   须回归夹具全绿，见 #60）。
 - `build_sidecar.py` — 构建脚本，产物落 `app/src-tauri/sidecar/pdfparse/`。
-- `THIRD_PARTY_NOTICES.md` — 随包分发的归属与许可声明（许可核实见
+- `THIRD_PARTY_NOTICES.md` — 随包分发的归属与许可声明（许可核实见 Git 历史 35324e7 的
   `docs/background/2026-09-10-docling-sidecar/model-license-review.md`）。
 
 ## 构建

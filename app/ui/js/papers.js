@@ -1,5 +1,5 @@
 // 论文生命周期 module：统一拥有记录创建、精读部分投影、进度派生与全部写入。
-// 设计决定见 docs/adr/0004-paper-lifecycle-module.md。
+// 设计决定见 Git 历史 35324e7 的 docs/adr/0004-paper-lifecycle-module.md；现行语义见根 CONCEPTS.md。
 // 移植自 public/js/papers.js，领域逻辑逐行保持；差异仅在存储缝：
 // - 存储适配器不再内置 IndexedDB 实现，Tauri 端适配器见 ./store.js；
 // - PDF 字节不随记录持久化，导出信封需要的 base64 经 init 注入的 pdfHelpers.pdfBase64 获取。
@@ -330,7 +330,7 @@ function recordActivityDay(paper, kind) {
   }
 }
 
-/** 阅读活动日列表：落库活动日的日期部分（语义见 CONTEXT.md「打卡」）。 */
+/** 阅读活动日列表：落库活动日的日期部分（语义见 CONCEPTS.md「打卡」）。 */
 export function activityDays(paper) {
   return (Array.isArray(paper?.activityDays) ? paper.activityDays : [])
     .filter(entry => typeof entry?.day === 'string' && entry.day)

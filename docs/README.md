@@ -1,37 +1,22 @@
-# 项目文档
+# 文档
 
-本目录按文档成熟度和用途组织资料。代码与测试说明当前行为，`CONTEXT.md` 统一领域术语，ADR 记录已接受决策；本目录中的背景、状态和草稿承担不同职责，不互相替代。
+开发直接使用已安装的 Compound Engineering（CE）技能。需求探索、计划、实施、审查和经验沉淀的步骤与产物格式由技能管理，仓库不维护第二套流程。
 
-## 阅读顺序
+- `plans/`：技能按需生成统一计划，探索与实施设计在同一产物中推进。
+- `solutions/`：ce-compound 按条件沉淀经验证的项目经验。
+- 其他产物目录由相应技能按需创建；不预建完整目录树或空白模板。
 
-1. 开始项目分析、规划或实现前，读取 [当前状态](status/current.md)。
-2. 涉及领域概念时，读取根目录的 [`CONTEXT.md`](../CONTEXT.md)。
-3. 涉及既有决策时，读取 [`adr/`](adr/) 中相关 ADR。
-4. 需要追溯需求、调研或可行性时，读取 [`background/`](background/)。
-5. 仅在处理尚未定稿的方案时，读取 [`draft/`](draft/)；草稿不代表项目决定。
+项目介绍见 [README](../README.md)，产品定位与方向见 [STRATEGY.md](../STRATEGY.md)，业务概念与既有取舍见 [CONCEPTS.md](../CONCEPTS.md)，运行和测试见 [客户端 README](../app/README.md)。工作上下文来自当前任务、相关计划、代码、测试和必要的 Issue，而不是必须读取或更新的全局状态文件。
 
-## 文档分层
+2026-09-23 从旧文档体系迁移至 CE。迁移前的 ADR、背景调研、验证记录、状态与草稿不再保留于工作区，可从 [Git 历史 35324e7](https://github.com/attackingjensen/paper-30min/tree/35324e785c16059e6d4932ab5b483024733c1f01/docs) 或原始 Issue 查阅；当时状态快照的要点已并入 [AGENTS.md](../AGENTS.md)「当前前沿」与 [CONCEPTS.md](../CONCEPTS.md)。
 
-### `background/`
+## 历史资料索引
 
-保存形成需求或决策之前的输入资料，例如原始构想、需求背景、调研和可行性分析。背景资料保留来源语境，不承担实时状态或最终决策职责。
+以下链接固定到迁移前的 Git 提交，用于追溯当时的决定和验证，不代表现行实现；行为变更仍以当前代码、测试和相关 Issue 为准。
 
-### `status/`
+- 阅读协议与进度取舍：[三层阅读协议](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/adr/0006-three-layer-reading-protocol.md)、[进度与产物数据模型](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/adr/0007-progress-and-products-data-model.md)。
+- 客户端与未来移动阅读边界：[客户端与前端边界](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/background/client-and-frontend-boundaries.md)、[Rust/JavaScript 接口边界](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/background/client-local-rust-js-boundary.md)。
+- 侧车发版与升级核对：[模型权重再分发许可核实](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/background/2026-09-10-docling-sidecar/model-license-review.md)、[打包体积与速度复核](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/background/2026-09-10-docling-sidecar/packaging-measurements.md)。
+- 性能对照：[v1.0.0 与 #74 优化后的 #85 走查](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/draft/2026-09-19-issue85-walkthrough.md)。
 
-保存项目当前状态。默认只维护 [`current.md`](status/current.md)，在目标、能力、风险、进行中事项或下一步发生实质变化时覆盖更新。文件内部不追加流水账；旧快照只作为该文件**随工作提交**时的 Git 历史存在，不为覆盖快照单独开提交。提交节奏见根目录 `AGENTS.md`「项目文档」。
-
-### `draft/`
-
-保存尚未成熟的设计草稿、临时记录和待验证假设。草稿是非权威资料；结论成熟后，应进入规格、ADR、背景资料或代码，原草稿随即归档或删除。
-
-### `draft/prototypes/`
-
-保存轻量原型、原型说明及可运行原型的索引。独立分支或目录中的原型代码应在此留下目标、位置和结论，方便统一查找。
-
-### `adr/`
-
-保存已接受、难以逆转且存在真实取舍的项目决策。ADR 只记录决定及原因，不承担需求、进度或草稿职责。
-
-### `agents/`
-
-保存代理读取的仓库工作约定。修改这些文件时同步检查 `AGENTS.md` 中的上下文指针。
+CE 配置使用默认值，产物根目录默认是 `docs/`。可选设置见 `.compound-engineering/config.example.yaml`。已启用的自动经验沉淀和汇报写作约定保留在 [AGENTS.md](../AGENTS.md)。

@@ -70,10 +70,11 @@ paper-30min/
 ├── skills/              # 技能库：顶层为新协议提示词与关注点数据，legacy/ 为旧五技能留档
 ├── app/                 # Windows 正式客户端（Tauri 外壳 + Rust/JavaScript 桥接 + Docling 侧车）
 ├── tools/               # 侧车构建、mock 模型等工具
-└── docs/
-    ├── background/      #   原始需求、调研和可行性分析
-    ├── status/          #   项目当前状态（持续覆盖更新）
-    ├── draft/           #   未定稿设计、走查记录和原型
-    ├── adr/             #   已接受且需要长期保留的决策
-    └── agents/          #   代理使用的仓库约定
+└── docs/                # CE 产物与文档
+    ├── plans/           #   按需生成的统一计划
+    └── solutions/       #   经验证的项目经验
 ```
+
+## 开发协作
+
+使用已安装的 Compound Engineering（CE）技能，按任务直接调用，不另设仓库工作流。产品方向见 [STRATEGY.md](STRATEGY.md)，概念与关键取舍见 [CONCEPTS.md](CONCEPTS.md)，项目事实和测试入口见 [AGENTS.md](AGENTS.md)。其他资料从 [docs/README.md](docs/README.md) 查找。产品阅读提示词与 CE 开发技能分开维护。

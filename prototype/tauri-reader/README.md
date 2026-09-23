@@ -1,7 +1,7 @@
 # Paper30min PROTOTYPE（一次性原型，issue #20）
 
 验证 Tauri Windows + Android 能否承载现有 Web 阅读器。**不是正式实现，不合入主线。**
-验证矩阵与通过标准见 `docs/draft/prototypes/2026-09-05-tauri-client-validation.md`。
+验证矩阵与通过标准见 Git 历史 35324e7 的 `docs/draft/prototypes/2026-09-05-tauri-client-validation.md`。
 
 ## 运行
 

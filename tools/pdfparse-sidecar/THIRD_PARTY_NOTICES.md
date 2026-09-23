@@ -1,6 +1,6 @@
 # 第三方组件与模型权重声明（Docling 侧车）
 
-本侧车随安装包再分发以下第三方组件与模型权重。许可证核实记录见
+本侧车随安装包再分发以下第三方组件与模型权重。许可证核实记录见 Git 历史 35324e7 的
 `docs/background/2026-09-10-docling-sidecar/model-license-review.md`（Issue #57 验收项）。
 
 ## 代码组件（pip 钉版依赖，见 requirements-sidecar.txt）

@@ -22,3 +22,7 @@ Thumbs.db
 
 # 回归夹具 dump 临时产物（#60）
 app/src-tauri/tests/fixtures/regression/manifest.dump.json
+
+# Compound Engineering：本机覆盖与临时产物
+.compound-engineering/*.local.yaml
+.context/compound-engineering/

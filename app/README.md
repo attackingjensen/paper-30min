@@ -1,12 +1,16 @@
 # 论文精读 Windows 正式客户端（`app/`）
 
-基于 Tauri 的 Windows 正式客户端。Rust 提供窄接口的本地能力，JavaScript 负责领域流程编排与界面。
-当前范围（issue #31）：论文阅读、导入、精读、PDF、翻译、问答和回想卡片流程已接入正式客户端，
-并接入 Windows 本地模型调用与统一任务生命周期；完成第一轮渐进式前端重设计（导航、阅读状态、任务反馈）。
-不处理云端同步（另票）；任务注册表仍为内存态，重启后任务不恢复。
+基于 Tauri 的 Windows 正式客户端。Rust 承担本地能力、模型请求与阅读协议运行，JavaScript 承担界面与前端状态。支持导入、建图、深挖、复述稿和论文问答。云端同步尚未实现，任务注册表为内存态。
 
-实现约束见 `docs/specs/client-and-frontend-boundaries.md` 与 `docs/specs/client-local-rust-js-boundary.md`；
-领域术语见根目录 `CONTEXT.md`。`prototype/tauri-reader/` 的临时代码不作为本目录来源。
+## 代码入口
+
+- [bridge.rs](src-tauri/src/bridge.rs)：版本化命令与任务入口。
+- [library.rs](src-tauri/src/library.rs)：本地书库与持久化。
+- [protocol.rs](src-tauri/src/protocol.rs)、[model.rs](src-tauri/src/model.rs)：阅读协议运行与模型请求。
+- [tasks.rs](src-tauri/src/tasks.rs)：任务生命周期。
+- [pdfparse.rs](src-tauri/src/pdfparse.rs)、[pdfpool.rs](src-tauri/src/pdfpool.rs)、[pdfassets.rs](src-tauri/src/pdfassets.rs)：解析侧车、常驻池与页图/裁切图。
+
+以下桥接说明用于入门，命令与任务类型以代码和契约测试为准。
 
 ## 桥接形状
 

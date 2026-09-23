@@ -1,5 +1,5 @@
 // 论文生命周期 module：统一拥有记录创建、精读部分投影、进度派生与全部写入。
-// 设计决定见 docs/adr/0004-paper-lifecycle-module.md。
+// 设计决定见 Git 历史 35324e7 的 docs/adr/0004-paper-lifecycle-module.md；现行语义见根 CONCEPTS.md。
 
 // ---------------- 存储缝 ----------------
 
@@ -275,7 +275,7 @@ function dayKey(ts) {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-/** 阅读活动日：导入论文与产生精读结果（语义见 CONTEXT.md「打卡」）。 */
+/** 阅读活动日：导入论文与产生精读结果（语义见 CONCEPTS.md「打卡」）。 */
 export function activityDays(paper) {
   const days = [dayKey(paper.addedAt)];
   for (const analysis of Object.values(paper.analyses || {})) {

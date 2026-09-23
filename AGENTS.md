@@ -1,32 +1,47 @@
-## Agent skills
+# Paper30Min
 
-### 问题跟踪
+论文精读应用：Windows Tauri 客户端与保留的浏览器阅读器。开发流程直接使用已安装的 Compound Engineering 技能，不在仓库另定义阶段、文档审批链或必读状态快照。
 
-问题与规格说明统一记录在 GitHub Issues。详见 `docs/agents/issue-tracker.md`。
+## 项目事实
 
-### 分类标签
+- Windows 本地书库是论文内容权威来源；Rust 负责存储、文件、网络、模型和阅读协议运行，JavaScript 负责界面与前端状态。
+- `app/` 是 Windows 客户端，`public/` 是浏览器阅读器，`skills/` 是产品阅读提示词，不能与 CE 开发技能混用。
+- 云同步与 Android 尚未实现；相关历史规格为 GitHub Issue #25 / #26。已有规格是理解产品契约的材料，不要求复制旧 Wayfinder 工作流程。
+- 当前协作目标分支为 `steven123397/dev`，发布前核对目标分支。
 
-使用五个默认分类标签。详见 `docs/agents/triage-labels.md`。
+## 当前前沿
 
-### 领域文档
+- v1.0.0 已发布；此后提交尚未发版，下一步是发布下一版。
+- 发版验收待补：覆盖升级、干净账户安装和卸载；侧车控制台黑窗修复已修，随该版确认。
+- 已知未做：批量重挖的覆盖确认、编辑原文入口、PDF 按页懒加载、移除卡片后的附件清理；存量 readMarks 孤儿与旧记录 parts 形态未迁移（语义见 [CONCEPTS.md](CONCEPTS.md)「阅读积累」）。
+- 解析侧车仅 Windows 可用（Linux/macOS 未适配），任务注册表为内存态、重启不恢复；未来线云端 #25 与 Android #26 未启动。
 
-本仓库采用单上下文文档结构。详见 `docs/agents/domain.md`。
+本节只写阶段定位与前沿，前沿变化时更新；过程与证据归计划、Issue 和提交历史。
 
-### 项目文档
+## 验证入口
 
-- 开始项目分析、规划或实现前，先读取 `docs/status/current.md`、`CONTEXT.md` 和相关 GitHub Wayfinder 地图/票据。
-- 完成会实质改变目标、能力、风险、进行中事项或下一步的工作后，覆盖更新 `docs/status/current.md`。
-- 关票与实现收口只交一次：把 `current.md` 和这次工作的代码、测试、规格收口放进**同一次** git 提交。单独改状态快照不够成一次提交；留在工作区，并进下一笔带代码、测试或规格收口的提交。
-- 文档分层及背景、草稿和原型的读取规则见 `docs/README.md`。
+- 浏览器：仓库根目录 `npm test`。
+- Windows JavaScript：`cd app` 后 `node --test`。
+- Rust：`cd app/src-tauri` 后 `cargo test`。
+- 桌面集成：`cd app` 后 `npm run smoke`；浏览器验证不能替代 Tauri 原生桥和窗口验证。
 
-### Wayfinder 与规格
+按改动范围选择检查；构建与运行细节见 `app/README.md`。
 
-- 规划工作通过 GitHub Issues 推进；决策票的讨论和 resolution comment 是权威来源。操作规则见 `docs/agents/issue-tracker.md`。
-- 定稿规格以 GitHub Issue 发布（标题前缀 `Spec：`，就绪后加 `ready-for-agent` 标签），规格正文即 Issue 正文，回链来源地图/票据；规格修订以追加评论为准，正文仅在同步最新结论时更新。本地不再维护 `docs/specs/`。
-- 涉及 Tauri、本地书库、Android 阅读伴侣、Rust/JavaScript 接口或前端重设计时，先读取 `docs/background/client-and-frontend-boundaries.md`（现行实现的事实参考；新方向以 Issue #35 地图为准）。
+## 工作约定
 
-### 当前路线
+- 文档默认中文；标识符与 CE frontmatter 保留技能自身格式。
+- 技能不可用时说明情况，不谎称已调用。
+- 无法运行的检查说明原因，不标为通过。
+- 小型明确修复不为凑流程创建计划或额外产物。
+- 前沿与状态类文档的更新随对应改动同笔提交，不单独提交。
+- 仅在用户明确要求端到端自主交付时使用 `lfg`；其推送与 PR 流程仍遵守分支约束。
 
-- Windows 正式客户端采用 Tauri，保留浏览器阅读器；Android 首版是移动阅读伴侣。
-- Windows 本地书库是论文内容权威来源；前端重设计可以改变布局和视觉表现，但保持业务行为与数据契约一致。
-- 当前 Wayfinder 地图 Issue #35 实施链已完成；现行工作是性能规格 Issue #74。云端服务和 Android 须在相应规格与票据明确后进行。
+## 项目知识
+
+`STRATEGY.md` 承接已确认的产品定位、用户、边界和方向，供 CE 探索与规划使用。`CONCEPTS.md` 提供阅读模型、关键术语与既有取舍，并回链源码和历史依据；可按任务查阅。
+
+`docs/solutions/` 是 CE 经验库，按类别与 `module`、`tags`、`problem_type` 等 YAML 元数据检索，供相关实现和调试复用。迁移前的 ADR、背景调研、验证记录、状态与草稿不保留在工作区，需要历史证据时查 Git 历史 35324e7 或原始 Issue。
+
+解决并验证一个问题后，仅当这项工作产生了不易从最终代码、测试、类型、注释或现有文档恢复的持久项目推理，且丢失它可能导致复发、实质风险或大量重复调查时，才在收尾检查点以 `mode:non-interactive` 自动调用 `ce-compound` 技能。反事实检验：假如这份经验文档消失，未来阅读最终实现的工程师是否仍可能重犯该错误或重做大量调查？若否，不要调用。完成度、投入或 diff 规模本身不构成理由。在检查点捕获，使合格的经验能随产生它的 PR 一起交付，且仅当仓库把沉淀经验视为受跟踪、已提交的知识时适用。
+
+凡是写给用户的汇报、总结或交接，都经 `ce-noslop` 技能完成。适用于顶层 agent 面向用户的写作，不适用于子 agent 向其调用方汇报；也不适用于代码、配置、逐字引用或用户要求原样发出的文本。
