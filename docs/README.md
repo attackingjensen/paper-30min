@@ -6,9 +6,9 @@
 - `solutions/`：ce-compound 按条件沉淀经验证的项目经验。
 - 其他产物目录由相应技能按需创建；不预建完整目录树或空白模板。
 
-项目介绍见 [README](../README.md)，产品定位与方向见 [STRATEGY.md](../STRATEGY.md)，业务概念与既有取舍见 [CONCEPTS.md](../CONCEPTS.md)，运行和测试见 [客户端 README](../app/README.md)。工作上下文来自当前任务、相关计划、代码、测试和必要的 Issue，而不是必须读取或更新的全局状态文件。
+项目介绍见 [README](../README.md)，当前进度见 [current.md](current.md)，产品定位与方向见 [STRATEGY.md](../STRATEGY.md)，业务概念与既有取舍见 [CONCEPTS.md](../CONCEPTS.md)，运行和测试见 [客户端 README](../app/README.md)。工作上下文来自当前任务、相关计划、代码、测试和必要的 Issue；`current.md` 只保留简短的项目进度，提交前按实际变化更新。
 
-2026-09-23 从旧文档体系迁移至 CE。迁移前的 ADR、背景调研、验证记录、状态与草稿不再保留于工作区，可从 [Git 历史 35324e7](https://github.com/attackingjensen/paper-30min/tree/35324e785c16059e6d4932ab5b483024733c1f01/docs) 或原始 Issue 查阅；当时状态快照的要点已并入 [AGENTS.md](../AGENTS.md)「当前前沿」与 [CONCEPTS.md](../CONCEPTS.md)。
+2026-09-23 从旧文档体系迁移至 CE。迁移前的 ADR、背景调研、验证记录、状态与草稿不再保留于工作区，可从 [Git 历史 35324e7](https://github.com/attackingjensen/paper-30min/tree/35324e785c16059e6d4932ab5b483024733c1f01/docs) 或原始 Issue 查阅；仍适用的进度和领域语义分别见 [current.md](current.md) 与 [CONCEPTS.md](../CONCEPTS.md)。
 
 ## 历史资料索引
 
