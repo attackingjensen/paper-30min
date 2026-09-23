@@ -38,7 +38,9 @@ cargo test --test pdfparse_regression
 PAPER30MIN_PDFPARSE_FIXTURES=1 cargo test --test pdfparse_regression -- --nocapture
 
 # dump 模式：全链重跑并写 manifest.dump.json（实测耗时 + 事实，供基线重建/
-# 版本升级同机对照）
+# 版本升级同机对照）。A1 计时探针默认关（#89）：assert 门禁与 dump 基线同口径；
+# 需分阶段 timings 对照时显式设 PAPER30MIN_PDFPARSE_PROFILE_TIMINGS=1
+# （该次 dump 的 measuredSeconds 不作基线用）。
 PAPER30MIN_PDFPARSE_FIXTURES=dump cargo test --test pdfparse_regression -- --nocapture
 # 复用既有 docling.json 目录跳过转换（本清单初始基线即由 #46 实测输出重建）
 PAPER30MIN_PDFPARSE_FIXTURES=dump PAPER30MIN_PDFPARSE_FIXTURES_DUMP_DIR=<docling.json 目录> \

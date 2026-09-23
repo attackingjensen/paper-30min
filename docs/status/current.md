@@ -1,12 +1,12 @@
 # 项目当前状态
 
-> 更新时间：2026-09-22
+> 更新时间：2026-09-23
 
 ## 当前阶段
 
 Paper30Min 是「论文精读」专精 agent harness：帮助用户高效读完一篇完整论文。Windows 正式客户端 **1.0.0** 已发布（[GitHub Release](https://github.com/attackingjensen/paper-30min/releases/tag/v1.0.0)）；`steven123397/dev` 与 `main` 同源，当前协作走 `dev`，不创建合入 `main` 的 PR，也不因零散感受新建打磨类 Issue。
 
-Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）实施链 **#75–#84、#86 全部完成**，对照走查 [#85](https://github.com/attackingjensen/paper-30min/issues/85) 已完成并关闭（[走查记录](../draft/2026-09-19-issue85-walkthrough.md)：同机 v1.0.0 基线 vs 优化后，3 篇夹具全链 8.0–8.4×；真实窗口 9 项点验 8 过 1 项被缺陷阻断）。走查发现的阻断缺陷 [#87](https://github.com/attackingjensen/paper-30min/issues/87) 已修复并关闭（A+B：深挖校验域改块模型内容节映射域 + 建图后按块模型回写记录 parts；[走查记录](../draft/2026-09-22-issue87-walkthrough.md)：XGBoost / NAF 两篇导入→建图→全部深挖 3/3 过，含取消保留与单节重挖）。#87 走查留下的两笔也已修复关闭：[#90](https://github.com/attackingjensen/paper-30min/issues/90)（块模型无 abstract 节的论文进度域多 1、永远到不了「已读完」）与 [#91](https://github.com/attackingjensen/paper-30min/issues/91)（瞬时失败的协议任务让节页与「全部深挖」禁用状态滞留），见[走查记录](../draft/2026-09-22-issue90-91-walkthrough.md)。[#88](https://github.com/attackingjensen/paper-30min/issues/88)（常驻池「未保温」）已查清关闭：系 #85 取数伪象与回退不可见叠加，会话内保温实证正常，池层补齐 pid/复用/回退原因遥测。当前无进行中工作；开口为缺陷票 [#89](https://github.com/attackingjensen/paper-30min/issues/89) / [#92](https://github.com/attackingjensen/paper-30min/issues/92) 与未来线 [#25](https://github.com/attackingjensen/paper-30min/issues/25) / [#26](https://github.com/attackingjensen/paper-30min/issues/26)。
+Wayfinder 地图 [#35](https://github.com/attackingjensen/paper-30min/issues/35) 的实施链已完成。性能规格 [#74](https://github.com/attackingjensen/paper-30min/issues/74)（修订 #48 / #55 的耗时，不改产物契约）实施链 **#75–#84、#86 全部完成**，对照走查 [#85](https://github.com/attackingjensen/paper-30min/issues/85) 已完成并关闭（[走查记录](../draft/2026-09-19-issue85-walkthrough.md)：同机 v1.0.0 基线 vs 优化后，3 篇夹具全链 8.0–8.4×；真实窗口 9 项点验 8 过 1 项被缺陷阻断）。走查发现的阻断缺陷 [#87](https://github.com/attackingjensen/paper-30min/issues/87) 已修复并关闭（A+B：深挖校验域改块模型内容节映射域 + 建图后按块模型回写记录 parts；[走查记录](../draft/2026-09-22-issue87-walkthrough.md)：XGBoost / NAF 两篇导入→建图→全部深挖 3/3 过，含取消保留与单节重挖）。#87 走查留下的两笔也已修复关闭：[#90](https://github.com/attackingjensen/paper-30min/issues/90)（块模型无 abstract 节的论文进度域多 1、永远到不了「已读完」）与 [#91](https://github.com/attackingjensen/paper-30min/issues/91)（瞬时失败的协议任务让节页与「全部深挖」禁用状态滞留），见[走查记录](../draft/2026-09-22-issue90-91-walkthrough.md)。[#88](https://github.com/attackingjensen/paper-30min/issues/88)（常驻池「未保温」）已查清关闭：系 #85 取数伪象与回退不可见叠加，会话内保温实证正常，池层补齐 pid/复用/回退原因遥测。[#89](https://github.com/attackingjensen/paper-30min/issues/89)（A1 计时探针开销与回归共享锁容毒）已修复关闭：探针改环境变量按需开启（默认关，载荷 timings 可空），回归族测试共享锁容毒并附毒化负例，`PERF_FACTOR=1.0` 全量回归 14/14 全绿（2106 从超门禁 1.6–1.8× 回到 0.93×）。当前无进行中工作；开口为缺陷票 [#92](https://github.com/attackingjensen/paper-30min/issues/92) 与未来线 [#25](https://github.com/attackingjensen/paper-30min/issues/25) / [#26](https://github.com/attackingjensen/paper-30min/issues/26)。
 
 ## 已具备能力
 
@@ -20,7 +20,7 @@ Tauri + Rust + 原生 JavaScript，SQLite 本地书库。支持本地 PDF、arXi
 
 阅读是四 tab（地图 / 原文 / 提问 / 回想卡片）与地图页 ⇄ 节页两层导航。建图生成阅读地图与全部节薄摘要；深挖按节取证，配方预附本节关键图表裁切图、一轮可发至多三个工具调用；复述稿手动触发。批量深挖多节有界并发推进（上限同建图的协议并发设置），开工即列出全部目标，任务中心按节显示排队 / 轮次 / 完成 / 失败并分栏轨迹，节页各自显示本节运行态；单节失败不停机、收尾汇总失败节，取消后在飞节轮边界收尾、未开始节不再启动。深挖进行中节页实时显示「第 n 轮 · 正在调用工具 · 已收到 x 字」，最终四段式结果与复述稿在生成中流式预览（标「生成中」），任务成功后由落库产物替换；建图 JSON 阶段发接收进度心跳。提问支持 @节、原文选中片段与建图门禁。出处按文本块 / 图表 / 页三分定位。节树与 PDF 对照可调宽、可收起。任务往返书库 / 任务中心 / 阅读页不取消。
 
-导入后页图预渲染与解析并行，解析完成后补渲染图表裁切图；解析完成即可建图。解析默认 TableFormer FAST、线程按物理核钳制到 2–8，设置可切回 ACCURATE。解析侧车常驻：应用启动时预热模型（默认开，可关），第二篇及以后论文解析免去启动等待；页图渲染复用同一进程并与解析并行；空闲超时（默认 10 分钟，可配 1–240）自动释放，常驻不可用自动回退一次一进程。解析/预渲染任务载荷带常驻进程 pid 与复用判定，回退附原因码与 stderr 尾巴（#88）。深挖在页图与裁切图齐备前禁用。
+导入后页图预渲染与解析并行，解析完成后补渲染图表裁切图；解析完成即可建图。解析默认 TableFormer FAST、线程按物理核钳制到 2–8，设置可切回 ACCURATE。解析侧车常驻：应用启动时预热模型（默认开，可关），第二篇及以后论文解析免去启动等待；页图渲染复用同一进程并与解析并行；空闲超时（默认 10 分钟，可配 1–240）自动释放，常驻不可用自动回退一次一进程。解析/预渲染任务载荷带常驻进程 pid 与复用判定，回退附原因码与 stderr 尾巴（#88）。分阶段解析计时（timings）是诊断探针，默认关，环境变量按需开启（#89）。深挖在页图与裁切图齐备前禁用。
 
 协议四阶段默认关闭思考，问答默认开启并显示思考心跳；可按阶段指定模型名与请求体附加参数。温度设置可留空表示不发送；端点拒收 temperature/max_tokens 等参数时自动卸参数重发一次并按端点记住，任务中心可见提示。模型由 Rust 调用，API Key 只留本机。任务中心覆盖排队到重试，关窗可等待或停止。笔记导出以协议产物为正源。视觉为 soft-ui 皮肤。
 
@@ -63,7 +63,7 @@ Linux 暂不支持（Docling 侧车仅 Windows）。覆盖升级与卸载未专�
 - [#87](https://github.com/attackingjensen/paper-30min/issues/87) 已修复关闭（[走查记录](../draft/2026-09-22-issue87-walkthrough.md)）：遗留——建图对齐 parts 不迁移 readMarks，导入→解析窗口内按 pdf.js 序号记的已读完标记在对齐后改指块模型同序号节或成孤儿（不计数、不显示，历史保留）。
 - [#92](https://github.com/attackingjensen/paper-30min/issues/92)：建图早于 #87 的存量论文 parts 未对齐块模型——进度分母与节树不一致（parts 节数多于块模型时该类论文仍永远到不了「已读完」），且 UI 无「重新建图」入口触发对齐，待修。
 - [#88](https://github.com/attackingjensen/paper-30min/issues/88) 已查清关闭：「池未跨任务保温」不成立——#85 矩阵每篇重付模型加载是取数伪象（driver 每篇独立进程各带一池），真实窗口第二篇「启动 0.6 s」是一次一进程回退签名（当时会话空闲阈值被设为 1 分钟 + 回退原因不可见）；会话内保温经契约与单进程连解三篇实证（同一 pid，第 2 篇起零模型加载）。池层已补可观测性：任务载荷记 sidecarPid/sidecarReused，回退记原因码与 stderr 尾巴。真实窗口那次回退的原始诱因未复现、未定论，再遇时新遥测可直接定位。
-- A1 解析计时探针在表密集论文上开销显著（2106 对照：开 102 s / 关 66 s），叠加连跑热节流可击穿 #78 性能门禁；#85 走查按机制以 `PAPER30MIN_PDFPARSE_PERF_FACTOR=2.0` 放宽通过，探针按需化与回归锁容毒同票——[#89](https://github.com/attackingjensen/paper-30min/issues/89) 跟踪。
+- [#89](https://github.com/attackingjensen/paper-30min/issues/89) 已修复关闭：A1 计时探针默认关（`PAPER30MIN_PDFPARSE_PROFILE_TIMINGS=1` 按需开，关时载荷 `timings: null`），回归族测试共享锁容毒。备注：#85 记录的 ~35 s/篇探针开销在单篇冷机复测中未复现（开/关均 ~52 s），仅在连跑热节流状态下出现过——探针已移出默认路径，门禁不再暴露于该不确定性。
 
 ## 权威来源
 

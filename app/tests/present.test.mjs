@@ -399,6 +399,12 @@ test('任务中心：解析计时拆分与模型轮遥测行', () => {
   assert.equal(parseModel.timings[0].label, '启动');
   assert.equal(parseModel.timings.find(row => row.key === 'layout').ms, 2000);
 
+  // A1 探针默认关（#89）：timings 为 null 时不出版面/表格/OCR 行，只留实测行。
+  assert.deepEqual(
+    convertTimingRows({ startupMs: 800, wallClockMs: 5000, timings: null }).map(row => row.key),
+    ['startup', 'total'],
+  );
+
   const round = roundView({
     round: 2,
     ttftMs: 400,

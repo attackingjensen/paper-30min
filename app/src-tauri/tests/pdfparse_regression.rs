@@ -14,6 +14,10 @@
 //!   数据与基线草案）；再设 `PAPER30MIN_PDFPARSE_FIXTURES_DUMP_DIR=<dir>` 可跳过
 //!   转换、直接从既有 docling.json 目录重建事实（初始基线即由 #46 实测输出生成）。
 //!
+//! A1 解析计时探针（#89）默认关，assert 门禁与 dump 基线同口径（生产即探针关，
+//! profiling 开销不进 measuredSeconds）；需要分阶段 timings 对照时显式设
+//! `PAPER30MIN_PDFPARSE_PROFILE_TIMINGS=1`（该次 dump 的 measuredSeconds 不作基线用）。
+//!
 //! 性能门禁的计时口径：侧车 result.elapsedMs 含 Python 启动与模型加载固定开销，
 //! #46 基线（manifest.baselineSeconds）为纯转换耗时；#57 复核实测同机状态波动
 //! 可达 1.7×，故门禁为 `elapsed ≤ 基线 × 1.5 × PAPER30MIN_PDFPARSE_PERF_FACTOR`
@@ -40,6 +44,14 @@ use std::time::Duration;
 /// 侧车转换共用一把锁：docling 模型加载吃内存与 CPU，串行防抖动
 /// （与 pdfparse_contract / pdfassets_contract 同族）。
 static SIDECAR_LOCK: Mutex<()> = Mutex::new(());
+
+/// 取锁：容毒（#89）——单个用例持锁 panic 后，其余用例 `into_inner()` 继续用，
+/// 不再以 PoisonError 级联失败（与 protocol_contract 的 env_lock! 同款）。
+fn sidecar_guard() -> std::sync::MutexGuard<'static, ()> {
+    SIDECAR_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 const ENV_FIXTURES: &str = "PAPER30MIN_PDFPARSE_FIXTURES";
 const ENV_DUMP_DIR: &str = "PAPER30MIN_PDFPARSE_FIXTURES_DUMP_DIR";
@@ -166,6 +178,20 @@ fn manifest_is_well_formed() {
         .expect("formulaSamples.graphics");
     assert_eq!(graphics, "pdfparse_formula_graphics.pdf");
     assert!(formula_graphics_pdf().is_file(), "合成公式图形夹具应在场");
+}
+
+/// #89 验收负例：人为构造「单篇失败」——持锁 panic 毒化共享锁。修复前其余用例
+/// 取锁即 PoisonError 连环失败（把一次局部失败放大成整片红）；修复后按容毒
+/// 路径取锁继续用，不级联。
+#[test]
+fn poisoned_sidecar_lock_does_not_cascade() {
+    let panicked = std::panic::catch_unwind(|| {
+        let _guard = sidecar_guard();
+        panic!("模拟单篇用例失败");
+    });
+    assert!(panicked.is_err(), "负例前提：应捕获到 panic");
+    assert!(SIDECAR_LOCK.is_poisoned(), "负例前提：共享锁应已中毒");
+    let _guard = sidecar_guard();
 }
 
 // ============================================================================
@@ -485,7 +511,7 @@ fn run_corpus_paper(id: &str) {
         return;
     }
     require_sidecar();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
 
     let manifest = load_manifest();
     let entry = paper_entry(&manifest, id);
@@ -551,7 +577,7 @@ fn formula_graphics_sample_never_garbles_text() {
         return;
     }
     require_sidecar();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
 
     let work = tempfile::tempdir().expect("临时工作目录");
     let result = convert_pdf(&formula_graphics_pdf(), work.path());
@@ -608,7 +634,7 @@ fn dump_baseline_facts() {
     if dump_dir.is_none() {
         require_sidecar();
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
 
     let mut out = Vec::new();
     for entry in manifest["papers"].as_array().unwrap() {
@@ -625,10 +651,16 @@ fn dump_baseline_facts() {
                 // 临时目录随 work 删除前先把 JSON 读出来映射。
                 let paper = map_docling_json_file(&path).expect("映射应成功");
                 let facts = dump_facts(entry, &paper, Some(seconds), version.as_deref(), Some(&result));
-                let layout = result["timings"]["layout"].as_f64().unwrap_or(0.0);
-                let table = result["timings"]["table"].as_f64().unwrap_or(0.0);
+                // 探针默认关（#89）时 timings 为 null：打印「探针关」而非误导的 0.0s；
+                // 需分阶段耗时对照时显式设 PAPER30MIN_PDFPARSE_PROFILE_TIMINGS=1。
+                let stage = |key: &str| match result["timings"].get(key).and_then(Value::as_f64) {
+                    Some(value) => format!("{key}={value:.1}s"),
+                    None => "探针关".to_string(),
+                };
                 eprintln!(
-                    "[dump {id}] {seconds:.1}s layout={layout:.1}s table={table:.1}s 引擎违例 {} 项",
+                    "[dump {id}] {seconds:.1}s {} {} 引擎违例 {} 项",
+                    stage("layout"),
+                    stage("table"),
                     facts["facts"]["engineViolations"].as_array().unwrap().len()
                 );
                 out.push(facts);

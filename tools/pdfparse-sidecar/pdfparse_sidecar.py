@@ -58,6 +58,17 @@ HF_MIRROR = "https://hf-mirror.com"
 THREAD_MIN = 2
 THREAD_MAX = 8
 
+# A1 解析计时探针开关（#89）：Docling 分阶段 profiling 在表密集论文连跑热节流下
+# 实测可达 ~35 s/篇开销（单篇冷机近零，热敏），默认关；诊断取数时置 1 取分阶段
+# timings，回归 assert/dump 保持关以与生产口径一致。
+PROFILE_TIMINGS_ENV = "PAPER30MIN_PDFPARSE_PROFILE_TIMINGS"
+
+
+def profile_timings_enabled():
+    """探针开关：环境变量为 1/true/yes/on（不区分大小写）时开，其余（含未设）关。"""
+    raw = os.environ.get(PROFILE_TIMINGS_ENV, "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _explicit_thread_env():
     """环境已显式给出合法线程数时返回该整数，否则 None。"""
@@ -338,7 +349,10 @@ def load_converter(models_dir, table_mode, do_ocr, formula_enrichment, num_threa
     except ImportError as err:
         return None, error_payload("deps_missing", f"侧车依赖不完整: {err}", False)
 
-    settings.debug.profile_pipeline_timings = True
+    # A1 探针按需开启（#89）：默认关，开 profiling 的开销见 PROFILE_TIMINGS_ENV 注释。
+    # Docling 的 TimeRecorder 在每次调用时读该全局设置，serve 模式缓存 converter
+    # 也不影响开关语义（进程环境变量在 spawn 时刻固定）。
+    settings.debug.profile_pipeline_timings = profile_timings_enabled()
 
     pipeline_options = PdfPipelineOptions(
         artifacts_path=models_dir,
@@ -432,7 +446,12 @@ def convert_document(pdf_path, out_dir, models_dir, table_mode, formula_enrichme
         conversion = converter.convert(str(pdf_path))
         docling_json = out_dir / "docling.json"
         conversion.document.save_as_json(str(docling_json))
-        timings = summarize_pipeline_timings(getattr(conversion, "timings", None))
+        # 探针关时 Docling 不记分阶段耗时：如实报 null（UI 不出全 0 误导行，#89）。
+        timings = (
+            summarize_pipeline_timings(getattr(conversion, "timings", None))
+            if profile_timings_enabled()
+            else None
+        )
     except Exception as err:  # noqa: BLE001
         detail = traceback.format_exc()[-1500:]
         return error_payload("conversion_failed", f"PDF 转换失败: {err}", True, detail=detail)

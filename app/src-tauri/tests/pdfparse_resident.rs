@@ -24,6 +24,14 @@ use std::time::{Duration, Instant};
 /// docling 模型加载吃内存与 CPU：本文件全部测试串行。
 static RESIDENT_LOCK: Mutex<()> = Mutex::new(());
 
+/// 取锁：容毒（#89）——单个用例持锁 panic 后，其余用例 `into_inner()` 继续用，
+/// 不再以 PoisonError 级联失败。
+fn resident_guard() -> std::sync::MutexGuard<'static, ()> {
+    RESIDENT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 const CONVERT_TIMEOUT: Duration = Duration::from_secs(300);
 const FAST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -155,7 +163,7 @@ fn serve_protocol_ping_parallel_render_and_shutdown() {
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = RESIDENT_LOCK.lock().unwrap();
+    let _guard = resident_guard();
     let layout = pdfparse::resolve_sidecar(Path::new(env!("CARGO_MANIFEST_DIR")))
         .expect("侧车在位");
     let mut serve = spawn_serve(&layout);
@@ -216,7 +224,7 @@ fn resident_second_convert_has_zero_startup() {
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = RESIDENT_LOCK.lock().unwrap();
+    let _guard = resident_guard();
 
     let first_id = start_convert(&registry, &sample_pdf(), &dir.path().join("r-conv-1"));
     let status = wait_terminal(&registry, &first_id, CONVERT_TIMEOUT).expect("第一次转换超时");
@@ -264,7 +272,7 @@ fn resident_three_converts_reuse_same_pid() {
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = RESIDENT_LOCK.lock().unwrap();
+    let _guard = resident_guard();
 
     let mut pids = Vec::new();
     let mut reused = Vec::new();
@@ -308,7 +316,7 @@ fn resident_fallback_when_serve_entry_missing() {
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = RESIDENT_LOCK.lock().unwrap();
+    let _guard = resident_guard();
     let _env = EnvGuard(paper30min_lib::pdfpool::SERVE_ENTRY_ENV);
     std::env::set_var(
         paper30min_lib::pdfpool::SERVE_ENTRY_ENV,
@@ -364,7 +372,7 @@ fn resident_process_death_reports_stderr_tail() {
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = RESIDENT_LOCK.lock().unwrap();
+    let _guard = resident_guard();
     let fake = dir.path().join("fake-serve.py");
     std::fs::write(
         &fake,
@@ -415,7 +423,7 @@ fn resident_cancel_kills_child_and_next_convert_respawns() {
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = RESIDENT_LOCK.lock().unwrap();
+    let _guard = resident_guard();
 
     let work_dir = dir.path().join("r-cancel");
     let task_id = start_convert(&registry, &sample_pdf(), &work_dir);
@@ -460,7 +468,7 @@ fn resident_idle_shutdown_releases_and_restarts() {
     if !sidecar_ready(&library) {
         return;
     }
-    let _guard = RESIDENT_LOCK.lock().unwrap();
+    let _guard = resident_guard();
     let _env = EnvGuard(paper30min_lib::pdfpool::IDLE_SECS_ENV);
     std::env::set_var(paper30min_lib::pdfpool::IDLE_SECS_ENV, "3");
 

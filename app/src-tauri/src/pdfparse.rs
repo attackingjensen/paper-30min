@@ -460,10 +460,12 @@ fn sidecar_startup_timings(harness: &ChildHarness) -> (Option<u64>, Option<u64>)
 /// pdfparse.convert@1：单篇 PDF → DoclingDocument JSON。
 /// 输入: { pdfPath?, paperId?, workDir?, formulaEnrichment? }（pdfPath 缺省 = paperId 论文的 pdf 附件）
 /// 结果: { doclingJsonPath, workDir, pages, elapsedMs, wallClockMs,
-///         doclingVersion, ocrPages, warnings, timings, startupMs, modelLoadMs?,
+///         doclingVersion, ocrPages, warnings, timings?, startupMs, modelLoadMs?,
 ///         tableMode, numThreads, resident, sidecarPid?, sidecarReused?,
 ///         sidecarFallback?, blockModelAssetId?, mappingWarnings? }
 ///（#88：常驻命中带 sidecarPid/sidecarReused；回退带 sidecarFallback 诊断与原因码警示）
+///（#89：timings 仅 A1 探针开启时非 null——侧车环境变量
+/// `PAPER30MIN_PDFPARSE_PROFILE_TIMINGS=1`，默认关，表密集论文 profiling 开销大）
 /// 带 paperId 时转换成功后立即映射并落 blockmodel.json（#76）。
 /// #84 起优先走常驻侧车池（resident: true，模型只加载一次）；常驻不可用时回退
 /// 一次一进程（resident: false，warnings 记 sidecar_resident_fallback）。

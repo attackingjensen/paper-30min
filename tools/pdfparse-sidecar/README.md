@@ -108,6 +108,11 @@ Rust 侧回退/测试钩子环境变量：`PAPER30MIN_PDFPARSE_SERVE`（serve �
 - OCR 仅对无文本层页触发（预扫 `pypdfium2` 文本层，存在无文本层页才启用
   RapidOCR torch 后端；onnxruntime 不随包），触发页在结果 `ocrPages` 标记并附
   `scanned_pages_ocr` 警示。
+- A1 解析计时探针按需开启（#89）：`PAPER30MIN_PDFPARSE_PROFILE_TIMINGS=1` 打开
+  Docling 分阶段 profiling，convert 结果带 `timings`（layout/table/ocr/…）；
+  默认关，`timings` 为 null——#85 实测表密集论文连跑热节流下 profiling 开销
+  可达 ~35 s/篇（单篇冷机复测开销近零，热敏），只在诊断取数时开启；回归
+  assert/dump 均默认关以保持与生产同口径（见回归夹具 README）。
 - convert 启动时若环境未显式设置 `DOCLING_NUM_THREADS` / `OMP_NUM_THREADS`，按物理核
   （`psutil.cpu_count(logical=False)`）钳制到 `[2, 8]` 后写入 `DOCLING_NUM_THREADS`
   （须在 import docling 之前）。表格结构默认 FAST，可由 `--table-mode accurate` 切回。

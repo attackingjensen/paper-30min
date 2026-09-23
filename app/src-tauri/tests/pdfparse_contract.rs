@@ -27,8 +27,18 @@ use std::time::Duration;
 /// 须在锁内调用（评审发现的既有竞态）。
 static SIDECAR_LOCK: Mutex<()> = Mutex::new(());
 
+/// 取锁：容毒（#89）——单个用例持锁 panic 后，其余用例 `into_inner()` 继续用，
+/// 不再以 PoisonError 级联失败。
+fn sidecar_guard() -> std::sync::MutexGuard<'static, ()> {
+    SIDECAR_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 const CONVERT_TIMEOUT: Duration = Duration::from_secs(300);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(60);
+/// A1 解析计时探针开关（#89）：默认关；置 1 时侧车报分阶段 timings。
+const PROFILE_TIMINGS_ENV: &str = "PAPER30MIN_PDFPARSE_PROFILE_TIMINGS";
 
 fn sample_pdf() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -80,7 +90,7 @@ fn start_convert(
 #[test]
 fn status_reports_sidecar_layout() {
     let (registry, library, _dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     let result = bridge::invoke(&registry, &library, "pdfparse.status@1", &json!({}))
         .expect("pdfparse.status@1");
     assert_eq!(result["schemaVersion"], json!(bridge::BRIDGE_SCHEMA_VERSION));
@@ -110,7 +120,7 @@ fn convert_without_deps_reports_bootstrap_required() {
     // download 案未 bootstrap：骨架侧车（python.exe 在、无 site-packages/docling）
     // 应得到结构化 bootstrap_required，而不是子进程崩溃。无需真实侧车。
     let (registry, _library, _dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     let fake = tempfile::tempdir().expect("临时目录");
     std::fs::create_dir_all(fake.path().join("python")).unwrap();
     std::fs::write(fake.path().join("python").join("python.exe"), b"").unwrap();
@@ -130,7 +140,7 @@ fn convert_without_deps_reports_bootstrap_required() {
 #[test]
 fn convert_sample_pdf_produces_docling_document() {
     let (registry, library, dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     if !sidecar_ready(&library) {
         return;
     }
@@ -148,9 +158,12 @@ fn convert_sample_pdf_produces_docling_document() {
     assert_eq!(result["doclingVersion"], json!("2.126.0"));
     assert!(result["elapsedMs"].as_u64().unwrap() > 0);
     assert_eq!(result["ocrPages"], json!([]));
-    let timings = result["timings"].as_object().expect("convert 应带 timings");
-    assert!(timings.contains_key("layout"), "timings 至少含版面");
-    assert!(timings.contains_key("table"), "timings 至少含表格");
+    // A1 探针默认关（#89）：不开探针时 timings 为 null（而非全 0 误导行）。
+    assert!(
+        result["timings"].is_null(),
+        "探针默认关时 timings 应为 null，实得 {}",
+        result["timings"]
+    );
     assert!(result["startupMs"].as_u64().is_some(), "应有 startupMs");
     assert!(result["modelLoadMs"].as_u64().is_some(), "应有 modelLoadMs");
     assert_eq!(result["tableMode"], json!("fast"), "缺省表格模式应为 fast");
@@ -173,11 +186,41 @@ fn convert_sample_pdf_produces_docling_document() {
     assert_eq!(first_prov["bbox"]["coord_origin"], json!("BOTTOMLEFT"));
 }
 
+/// 探针按需开启（#89）：`PAPER30MIN_PDFPARSE_PROFILE_TIMINGS=1` 时 convert 报
+/// 分阶段 timings（至少含 layout/table）。环境变量在锁内置入/移除，与其他用例
+/// 的侧车 spawn 互斥（子进程在 spawn 时刻继承环境）。
+#[test]
+fn convert_with_profile_timings_env_reports_stage_timings() {
+    let (registry, library, dir) = common::env();
+    let _guard = sidecar_guard();
+    if !sidecar_ready(&library) {
+        return;
+    }
+    let _env = EnvGuard(PROFILE_TIMINGS_ENV);
+    std::env::set_var(PROFILE_TIMINGS_ENV, "1");
+    let work_dir = dir.path().join("convert-probe-on");
+    let (task_id, sink) = start_convert(&registry, &sample_pdf(), Some(&work_dir));
+
+    let status = wait_terminal(&registry, &task_id, CONVERT_TIMEOUT).expect("转换超时");
+    assert_eq!(status, TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+
+    let result = registry
+        .get(&task_id)
+        .expect("任务快照")
+        .result
+        .expect("succeeded 应携带 result");
+    let timings = result["timings"]
+        .as_object()
+        .expect("探针开启时 convert 应带 timings 对象");
+    assert!(timings.contains_key("layout"), "timings 至少含版面");
+    assert!(timings.contains_key("table"), "timings 至少含表格");
+}
+
 #[test]
 fn convert_missing_pdf_fails_with_structured_error() {
     // Rust 侧预检（不启动子进程），无侧车也可运行。
     let (registry, _library, dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     let missing = dir.path().join("no-such.pdf");
     let (task_id, _sink) = start_convert(&registry, &missing, None);
 
@@ -191,7 +234,7 @@ fn convert_missing_pdf_fails_with_structured_error() {
 #[test]
 fn convert_corrupt_pdf_fails_with_structured_error() {
     let (registry, library, dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     if !sidecar_ready(&library) {
         return;
     }
@@ -210,7 +253,7 @@ fn convert_corrupt_pdf_fails_with_structured_error() {
 #[test]
 fn convert_cancel_terminates_subprocess() {
     let (registry, library, dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     if !sidecar_ready(&library) {
         return;
     }
@@ -284,7 +327,7 @@ fn convert_rejects_unsafe_paper_id() {
 #[test]
 fn convert_with_paper_id_persists_block_model_attachment() {
     let (registry, library, _dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     if !sidecar_ready(&library) {
         return;
     }
@@ -354,7 +397,7 @@ fn convert_scanned_blank_page_marks_ocr_degraded() {
         return;
     }
     let (registry, library, dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     if !sidecar_ready(&library) {
         return;
     }
@@ -397,7 +440,7 @@ fn status_echoes_table_mode_from_settings() {
 #[test]
 fn convert_echoes_accurate_table_mode_from_settings() {
     let (registry, library, dir) = common::env();
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     if !sidecar_ready(&library) {
         return;
     }
@@ -420,7 +463,7 @@ fn convert_echoes_accurate_table_mode_from_settings() {
 fn sidecar_resolves_thread_count_from_env_and_clamps() {
     let (_registry, library, _dir) = common::env();
     // sidecar_ready 读进程级 SIDECAR_HOME_ENV，须与改环境变量的用例互斥。
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     if !sidecar_ready(&library) {
         return;
     }

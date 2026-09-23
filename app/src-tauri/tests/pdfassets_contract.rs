@@ -21,6 +21,14 @@ use std::time::Duration;
 /// 渲染与 convert 共用同一侧车，串行防资源争抢。
 static SIDECAR_LOCK: Mutex<()> = Mutex::new(());
 
+/// 取锁：容毒（#89）——单个用例持锁 panic 后，其余用例 `into_inner()` 继续用，
+/// 不再以 PoisonError 级联失败。
+fn sidecar_guard() -> std::sync::MutexGuard<'static, ()> {
+    SIDECAR_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 const PRERENDER_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn sample_pdf() -> PathBuf {
@@ -265,7 +273,7 @@ fn prerender_full_chain_stores_verified_assets() {
     if !require_render_ready() {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     put_paper(&registry, &library, "p-1");
     // PDF 走附件缝落库（id 固定 'pdf'），prerender 用默认路径解析。
     let pdf_bytes = std::fs::read(sample_pdf()).expect("读取示例 PDF");
@@ -432,7 +440,7 @@ fn prerender_pages_scope_stores_only_page_images() {
     if !require_render_ready() {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     put_paper(&registry, &library, "p-1");
     put_pdf(&library, "p-1");
 
@@ -477,7 +485,7 @@ fn prerender_crops_scope_stores_only_crops_and_block_model() {
     if !require_render_ready() {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     put_paper(&registry, &library, "p-1");
     put_pdf(&library, "p-1");
     put_blockmodel(&library, "p-1");
@@ -522,7 +530,7 @@ fn prerender_crops_falls_back_to_docling_when_block_model_missing() {
     if !require_render_ready() {
         return;
     }
-    let _guard = SIDECAR_LOCK.lock().unwrap();
+    let _guard = sidecar_guard();
     put_paper(&registry, &library, "p-1");
     put_pdf(&library, "p-1");
     let docling_path = dir.path().join("docling.json");
