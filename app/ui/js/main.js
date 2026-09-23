@@ -318,6 +318,9 @@ function updateStreakBadge() {
 }
 
 // ---------------- 书库视图 ----------------
+// 进度点降级阈值：精读部分数超过此值时圆点放不进单行状态槽，改为「● n/N」紧凑文本形态。
+const PROGRESS_DOTS_MAX = 12;
+
 async function refreshLibrary() {
   library = await papers.listPapers();
   const list = $('#paper-list');
@@ -371,22 +374,33 @@ async function refreshLibrary() {
     const defs = papers.progressParts(p);   // 进度点与进度计数同域（#90）
     const { done, total } = papers.readingProgress(p);
 
+    // 槽位 1：标题。最多 2 行，1 行标题也占 2 行位置（CSS 侧 line-clamp + min-height）。
     const title = document.createElement('p');
     title.className = 'pc-title';
     title.textContent = p.title;
 
+    // 槽位 2a：进度点行（单行）。
     const sub = document.createElement('div');
     sub.className = 'pc-sub';
     const dots = document.createElement('span');
     dots.className = 'progress-dots';
     dots.title = `已读完 ${done}/${total}`;
-    for (const def of defs) {
+    if (defs.length <= PROGRESS_DOTS_MAX) {
+      for (const def of defs) {
+        const dot = document.createElement('span');
+        dot.className = 'pdot' + (p.readMarks?.[def.id] != null ? ' done' : '');
+        dots.appendChild(dot);
+      }
+    } else {
+      dots.classList.add('compact');
       const dot = document.createElement('span');
-      dot.className = 'pdot' + (p.readMarks?.[def.id] != null ? ' done' : '');
-      dots.appendChild(dot);
+      dot.className = 'pdot done';
+      const count = document.createElement('span');
+      count.textContent = `${done}/${total}`;
+      dots.append(dot, count);
     }
     sub.appendChild(dots);
-    // 建图状态（#56 决策 12）：未建图 = 状态点；建图中 = 阶段进度；已建图 = 标记进度 n/N。
+    // 槽位 2b：建图状态行（#56 决策 12）：未建图 = 状态点；建图中 = 阶段进度；已建图 = 标记进度 n/N。
     const mapState = libraryMapState({
       mapped: hasMapProduct(p.products),
       mapping: isMappingPaper(p.id),
@@ -395,46 +409,55 @@ async function refreshLibrary() {
       done,
       total,
     });
+    const statusRow = document.createElement('div');
+    statusRow.className = 'pc-status';
     const mapChip = document.createElement('span');
     mapChip.className = `map-state-chip ${mapState.tone}`;
-    mapChip.textContent = mapState.text;
-    sub.appendChild(mapChip);
-    if (papers.isPaperRead(p)) {
-      const doneChip = document.createElement('span');
-      doneChip.className = 'metadata-chip pc-done';
-      doneChip.textContent = '已读完';
-      sub.appendChild(doneChip);
-    }
-    const added = document.createElement('span');
-    added.textContent = `${p.numPages ? p.numPages + ' 页 · ' : ''}导入于 ${fmtDate(p.addedAt)}`;
-    sub.appendChild(added);
-    // 「最近精读」只看精读结果时间，与已读完标记解耦——只标记未生成结果的论文没有该行。
-    const analysisTimes = Object.values(p.analyses || {}).map(a => a?.updatedAt || 0).filter(Boolean);
-    if (analysisTimes.length) {
-      const recent = document.createElement('span');
-      recent.textContent = `最近精读 ${fmtDate(Math.max(...analysisTimes))}`;
-      sub.appendChild(recent);
-    }
-
-    const metadata = document.createElement('div');
-    metadata.className = 'pc-metadata';
+    // 「已读完」并入建图 chip（原独立 pc-done chip 取消）：已建图时 n/N 必然满，省略计数避免冗余。
+    mapChip.textContent = papers.isPaperRead(p)
+      ? (mapState.tone === 'done' ? '已建图 · 已读完 ✓' : `${mapState.text} · 已读完 ✓`)
+      : mapState.text;
+    statusRow.appendChild(mapChip);
+    // 槽位 2c：评分行。
+    const rateRow = document.createElement('div');
+    rateRow.className = 'pc-rate';
     const rating = document.createElement('span');
     rating.className = 'pc-rating' + (p.rating ? '' : ' empty');
     rating.textContent = ratingText(p.rating);
-    metadata.appendChild(rating);
+    rateRow.appendChild(rating);
+
+    // 槽位 3：信息行（单行省略）——n 页 · 导入于 日期 · 最近精读 日期，固定顺序。
+    const info = document.createElement('div');
+    info.className = 'pc-info';
+    const infoParts = [];
+    if (p.numPages) infoParts.push(`${p.numPages} 页`);
+    infoParts.push(`导入于 ${fmtDate(p.addedAt)}`);
+    // 「最近精读」只看精读结果时间，与已读完标记解耦——只标记未生成结果的论文没有该段。
+    const analysisTimes = Object.values(p.analyses || {}).map(a => a?.updatedAt || 0).filter(Boolean);
+    if (analysisTimes.length) infoParts.push(`最近精读 ${fmtDate(Math.max(...analysisTimes))}`);
+    info.textContent = infoParts.join(' · ');
+
+    // 槽位 4：标签行（单行截断）——分类 + 标签；全量内容放 title 悬浮查看。
+    const metadata = document.createElement('div');
+    metadata.className = 'pc-metadata';
+    const chipTexts = [];
     for (const category of papers.paperCategories(p)) {
       const chip = document.createElement('span');
       chip.className = 'metadata-chip category';
       chip.textContent = category;
+      chipTexts.push(category);
       metadata.appendChild(chip);
     }
     for (const tag of papers.paperTags(p)) {
       const chip = document.createElement('span');
       chip.className = 'metadata-chip tag';
       chip.textContent = `#${tag}`;
+      chipTexts.push(`#${tag}`);
       metadata.appendChild(chip);
     }
+    if (chipTexts.length) metadata.title = chipTexts.join(' · ');
 
+    // 槽位 5：按钮行（margin-top:auto 锚底）——继续阅读靠左，删除靠右。
     const actions = document.createElement('div');
     actions.className = 'pc-actions';
     const openBtn = document.createElement('button');
@@ -443,7 +466,7 @@ async function refreshLibrary() {
     openBtn.textContent = '继续阅读';
     openBtn.onclick = event => { event.stopPropagation(); openPaper(p); };
     const delBtn = document.createElement('button');
-    delBtn.className = 'btn small danger';
+    delBtn.className = 'btn small ghost pc-delete';
     delBtn.type = 'button';
     delBtn.textContent = '删除';
     delBtn.onclick = async event => {
@@ -456,7 +479,7 @@ async function refreshLibrary() {
     };
     actions.append(openBtn, delBtn);
 
-    card.append(title, sub, metadata, actions);
+    card.append(title, sub, statusRow, rateRow, info, metadata, actions);
     card.onclick = () => openPaper(p);
     list.appendChild(card);
   }
