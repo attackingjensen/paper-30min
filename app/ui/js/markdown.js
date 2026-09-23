@@ -128,15 +128,32 @@ export function renderMarkdown(src) {
   return html.join('\n');
 }
 
-let mathTimer = null;
+const streamingText = new WeakMap();
+const mathTimers = new WeakMap();
+
+export function renderStreamingTextInto(element, text) {
+  clearTimeout(mathTimers.get(element));
+  mathTimers.delete(element);
+  const previous = streamingText.get(element);
+  if (element.classList.contains('streaming-text') && previous !== undefined &&
+      text.startsWith(previous) && element.firstChild?.nodeType === 3 &&
+      element.firstChild.data === previous) {
+    element.firstChild.appendData(text.slice(previous.length));
+  } else {
+    element.textContent = text;
+  }
+  streamingText.set(element, text);
+  element.classList.add('streaming-text');
+}
 
 export function typesetMath(root) {
   if (!root) return;
-  clearTimeout(mathTimer);
-  mathTimer = setTimeout(() => {
+  clearTimeout(mathTimers.get(root));
+  mathTimers.set(root, setTimeout(() => {
+    mathTimers.delete(root);
     const mathJax = window.MathJax;
     if (!mathJax?.typesetPromise) return;
     mathJax.typesetClear?.([root]);
     mathJax.typesetPromise([root]).catch(error => console.warn('公式排版失败', error));
-  }, 80);
+  }, 80));
 }

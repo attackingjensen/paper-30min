@@ -455,6 +455,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .md .math-block { margin: 12px 0; overflow-x: auto; text-align: center; }
 .md mjx-container { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.streaming-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ---------- 原文 ---------- */
 /* 原文工具行：翻译控件固定成行并吸顶；章节导航改由共享节树承担（chips 仅未建图旧数据使用） */

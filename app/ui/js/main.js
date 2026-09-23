@@ -9,7 +9,7 @@ import * as model from './model.js';
 import * as generation from './generation.js';
 import * as parser from './parser.js';
 import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
-import { renderMarkdown, typesetMath } from './markdown.js';
+import { renderMarkdown, renderStreamingTextInto, typesetMath } from './markdown.js';
 import { PROTOCOL_TASKS, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
 import { showStartup } from './startup.js';
 import * as view from './view.js';
@@ -127,6 +127,7 @@ const recallBlobUrls = new Map(); // 回忆卡图片 imageId -> Blob URL，离�
 let paneDrag = null;         // 双侧栏拖拽：{ side, pointerId, treeLeft }
 
 function renderMarkdownInto(element, text) {
+  element.classList.remove('streaming-text');
   element.innerHTML = renderMarkdown(text);
   typesetMath(element);
 }
@@ -743,6 +744,7 @@ function refsHtml(refs) {
 }
 
 function renderCitedMarkdownInto(element, text) {
+  element.classList.remove('streaming-text');
   element.innerHTML = linkifyCiteHtml(renderMarkdown(text));
   typesetMath(element);
 }
@@ -802,7 +804,7 @@ function renderMapPage() {
     const live = page.retell.live;
     const received = live?.receivedChars > 0 ? `已收到 ${live.receivedChars} 字` : '';
     const statusLine = ['正在生成复述稿', received, thinking].filter(Boolean).join(' · ');
-    retell += `<p>${escapeTemplate(statusLine)}</p><button class="btn small" type="button" data-action="cancel-synth">取消</button>`;
+    retell += `<p class="retell-status">${escapeTemplate(statusLine)}</p><button class="btn small" type="button" data-action="cancel-synth">取消</button>`;
     if (live?.previewText) {
       retell += `<div class="dig-head"><span class="chip">${escapeTemplate(COPY.livePreview)}</span></div><div class="md retell-preview"></div>`;
     }
@@ -825,7 +827,7 @@ function renderMapPage() {
   if (retellBody && page.retell.body) renderCitedMarkdownInto(retellBody, page.retell.body);
   const retellPreview = body.querySelector('.retell-preview');
   if (retellPreview && page.retell.live?.previewText) {
-    renderCitedMarkdownInto(retellPreview, page.retell.live.previewText);
+    renderStreamingTextInto(retellPreview, page.retell.live.previewText);
   }
 }
 
@@ -863,7 +865,7 @@ function renderSectionPage() {
     const live = model.deepDive.live;
     const statusLine = live ? deepDiveStatusLine(live) : '';
     const progress = [model.deepDive.progressText, statusLine, thinking].filter(Boolean).join(' · ');
-    dig += `<div class="dig-empty"><p>${escapeTemplate(progress)}</p>
+    dig += `<div class="dig-empty"><p class="dig-status" data-progress="${escapeTemplate(model.deepDive.progressText)}">${escapeTemplate(progress)}</p>
       <button class="btn small" type="button" data-action="cancel-dig">取消</button></div>`;
     if (live?.previewText) {
       dig += `<div class="dig-head"><span class="chip">${escapeTemplate(COPY.livePreview)}</span></div>
@@ -910,7 +912,7 @@ function renderSectionPage() {
   // 预览容器也带 .dig-result 类：运行中优先渲染预览（#80），避免被旧产物覆盖。
   const preview = body.querySelector('.dig-preview');
   if (preview && model.deepDive.live?.previewText) {
-    renderCitedMarkdownInto(preview, model.deepDive.live.previewText);
+    renderStreamingTextInto(preview, model.deepDive.live.previewText);
   } else {
     const result = body.querySelector('.dig-result');
     if (result && model.deepDive.body) renderCitedMarkdownInto(result, model.deepDive.body);
@@ -1382,7 +1384,16 @@ async function startSynthesize(overwriteConfirmed) {
         if (event.event === 'preview') {
           // #80：复述稿流式预览驱动地图页「生成中」正文。
           pushRunEvent(meta, event);
-          if (current?.id === paperId) renderMapTab();
+          if (current?.id === paperId && reader.appView === 'reader' &&
+              reader.tab === 'map' && reader.sectionId === null) {
+            const preview = $('#map-page-body .retell-preview');
+            if (preview && event.detail?.text) {
+              renderStreamingTextInto(preview, event.detail.text);
+              const status = $('#retell-block .retell-status');
+              if (status) status.textContent = ['正在生成复述稿', `已收到 ${event.detail.text.length} 字`,
+                protocolThinkingText(paperId, PROTOCOL_TASKS.synthesize)].filter(Boolean).join(' · ');
+            } else renderMapTab();
+          }
         } else if (applyThinkingEvent(meta, event) && current?.id === paperId) {
           renderMapTab();
         }
@@ -1463,7 +1474,26 @@ async function startDeepDive(paperId, partIds) {
           // #80：轮次进度与最终稿预览驱动节页运行态（状态行 + 生成中预览正文）。
           pushRunEvent(meta, event);
           applyThinkingEvent(meta, event);
-          if (current?.id === paperId) renderMapTab();
+          if (current?.id === paperId) {
+            if (event.event === 'preview') {
+              if (reader.appView === 'reader' && reader.tab === 'map' &&
+                  reader.sectionId === event.detail?.partId) {
+                const preview = $('#section-page-body .dig-preview');
+                if (preview && event.detail?.text) {
+                  renderStreamingTextInto(preview, event.detail.text);
+                  const status = $('#section-page-body .dig-status');
+                  if (status) {
+                    const live = deepDiveRunState(meta.runEvents, reader.sectionId, meta.status);
+                    status.textContent = [status.dataset.progress, deepDiveStatusLine(live),
+                      protocolThinkingText(paperId, PROTOCOL_TASKS.deepDive, reader.sectionId)]
+                      .filter(Boolean).join(' · ');
+                  }
+                } else renderMapTab();
+              }
+            } else {
+              renderMapTab();
+            }
+          }
         } else if (applyThinkingEvent(meta, event) && current?.id === paperId) {
           renderMapTab();
         }
@@ -1486,11 +1516,14 @@ function recallCard() {
   return current?.recallCard || { markdown: '', images: [], updatedAt: 0 };
 }
 
-function updateRecallPreview() {
+function updateRecallPreview(streaming = false) {
   const preview = $('#recall-preview');
   const markdown = $('#recall-editor').value.trim();
   preview.classList.toggle('empty-hint', !markdown);
-  if (markdown) renderMarkdownInto(preview, markdown);
+  if (markdown) {
+    if (streaming) renderStreamingTextInto(preview, markdown);
+    else renderMarkdownInto(preview, markdown);
+  }
   else preview.textContent = '尚未生成或填写回想卡片。';
 }
 
@@ -1615,7 +1648,7 @@ async function generateRecallDraft() {
       signal: recallAborter.signal,
       onDelta: full => {
         editor.value = full;
-        updateRecallPreview();
+        updateRecallPreview(true);
       },
       // 任务中心「重试」：重跑回想卡片草稿生成。
       retry: () => { void generateRecallDraft(); },
@@ -1632,6 +1665,7 @@ async function generateRecallDraft() {
       toast(err.message, true);
     }
   } finally {
+    if ($('#recall-preview').classList.contains('streaming-text')) updateRecallPreview();
     button.disabled = !hasMapProduct(current?.products);
     $('#btn-recall-stop').hidden = true;
     recallAborter = null;
@@ -2010,7 +2044,7 @@ async function translateCurrentText() {
       ], {
         stream: true,
         signal: translateAborter.signal,
-        onDelta: full => renderMarkdownInto(output, [...translated, full].join('\n\n')),
+        onDelta: full => renderStreamingTextInto(output, [...translated, full].join('\n\n')),
         retry: () => { void translateCurrentText(); },
       });
       translated.push(piece);
@@ -2027,6 +2061,7 @@ async function translateCurrentText() {
       toast(err.message, true);
     }
   } finally {
+    if (output.classList.contains('streaming-text')) renderMarkdownInto(output, output.textContent);
     output.classList.remove('cursor');
     button.disabled = false;
     $('#btn-translate-stop').hidden = true;
@@ -2350,7 +2385,7 @@ async function sendChat() {
         },
         onDelta: full => {
           bubble.classList.remove('chat-thinking');
-          renderMarkdownInto(bubble, full);
+          renderStreamingTextInto(bubble, full);
           $('#chat-log').scrollTop = $('#chat-log').scrollHeight;
         },
         retry: () => { void askOnce(); },
@@ -2359,6 +2394,7 @@ async function sendChat() {
       await papers.appendChatMessage(paper, { role: 'assistant', content: text, bindingKind: 'none' });
     } catch (err) {
       bubble.classList.add('err');
+      bubble.classList.remove('streaming-text');
       if (err.name === 'AbortError') {
         bubble.textContent = '已停止。';
       } else {
