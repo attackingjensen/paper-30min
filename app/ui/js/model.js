@@ -1,4 +1,4 @@
-// 模型调用客户端（取代浏览器端 api.js）：设置内存缓存 + 经桥接任务的对话与连接测试。
+// 模型调用客户端：设置内存缓存 + 经桥接任务的对话与连接测试。
 // 端点规范化、鉴权与网络都在 Rust 侧，本模块只面对冻结的桥接契约：
 // settings.get@1 / settings.putModel@1，以及长任务 model.chat@1 / model.test@1。
 import { trackTask } from '../bridge.js';

@@ -1,6 +1,5 @@
 //! 模型流式调用：OpenAI 兼容端点规范化、HTTP 客户端、SSE 解析与连接测试。
-//! 语义移植自浏览器端 public/js/api.js（endpoint / readError / chat / testConnection），
-//! 只移植语义，不搬运 JS 代码结构。
+//! 端点规范化、错误读取、对话和连接测试都在 Rust 侧运行。
 
 use reqwest::blocking::{Client, Response};
 use reqwest::Url;
@@ -16,8 +15,7 @@ use crate::error::BridgeError;
 use crate::library::Library;
 use crate::tasks::{run_with_retry_while, Progress, RunContext};
 
-/// 浏览器 UA：与 server.py 转发时使用的字符串一致，
-/// 部分中转站按 UA/TLS 指纹拦截非浏览器客户端。
+/// 部分中转站按 UA/TLS 指纹拦截非浏览器客户端，因此使用浏览器 UA。
 pub(crate) const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 

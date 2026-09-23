@@ -3,7 +3,7 @@
 import os
 import textwrap
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'public', 'samples', 'sample_paper.pdf')
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app', 'ui', 'samples', 'sample_paper.pdf')
 
 TITLE = ["SampleNet: Contrastive Distillation for", "Neural Paper Summarization"]
 AUTHORS = "Jane Doe, John Smith  -  Institute of Sample Research"

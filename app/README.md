@@ -51,17 +51,16 @@ npm run smoke          # 不开窗口的桥接冒烟检查（debug 构建，退�
 
 - `ui/index.html` + `ui/style.css` + `ui/js/main.js`：阅读界面（书库 / 阅读 / 任务中心三个视图）。
 - `ui/js/` 领域模块：`papers.js`（论文记录生命周期）、`generation.js`（精读生成编排）、
-  `skills.js`、`markdown.js`、`parser.js`（PDF/arXiv/文本解析）与浏览器版同源移植；
-  `store.js`（`library.*@1`/`files.*@1` 存储适配）、`model.js`（设置缓存与 `model.*@1` 任务封装）为 Tauri 端新增。
-- `ui/vendor/`（pdf.js、MathJax）与 `ui/samples/` 从 `public/` 复制；技能文件由 Rust 编译期内嵌
-  （`skills.list@1`），`generation.js`/`markdown.js` 与内置技能副本有同步测试防漂移。
+  `skills.js`、`markdown.js`、`parser.js`（PDF/arXiv/文本解析）在客户端内维护；
+  `store.js` 负责 `library.*@1`/`files.*@1` 存储适配，`model.js` 负责设置缓存与 `model.*@1` 任务封装。
+- `ui/vendor/` 内置 pdf.js、MathJax，`ui/samples/` 内置示例论文；技能文件由 Rust 编译期内嵌
+  （`skills.list@1`），内置技能副本有同步测试防漂移。
 - 任务中心从主导航进入，显示全部任务的七态与进度，支持取消与失败重试；
   阅读位置（视图/精读部分/PDF 页码）经 `library.*ReadingPosition@1` 持久化，重开论文时恢复。
 
 ## 数据位置
 
-应用数据目录由 Tauri 管理（`app_data_dir`，标识 `com.paper30min.reader`），与原型
-（`com.paper30min.prototype`）和浏览器书库相互隔离。首次启动会创建
+应用数据目录由 Tauri 管理（`app_data_dir`，标识 `com.paper30min.reader`）。首次启动会创建
 `database/`、`attachments/`、`operations/`、`exports/`，并在 `database/library.sqlite`
 建立版本化书库（v3 起含 settings 表：模型设置与技能覆盖；API Key 只存此处，
 不进入论文 DTO、迁移数据与整库导出）。JavaScript 只通过 `library.*@1`、`files.*@1` 与 `migration.*@1` 命令读写领域 DTO，

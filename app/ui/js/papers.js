@@ -1,18 +1,17 @@
 // 论文生命周期 module：统一拥有记录创建、精读部分投影、进度派生与全部写入。
 // 设计决定见 Git 历史 35324e7 的 docs/adr/0004-paper-lifecycle-module.md；现行语义见根 CONCEPTS.md。
-// 移植自 public/js/papers.js，领域逻辑逐行保持；差异仅在存储缝：
-// - 存储适配器不再内置 IndexedDB 实现，Tauri 端适配器见 ./store.js；
+// - 存储适配器由 ./store.js 注入，不在领域模块内持久化；
 // - PDF 字节不随记录持久化，导出信封需要的 base64 经 init 注入的 pdfHelpers.pdfBase64 获取。
-// - 进度域（progressParts，#90/#92）只在 app 侧：已建图时以 L2 产物集合为域
+// - 进度域（progressParts，#90/#92）：已建图时以 L2 产物集合为域
 //   （节树同域，覆盖存量 parts 未对齐的记录）；块模型无 abstract 节时摘要占位不计入
-//   进度。浏览器阅读器没有块模型与协议产物，沿用 readingParts 的投影即可，不跟进。
+//   进度。
 
 // ---------------- 存储缝 ----------------
 
 let store = null;
 
-// PDF 导出助手：pdfBase64(paper) -> string|null。缺省保持浏览器行为——
-// pdfBlob 还在记录上（导入流程的瞬时 Blob/File）时直接从 Blob 读字节转 base64。
+// PDF 导出助手：pdfBase64(paper) -> string|null。导入流程的瞬时 Blob/File
+// 仍在记录上时，缺省实现直接从 Blob 读字节转 base64。
 const defaultPdfHelpers = {
   async pdfBase64(paper) {
     if (!(paper?.pdfBlob instanceof Blob) || !paper.pdfBlob.size) return null;

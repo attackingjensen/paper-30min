@@ -8,7 +8,7 @@ import test from 'node:test';
 // 全链断言（PDF → 侧车 → 映射 → 基线）在 app/src-tauri/tests/pdfparse_regression.rs，
 // 由 PAPER30MIN_PDFPARSE_FIXTURES=1 驱动；本文件保证夹具包装本身不进 CI 就烂掉。
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const fixturesDir = path.join(repoRoot, 'app', 'src-tauri', 'tests', 'fixtures');
 const regressionDir = path.join(fixturesDir, 'regression');
 

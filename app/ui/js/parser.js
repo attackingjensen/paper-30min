@@ -1,9 +1,8 @@
-// PDF 解析与章节切分（移植自 public/js/parser.js，切分管线逐行保持）
+// PDF 解析与章节切分
 // 1) 用 pdf.js 逐页提取文本，处理双栏排版（标题/摘要等通栏内容作为分隔带）
 // 2) 按标题规则切出 Abstract / Introduction / Related Work / Method / Experiments / Conclusion
 // 3) 提取论文标题
-// 与浏览器版的差异：
-// - pdfjs 改为函数内惰性访问 window.pdfjsLib（模块顶层不碰 window，保证 node 可导入）；
+// - pdf.js 在函数内惰性访问 window.pdfjsLib（模块顶层不碰 window，保证 node 可导入）；
 // - arXiv 网络访问经 initParser 注入缝（fetchText 走 net.fetch-text@1，downloadPdf 走 files.download@1）。
 
 // ---------------- 注入缝 ----------------
@@ -476,7 +475,7 @@ export function normalizeArxivId(value) {
 
 /**
  * 拉取 arXiv 结构化 HTML 并解析为章节。经注入缝 fetchText（net.fetch-text@1 累积），
- * 不再走浏览器版的 /api/arxiv 转发；「该论文暂无 HTML」等失败信息由调用方按错误展示。
+ * 「该论文暂无 HTML」等失败信息由调用方按错误展示。
  */
 export async function fetchArxiv(id) {
   const normalized = normalizeArxivId(id);

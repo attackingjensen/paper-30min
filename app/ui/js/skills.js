@@ -8,8 +8,7 @@
 //   {version: 2, prompts: {stage: 提示词文本}, focus: {类型: [关注点]}, legacy: {旧技能id: 原文}}
 // v1 平铺 {章节id: 提示词} 在 initSkills 时迁移并写回：已知类型 → focus 覆盖项 + legacy 只读留档，
 // 未知键仅 legacy 留档；legacy 同时供旧精读路径沿用（用户调教在旧路径退役前不失效）。
-// 移植自 public/js/skills.js：fetch('/api/skills') 与 localStorage 覆盖层
-// 改为经 initSkills 注入的异步缝（main.js 启动时接 skills.list@1 / settings 命令）。
+// 运行时经 initSkills 注入异步缝（main.js 启动时接 skills.list@1 / settings 命令）。
 
 // ---------- 受控词表与占位符契约 ----------
 // SECTION_TYPES 即建图调用①章节类型打标的受控词表（#55 决策 12），与 section-focus.json 的键一致。
@@ -440,13 +439,6 @@ Experiment 原文：
 """`,
   },
 ];
-
-// 浏览器阅读器仍用此模板做截断注入；Tauri 问答已改走 qa.js 三形态装配（#67）。
-export const CHAT_SYSTEM_TEMPLATE = `你是「论文精读助手」，正在帮助用户深入理解论文《{title}》。以下是论文的主要内容（可能被截断）：
-
-{content}
-
-请基于论文内容用中文回答用户问题；引用原文时给出英文原句；如果论文中没有相关内容，请如实说明，不要编造。回答使用 Markdown 格式。`;
 
 // ---------- 注入缝 ----------
 // listSkillFiles() -> [{file, text}]（接 skills.list@1）；

@@ -1,5 +1,5 @@
 //! 技能文件服务：编译期内嵌仓库根 skills/ 下的技能库文件，
-//! 返回形状与浏览器端 server.py `/api/skills` 一致（按文件名排序的 [{file, text}]）。
+//! 返回按文件名排序的 [{file, text}]。
 //!
 //! 技能库形态（规格 #55 决策 23–25，#64）：四段协议提示词（map-l2 / map-l1 / deep-dive /
 //! synthesize）+ 章节关注点数据（section-focus.json）；旧五技能（每类章节一个提示词）迁为

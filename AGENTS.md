@@ -1,11 +1,11 @@
 # Paper30Min
 
-论文精读应用：Windows Tauri 客户端与保留的浏览器阅读器。开发流程直接使用已安装的 Compound Engineering 技能，不在仓库另定义阶段、文档审批链或必读状态快照。
+论文精读应用：Windows Tauri 客户端。开发流程直接使用已安装的 Compound Engineering 技能，不在仓库另定义阶段、文档审批链或必读状态快照。
 
 ## 项目事实
 
 - Windows 本地书库是论文内容权威来源；Rust 负责存储、文件、网络、模型和阅读协议运行，JavaScript 负责界面与前端状态。
-- `app/` 是 Windows 客户端，`public/` 是浏览器阅读器，`skills/` 是产品阅读提示词，不能与 CE 开发技能混用。
+- `app/` 是 Windows 客户端，`skills/` 是产品阅读提示词，不能与 CE 开发技能混用。
 - 云同步与 Android 尚未实现；相关历史规格为 GitHub Issue #25 / #26。已有规格是理解产品契约的材料，不要求复制旧 Wayfinder 工作流程。
 - 日常开发直接在 `steven123397/dev` 分支进行，不为每项工作单独开分支；发布前核对目标分支。
 
@@ -20,10 +20,10 @@
 
 ## 验证入口
 
-- 浏览器：仓库根目录 `npm test`。
 - Windows JavaScript：`cd app` 后 `node --test`。
 - Rust：`cd app/src-tauri` 后 `cargo test`。
-- 桌面集成：`cd app` 后 `npm run smoke`；浏览器验证不能替代 Tauri 原生桥和窗口验证。
+- 桌面集成：`cd app` 后 `npm run smoke`；JavaScript 单测不能替代 Tauri 原生桥和窗口验证。
+- JavaScript 语法：仓库根目录 `node tools/check_syntax.mjs`。
 
 按改动范围选择检查；构建与运行细节见 `app/README.md`。
 

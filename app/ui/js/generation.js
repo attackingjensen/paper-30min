@@ -13,7 +13,7 @@ let nextTaskId = 1;
 const tasks = new Map();    // 任务 registry：id -> 精读任务，不对外暴露
 const batches = new Set();  // 进行中的批量生成
 
-/** 注入模型调用与设置读取；浏览器端在启动时接线，测试注入可控实现。 */
+/** 注入模型调用与设置读取；启动时接线，测试注入可控实现。 */
 export function init(dependencies) {
   deps = dependencies;
 }

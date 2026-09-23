@@ -3137,7 +3137,7 @@ async function importSkillFile(file) {
 }
 
 // ---------------- 浏览器迁移 ----------------
-// 取代浏览器版的应用内整库导入：选文件 → 预检 → 展示报告 → 确认迁入。
+// 选旧书库导出文件 → 预检 → 展示报告 → 确认迁入。
 // inspect/commit 错误（source_changed / token_expired / 损坏 JSON / 版本不符）
 // 统一展示 code + message，并允许重新选择文件重新预检。
 
