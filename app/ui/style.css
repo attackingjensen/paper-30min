@@ -299,7 +299,9 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   gap: 14px; align-items: start;
 }
 .reader-workspace.pdf-closed { grid-template-columns: minmax(0, 1fr); }
-.reader-primary { min-width: 0; }
+/* 阅读主区：共享节树（左）+ 当前 tab 面板（右）；节树隐藏时面板占满 */
+.reader-primary { min-width: 0; display: flex; align-items: flex-start; gap: 18px; }
+.reader-primary > .tab-panel { flex: 1; min-width: 0; }
 
 /* 地图 tab：B 双栏（节树 + 内容）；双侧栏 VSCode 式拖拽调宽 */
 .card {
@@ -314,7 +316,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 }
 .build-landing h2 { margin: 0 0 10px; font-size: 20px; }
 .build-landing .btn { margin-top: 8px; }
-.map-split { display: flex; align-items: flex-start; gap: 0; min-height: 56vh; }
+.map-split { min-height: 56vh; }
 .map-tree {
   width: 250px; flex: none; background: var(--card); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 12px; position: sticky; top: 88px;
@@ -353,7 +355,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .dot.todo { background: #c9cede; }
 .dot.dug { background: var(--warn); }
 .dot.marked { background: var(--ok); }
-.map-content { flex: 1; min-width: 0; padding: 0 0 0 18px; }
+.map-content { flex: 1; min-width: 0; }
 .crumb { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
 .map-sec { padding: 14px 16px; margin-bottom: 12px; }
 .map-sec h3 { margin: 0 0 6px; font-size: 15px; color: var(--accent); }
@@ -455,8 +457,15 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .md mjx-container { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
 
 /* ---------- 原文 ---------- */
-.source-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.source-chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 180px; }
+/* 原文工具行：翻译控件固定成行并吸顶；章节导航改由共享节树承担（chips 仅未建图旧数据使用） */
+.source-toolbar {
+  position: sticky; top: 88px; z-index: 8;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 8px; padding: 6px 0 10px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.source-chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1 1 100%; }
+.source-hint { margin-left: auto; font-size: 12px; }
 .trans-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .trans-lang { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .trans-lang select {
@@ -479,14 +488,6 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   padding: 16px; white-space: pre-wrap; word-break: break-word;
   font-size: 13.5px; line-height: 1.7; max-height: 65vh; overflow-y: auto;
 }
-.source-chip-wrap { display: inline-flex; align-items: stretch; gap: 0; }
-.source-chip-wrap .chip { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.chip-ask {
-  border: 1px solid var(--border); border-left: 0; background: var(--card); color: var(--accent);
-  border-radius: 0 999px 999px 0; padding: 4px 10px; font-size: 12px; cursor: pointer;
-}
-.chip-ask:hover { background: var(--accent-soft); }
-.chip-ask:disabled { opacity: .45; cursor: not-allowed; }
 .source-wrap { position: relative; }
 .source-doc {
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);

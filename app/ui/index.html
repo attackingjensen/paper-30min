@@ -103,6 +103,20 @@
 
   <div class="reader-workspace" id="reader-workspace">
   <div class="reader-primary">
+    <!-- 共享节树侧栏：地图 tab 与原文 tab 共用（未建图或问答/回想卡片 tab 时隐藏） -->
+    <aside class="map-tree" id="map-tree" aria-label="节树" hidden>
+      <div class="tree-head">
+        <span class="chip" id="map-progress-chip"></span>
+        <button class="tree-fold" id="btn-tree-fold" type="button" title="收起节树">«</button>
+      </div>
+      <button class="tree-item" id="btn-tree-map" type="button">阅读地图</button>
+      <button class="tree-item" id="btn-tree-full" type="button" hidden><span class="dot todo" id="tree-full-dot"></span><span class="tname">全文</span></button>
+      <div id="map-tree-items"></div>
+      <div class="tree-foot">
+        <button class="btn small primary" id="btn-deep-all" type="button" disabled>▶ 全部深挖</button>
+      </div>
+      <div class="tree-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="调节节树宽度" title="拖拽调节节树宽度"></div>
+    </aside>
     <!-- 地图 tab：落地页 / 地图页 / 节页（B 双栏；内容区见 #71） -->
     <section id="tab-map" class="tab-panel">
       <div id="map-landing" class="map-landing" hidden>
@@ -115,18 +129,6 @@
         </div>
       </div>
       <div id="map-split" class="map-split" hidden>
-        <aside class="map-tree" id="map-tree" aria-label="节树">
-          <div class="tree-head">
-            <span class="chip" id="map-progress-chip"></span>
-            <button class="tree-fold" id="btn-tree-fold" type="button" title="收起节树">«</button>
-          </div>
-          <button class="tree-item" id="btn-tree-map" type="button">阅读地图</button>
-          <div id="map-tree-items"></div>
-          <div class="tree-foot">
-            <button class="btn small primary" id="btn-deep-all" type="button" disabled>▶ 全部深挖</button>
-          </div>
-          <div class="tree-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="调节节树宽度" title="拖拽调节节树宽度"></div>
-        </aside>
         <div class="map-content">
           <div id="map-page">
             <div class="crumb">地图</div>
@@ -172,7 +174,7 @@
     <!-- 原文：整篇连续滚动；翻译降为节级对照开关 -->
     <section id="tab-source" class="tab-panel" hidden>
       <div class="source-toolbar">
-        <div class="source-chips" id="source-chips"></div>
+        <div class="source-chips" id="source-chips" hidden></div>
         <label class="trans-toggle">
           <input type="checkbox" id="source-translate-toggle">
           对照显示当前节译文
@@ -186,6 +188,7 @@
         <button class="btn small" id="btn-translate" type="button">翻译本节</button>
         <button class="btn small danger" id="btn-translate-stop" type="button" hidden>停止</button>
         <span class="muted" id="translate-status"></span>
+        <span class="muted source-hint">选中文本可浮动「提问」（含跨节选择）</span>
       </div>
       <div class="source-wrap" id="source-wrap">
         <pre id="source-text" class="source-text"></pre>

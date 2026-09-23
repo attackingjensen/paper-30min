@@ -205,13 +205,14 @@ test('拖拽调宽：节树按指针相对左缘；PDF 按窗口右缘距离，�
   assert.equal(resolvedPdfWidth(setPdfWidth(reader(), 700, 1200), 800), Math.round(800 * PDF_WIDTH_MAX_RATIO));
 });
 
-test('浮钮：节树收起后仅地图/节页露出左缘 »；PDF 收起露出右缘 «，顶栏全关则无浮钮', () => {
+test('浮钮：节树收起后在地图/节页与原文 tab 露出左缘 »；PDF 收起露出右缘 «，顶栏全关则无浮钮', () => {
   const onMap = reader();
   assert.deepEqual(paneFabVisibility(onMap), { tree: false, pdf: false });
 
   const treeDown = collapseTree(onMap);
   assert.deepEqual(paneFabVisibility(treeDown), { tree: true, pdf: false });
-  assert.equal(paneFabVisibility(switchTab(treeDown, 'source')).tree, false);
+  // 共享节树：原文 tab 也显示节树，折叠后同样露出浮钮（未建图时由壳层按节树可见性再压掉）。
+  assert.equal(paneFabVisibility(switchTab(treeDown, 'source')).tree, true);
   assert.equal(paneFabVisibility(switchAppView(treeDown, 'library')).tree, false);
   assert.equal(paneFabVisibility(openPaper(initialState(), { hasMap: false })).tree, false);
 

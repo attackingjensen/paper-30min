@@ -165,11 +165,14 @@ export function expandPdf(state) {
   return patch(state, { pdfOpen: true, pdfCollapsed: false });
 }
 
-/** 收起后视口边缘圆形浮钮：左节树仅地图/节页出现，右 PDF 在全开且收起时出现。 */
+/** 收起后视口边缘圆形浮钮：左节树在地图/节页与原文 tab 出现，右 PDF 在全开且收起时出现。 */
 export function paneFabVisibility(state) {
   const onReader = !!state?.paperOpen && state.appView === 'reader';
   const surface = mapSurface(state);
-  const treeOn = onReader && state.tab === 'map' && (surface === 'map' || surface === 'section');
+  const treeOn = onReader && (
+    (state.tab === 'map' && (surface === 'map' || surface === 'section'))
+    || state.tab === 'source'
+  );
   return {
     tree: treeOn && !!state.treeCollapsed,
     pdf: onReader && !!state.pdfOpen && !!state.pdfCollapsed,

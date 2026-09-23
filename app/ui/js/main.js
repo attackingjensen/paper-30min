@@ -230,7 +230,8 @@ function renderReaderTabs() {
 
 function updatePaneFabs() {
   const fabs = view.paneFabVisibility(reader);
-  $('#tree-fab').hidden = !fabs.tree;
+  // 节树浮钮仅在节树实际可见（地图 / 已建图原文 tab）且被折叠时出现。
+  $('#tree-fab').hidden = !fabs.tree || $('#map-tree').hidden;
   $('#pdf-fab').hidden = !fabs.pdf;
 }
 
@@ -1031,10 +1032,20 @@ function renderMapTab() {
   const tree = $('#map-tree');
   tree.classList.toggle('rail', reader.treeCollapsed);
   applyTreeWidth();
+  // 共享节树（地图 / 原文 tab）：未建图或问答/回想卡片 tab 时隐藏；
+  // 原文 tab 点击树项 = 切换正文节（沿用 chip 时代的过滤模型），高亮跟随 sourceTab。
+  const onSourceTab = reader.tab === 'source';
+  tree.hidden = onSourceTab
+    ? !(currentMapped?.sections?.length)
+    : (surface !== 'map' && surface !== 'section');
 
   $('#map-page').hidden = surface !== 'map';
   $('#section-page').hidden = surface !== 'section';
-  $('#btn-tree-map').classList.toggle('cur', surface === 'map');
+  $('#btn-tree-map').classList.toggle('cur', !onSourceTab && surface === 'map');
+  const fullBtn = $('#btn-tree-full');
+  fullBtn.hidden = !onSourceTab;
+  fullBtn.classList.toggle('cur', onSourceTab && mappedSourceTab() === '__full');
+  $('#tree-full-dot').className = `dot ${papers.isPaperRead(current) ? 'marked' : 'todo'}`;
   if (surface === 'section') {
     const title = navTitleById(reader.sectionId);
     $('#section-page-title').textContent = title;
@@ -1046,7 +1057,8 @@ function renderMapTab() {
   for (const item of mapNavItems()) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'tree-item' + (item.grey ? ' grey' : '') + (reader.sectionId === item.id ? ' cur' : '');
+    const cur = onSourceTab ? mappedSourceTab() === item.id : reader.sectionId === item.id;
+    button.className = 'tree-item' + (item.grey ? ' grey' : '') + (cur ? ' cur' : '');
     const note = item.grey ? '<span class="muted tree-l2-note">不参与 L2</span>' : '';
     const dot = view.treeItemStatus(item.id, {
       readMarks: current.readMarks,
@@ -1054,7 +1066,13 @@ function renderMapTab() {
       grey: item.grey,
     });
     button.innerHTML = `<span class="dot ${dot}"></span><span class="tname">${escapeTemplate(item.title)}</span>${note}`;
-    button.onclick = () => drillSection(item.id);
+    button.onclick = () => {
+      if (reader.tab === 'source') {
+        sourceTab = item.id;
+        commitReader(view.setSourceSection(reader, item.id));
+        renderSource();
+      } else drillSection(item.id);
+    };
     items.appendChild(button);
   }
   const partIds = view.deepAllPartIds(currentMapped);
@@ -1829,46 +1847,13 @@ function mappedSourceTab() {
   return fromPart?.id || '__full';
 }
 
-function appendSourceAskChip(wrap, section) {
-  const group = document.createElement('span');
-  group.className = 'source-chip-wrap';
-  const chip = document.createElement('button');
-  chip.className = 'chip' + (mappedSourceTab() === section.id ? ' active' : '');
-  chip.type = 'button';
-  chip.textContent = section.title || section.id;
-  chip.onclick = () => { sourceTab = section.id; reader = view.setSourceSection(reader, section.id); renderSource(); };
-  const ask = document.createElement('button');
-  ask.className = 'chip-ask';
-  ask.type = 'button';
-  ask.textContent = '提问';
-  ask.disabled = !qaReady();
-  ask.title = qaReady() ? `就「${section.title || section.id}」提问` : QA_GATE_MESSAGE;
-  ask.onclick = event => {
-    event.stopPropagation();
-    startSectionAsk(section);
-  };
-  group.append(chip, ask);
-  wrap.appendChild(group);
-}
-
 function renderMappedSource() {
+  // 已建图：章节导航由共享节树承担，chips 容器不再使用。
   const chips = $('#source-chips');
   chips.innerHTML = '';
+  chips.hidden = true;
   const tab = mappedSourceTab();
   sourceTab = tab;
-  const full = document.createElement('button');
-  full.className = 'chip' + (tab === '__full' ? ' active' : '');
-  full.type = 'button';
-  full.textContent = '全文';
-  full.onclick = () => { sourceTab = '__full'; reader = view.setSourceSection(reader, '__full'); renderSource(); };
-  chips.appendChild(full);
-  for (const section of currentMapped.sections ?? []) {
-    appendSourceAskChip(chips, section);
-  }
-  const hint = document.createElement('span');
-  hint.className = 'muted';
-  hint.textContent = '选中文本可浮动「提问」（含跨节选择）';
-  chips.appendChild(hint);
 
   $('#source-text').hidden = true;
   $('#source-empty').hidden = true;
@@ -1887,14 +1872,7 @@ function renderMappedSource() {
     const meta = document.createElement('span');
     meta.className = 'muted';
     meta.textContent = `${section.id} · p${section.pageStart}–p${section.pageEnd}`;
-    const ask = document.createElement('button');
-    ask.className = 'btn small';
-    ask.type = 'button';
-    ask.textContent = '提问';
-    ask.disabled = !qaReady();
-    ask.title = qaReady() ? '就本节提问' : QA_GATE_MESSAGE;
-    ask.onclick = () => startSectionAsk(section);
-    head.append(title, meta, ask);
+    head.append(title, meta);
     doc.appendChild(head);
     for (const block of section.blocks ?? []) {
       const el = document.createElement('p');
@@ -1916,8 +1894,10 @@ function renderMappedSource() {
 function renderLegacySource() {
   $('#source-text').hidden = false;
   $('#source-doc').hidden = true;
+  // 未建图：没有节树可用，保留简易 chip 行做节切换。
   const chips = $('#source-chips');
   chips.innerHTML = '';
+  chips.hidden = false;
   const paperDefs = papers.readingParts(current);
   const defs = [...paperDefs, { id: 'conclusion', label: 'Conclusion' }, { id: '__full', label: '全文' }];
   for (const def of defs) {
@@ -2428,10 +2408,14 @@ function applyTreeWidth() {
 function beginPaneDrag(side, event) {
   if (event.button !== 0) return;
   const treeBox = $('#map-tree')?.getBoundingClientRect();
+  const pdfBox = $('#pdf-sidebar')?.getBoundingClientRect();
   paneDrag = {
     side,
     pointerId: event.pointerId,
     treeLeft: treeBox?.left ?? 0,
+    // PDF 宽度以栏右缘为基准：工作区居中、右缘不到窗口右缘，
+    // 用 window.innerWidth 反推宽度会在按下瞬间把左缘向左顶出一段。
+    pdfRight: pdfBox?.right ?? window.innerWidth,
   };
   event.currentTarget.setPointerCapture(event.pointerId);
   event.currentTarget.classList.add('on');
@@ -2445,7 +2429,7 @@ function onPaneDragMove(event) {
     reader = view.resizeTreeByClientX(reader, event.clientX, paneDrag.treeLeft);
     applyTreeWidth();
   } else {
-    reader = view.resizePdfByClientX(reader, event.clientX, window.innerWidth);
+    reader = view.setPdfWidth(reader, paneDrag.pdfRight - event.clientX, window.innerWidth);
     applyPdfPaneWidth();
   }
 }
@@ -3683,7 +3667,16 @@ function bindEvents() {
   $('#pdf-fab').onclick = expandPdfPane;
   $('#tree-fab').onclick = () => commitReader(view.expandTree(reader), { restore: true });
   $('#btn-tree-fold').onclick = () => commitReader(view.collapseTree(reader), { restore: true });
-  $('#btn-tree-map').onclick = backToMap;
+  $('#btn-tree-map').onclick = () => {
+    // 原文 tab 上「阅读地图」= 切回地图 tab；地图 tab 内 = 回到地图页。
+    if (reader.tab === 'source') switchTab('map');
+    else backToMap();
+  };
+  $('#btn-tree-full').onclick = () => {
+    sourceTab = '__full';
+    commitReader(view.setSourceSection(reader, '__full'));
+    renderSource();
+  };
   $('#btn-back-map').onclick = backToMap;
   $('#btn-deep-all').onclick = () => startDeepAll().catch(err => toast(errorText(err), true));
   $('#btn-build-map').onclick = () => startBuildMap().catch(err => toast(errorText(err), true));
