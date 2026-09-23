@@ -21,6 +21,7 @@
   <div class="topbar-right">
     <button class="btn ghost" id="btn-skills" type="button">技能库</button>
     <button class="btn ghost" id="btn-settings" type="button">设置</button>
+    <button class="btn ghost" id="btn-startup" type="button" title="回到启动页">退出</button>
   </div>
 </header>
 
@@ -454,6 +455,27 @@
   </div>
 </div>
 
+<!-- ============ 启动页：左动效场景 + 右进入栏（无账号体系，进入即收起） ============ -->
+<div id="startup-view" role="dialog" aria-label="启动页">
+  <section class="su-scene">
+    <canvas id="su-gl"></canvas>
+    <canvas id="su-dust"></canvas>
+    <div class="su-scene-copy">
+      <h1>Paper30Min</h1>
+      <p>把论文读薄 —— 30 分钟讲清问题、方法、证据与边界</p>
+    </div>
+  </section>
+  <aside class="su-side">
+    <div class="su-card">
+      <svg class="su-logo" viewBox="0 0 1024 1024" aria-hidden="true"><defs><linearGradient id="sulogobg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6a70f0"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs><rect x="32" y="32" width="960" height="960" rx="220" fill="url(#sulogobg)"/><rect x="252" y="192" width="430" height="560" rx="44" fill="#ffffff"/><rect x="316" y="280" width="220" height="36" rx="18" fill="#c9d0f2"/><rect x="316" y="372" width="302" height="26" rx="13" fill="#e3e7fa"/><rect x="316" y="442" width="302" height="26" rx="13" fill="#e3e7fa"/><rect x="316" y="512" width="302" height="26" rx="13" fill="#e3e7fa"/><rect x="316" y="582" width="200" height="26" rx="13" fill="#e3e7fa"/><circle cx="712" cy="712" r="188" fill="#ffffff"/><circle cx="712" cy="712" r="120" fill="none" stroke="#e3e7fa" stroke-width="46"/><circle cx="712" cy="712" r="120" fill="none" stroke="#f2b63c" stroke-width="46" stroke-dasharray="528 754" stroke-linecap="round" transform="rotate(-90 712 712)"/></svg>
+      <h2>Paper30Min</h2>
+      <p class="su-sub">论文精读工作台：建图导航、按节深挖、复述成稿，<br>把每一篇论文真正读完。</p>
+      <button class="su-enter" id="su-enter" type="button">进入书库</button>
+      <p class="su-fine">本地书库 · 数据不出本机 · 无需登录</p>
+    </div>
+  </aside>
+</div>
+
 <script src="vendor/pdf.min.js"></script>
 <script>
   window.MathJax = {
@@ -467,6 +489,7 @@
   };
 </script>
 <script defer src="vendor/mathjax-tex-svg.js"></script>
+<script type="module" src="js/startup.js"></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

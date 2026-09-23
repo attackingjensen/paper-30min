@@ -11,6 +11,7 @@ import * as parser from './parser.js';
 import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, typesetMath } from './markdown.js';
 import { PROTOCOL_TASKS, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
+import { showStartup } from './startup.js';
 import * as view from './view.js';
 import {
   COPY,
@@ -3801,6 +3802,7 @@ function bindEvents() {
   });
 
   $('#btn-skills').onclick = openSkillsModal;
+  $('#btn-startup').onclick = showStartup;
   $('#btn-skill-save').onclick = async () => {
     if (!editingSkillId) return;
     try {

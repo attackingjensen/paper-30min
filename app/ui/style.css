@@ -758,3 +758,63 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   .skill-list { width: 100%; }
   .streak-badge { max-width: 180px; }
 }
+
+/* ---------- 启动页：左动效场景 + 右进入栏（js/startup.js） ---------- */
+#startup-view {
+  position: fixed; inset: 0; z-index: 999; display: flex; background: #f6f8fd;
+  transition: opacity .65s ease, transform .65s ease;
+}
+#startup-view.leaving { opacity: 0; transform: scale(1.05); pointer-events: none; }
+/* 用 visibility 而非 display 隐藏：保留渲染树，避免 WebView2 丢失 WebGL 上下文 */
+#startup-view.su-hidden { visibility: hidden; }
+
+/* 左侧动效场景 */
+.su-scene { position: relative; flex: 1; overflow: hidden; }
+.su-scene canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* 底部与左侧的纸色渐隐，保证文案可读 */
+.su-scene::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(105deg, rgba(248, 250, 253, .55), rgba(248, 250, 253, 0) 45%),
+    linear-gradient(to top, rgba(248, 250, 253, .82), rgba(248, 250, 253, 0) 34%);
+}
+/* WebGL 不可用回退：静态蓝金渐变底 */
+.su-scene.su-no-gl {
+  background:
+    radial-gradient(60% 80% at 30% 30%, rgba(99, 102, 241, .30), transparent 70%),
+    radial-gradient(50% 60% at 75% 65%, rgba(242, 182, 60, .28), transparent 70%),
+    #f6f8fd;
+}
+.su-scene-copy { position: absolute; left: 56px; bottom: 52px; z-index: 2; pointer-events: none; }
+.su-scene-copy h1 {
+  margin: 0 0 10px; font-size: 38px; letter-spacing: .5px;
+  background: linear-gradient(115deg, #4f46e5 20%, #3b82f6 55%, #f2b63c 95%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.su-scene-copy p { margin: 0; color: #5b6b83; font-size: 14.5px; }
+
+/* 右侧进入栏 */
+.su-side {
+  width: 430px; flex: none; background: #fff; display: flex; align-items: center;
+  box-shadow: -14px 0 44px -18px rgba(30, 41, 59, .18);
+}
+.su-card { width: 100%; padding: 0 52px; }
+.su-logo { width: 64px; height: 64px; display: block; margin-bottom: 22px; filter: drop-shadow(0 12px 22px rgba(79, 70, 229, .35)); }
+.su-card h2 { margin: 0 0 8px; font-size: 25px; }
+.su-sub { margin: 0 0 30px; color: var(--muted); font-size: 13.5px; line-height: 1.75; }
+.su-enter {
+  width: 100%; padding: 14px 0; border: 0; border-radius: 14px; cursor: pointer;
+  background: linear-gradient(120deg, #4f46e5, #6366f1); color: #fff; font-size: 15.5px; font-weight: 600;
+  box-shadow: 0 12px 26px -10px rgba(79, 70, 229, .55); transition: all .22s ease;
+}
+.su-enter:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 34px -10px rgba(79, 70, 229, .6), 0 0 0 4px rgba(242, 182, 60, .18);
+}
+.su-enter:active { transform: scale(.98); }
+.su-fine { margin-top: 18px; font-size: 12px; color: #94a3b8; line-height: 1.7; }
+
+@media (max-width: 760px) {
+  .su-scene { display: none; }
+  .su-side { width: 100%; box-shadow: none; }
+}
