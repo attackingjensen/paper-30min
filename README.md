@@ -4,9 +4,9 @@
 
 ## 下载安装（Windows）
 
-从 [GitHub Releases](https://github.com/attackingjensen/paper-30min/releases) 下载最新的 `Paper30Min_x.x.x_x64-setup.exe`，双击安装即可（免管理员权限）。安装包内置文档解析引擎与全部模型，装完即用，无需联网下载组件。
+从 [GitHub Releases](https://github.com/attackingjensen/paper-30min/releases) 下载最新的 `Paper30Min_x.x.x_x64-setup.exe`，双击安装即可（免管理员权限）。v1.2.0 起主程序安装包不内置本地解析组件；需要导入并解析新 PDF 时，在「设置 → 服务 → 解析模型」中按需安装，已有可用组件的升级用户无需重新下载。
 
-当前正式版为 v1.1.0。v1.2.0-beta.1 用于安装版验收，本地解析组件改为按需安装；进度及限制见 [docs/current.md](docs/current.md)。
+v1.2.0 使用的可选本地解析组件见 [Beta.1 发布页](https://github.com/attackingjensen/paper-30min/releases/tag/v1.2.0-beta.1)；组件 ZIP 不是主程序安装包。当前版本和验收情况见 [docs/current.md](docs/current.md)。
 
 首次启动书库内置一份「使用说明」。使用前打开右上角「设置」，填入任意 **OpenAI 兼容** 的大模型接口并「连接测试」：
 
@@ -18,7 +18,7 @@
 | 阿里云百炼（通义） | `https://dashscope.aliyuncs.com/compatible-mode/v1`（直接填裸域名 `https://dashscope.aliyuncs.com` 也可以，会自动改写） | `qwen-max` |
 | Ollama（本地） | `http://127.0.0.1:11434/v1` | `qwen2.5:14b` |
 
-然后导入论文（本地 PDF / arXiv 编号 / 示例论文），解析与预渲染会自动在后台完成，点「开始建图」即可开始精读。
+安装解析组件后，导入论文（本地 PDF / arXiv 编号 / 示例论文），解析与预渲染会自动在后台完成，点「开始建图」即可开始精读。
 
 没有 API Key 时，可运行 `python tools/mock_llm.py` 启动本地演示模型；在客户端设置中填入 `http://127.0.0.1:8799/v1`、任意 Key 和模型名 `mock-reader-1`。
 
@@ -37,7 +37,7 @@
 
 - `skills/` 顶层是新阅读协议的技能库（四段协议提示词 `map-l2` / `map-l1` / `deep-dive` / `synthesize` + 章节关注点数据 `section-focus.json`），Windows 客户端使用；
 - `skills/legacy/` 保留旧五技能，供 Windows 客户端的旧精读路径和存量技能覆盖使用；
-- 应用内「技能库」面板可在线编辑、恢复默认、导入 `.md` 技能文件覆盖。
+- 应用「设置 → 技能库」可在线编辑、恢复默认、导入 `.md` 技能文件覆盖。
 
 ## 数据与隐私
 
@@ -57,7 +57,7 @@
 ```
 paper-30min/
 ├── skills/              # 技能库：顶层为新协议提示词与关注点数据，legacy/ 为旧五技能留档
-├── app/                 # Windows 正式客户端（Tauri 外壳 + Rust/JavaScript 桥接 + Docling 侧车）
+├── app/                 # Windows 正式客户端（Tauri 外壳 + Rust/JavaScript 桥接 + 可选 Docling 组件）
 ├── tools/               # 侧车构建、示例论文与 mock 模型等工具
 └── docs/                # CE 产物与文档
     ├── plans/           #   按需生成的统一计划

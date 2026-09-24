@@ -1,6 +1,6 @@
 [package]
 name = "paper30min"
-version = "1.2.0-beta.2"
+version = "1.2.0"
 description = "论文精读 Windows 正式客户端"
 edition = "2021"
 
