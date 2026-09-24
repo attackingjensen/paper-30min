@@ -1,6 +1,70 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createManifest, verifyManifest, verifyComponentRelease } from './release_manifest.mjs';
+import { execFileSync } from 'node:child_process';
+import { createHash, generateKeyPairSync, randomBytes, sign as ed25519Sign } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  createManifest, verifyManifest, verifyComponentRelease,
+  parseUpdaterPublicKey, loadUpdaterPublicKey, verifyInstallerSignature,
+} from './release_manifest.mjs';
+
+const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+function makeKeyMaterial() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  return { publicKey, privateKey, keyId: randomBytes(8) };
+}
+
+// 按 minisign SignatureBox 格式拼装签名：主签名覆盖安装包的 BLAKE2b-512 摘要
+// （prehashed，算法字节 "ED"；legacy "Ed" 覆盖原始字节），全局签名覆盖 主签名+trusted comment。
+function signInstaller(content, privateKey, keyId, {
+  algorithm = 'ED',
+  trustedComment = 'timestamp:1760000000\tfile:Paper30Min_9.9.9_x64-setup.exe\tprehashed',
+} = {}) {
+  const message = algorithm === 'ED' ? createHash('blake2b512').update(content).digest() : content;
+  const signature = ed25519Sign(null, message, privateKey);
+  const globalSignature = ed25519Sign(null, Buffer.concat([signature, Buffer.from(trustedComment, 'utf8')]), privateKey);
+  const box = [
+    'untrusted comment: signature from minisign secret key',
+    Buffer.concat([Buffer.from(algorithm, 'latin1'), keyId, signature]).toString('base64'),
+    `trusted comment: ${trustedComment}`,
+    globalSignature.toString('base64'),
+    '',
+  ].join('\n');
+  return Buffer.from(box, 'utf8').toString('base64');
+}
+
+// 按 tauri.conf.json 中 plugins.updater.pubkey 的格式（base64 的 minisign .pub 文本）构造公钥。
+function minisignPubkeyBase64(publicKey, keyId) {
+  const raw = publicKey.export({ format: 'der', type: 'spki' }).subarray(SPKI_PREFIX.length);
+  const text = `untrusted comment: minisign public key: TEST\n${Buffer.concat([Buffer.from('Ed', 'latin1'), keyId, raw]).toString('base64')}\n`;
+  return Buffer.from(text, 'utf8').toString('base64');
+}
+
+function tempDir(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'release-manifest-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+function tempInstaller(t, content) {
+  const path = join(tempDir(t), 'Paper30Min_9.9.9_x64-setup.exe');
+  writeFileSync(path, content);
+  return path;
+}
+
+function runCli(args) {
+  try {
+    const stdout = execFileSync(process.execPath, args, { encoding: 'utf8' });
+    return { status: 0, stdout, stderr: '' };
+  } catch (error) {
+    return { status: error.status, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
+  }
+}
 
 const artifact = {
   version: '1.2.0', filename: 'Paper30Min_1.2.0_x64-setup.exe',
@@ -37,4 +101,100 @@ test('组件包必须与主程序内置可信清单一致', () => {
   assert.doesNotThrow(() => verifyComponentRelease(component, component, component.archive, 12, component.sha256, '1.2.0'));
   assert.throws(() => verifyComponentRelease(component, component, component.archive, 12, 'b'.repeat(64), '1.2.0'), /不一致/);
   assert.throws(() => verifyComponentRelease({ ...component, arch: 'aarch64' }, component, component.archive, 12, component.sha256, '1.2.0'), /不一致/);
+});
+
+test('当前安装包与签名通过更新器公钥验签', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const content = Buffer.from('installer-bytes-A');
+  const installer = tempInstaller(t, content);
+  const signature = signInstaller(content, privateKey, keyId);
+  await verifyInstallerSignature(installer, signature, { keyId, keyObject: publicKey });
+});
+
+test('同名同版本重建的安装包不得沿用旧签名', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const installer = tempInstaller(t, Buffer.from('installer-bytes-A'));
+  const staleSignature = signInstaller(Buffer.from('installer-bytes-A'), privateKey, keyId);
+  writeFileSync(installer, Buffer.from('installer-bytes-B-rebuilt'));
+  await assert.rejects(verifyInstallerSignature(installer, staleSignature, { keyId, keyObject: publicKey }), /不匹配/);
+});
+
+test('安装包签名后被篡改时验签失败', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const content = Buffer.from('installer-bytes-A');
+  const installer = tempInstaller(t, content);
+  const signature = signInstaller(content, privateKey, keyId);
+  writeFileSync(installer, Buffer.concat([content, Buffer.from([0])]));
+  await assert.rejects(verifyInstallerSignature(installer, signature, { keyId, keyObject: publicKey }), /不匹配/);
+});
+
+test('签名密钥标识与更新器公钥不一致时拒绝', async (t) => {
+  const signer = makeKeyMaterial();
+  const other = makeKeyMaterial();
+  const content = Buffer.from('installer-bytes-A');
+  const installer = tempInstaller(t, content);
+  const signature = signInstaller(content, signer.privateKey, other.keyId);
+  await assert.rejects(
+    verifyInstallerSignature(installer, signature, { keyId: signer.keyId, keyObject: signer.publicKey }),
+    /密钥标识/,
+  );
+});
+
+test('全局签名被篡改时拒绝', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const content = Buffer.from('installer-bytes-A');
+  const installer = tempInstaller(t, content);
+  const box = Buffer.from(signInstaller(content, privateKey, keyId), 'base64').toString('utf8').split('\n');
+  box[3] = randomBytes(64).toString('base64');
+  const tampered = Buffer.from(box.join('\n'), 'utf8').toString('base64');
+  await assert.rejects(verifyInstallerSignature(installer, tampered, { keyId, keyObject: publicKey }), /全局签名/);
+});
+
+test('legacy（Ed）签名被拒绝，发布仅接受预哈希（ED）签名', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const content = Buffer.from('installer-bytes-A');
+  const installer = tempInstaller(t, content);
+  const signature = signInstaller(content, privateKey, keyId, { algorithm: 'Ed' });
+  await assert.rejects(verifyInstallerSignature(installer, signature, { keyId, keyObject: publicKey }), /legacy|预哈希/);
+});
+
+test('从 tauri.conf.json 解析更新器公钥并完成验签', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const parsed = parseUpdaterPublicKey(minisignPubkeyBase64(publicKey, keyId));
+  assert.equal(parsed.keyId.toString('hex'), keyId.toString('hex'));
+  assert.equal(parsed.keyObject.asymmetricKeyType, 'ed25519');
+  const content = Buffer.from('installer-bytes-A');
+  const installer = tempInstaller(t, content);
+  await verifyInstallerSignature(installer, signInstaller(content, privateKey, keyId), parsed);
+
+  const real = loadUpdaterPublicKey();
+  assert.equal(real.keyObject.asymmetricKeyType, 'ed25519');
+  assert.equal(real.keyId.length, 8);
+});
+
+test('create 与 verify 命令在验签失败时不产出或确认清单', (t) => {
+  const dir = tempDir(t);
+  const version = JSON.parse(readFileSync(resolve(repoRoot, 'app/package.json'), 'utf8')).version;
+  const installer = join(dir, `Paper30Min_${version}_x64-setup.exe`);
+  const content = Buffer.from('installer-bytes-A');
+  writeFileSync(installer, content);
+  const { privateKey, keyId } = makeKeyMaterial();
+  const signatureFile = join(dir, 'installer.sig');
+  writeFileSync(signatureFile, signInstaller(content, privateKey, keyId));
+  const manifestPath = join(dir, 'latest.json');
+  const script = resolve(repoRoot, 'tools/release_manifest.mjs');
+  const args = (mode) => [script, mode,
+    '--installer', installer, '--signature', signatureFile, '--manifest', manifestPath,
+    '--component', join(dir, 'dummy.zip'), '--component-manifest', join(dir, 'dummy.json'),
+    '--tag', `v${version}`];
+
+  const createRun = runCli(args('create'));
+  assert.equal(createRun.status, 1, createRun.stderr);
+  assert.match(createRun.stderr, /密钥标识|不匹配|验签/);
+  assert.equal(existsSync(manifestPath), false);
+
+  writeFileSync(manifestPath, '{}\n');
+  const verifyRun = runCli(args('verify'));
+  assert.equal(verifyRun.status, 1, verifyRun.stderr);
+  assert.match(verifyRun.stderr, /密钥标识|不匹配|验签/);
 });

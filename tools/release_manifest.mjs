@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey, verify as ed25519Verify } from 'node:crypto';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createReadStream } from 'node:fs';
 import { basename, resolve } from 'node:path';
@@ -65,14 +65,82 @@ async function fileSha256(path) {
   return hash.digest('hex');
 }
 
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+// 解析 tauri.conf.json 的 plugins.updater.pubkey：base64 解码得 minisign .pub 文本，
+// 第二行再 base64 解码为 42 字节 [2B 算法][8B key_id][32B Ed25519 公钥]。
+export function parseUpdaterPublicKey(pubkeyBase64) {
+  const lines = Buffer.from(String(pubkeyBase64).trim(), 'base64').toString('utf8')
+    .split('\n').map(line => line.trim()).filter(Boolean);
+  if (lines.length < 2 || !lines[0].startsWith('untrusted comment:')) throw new Error('更新器公钥格式无效');
+  const raw = Buffer.from(lines[1], 'base64');
+  const algorithm = raw.subarray(0, 2).toString('latin1');
+  if (raw.length !== 42 || (algorithm !== 'Ed' && algorithm !== 'ED')) throw new Error('更新器公钥格式无效');
+  return {
+    keyId: raw.subarray(2, 10),
+    keyObject: createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, raw.subarray(10, 42)]),
+      format: 'der', type: 'spki',
+    }),
+  };
+}
+
+export function loadUpdaterPublicKey(configPath = resolve(root, 'app/src-tauri/tauri.conf.json')) {
+  const pubkey = JSON.parse(readFileSync(configPath, 'utf8'))?.plugins?.updater?.pubkey;
+  if (!pubkey) throw new Error('tauri.conf.json 缺少 plugins.updater.pubkey');
+  return parseUpdaterPublicKey(pubkey);
+}
+
+// 解析 base64 的 minisign SignatureBox：四行分别为 untrusted comment、
+// 74 字节 [2B 算法][8B keynum][64B 签名]、trusted comment 行、64 字节全局签名。
+function decodeSignatureBox(signatureBase64) {
+  const lines = Buffer.from(signatureBase64, 'base64').toString('utf8')
+    .split('\n').map(line => line.replace(/\r$/, ''));
+  const prefix = 'trusted comment: ';
+  const box1 = Buffer.from(lines[1] || '', 'base64');
+  const globalSignature = Buffer.from(lines[3] || '', 'base64');
+  if (lines.length < 4 || box1.length !== 74 || globalSignature.length !== 64 || !lines[2].startsWith(prefix)) {
+    throw new Error('更新签名格式无效');
+  }
+  return {
+    algorithm: box1.subarray(0, 2).toString('latin1'),
+    keyId: box1.subarray(2, 10),
+    signature: box1.subarray(10, 74),
+    trustedComment: lines[2].slice(prefix.length),
+    globalSignature,
+  };
+}
+
+// 用更新器公钥对当前安装包字节实际验签，语义对齐 tauri-plugin-updater 的 minisign-verify：
+// keynum 必须等于公钥 key_id；主签名覆盖安装包的 BLAKE2b-512 摘要（流式计算，避免大文件入内存）；
+// 全局签名覆盖 主签名+trusted comment。任一失败即抛错。
+export async function verifyInstallerSignature(installerPath, signatureBase64, publicKey) {
+  const box = decodeSignatureBox(signatureBase64);
+  if (!box.keyId.equals(publicKey.keyId)) throw new Error('更新签名的密钥标识与更新器公钥不匹配');
+  // tauri-cli 产出的安装包签名恒为预哈希（ED）格式。legacy（Ed）需对原始字节验签、
+  // 大安装包必须整文件入内存；本项目发布不会出现，从严拒绝（客户端 allow_legacy 更宽松）。
+  if (box.algorithm === 'Ed') throw new Error('更新签名为 legacy（Ed）格式，发布仅接受预哈希（ED）签名');
+  if (box.algorithm !== 'ED') throw new Error('更新签名算法不受支持');
+  const digest = createHash('blake2b512');
+  for await (const chunk of createReadStream(installerPath)) digest.update(chunk);
+  if (!ed25519Verify(null, digest.digest(), publicKey.keyObject, box.signature)) {
+    throw new Error('安装包内容与更新签名不匹配');
+  }
+  const globalMessage = Buffer.concat([box.signature, Buffer.from(box.trustedComment, 'utf8')]);
+  if (!ed25519Verify(null, globalMessage, publicKey.keyObject, box.globalSignature)) {
+    throw new Error('更新签名的全局签名验签失败');
+  }
+}
+
 async function artifactInputs(values) {
   const installer = resolve(values.installer);
   const signatureFile = resolve(values.signature || `${installer}.sig`);
   if (statSync(installer).size === 0) throw new Error('安装包为空');
   const signature = readFileSync(signatureFile, 'utf8').trim();
+  await verifyInstallerSignature(installer, signature, loadUpdaterPublicKey());
   const version = releaseVersions();
   const componentPath = resolve(values.component);
-  const componentManifest = JSON.parse(readFileSync(resolve(values.componentManifest), 'utf8'));
+  const componentManifest = JSON.parse(readFileSync(resolve(values['component-manifest']), 'utf8'));
   const trusted = JSON.parse(readFileSync(resolve(root, 'app/src-tauri/component-release.json'), 'utf8'));
   verifyComponentRelease(componentManifest, trusted, basename(componentPath), statSync(componentPath).size,
     await fileSha256(componentPath), version);
@@ -92,9 +160,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const { values } = parseArgs({ args, options: {
       installer: { type: 'string' }, signature: { type: 'string' },
       manifest: { type: 'string' }, tag: { type: 'string' }, arch: { type: 'string' },
-      component: { type: 'string' }, componentManifest: { type: 'string' },
+      component: { type: 'string' }, 'component-manifest': { type: 'string' },
     } });
-    if (!values.installer || !values.component || !values.componentManifest || !values.tag || !values.manifest) throw new Error('缺少安装包、组件包、Release tag 或清单路径');
+    const componentManifest = values['component-manifest'];
+    if (!values.installer || !values.component || !componentManifest || !values.tag || !values.manifest) throw new Error('缺少安装包、组件包、Release tag 或清单路径');
     const expected = await artifactInputs(values);
     if (mode === 'create') {
       writeFileSync(values.manifest, `${JSON.stringify(createManifest(expected), null, 2)}\n`);
