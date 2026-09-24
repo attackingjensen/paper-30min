@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod bridge;
 pub mod component;
 pub mod component_runtime;
@@ -28,6 +29,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use component_runtime::ComponentRuntime;
+use admission::AdmissionGate;
 use error::BridgeError;
 use library::Library;
 use tasks::{EventSink, TaskEvent, TaskRegistry};
@@ -50,7 +52,8 @@ pub struct AppState {
     library: Arc<Library>,
     /// 用户在前端确认过关闭选择后置位，之后 CloseRequested 直接放行。
     force_close: AtomicBool,
-    installing_update: AtomicBool,
+    /// 更新安装、任务注册与组件操作共用的准入门（#93）。
+    admission: Arc<AdmissionGate>,
     component: Arc<ComponentRuntime>,
 }
 
@@ -139,13 +142,6 @@ fn bridge_start(
     kind: String,
     input: Option<Value>,
 ) -> Result<Value, BridgeError> {
-    if state.installing_update.load(Ordering::SeqCst) {
-        return Err(BridgeError::new(
-            "update_busy",
-            "更新安装期间不能启动新任务。",
-            true,
-        ));
-    }
     let sink: Arc<dyn EventSink> = Arc::new(TauriEventSink { app });
     let task_id = state.component.start_task(|| {
         state
@@ -174,14 +170,7 @@ async fn updater_install(
     state: State<'_, AppState>,
     version: String,
 ) -> Result<(), BridgeError> {
-    if state.component.is_busy() {
-        return Err(BridgeError::new(
-            "component_busy",
-            "请等待解析组件操作完成后再安装更新。",
-            true,
-        ));
-    }
-    updater::install(&app, &state.registry, &state.installing_update, &version).await
+    updater::install(&app, &state.admission, &state.registry, &version).await
 }
 
 #[tauri::command]
@@ -200,17 +189,11 @@ async fn component_install(
     state: State<'_, AppState>,
     source: Option<String>,
 ) -> Result<Value, BridgeError> {
-    if state.installing_update.load(Ordering::SeqCst) {
-        return Err(BridgeError::new(
-            "update_busy",
-            "请等待主程序更新完成。",
-            true,
-        ));
-    }
     let component = Arc::clone(&state.component);
     let registry = Arc::clone(&state.registry);
     tauri::async_runtime::spawn_blocking(move || {
-        component.install(&app, &registry, source.as_deref().map(std::path::Path::new))
+        let sink = component_runtime::TauriComponentSink(&app);
+        component.install(&sink, &registry, source.as_deref().map(std::path::Path::new))
     })
     .await
     .map_err(|error| BridgeError::internal(format!("组件安装线程失败：{error}")))?
@@ -221,18 +204,14 @@ async fn component_remove(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Value, BridgeError> {
-    if state.installing_update.load(Ordering::SeqCst) {
-        return Err(BridgeError::new(
-            "update_busy",
-            "请等待主程序更新完成。",
-            true,
-        ));
-    }
     let component = Arc::clone(&state.component);
     let registry = Arc::clone(&state.registry);
-    tauri::async_runtime::spawn_blocking(move || component.remove(&app, &registry))
-        .await
-        .map_err(|error| BridgeError::internal(format!("组件卸载线程失败：{error}")))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink = component_runtime::TauriComponentSink(&app);
+        component.remove(&sink, &registry)
+    })
+    .await
+    .map_err(|error| BridgeError::internal(format!("组件卸载线程失败：{error}")))?
 }
 
 #[tauri::command]
@@ -245,8 +224,9 @@ async fn component_migrate(
     let component = Arc::clone(&state.component);
     let registry = Arc::clone(&state.registry);
     tauri::async_runtime::spawn_blocking(move || {
+        let sink = component_runtime::TauriComponentSink(&app);
         component
-            .migrate_legacy(&app, &registry, &source)
+            .migrate_legacy(&sink, &registry, &source)
             .map(|_| component.status())
     })
     .await
@@ -281,7 +261,8 @@ pub fn run() {
             let root = app.path().app_data_dir()?;
             let component_root = component::component_root(&app.path().app_local_data_dir()?);
             pdfparse::set_component_root(component_root.clone());
-            let component = ComponentRuntime::new(component_root);
+            let admission = AdmissionGate::new();
+            let component = ComponentRuntime::new(component_root, Arc::clone(&admission));
             let library = Arc::new(Library::open(&root)?);
             let registry = TaskRegistry::new(Arc::clone(&library));
             // 常驻解析侧车启动预热（#84）：侧车就绪且设置开启时后台拉起并加载模型，
@@ -293,8 +274,9 @@ pub fn run() {
                 let registry_for_migration = Arc::clone(&registry);
                 let library_for_migration = Arc::clone(&library);
                 std::thread::spawn(move || {
+                    let sink = component_runtime::TauriComponentSink(&app_handle);
                     if let Err(error) = component_for_migration.migrate_legacy(
-                        &app_handle,
+                        &sink,
                         &registry_for_migration,
                         &source,
                     ) {
@@ -313,7 +295,7 @@ pub fn run() {
                 registry,
                 library,
                 force_close: AtomicBool::new(false),
-                installing_update: AtomicBool::new(false),
+                admission,
                 component,
             });
             Ok(())

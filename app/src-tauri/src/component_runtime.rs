@@ -1,3 +1,4 @@
+use crate::admission::{AdmissionGate, ComponentClaim};
 use crate::component::{self, ComponentManifest};
 use crate::error::BridgeError;
 use crate::tasks::TaskRegistry;
@@ -8,86 +9,70 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 const DOWNLOAD_URL: &str = "https://github.com/attackingjensen/paper-30min/releases/download/v1.2.0/Paper30Min_pdfparse_1.2.0_windows-x86_64.zip";
 
+/// 组件包下载等待上限（#94）：连接与「每次读取」各有有界等待，停流/断网可在预期时间内退出。
+/// 刻意不设整包期限：组件包约 885 MB，慢速但持续有字节的下载必须能完成。
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 组件进度事件出口：生产为 Tauri 事件，测试可捕获（先例：tasks::EventSink）。
+pub trait ComponentSink: Send + Sync {
+    fn component_progress(&self, value: Value);
+}
+
+/// 生产事件出口：`app:component-progress` 频道。
+pub struct TauriComponentSink<'a>(pub &'a AppHandle);
+
+impl ComponentSink for TauriComponentSink<'_> {
+    fn component_progress(&self, value: Value) {
+        let _ = self.0.emit("app:component-progress", value);
+    }
+}
+
 pub struct ComponentRuntime {
     pub root: PathBuf,
-    busy: AtomicBool,
     cancelled: AtomicBool,
     progress: Mutex<Value>,
     error: Mutex<String>,
-    task_gate: Mutex<()>,
-}
-
-struct BusyGuard<'a>(&'a ComponentRuntime);
-
-impl Drop for BusyGuard<'_> {
-    fn drop(&mut self) {
-        self.0.busy.store(false, Ordering::SeqCst);
-    }
+    gate: Arc<AdmissionGate>,
 }
 
 impl ComponentRuntime {
-    pub fn new(root: PathBuf) -> Arc<Self> {
+    pub fn new(root: PathBuf, gate: Arc<AdmissionGate>) -> Arc<Self> {
         Arc::new(Self {
             root,
-            busy: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             progress: Mutex::new(json!({ "phase": "idle" })),
             error: Mutex::new(String::new()),
-            task_gate: Mutex::new(()),
+            gate,
         })
     }
 
-    fn begin(&self, registry: &TaskRegistry) -> Result<BusyGuard<'_>, BridgeError> {
-        let _gate = self
-            .task_gate
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if registry.has_active() {
-            return Err(BridgeError::new(
-                "tasks_active",
-                "请先等待正在运行的任务完成。",
-                true,
-            ));
-        }
-        self.busy
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|_| {
-                BridgeError::new("component_busy", "解析组件正在处理另一项操作。", true)
-            })?;
+    fn begin(&self, registry: &TaskRegistry) -> Result<ComponentClaim, BridgeError> {
+        let claim = self.gate.admit_component(registry)?;
         self.cancelled.store(false, Ordering::SeqCst);
-        Ok(BusyGuard(self))
+        Ok(claim)
     }
 
     pub fn start_task<T>(
         &self,
         start: impl FnOnce() -> Result<T, BridgeError>,
     ) -> Result<T, BridgeError> {
-        let _gate = self
-            .task_gate
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if self.is_busy() {
-            return Err(BridgeError::new(
-                "component_busy",
-                "解析组件正在安装或迁移，请稍后再启动任务。",
-                true,
-            ));
-        }
-        start()
+        self.gate.admit_task(start)
     }
 
-    fn emit(&self, app: &AppHandle, phase: &str, downloaded: u64, total: u64, message: &str) {
+    fn emit(&self, sink: &dyn ComponentSink, phase: &str, downloaded: u64, total: u64, message: &str) {
         let value =
             json!({ "phase": phase, "downloaded": downloaded, "total": total, "message": message });
         *self
             .progress
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = value.clone();
-        let _ = app.emit("app:component-progress", value);
+        sink.component_progress(value);
     }
 
     fn checkpoint(&self) -> io::Result<()> {
@@ -103,7 +88,7 @@ impl ComponentRuntime {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.busy.load(Ordering::SeqCst)
+        self.gate.component_busy()
     }
 
     pub fn status(&self) -> Value {
@@ -134,7 +119,7 @@ impl ComponentRuntime {
             "installedVersion": if ready { component::COMPONENT_VERSION } else { "" },
             "archiveBytes": manifest.archive_bytes,
             "unpackedBytes": manifest.unpacked_bytes,
-            "phase": if self.busy.load(Ordering::SeqCst) { progress["phase"].as_str().unwrap_or("installing") } else { "idle" },
+            "phase": if self.gate.component_busy() { progress["phase"].as_str().unwrap_or("installing") } else { "idle" },
             "downloaded": progress["downloaded"],
             "total": progress["total"],
             "error": error,
@@ -144,24 +129,24 @@ impl ComponentRuntime {
 
     pub fn install(
         &self,
-        app: &AppHandle,
+        sink: &dyn ComponentSink,
         registry: &TaskRegistry,
         source: Option<&Path>,
     ) -> Result<Value, BridgeError> {
         let _guard = self.begin(registry)?;
-        let result = self.install_inner(app, registry, source);
+        let result = self.install_inner(sink, registry, source);
         *self.error.lock().unwrap_or_else(|error| error.into_inner()) = result
             .as_ref()
             .err()
             .map(ToString::to_string)
             .unwrap_or_default();
-        self.emit(app, "idle", 0, 0, "");
+        self.emit(sink, "idle", 0, 0, "");
         result
     }
 
     fn install_inner(
         &self,
-        app: &AppHandle,
+        sink: &dyn ComponentSink,
         registry: &TaskRegistry,
         source: Option<&Path>,
     ) -> Result<Value, BridgeError> {
@@ -179,7 +164,7 @@ impl ComponentRuntime {
                 .map_err(component_error)?;
             if let Some(source) = source {
                 self.emit(
-                    app,
+                    sink,
                     "verifying",
                     0,
                     manifest.archive_bytes,
@@ -190,33 +175,26 @@ impl ComponentRuntime {
                     &mut input,
                     &mut output,
                     self,
-                    app,
+                    sink,
                     "verifying",
                     manifest.archive_bytes,
                 )?;
             } else {
                 self.emit(
-                    app,
+                    sink,
                     "downloading",
                     0,
                     manifest.archive_bytes,
                     "正在下载解析组件",
                 );
-                let client = reqwest::blocking::Client::builder()
-                    .build()
-                    .map_err(component_error)?;
-                let mut response = client
-                    .get(DOWNLOAD_URL)
-                    .send()
-                    .and_then(|response| response.error_for_status())
-                    .map_err(component_error)?;
-                copy_progress(
-                    &mut response,
+                download_archive(
+                    DOWNLOAD_URL,
                     &mut output,
-                    self,
-                    app,
-                    "downloading",
                     manifest.archive_bytes,
+                    DOWNLOAD_CONNECT_TIMEOUT,
+                    DOWNLOAD_READ_TIMEOUT,
+                    &|| self.checkpoint(),
+                    &|done| self.emit(sink, "downloading", done, manifest.archive_bytes, ""),
                 )?;
             }
             output.sync_all().map_err(component_error)?;
@@ -229,7 +207,7 @@ impl ComponentRuntime {
             }
             fs::rename(&staged, &archive).map_err(component_error)?;
             self.emit(
-                app,
+                sink,
                 "verifying",
                 manifest.archive_bytes,
                 manifest.archive_bytes,
@@ -247,7 +225,7 @@ impl ComponentRuntime {
             }
             registry.sidecar_pool().release();
             self.emit(
-                app,
+                sink,
                 "installing",
                 manifest.archive_bytes,
                 manifest.archive_bytes,
@@ -270,7 +248,7 @@ impl ComponentRuntime {
 
     pub fn migrate_legacy(
         &self,
-        app: &AppHandle,
+        sink: &dyn ComponentSink,
         registry: &TaskRegistry,
         source: &Path,
     ) -> Result<(), BridgeError> {
@@ -284,7 +262,7 @@ impl ComponentRuntime {
             return Ok(());
         }
         let _guard = self.begin(registry)?;
-        self.emit(app, "migrating", 0, 0, "正在迁移旧版解析组件");
+        self.emit(sink, "migrating", 0, 0, "正在迁移旧版解析组件");
         let result =
             component::migrate_legacy_sidecar_cancellable(&self.root, source, self_check, || {
                 self.checkpoint()
@@ -296,11 +274,11 @@ impl ComponentRuntime {
             .err()
             .map(ToString::to_string)
             .unwrap_or_default();
-        self.emit(app, "idle", 0, 0, "");
+        self.emit(sink, "idle", 0, 0, "");
         result.map(|_| ())
     }
 
-    pub fn remove(&self, app: &AppHandle, registry: &TaskRegistry) -> Result<Value, BridgeError> {
+    pub fn remove(&self, sink: &dyn ComponentSink, registry: &TaskRegistry) -> Result<Value, BridgeError> {
         let _guard = self.begin(registry)?;
         registry.sidecar_pool().release();
         fs::create_dir_all(&self.root).map_err(component_error)?;
@@ -319,7 +297,7 @@ impl ComponentRuntime {
         if active.exists() {
             fs::remove_file(active).map_err(component_error)?;
         }
-        self.emit(app, "idle", 0, 0, "");
+        self.emit(sink, "idle", 0, 0, "");
         Ok(self.status())
     }
 }
@@ -336,7 +314,7 @@ fn copy_progress<R: Read>(
     input: &mut R,
     output: &mut File,
     runtime: &ComponentRuntime,
-    app: &AppHandle,
+    sink: &dyn ComponentSink,
     phase: &str,
     total: u64,
 ) -> Result<(), BridgeError> {
@@ -355,12 +333,56 @@ fn copy_progress<R: Read>(
         output
             .write_all(&buffer[..count])
             .map_err(component_error)?;
-        runtime.emit(app, phase, done, total, "");
+        runtime.emit(sink, phase, done, total, "");
     }
     if done != total {
         return Err(BridgeError::invalid_input("组件包大小与可信清单不符。"));
     }
     Ok(())
+}
+
+/// 组件包下载（#94 可测缝）：异步客户端以获得按读超时——reqwest 阻塞客户端只有整包期限，
+/// 会在慢速网络上误杀 885 MB 的正常下载；按读超时只掐断连续无字节的停流。
+/// 每次读取前先过 `checkpoint` 响应取消；块大小核对与本地来源路径一致。
+pub fn download_archive(
+    url: &str,
+    output: &mut File,
+    total: u64,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    checkpoint: &(dyn Fn() -> io::Result<()> + Sync),
+    progress: &(dyn Fn(u64) + Sync),
+) -> Result<(), BridgeError> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(read_timeout)
+        .build()
+        .map_err(component_error)?;
+    tauri::async_runtime::block_on(async {
+        let mut response = client
+            .get(url)
+            .send()
+            .await
+            .and_then(|response| response.error_for_status())
+            .map_err(component_error)?;
+        let mut done = 0_u64;
+        loop {
+            checkpoint().map_err(component_error)?;
+            let Some(chunk) = response.chunk().await.map_err(component_error)? else {
+                break;
+            };
+            done = done.saturating_add(chunk.len() as u64);
+            if done > total {
+                return Err(BridgeError::invalid_input("组件包大小超出可信清单。"));
+            }
+            output.write_all(&chunk).map_err(component_error)?;
+            progress(done);
+        }
+        if done != total {
+            return Err(BridgeError::invalid_input("组件包大小与可信清单不符。"));
+        }
+        Ok(())
+    })
 }
 
 fn trusted_manifest() -> ComponentManifest {

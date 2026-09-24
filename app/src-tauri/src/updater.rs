@@ -1,8 +1,9 @@
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
+use crate::admission::AdmissionGate;
 use crate::error::BridgeError;
 use crate::tasks::TaskRegistry;
 
@@ -23,38 +24,15 @@ pub async fn check(app: &AppHandle) -> Result<Value, BridgeError> {
     })
 }
 
-struct InstallGuard<'a>(&'a AtomicBool);
-
-impl Drop for InstallGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
-}
-
 pub async fn install(
     app: &AppHandle,
+    gate: &Arc<AdmissionGate>,
     registry: &TaskRegistry,
-    installing: &AtomicBool,
     expected_version: &str,
 ) -> Result<(), BridgeError> {
-    if installing
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err(BridgeError::new(
-            "update_busy",
-            "更新安装已在进行中。",
-            false,
-        ));
-    }
-    let _guard = InstallGuard(installing);
-    if registry.has_active() {
-        return Err(BridgeError::new(
-            "tasks_active",
-            "请先等待运行中的任务完成或取消，再安装更新。",
-            true,
-        ));
-    }
+    // 准入门（#93）：占用 installing 与活动任务/组件 busy 检查在同一把锁内完成，
+    // 新任务与组件操作在下载安装期间一律被拒。
+    let _claim = gate.admit_update(registry)?;
     let updater = app.updater().map_err(install_error)?;
     let update = updater
         .check()

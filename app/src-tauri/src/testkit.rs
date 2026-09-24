@@ -89,6 +89,9 @@ pub enum MockBody {
     Bytes(Vec<u8>),
     Chunked { chunks: Vec<Vec<u8>>, delay: Duration },
     TruncatedChunked { chunks: Vec<Vec<u8>>, delay: Duration },
+    /// 停流（#94）：写出响应头（Content-Length 大于已发字节）与 prefix 后不再产出，
+    /// 直到服务器关闭——模拟连接挂起，客户端只能靠按读超时退出。
+    Stall { prefix: Vec<u8> },
 }
 
 /// 预置响应：状态、头与体。
@@ -276,7 +279,7 @@ fn serve_connection(
         let response = handler(&request, hit);
         // 客户端中途取消时写会失败（broken pipe），忽略即可。
         let keep_alive = !matches!(response.body, MockBody::TruncatedChunked { .. });
-        let _ = write_response(&mut stream, &response, keep_alive);
+        let _ = write_response(&mut stream, &response, keep_alive, &shutdown);
         if !keep_alive {
             return;
         }
@@ -339,6 +342,7 @@ fn write_response(
     stream: &mut std::net::TcpStream,
     response: &MockResponse,
     keep_alive: bool,
+    shutdown: &AtomicBool,
 ) -> std::io::Result<()> {
     let status_text = match response.status {
         200 => "OK",
@@ -373,6 +377,10 @@ fn write_response(
             head.push_str(&format!("Content-Length: {total}\r\n"));
         }
         MockBody::TruncatedChunked { .. } => {}
+        // 声明比实际更多的字节：客户端发完 prefix 后必然停在读取上。
+        MockBody::Stall { prefix } => {
+            head.push_str(&format!("Content-Length: {}\r\n", prefix.len() + 1));
+        }
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
@@ -398,6 +406,13 @@ fn write_response(
                 if !delay.is_zero() {
                     std::thread::sleep(*delay);
                 }
+            }
+        }
+        MockBody::Stall { prefix } => {
+            stream.write_all(prefix)?;
+            stream.flush()?;
+            while !shutdown.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
     }
