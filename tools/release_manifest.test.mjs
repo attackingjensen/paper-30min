@@ -92,15 +92,19 @@ test('版本、架构和签名缺失时拒绝生成清单', () => {
   assert.throws(() => createManifest({ ...artifact, tag: 'v1.2.0' }), /不一致/);
 });
 
-test('组件包必须与主程序内置可信清单一致', () => {
+test('组件包独立于主程序版本，仍须与内置可信清单一致', () => {
   const component = {
     schemaVersion: 1, component: 'pdfparse', version: '1.2.0-beta.1', platform: 'windows', arch: 'x86_64',
     archive: 'Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip', archiveBytes: 12,
     sha256: 'a'.repeat(64), unpackedBytes: 24,
   };
-  assert.doesNotThrow(() => verifyComponentRelease(component, component, component.archive, 12, component.sha256, '1.2.0-beta.1'));
-  assert.throws(() => verifyComponentRelease(component, component, component.archive, 12, 'b'.repeat(64), '1.2.0-beta.1'), /不一致/);
-  assert.throws(() => verifyComponentRelease({ ...component, arch: 'aarch64' }, component, component.archive, 12, component.sha256, '1.2.0-beta.1'), /不一致/);
+  const appVersion = '1.2.0-beta.2';
+  assert.notEqual(component.version, appVersion);
+  assert.doesNotThrow(() => verifyComponentRelease(component, component, component.archive, 12, component.sha256));
+  assert.throws(() => verifyComponentRelease(component, component, component.archive, 12, 'b'.repeat(64)), /不一致/);
+  assert.throws(() => verifyComponentRelease({ ...component, arch: 'aarch64' }, component, component.archive, 12, component.sha256), /不一致/);
+  assert.throws(() => verifyComponentRelease({ ...component, archive: 'other.zip' }, component, component.archive, 12, component.sha256), /不一致/);
+  assert.throws(() => verifyComponentRelease(component, { ...component, version: appVersion }, component.archive, 12, component.sha256), /不一致/);
 });
 
 test('当前安装包与签名通过更新器公钥验签', async (t) => {

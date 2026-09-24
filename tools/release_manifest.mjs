@@ -48,11 +48,11 @@ export function verifyManifest(manifest, expected) {
   }
 }
 
-export function verifyComponentRelease(component, trusted, filename, size, digest, version) {
+export function verifyComponentRelease(component, trusted, filename, size, digest) {
   if (component.schemaVersion !== 1 || component.component !== 'pdfparse'
-      || component.version !== version || component.platform !== 'windows'
+      || component.version !== trusted.version || component.platform !== 'windows'
       || component.arch !== 'x86_64' || component.archive !== filename
-      || filename !== `Paper30Min_pdfparse_${version}_windows-x86_64.zip`
+      || filename !== `Paper30Min_pdfparse_${trusted.version}_windows-x86_64.zip`
       || component.archiveBytes !== size || component.sha256 !== digest
       || component.unpackedBytes <= 0 || JSON.stringify(component) !== JSON.stringify(trusted)) {
     throw new Error('解析组件与主程序内置的可信清单、版本或实际 ZIP 不一致');
@@ -169,7 +169,7 @@ async function artifactInputs(values) {
   const componentManifest = JSON.parse(readFileSync(resolve(values['component-manifest']), 'utf8'));
   const trusted = JSON.parse(readFileSync(resolve(root, 'app/src-tauri/component-release.json'), 'utf8'));
   verifyComponentRelease(componentManifest, trusted, basename(componentPath), statSync(componentPath).size,
-    await fileSha256(componentPath), version);
+    await fileSha256(componentPath));
   return {
     version,
     filename: basename(installer),

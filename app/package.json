@@ -1,7 +1,7 @@
 {
   "name": "paper30min-app",
   "private": true,
-  "version": "1.2.0-beta.1",
+  "version": "1.2.0-beta.2",
   "type": "module",
   "description": "论文精读 Windows 正式客户端（Tauri 外壳、桥接、SQLite 书库、附件/PDF 与浏览器迁移，issue #30）",
   "scripts": {
