@@ -246,10 +246,10 @@ test('getAll：先 listPapers 再逐篇 getPaper', async () => {
   ]);
 });
 
-test('delete：转发 library.deletePaper@1', async () => {
-  const bridge = createFakeBridge({ 'library.deletePaper@1': () => ({ schemaVersion: 1 }) });
+test('delete：转发 library.deletePaper@1 并返回附件待清理状态', async () => {
+  const bridge = createFakeBridge({ 'library.deletePaper@1': () => ({ schemaVersion: 1, deleted: true, cleanupPending: true }) });
   const store = createTauriStore(bridge);
-  await store.delete('p1');
+  assert.equal(await store.delete('p1'), true);
   assert.deepEqual(bridge.calls, [{ command: 'library.deletePaper@1', input: { paperId: 'p1' } }]);
 });
 

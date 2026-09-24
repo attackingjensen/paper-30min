@@ -464,7 +464,8 @@ export function createTauriStore(bridge) {
     },
 
     async delete(id) {
-      await bridge.invoke('library.deletePaper@1', { paperId: id });
+      const result = await bridge.invoke('library.deletePaper@1', { paperId: id });
+      return result?.cleanupPending === true;
     },
 
     // 阅读位置三命令。位置 DTO 的 updatedAt 同样在边界做 毫秒↔ISO 双向转换。

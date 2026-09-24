@@ -99,10 +99,17 @@ fn put_attachment_round_trips_metadata_without_absolute_path() {
     assert_eq!(loaded["attachment"], saved["attachment"]);
 
     let stored = dir.path().join("attachments").join("paper-a").join("pdf");
-    assert!(stored.is_file(), "附件应按论文分区落在 attachments/{{paperId}}/");
+    assert!(
+        stored.is_file(),
+        "附件应按论文分区落在 attachments/{{paperId}}/"
+    );
     assert_eq!(std::fs::read_to_string(&stored).unwrap(), HELLO_PDF);
     assert!(
-        !dir.path().join("attachments").join("paper-a").join("pdf.part").exists(),
+        !dir.path()
+            .join("attachments")
+            .join("paper-a")
+            .join("pdf.part")
+            .exists(),
         "成功写入后不应留下临时文件"
     );
 }
@@ -141,8 +148,10 @@ fn escaped_paths_are_rejected_and_do_not_write_outside_attachments() {
         .map(|entry| entry.unwrap().file_name())
         .collect();
     assert!(
-        attachment_entries.iter().all(|name| name != std::ffi::OsStr::new("..")
-            && name != std::ffi::OsStr::new("exports")),
+        attachment_entries
+            .iter()
+            .all(|name| name != std::ffi::OsStr::new("..")
+                && name != std::ffi::OsStr::new("exports")),
         "attachments/ 下不应出现逃逸目录项: {attachment_entries:?}"
     );
 }
@@ -183,7 +192,11 @@ fn reopen_discards_leftover_temp_files() {
     let library = Arc::new(Library::open(dir.path()).unwrap());
     let registry = TaskRegistry::new(Arc::clone(&library));
     put_paper(&registry, &library, "paper-a");
-    let part = dir.path().join("attachments").join("paper-a").join("pdf.part");
+    let part = dir
+        .path()
+        .join("attachments")
+        .join("paper-a")
+        .join("pdf.part");
     std::fs::create_dir_all(part.parent().unwrap()).unwrap();
     std::fs::write(&part, "HALF-WRITTEN").unwrap();
     // 另开一条连接：打开时会清掉中断留下的临时文件。
@@ -196,6 +209,73 @@ fn reopen_discards_leftover_temp_files() {
         json!({ "paperId": "paper-a" }),
     );
     assert_eq!(listed["attachments"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn reopen_restores_old_attachment_after_interrupted_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Arc::new(Library::open(dir.path()).unwrap());
+    let registry = TaskRegistry::new(Arc::clone(&library));
+    put_paper(&registry, &library, "paper-a");
+    invoke(
+        &registry,
+        &library,
+        "files.putAttachment@1",
+        put_pdf_input("paper-a", "pdf", "attention.pdf"),
+    );
+    let dest = dir.path().join("attachments").join("paper-a").join("pdf");
+    let original = std::fs::read(&dest).unwrap();
+    std::fs::rename(&dest, dest.with_extension("old")).unwrap();
+    std::fs::write(dest.with_extension("part"), b"unfinished").unwrap();
+
+    let reopened = Library::open(dir.path()).unwrap();
+    assert_eq!(std::fs::read(&dest).unwrap(), original);
+    assert!(!dest.with_extension("old").exists());
+    assert!(!dest.with_extension("part").exists());
+    reopened.verify_attachment("paper-a", "pdf").unwrap();
+}
+
+#[test]
+fn reopen_uses_metadata_to_choose_old_attachment() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Arc::new(Library::open(dir.path()).unwrap());
+    let registry = TaskRegistry::new(Arc::clone(&library));
+    put_paper(&registry, &library, "paper-a");
+    invoke(
+        &registry,
+        &library,
+        "files.putAttachment@1",
+        put_pdf_input("paper-a", "pdf", "attention.pdf"),
+    );
+    let dest = dir.path().join("attachments").join("paper-a").join("pdf");
+    let original = std::fs::read(&dest).unwrap();
+    std::fs::rename(&dest, dest.with_extension("old")).unwrap();
+    std::fs::write(&dest, b"new-uncommitted-content").unwrap();
+
+    let reopened = Library::open(dir.path()).unwrap();
+    assert_eq!(std::fs::read(&dest).unwrap(), original);
+    assert!(!dest.with_extension("old").exists());
+    reopened.verify_attachment("paper-a", "pdf").unwrap();
+}
+
+#[test]
+fn reopen_discards_old_backup_when_current_matches_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Arc::new(Library::open(dir.path()).unwrap());
+    let registry = TaskRegistry::new(Arc::clone(&library));
+    put_paper(&registry, &library, "paper-a");
+    invoke(
+        &registry,
+        &library,
+        "files.putAttachment@1",
+        put_pdf_input("paper-a", "pdf", "attention.pdf"),
+    );
+    let dest = dir.path().join("attachments").join("paper-a").join("pdf");
+    std::fs::write(dest.with_extension("old"), b"stale-backup").unwrap();
+
+    let reopened = Library::open(dir.path()).unwrap();
+    reopened.verify_attachment("paper-a", "pdf").unwrap();
+    assert!(!dest.with_extension("old").exists());
 }
 
 #[test]
@@ -343,7 +423,11 @@ fn restart_restores_attachment_and_app_info_lists_file_commands() {
         "files.cleanupTemps@1",
     ] {
         assert!(
-            info["commands"].as_array().unwrap().iter().any(|item| item == name),
+            info["commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item == name),
             "app.info 未列出 {name}"
         );
     }

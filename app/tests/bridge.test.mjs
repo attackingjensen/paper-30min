@@ -6,7 +6,41 @@ import {
   taskStatusLabel,
   isTerminalStatus,
   activeTasks,
+  waitForActiveTasks,
 } from '../ui/bridge.js';
+
+test('waitForActiveTasks：事件缺失时轮询到任务终态', async () => {
+  let calls = 0;
+  const bridge = { invoke: async () => ({ tasks: [{ status: ++calls < 3 ? 'running' : 'succeeded' }] }) };
+  assert.equal(await waitForActiveTasks(bridge, { intervalMs: 0 }), true);
+  assert.equal(calls, 3);
+});
+
+test('waitForActiveTasks：取消等待后不再关闭窗口', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const bridge = { invoke: async () => {
+    calls += 1;
+    controller.abort();
+    return { tasks: [{ status: 'running' }] };
+  } };
+  assert.equal(await waitForActiveTasks(bridge, { signal: controller.signal, intervalMs: 0 }), false);
+  assert.equal(calls, 1);
+});
+
+test('waitForActiveTasks：轮询间隔中取消会及时停止', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const bridge = { invoke: async () => {
+    calls += 1;
+    return { tasks: [{ status: 'running' }] };
+  } };
+  const waiting = waitForActiveTasks(bridge, { signal: controller.signal, intervalMs: 1000 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  controller.abort();
+  assert.equal(await waiting, false);
+  assert.equal(calls, 1);
+});
 
 function createTauriStub() {
   const calls = [];

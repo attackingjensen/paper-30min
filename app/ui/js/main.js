@@ -3,7 +3,7 @@
 // 落地分流、侧栏折叠/拖拽、浮钮、节树状态）走 view.js；地图页 / 节页内容走 content.js。
 // 壳只负责渲染（#69/#70/#71 / 规格 #56）。
 
-import { createBridge, trackTask, taskStatusLabel, isTerminalStatus, activeTasks } from '../bridge.js';
+import { createBridge, trackTask, taskStatusLabel, isTerminalStatus, activeTasks, waitForActiveTasks } from '../bridge.js';
 import * as papers from './papers.js';
 import * as model from './model.js';
 import * as generation from './generation.js';
@@ -482,9 +482,10 @@ async function refreshLibrary() {
       event.stopPropagation();
       if (!confirm(`确定删除「${p.title.slice(0, 40)}…」及其精读记录？`)) return;
       const deletingCurrent = current?.id === p.id;
-      await papers.removeRecord(p.id);
+      const cleanupPending = await papers.removeRecord(p.id);
       if (deletingCurrent) await abandonPaper();
       else refreshLibrary();
+      if (cleanupPending) toast('论文已删除，附件待清理；下次启动时会重试。', true);
     };
     actions.append(openBtn, delBtn);
 
@@ -2570,7 +2571,7 @@ async function initPdfViewer() {
           try {
             await bridge.invoke('files.verifyAttachment@1', { paperId: paper.id, attachmentId: 'pdf' });
           } catch (err) {
-            if (current === paper) toast(`PDF 完整性校验未通过（${err.message || err}），仍尝试渲染`, true);
+            if (current?.id === paper.id) toast(`PDF 完整性校验未通过（${err.message || err}），仍尝试渲染`, true);
           }
         }
         const data = await store.pdf.bytes(paper);
@@ -2585,19 +2586,25 @@ async function initPdfViewer() {
       document => { pdfDocument = document; },
       document => document.destroy(),
     );
-    if (!installed || current !== paper) return;
+    if (!installed) return;
     const document = pdfDocument;
+    if (current?.id !== paper.id) {
+      if (pdfDocument === document) destroyPdfViewer();
+      return;
+    }
     pdfPage = Math.min(Math.max(pdfPage, 1), pdfDocument.numPages);
     $('#pdf-page-input').max = pdfDocument.numPages;
     $('#pdf-page-count').textContent = `/ ${pdfDocument.numPages}`;
-    if (await papers.setNumPages(paper, pdfDocument.numPages) && pdfDocument === document && current === paper) updateReaderMeta();
-    if (pdfDocument !== document || current !== paper) return;
+    const activePaper = current;
+    const changed = await papers.setNumPages(activePaper, pdfDocument.numPages);
+    if (changed && pdfDocument === document && current === activePaper) updateReaderMeta();
+    if (pdfDocument !== document || current?.id !== paper.id) return;
     await new Promise(resolve => requestAnimationFrame(resolve));
-    if (pdfDocument !== document || current !== paper) return;
+    if (pdfDocument !== document || current?.id !== paper.id) return;
     await fitPdfPage();
   } catch (err) {
     console.error(err);
-    if (current !== paper) return;
+    if (current?.id !== paper.id) return;
     loading.hidden = false;
     loading.textContent = `PDF 载入失败：${err.message}`;
   }
@@ -3571,6 +3578,7 @@ async function pollActiveTasks() {
 }
 
 // ---------------- 关闭确认（移植自旧预览界面 app.js） ----------------
+let closeWaitController = null;
 function bindCloseFlow() {
   bridge.onCloseRequested(payload => {
     const active = activeTasks(payload?.tasks ?? []);
@@ -3585,43 +3593,24 @@ function bindCloseFlow() {
   });
 
   $('#btn-close-wait').addEventListener('click', async () => {
+    if (closeWaitController) return;
+    const controller = new AbortController();
+    closeWaitController = controller;
     try {
-      const result = await bridge.invoke('tasks.list@1', { activeOnly: true });
-      const active = activeTasks(result?.tasks ?? []);
-      if (active.length === 0) {
+      if (await waitForActiveTasks(bridge, { signal: controller.signal }) && !controller.signal.aborted) {
         await bridge.closeWindow(false);
-        return;
+        $('#modal-close').hidden = true;
       }
-      let remaining = active.length;
-      for (const task of active) {
-        let settled = false;
-        const settle = async () => {
-          if (settled) return;
-          settled = true;
-          remaining -= 1;
-          if (remaining <= 0) {
-            await bridge.closeWindow(false);
-          }
-        };
-        await bridge.subscribe(task.taskId, event => {
-          if (isTerminalStatus(event?.status)) {
-            void settle();
-          }
-        });
-        // 事件不重放：订阅后复查快照，任务可能已在订阅前到达终态。
-        const snapshot = await bridge.invoke('tasks.get@1', { taskId: task.taskId });
-        if (isTerminalStatus(snapshot?.task?.status)) {
-          await settle();
-        }
-      }
-      $('#modal-close').hidden = true;
     } catch (err) {
-      toast(`等待任务完成失败：${errorText(err)}`, true);
+      if (!controller.signal.aborted) toast(`等待任务完成失败：${errorText(err)}`, true);
+    } finally {
+      if (closeWaitController === controller) closeWaitController = null;
     }
   });
 
   $('#btn-close-stop').addEventListener('click', async () => {
     try {
+      closeWaitController?.abort();
       await bridge.closeWindow(true);
     } catch (err) {
       toast(`停止任务并退出失败：${errorText(err)}`, true);
@@ -3629,6 +3618,7 @@ function bindCloseFlow() {
   });
 
   $('#btn-close-cancel').addEventListener('click', () => {
+    closeWaitController?.abort();
     $('#modal-close').hidden = true;
   });
 }

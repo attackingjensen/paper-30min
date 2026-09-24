@@ -144,3 +144,21 @@ export function isTerminalStatus(status) {
 export function activeTasks(tasks) {
   return tasks.filter((task) => !isTerminalStatus(task.status));
 }
+
+export async function waitForActiveTasks(bridge, { signal, intervalMs = 250 } = {}) {
+  while (!signal?.aborted) {
+    const result = await bridge.invoke('tasks.list@1', { activeOnly: true });
+    if (signal?.aborted) return false;
+    if (activeTasks(result?.tasks ?? []).length === 0) return true;
+    await new Promise(resolve => {
+      const done = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', done);
+        resolve();
+      };
+      const timer = setTimeout(done, intervalMs);
+      signal?.addEventListener('abort', done, { once: true });
+    });
+  }
+  return false;
+}

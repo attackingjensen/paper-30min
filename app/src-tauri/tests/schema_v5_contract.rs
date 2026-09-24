@@ -161,7 +161,7 @@ fn v4_snapshot_migrates_to_v5_and_products_round_trip() {
     let (registry, library) = open_migrated(dir.path());
 
     let info = bridge::invoke(&registry, &library, "library.info@1", &json!({})).unwrap();
-    assert_eq!(info["databaseVersion"], json!(6));
+    assert_eq!(info["databaseVersion"], json!(7));
 
     // v4 既有数据原样保留：标记与活动日不受影响。
     let paper = get_paper(&registry, &library, "paper-a");
@@ -217,7 +217,7 @@ fn migrated_v5_library_reopens_without_remigrating() {
     // 再次打开：version == DATABASE_VERSION 短路，不重复迁移；已落库产物原样读回。
     let (registry, library) = open_migrated(dir.path());
     let info = bridge::invoke(&registry, &library, "library.info@1", &json!({})).unwrap();
-    assert_eq!(info["databaseVersion"], json!(6));
+    assert_eq!(info["databaseVersion"], json!(7));
     let paper = get_paper(&registry, &library, "paper-a");
     assert_eq!(
         paper["paper"]["products"],
@@ -269,5 +269,5 @@ fn empty_v4_library_migrates_to_v5() {
         conn.execute_batch(V4_SCHEMA).unwrap();
     }
     let library = Library::open(dir.path()).expect("空 v4 库应成功迁移");
-    assert_eq!(library.info().database_version, 6);
+    assert_eq!(library.info().database_version, 7);
 }

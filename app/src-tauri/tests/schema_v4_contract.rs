@@ -166,7 +166,7 @@ fn v3_snapshot_migrates_read_marks_by_snapshot_criterion() {
 
     let info = bridge::invoke(&registry, &library, "library.info@1", &json!({})).unwrap();
     // v3 快照经 v4 回填后继续顺延到最新版本（当前 v6：问答绑定列）。
-    assert_eq!(info["databaseVersion"], json!(6));
+    assert_eq!(info["databaseVersion"], json!(7));
 
     // 正常结果：每个 analyses 行各产生一条标记，marked_at 取该结果 updated_at。
     let normal = get_paper(&registry, &library, "paper-normal");
@@ -293,5 +293,5 @@ fn empty_v3_library_migrates_to_latest_version() {
         conn.execute_batch(V3_SCHEMA).unwrap();
     }
     let library = Library::open(dir.path()).expect("空 v3 库应成功迁移");
-    assert_eq!(library.info().database_version, 6);
+    assert_eq!(library.info().database_version, 7);
 }

@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 
 use crate::error::BridgeError;
 
-pub const DATABASE_VERSION: i32 = 6;
+pub const DATABASE_VERSION: i32 = 7;
 pub const LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 /// activity_days.kind 的合法取值：导入论文 / 精读结果 / 中断保留的部分结果 / 设置已读完标记。
@@ -270,9 +270,8 @@ fn now_iso() -> String {
 }
 
 fn require_iso(field: &str, value: &str) -> Result<(), BridgeError> {
-    let parsed = OffsetDateTime::parse(value, &Rfc3339).map_err(|_| {
-        BridgeError::invalid_input(format!("{field} 必须是 ISO 8601 UTC 日期"))
-    })?;
+    let parsed = OffsetDateTime::parse(value, &Rfc3339)
+        .map_err(|_| BridgeError::invalid_input(format!("{field} 必须是 ISO 8601 UTC 日期")))?;
     if parsed.offset() != time::UtcOffset::UTC {
         return Err(BridgeError::invalid_input(format!(
             "{field} 必须是 ISO 8601 UTC 日期"
@@ -304,7 +303,8 @@ fn io_error(err: std::io::Error) -> BridgeError {
 }
 
 fn json_text(value: &impl Serialize) -> Result<String, BridgeError> {
-    serde_json::to_string(value).map_err(|err| BridgeError::internal(format!("JSON 编码失败: {err}")))
+    serde_json::to_string(value)
+        .map_err(|err| BridgeError::internal(format!("JSON 编码失败: {err}")))
 }
 
 fn parse_string_list(text: &str) -> Result<Vec<String>, BridgeError> {
@@ -335,14 +335,19 @@ impl Library {
         let mut conn = Connection::open(&db_path).map_err(sqlite_error)?;
         conn.busy_timeout(std::time::Duration::from_millis(5_000))
             .map_err(sqlite_error)?;
-        conn.pragma_update(None, "foreign_keys", true).map_err(sqlite_error)?;
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(sqlite_error)?;
+        conn.pragma_update(None, "foreign_keys", true)
+            .map_err(sqlite_error)?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(sqlite_error)?;
         migrate(&mut conn)?;
         let library = Self {
             root,
             conn: Mutex::new(conn),
             inspect_tokens: Mutex::new(HashMap::new()),
         };
+        if let Err(error) = library.retry_pending_file_cleanup() {
+            eprintln!("附件清理重试失败: {error}");
+        }
         library.cleanup_temps()?;
         Ok(library)
     }
@@ -390,26 +395,111 @@ impl Library {
         normalize_paper(&mut paper)?;
         let paper_id = paper.id.clone();
         let mut conn = self.lock_conn()?;
+        let cleanup_pending: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pending_file_cleanup WHERE paper_id = ?1)",
+                params![paper_id],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if cleanup_pending {
+            self.remove_paper_files(&paper_id)?;
+        }
         let tx = conn.transaction().map_err(sqlite_error)?;
+        tx.execute(
+            "DELETE FROM pending_file_cleanup WHERE paper_id = ?1",
+            params![paper_id],
+        )
+        .map_err(sqlite_error)?;
         upsert_paper(&tx, &paper)?;
         tx.commit().map_err(sqlite_error)?;
         load_paper(&conn, &paper_id)
     }
 
-    pub fn delete_paper(&self, paper_id: &str) -> Result<(), BridgeError> {
-        let conn = self.lock_conn()?;
-        let changed = conn
+    pub fn delete_paper(&self, paper_id: &str) -> Result<bool, BridgeError> {
+        self.delete_paper_with_cleanup(paper_id, |id| self.remove_paper_files(id))
+    }
+
+    fn delete_paper_with_cleanup(
+        &self,
+        paper_id: &str,
+        cleanup: impl FnOnce(&str) -> Result<(), BridgeError>,
+    ) -> Result<bool, BridgeError> {
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction().map_err(sqlite_error)?;
+        let changed = tx
             .execute("DELETE FROM papers WHERE id = ?1", params![paper_id])
             .map_err(sqlite_error)?;
         if changed == 0 {
             return Err(BridgeError::paper_not_found(paper_id));
         }
-        drop(conn);
-        self.remove_paper_files(paper_id)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO pending_file_cleanup (paper_id) VALUES (?1)",
+            params![paper_id],
+        )
+        .map_err(sqlite_error)?;
+        tx.commit().map_err(sqlite_error)?;
+        if let Err(error) = cleanup(paper_id) {
+            eprintln!("论文 {paper_id} 的附件待下次启动清理: {error}");
+            return Ok(true);
+        }
+        if let Err(error) = conn.execute(
+            "DELETE FROM pending_file_cleanup WHERE paper_id = ?1",
+            params![paper_id],
+        ) {
+            eprintln!("论文 {paper_id} 附件已清理，但清理标记未移除: {error}");
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn retry_pending_file_cleanup(&self) -> Result<(), BridgeError> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare("SELECT paper_id FROM pending_file_cleanup")
+            .map_err(sqlite_error)?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        drop(stmt);
+        for id in ids {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM papers WHERE id = ?1)",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if !exists {
+                if let Err(error) = self.remove_paper_files(&id) {
+                    eprintln!("论文 {id} 的附件清理重试失败: {error}");
+                    continue;
+                }
+            }
+            conn.execute(
+                "DELETE FROM pending_file_cleanup WHERE paper_id = ?1",
+                params![id],
+            )
+            .map_err(sqlite_error)?;
+        }
         Ok(())
     }
 
-    pub fn get_reading_position(&self, paper_id: &str) -> Result<Option<ReadingPositionDto>, BridgeError> {
+    #[cfg(test)]
+    fn pending_file_cleanup_count(&self) -> Result<i64, BridgeError> {
+        self.lock_conn()?
+            .query_row("SELECT COUNT(*) FROM pending_file_cleanup", [], |row| {
+                row.get(0)
+            })
+            .map_err(sqlite_error)
+    }
+
+    pub fn get_reading_position(
+        &self,
+        paper_id: &str,
+    ) -> Result<Option<ReadingPositionDto>, BridgeError> {
         let conn = self.lock_conn()?;
         conn.query_row(
             "SELECT paper_id, view, section_id, pdf_page, content_version, updated_at
@@ -430,7 +520,10 @@ impl Library {
         .map_err(sqlite_error)
     }
 
-    pub fn put_reading_position(&self, mut position: ReadingPositionDto) -> Result<ReadingPositionDto, BridgeError> {
+    pub fn put_reading_position(
+        &self,
+        mut position: ReadingPositionDto,
+    ) -> Result<ReadingPositionDto, BridgeError> {
         if position.paper_id.trim().is_empty() {
             return Err(BridgeError::invalid_input("阅读位置需要 paperId"));
         }
@@ -491,7 +584,10 @@ impl Library {
             return Err(BridgeError::paper_not_found(paper_id));
         }
         let changed = tx
-            .execute("DELETE FROM reading_positions WHERE paper_id = ?1", params![paper_id])
+            .execute(
+                "DELETE FROM reading_positions WHERE paper_id = ?1",
+                params![paper_id],
+            )
             .map_err(sqlite_error)?;
         tx.commit().map_err(sqlite_error)?;
         Ok(changed > 0)
@@ -561,7 +657,7 @@ fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     }
     if version == 0 {
         conn.execute_batch(
-        "
+            "
         BEGIN;
         CREATE TABLE papers (
           id TEXT PRIMARY KEY,
@@ -645,6 +741,23 @@ fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     migrate_read_marks(conn)?;
     migrate_protocol_products(conn)?;
     migrate_chat_bindings(conn)?;
+    migrate_pending_file_cleanup(conn)?;
+    Ok(())
+}
+
+fn migrate_pending_file_cleanup(conn: &mut Connection) -> Result<(), BridgeError> {
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(sqlite_error)?;
+    if version >= 7 {
+        return Ok(());
+    }
+    let tx = conn.transaction().map_err(sqlite_error)?;
+    tx.execute_batch("CREATE TABLE pending_file_cleanup (paper_id TEXT PRIMARY KEY);")
+        .map_err(sqlite_error)?;
+    tx.pragma_update(None, "user_version", 7)
+        .map_err(sqlite_error)?;
+    tx.commit().map_err(sqlite_error)?;
     Ok(())
 }
 
@@ -713,7 +826,12 @@ fn iso_day(value: &str) -> Result<String, BridgeError> {
     Ok(parsed.to_offset(time::UtcOffset::UTC).date().to_string())
 }
 
-fn insert_activity_day(tx: &Transaction, day: &str, paper_id: &str, kind: &str) -> Result<(), BridgeError> {
+fn insert_activity_day(
+    tx: &Transaction,
+    day: &str,
+    paper_id: &str,
+    kind: &str,
+) -> Result<(), BridgeError> {
     tx.execute(
         "INSERT OR IGNORE INTO activity_days(day, paper_id, kind) VALUES(?1, ?2, ?3)",
         params![day, paper_id, kind],
@@ -760,7 +878,9 @@ fn migrate_read_marks(conn: &mut Connection) -> Result<(), BridgeError> {
             .prepare("SELECT id, added_at FROM papers")
             .map_err(sqlite_error)?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(sqlite_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(sqlite_error)?;
@@ -792,7 +912,12 @@ fn migrate_read_marks(conn: &mut Connection) -> Result<(), BridgeError> {
     for (paper_id, section_id, body, updated_at) in &analyses {
         let partial = body.ends_with(V4_PARTIAL_MARKER_SNAPSHOT);
         let day = iso_day(updated_at)?;
-        insert_activity_day(&tx, &day, paper_id, if partial { "partial" } else { "analysis" })?;
+        insert_activity_day(
+            &tx,
+            &day,
+            paper_id,
+            if partial { "partial" } else { "analysis" },
+        )?;
         if !partial {
             tx.execute(
                 "INSERT INTO read_marks(paper_id, part_id, marked_at) VALUES(?1, ?2, ?3)",
@@ -803,7 +928,8 @@ fn migrate_read_marks(conn: &mut Connection) -> Result<(), BridgeError> {
         }
     }
 
-    tx.pragma_update(None, "user_version", 4).map_err(sqlite_error)?;
+    tx.pragma_update(None, "user_version", 4)
+        .map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     Ok(())
 }
@@ -832,7 +958,8 @@ fn migrate_protocol_products(conn: &mut Connection) -> Result<(), BridgeError> {
         ",
     )
     .map_err(sqlite_error)?;
-    tx.pragma_update(None, "user_version", 5).map_err(sqlite_error)?;
+    tx.pragma_update(None, "user_version", 5)
+        .map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     Ok(())
 }
@@ -858,7 +985,8 @@ fn migrate_chat_bindings(conn: &mut Connection) -> Result<(), BridgeError> {
         ",
     )
     .map_err(sqlite_error)?;
-    tx.pragma_update(None, "user_version", 6).map_err(sqlite_error)?;
+    tx.pragma_update(None, "user_version", 6)
+        .map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     Ok(())
 }
@@ -1069,7 +1197,9 @@ where
     for id in ids {
         let id = id.as_ref();
         if !seen.insert(id.to_string()) {
-            return Err(BridgeError::invalid_input(format!("{field} 不能重复: {id}")));
+            return Err(BridgeError::invalid_input(format!(
+                "{field} 不能重复: {id}"
+            )));
         }
     }
     Ok(())
@@ -1110,25 +1240,49 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
     )
     .map_err(sqlite_error)?;
 
-    tx.execute("DELETE FROM sections WHERE paper_id = ?1", params![paper.id])
-        .map_err(sqlite_error)?;
-    tx.execute("DELETE FROM reading_parts WHERE paper_id = ?1", params![paper.id])
-        .map_err(sqlite_error)?;
-    tx.execute("DELETE FROM analyses WHERE paper_id = ?1", params![paper.id])
-        .map_err(sqlite_error)?;
-    tx.execute("DELETE FROM translations WHERE paper_id = ?1", params![paper.id])
-        .map_err(sqlite_error)?;
-    tx.execute("DELETE FROM recall_cards WHERE paper_id = ?1", params![paper.id])
-        .map_err(sqlite_error)?;
-    tx.execute("DELETE FROM chat_messages WHERE paper_id = ?1", params![paper.id])
-        .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM sections WHERE paper_id = ?1",
+        params![paper.id],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM reading_parts WHERE paper_id = ?1",
+        params![paper.id],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM analyses WHERE paper_id = ?1",
+        params![paper.id],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM translations WHERE paper_id = ?1",
+        params![paper.id],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM recall_cards WHERE paper_id = ?1",
+        params![paper.id],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM chat_messages WHERE paper_id = ?1",
+        params![paper.id],
+    )
+    .map_err(sqlite_error)?;
     // read_marks 按 DTO 快照整组重写：撤销 = 快照少一行。
-    tx.execute("DELETE FROM read_marks WHERE paper_id = ?1", params![paper.id])
-        .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM read_marks WHERE paper_id = ?1",
+        params![paper.id],
+    )
+    .map_err(sqlite_error)?;
     // activity_days 是 append-only：不按快照重写、不删除，DTO 未携带的历史行不受影响。
     // protocol_products 按 DTO 快照整组重写：重跑覆盖 = 快照换一行，撤销/重做不留版本。
-    tx.execute("DELETE FROM protocol_products WHERE paper_id = ?1", params![paper.id])
-        .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM protocol_products WHERE paper_id = ?1",
+        params![paper.id],
+    )
+    .map_err(sqlite_error)?;
 
     for (position, section) in paper.sections.iter().enumerate() {
         tx.execute(
@@ -1165,7 +1319,12 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
         tx.execute(
             "INSERT INTO analyses(paper_id, section_id, body, updated_at)
              VALUES(?1, ?2, ?3, ?4)",
-            params![paper.id, analysis.section_id, analysis.text, analysis.updated_at],
+            params![
+                paper.id,
+                analysis.section_id,
+                analysis.text,
+                analysis.updated_at
+            ],
         )
         .map_err(sqlite_error)?;
     }
@@ -1402,7 +1561,16 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
         .map_err(sqlite_error)?
         .into_iter()
         .map(
-            |(role, content, created_at, binding_kind, sec_id, fragment_text, cite_json, asset_ids_json)| {
+            |(
+                role,
+                content,
+                created_at,
+                binding_kind,
+                sec_id,
+                fragment_text,
+                cite_json,
+                asset_ids_json,
+            )| {
                 Ok(ChatMessageDto {
                     role,
                     content,
@@ -1504,6 +1672,62 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn failed_file_cleanup_keeps_retry_after_record_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open(dir.path()).unwrap();
+        let paper = PaperDto {
+            id: "paper-1".into(),
+            title: "Paper".into(),
+            ..PaperDto::default()
+        };
+        library.put_paper(paper).unwrap();
+        let attachment_dir = dir.path().join("attachments").join("paper-1");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        fs::write(attachment_dir.join("pdf"), b"pdf").unwrap();
+        fs::write(attachment_dir.join("pdf.old"), b"old").unwrap();
+
+        let pending = library
+            .delete_paper_with_cleanup("paper-1", |_| Err(BridgeError::internal("附件占用")))
+            .unwrap();
+        assert!(pending);
+        assert!(library.get_paper("paper-1").is_err());
+        assert!(attachment_dir.exists());
+        library.cleanup_temps().unwrap();
+        drop(library);
+
+        let reopened = Library::open(dir.path()).unwrap();
+        assert!(!attachment_dir.exists());
+        assert_eq!(reopened.pending_file_cleanup_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn reusing_deleted_id_clears_old_files_before_new_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open(dir.path()).unwrap();
+        let paper = PaperDto {
+            id: "paper-1".into(),
+            title: "Old".into(),
+            ..PaperDto::default()
+        };
+        library.put_paper(paper.clone()).unwrap();
+        let attachment_dir = dir.path().join("attachments").join("paper-1");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        fs::write(attachment_dir.join("old-pdf"), b"old").unwrap();
+        assert!(library
+            .delete_paper_with_cleanup("paper-1", |_| Err(BridgeError::internal("busy")))
+            .unwrap());
+        library
+            .put_paper(PaperDto {
+                title: "New".into(),
+                ..paper
+            })
+            .unwrap();
+        assert!(!attachment_dir.exists());
+        assert_eq!(library.pending_file_cleanup_count().unwrap(), 0);
+        assert_eq!(library.get_paper("paper-1").unwrap().title, "New");
+    }
 
     #[test]
     fn unsupported_schema_version_is_not_retryable() {

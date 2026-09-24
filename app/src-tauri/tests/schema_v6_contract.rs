@@ -168,7 +168,7 @@ fn v5_snapshot_migrates_to_v6_and_old_chat_rows_backfill_none() {
     let (registry, library) = open_migrated(dir.path());
 
     let info = bridge::invoke(&registry, &library, "library.info@1", &json!({})).unwrap();
-    assert_eq!(info["databaseVersion"], json!(6));
+    assert_eq!(info["databaseVersion"], json!(7));
 
     let paper = get_paper(&registry, &library, "paper-a");
     assert_eq!(
@@ -246,7 +246,7 @@ fn migrated_v6_library_round_trips_bindings_and_reopens() {
 
     let (registry, library) = open_migrated(dir.path());
     let info = bridge::invoke(&registry, &library, "library.info@1", &json!({})).unwrap();
-    assert_eq!(info["databaseVersion"], json!(6));
+    assert_eq!(info["databaseVersion"], json!(7));
     let paper = get_paper(&registry, &library, "paper-a");
     assert_eq!(paper["paper"]["chat"][0]["bindingKind"], json!("section"));
     assert_eq!(paper["paper"]["chat"][0]["secId"], json!("sec_3_method"));
@@ -300,5 +300,5 @@ fn empty_v5_library_migrates_to_v6() {
         conn.execute_batch(V5_SCHEMA).unwrap();
     }
     let library = Library::open(dir.path()).expect("空 v5 库应成功迁移");
-    assert_eq!(library.info().database_version, 6);
+    assert_eq!(library.info().database_version, 7);
 }

@@ -352,7 +352,7 @@ export function streakDays(allPapers) {
 
 /** 删除一条论文记录。 */
 export async function removeRecord(id) {
-  await store.delete(id);
+  return store.delete(id);
 }
 
 /** 书库列表：按导入时间倒序。筛选与搜索属于视图层。 */

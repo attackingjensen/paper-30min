@@ -124,10 +124,11 @@ pub fn invoke(
         }
         "library.deletePaper@1" => {
             let paper_id = required_string(command, input, "paperId")?;
-            library.delete_paper(paper_id)?;
+            let cleanup_pending = library.delete_paper(paper_id)?;
             Ok(json!({
                 "schemaVersion": BRIDGE_SCHEMA_VERSION,
                 "deleted": true,
+                "cleanupPending": cleanup_pending,
             }))
         }
         "library.getReadingPosition@1" => {
@@ -180,7 +181,8 @@ pub fn invoke(
             let attachment_id = required_string(command, input, "attachmentId")?;
             let offset = required_u64(command, input, "offset")?;
             let length = required_u64(command, input, "length")?;
-            let (attachment, bytes) = library.read_range(paper_id, attachment_id, offset, length)?;
+            let (attachment, bytes) =
+                library.read_range(paper_id, attachment_id, offset, length)?;
             Ok(json!({
                 "schemaVersion": BRIDGE_SCHEMA_VERSION,
                 "attachment": attachment,
@@ -242,7 +244,11 @@ pub fn invoke(
     }
 }
 
-fn required_string<'a>(command: &str, input: &'a Value, field: &str) -> Result<&'a str, BridgeError> {
+fn required_string<'a>(
+    command: &str,
+    input: &'a Value,
+    field: &str,
+) -> Result<&'a str, BridgeError> {
     input
         .get(field)
         .and_then(Value::as_str)

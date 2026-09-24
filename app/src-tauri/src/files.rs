@@ -73,13 +73,17 @@ pub fn require_safe_segment(value: &str, field: &str) -> Result<(), BridgeError>
         || value.ends_with(TEMP_SUFFIX)
         || value.ends_with(OLD_SUFFIX)
     {
-        return Err(BridgeError::invalid_input(format!("{field} 不是合法标识: {value}")));
+        return Err(BridgeError::invalid_input(format!(
+            "{field} 不是合法标识: {value}"
+        )));
     }
     let safe = value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.');
     if !safe {
-        return Err(BridgeError::invalid_input(format!("{field} 不是合法标识: {value}")));
+        return Err(BridgeError::invalid_input(format!(
+            "{field} 不是合法标识: {value}"
+        )));
     }
     Ok(())
 }
@@ -89,7 +93,11 @@ fn paper_dir(root: &Path, paper_id: &str) -> Result<PathBuf, BridgeError> {
     Ok(root.join("attachments").join(paper_id))
 }
 
-pub(crate) fn attachment_path(root: &Path, paper_id: &str, attachment_id: &str) -> Result<PathBuf, BridgeError> {
+pub(crate) fn attachment_path(
+    root: &Path,
+    paper_id: &str,
+    attachment_id: &str,
+) -> Result<PathBuf, BridgeError> {
     require_safe_segment(paper_id, "paperId")?;
     require_safe_segment(attachment_id, "attachmentId")?;
     let attachments_root = root.join("attachments");
@@ -302,16 +310,20 @@ pub(crate) fn insert_attachment_row(
 }
 
 impl Library {
-    pub fn put_attachment(&self, paper_id: &str, write: AttachmentWrite) -> Result<AttachmentDto, BridgeError> {
+    pub fn put_attachment(
+        &self,
+        paper_id: &str,
+        write: AttachmentWrite,
+    ) -> Result<AttachmentDto, BridgeError> {
         require_safe_segment(paper_id, "paperId")?;
         require_safe_segment(&write.id, "attachment.id")?;
         let name = write.name.trim();
         if name.is_empty() {
             return Err(BridgeError::invalid_input("附件需要 name"));
         }
-        let bytes = BASE64.decode(write.content_base64.trim()).map_err(|_| {
-            BridgeError::invalid_input("附件 contentBase64 无效")
-        })?;
+        let bytes = BASE64
+            .decode(write.content_base64.trim())
+            .map_err(|_| BridgeError::invalid_input("附件 contentBase64 无效"))?;
         let content_type = write
             .content_type
             .as_deref()
@@ -353,8 +365,8 @@ impl Library {
         }
         write_atomic(&dest, bytes)?;
         let tx = conn.transaction().map_err(sqlite_error)?;
-        let sql_result = insert_attachment_row(&tx, &dto)
-            .and_then(|_| tx.commit().map_err(sqlite_error));
+        let sql_result =
+            insert_attachment_row(&tx, &dto).and_then(|_| tx.commit().map_err(sqlite_error));
         if let Err(error) = sql_result {
             let _ = fs::remove_file(&dest);
             let old = dest.with_file_name(format!("{}{OLD_SUFFIX}", dto.id));
@@ -396,7 +408,11 @@ impl Library {
         rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
     }
 
-    pub fn get_attachment(&self, paper_id: &str, attachment_id: &str) -> Result<AttachmentDto, BridgeError> {
+    pub fn get_attachment(
+        &self,
+        paper_id: &str,
+        attachment_id: &str,
+    ) -> Result<AttachmentDto, BridgeError> {
         require_safe_segment(paper_id, "paperId")?;
         require_safe_segment(attachment_id, "attachmentId")?;
         let conn = self.lock_conn()?;
@@ -425,7 +441,11 @@ impl Library {
         Ok((attachment, buf))
     }
 
-    pub fn verify_attachment(&self, paper_id: &str, attachment_id: &str) -> Result<AttachmentDto, BridgeError> {
+    pub fn verify_attachment(
+        &self,
+        paper_id: &str,
+        attachment_id: &str,
+    ) -> Result<AttachmentDto, BridgeError> {
         let attachment = self.get_attachment(paper_id, attachment_id)?;
         let dest = attachment_path(self.root(), paper_id, attachment_id)?;
         verify_file(&dest, &attachment)?;
@@ -442,13 +462,90 @@ impl Library {
             let entry = entry.map_err(io_error)?;
             let path = entry.path();
             if path.is_dir() {
-                removed += cleanup_dir_temps(&path)?;
+                let Some(paper_id) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let pending: bool = self
+                    .lock_conn()?
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pending_file_cleanup WHERE paper_id = ?1)",
+                        params![paper_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(sqlite_error)?;
+                if pending {
+                    continue;
+                }
+                removed += self.cleanup_dir_temps(&path)?;
             } else if is_temp_file(&path) {
                 fs::remove_file(&path).map_err(io_error)?;
                 removed += 1;
             }
         }
         Ok(removed)
+    }
+
+    fn cleanup_dir_temps(&self, dir: &Path) -> Result<u64, BridgeError> {
+        let paper_id = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| BridgeError::internal("附件目录名无效"))?;
+        let mut removed = 0;
+        for entry in fs::read_dir(dir).map_err(io_error)? {
+            let path = entry.map_err(io_error)?.path();
+            if !path.is_file() {
+                continue;
+            }
+            if is_old_backup(&path) {
+                removed += u64::from(self.recover_old_backup(paper_id, &path)?);
+            } else if is_temp_file(&path) {
+                fs::remove_file(&path).map_err(io_error)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    fn recover_old_backup(&self, paper_id: &str, old: &Path) -> Result<bool, BridgeError> {
+        let name = old
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| BridgeError::internal("附件备份名无效"))?;
+        let attachment_id = name.strip_suffix(OLD_SUFFIX).unwrap_or(name);
+        let dest = old.with_file_name(attachment_id);
+        let conn = self.lock_conn()?;
+        let metadata: Option<(i64, String)> = conn.query_row(
+            "SELECT byte_size, sha256 FROM attachments WHERE paper_id = ?1 AND attachment_id = ?2",
+            params![paper_id, attachment_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(sqlite_error)?;
+        let Some((size, hash)) = metadata else {
+            eprintln!("保留无元数据的附件备份: {paper_id}/{attachment_id}");
+            return Ok(false);
+        };
+        let matches = |path: &Path| -> Result<bool, BridgeError> {
+            if !path.exists() {
+                return Ok(false);
+            }
+            let bytes = fs::read(path).map_err(io_error)?;
+            Ok(bytes.len() as i64 == size && sha256_hex(&bytes) == hash)
+        };
+        if matches(&dest)? {
+            fs::remove_file(old).map_err(io_error)?;
+            return Ok(true);
+        }
+        if matches(old)? {
+            if dest.exists() {
+                fs::remove_file(&dest).map_err(io_error)?;
+            }
+            fs::rename(old, dest).map_err(io_error)?;
+            return Ok(false);
+        }
+        Err(BridgeError::integrity_failed(
+            paper_id,
+            attachment_id,
+            "附件与备份均不匹配书库记录",
+        ))
     }
 
     pub fn remove_paper_files(&self, paper_id: &str) -> Result<(), BridgeError> {
@@ -524,18 +621,11 @@ fn verify_file(path: &Path, attachment: &AttachmentDto) -> Result<(), BridgeErro
 fn is_temp_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(TEMP_SUFFIX) || name.ends_with(OLD_SUFFIX))
+        .is_some_and(|name| name.ends_with(TEMP_SUFFIX))
 }
 
-fn cleanup_dir_temps(dir: &Path) -> Result<u64, BridgeError> {
-    let mut removed = 0;
-    for entry in fs::read_dir(dir).map_err(io_error)? {
-        let entry = entry.map_err(io_error)?;
-        let path = entry.path();
-        if path.is_file() && is_temp_file(&path) {
-            fs::remove_file(&path).map_err(io_error)?;
-            removed += 1;
-        }
-    }
-    Ok(removed)
+fn is_old_backup(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(OLD_SUFFIX))
 }
