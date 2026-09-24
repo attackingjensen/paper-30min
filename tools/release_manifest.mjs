@@ -67,13 +67,26 @@ async function fileSha256(path) {
 
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
+// 严格 base64 解码：Node 的 Buffer.from(x, 'base64') 静默忽略空白、容忍缺 padding、
+// 接受 base64url 字符，而客户端 minisign-verify 的解码是严格的。发布门卫必须至少与
+// 客户端一样严，否则会放行「客户端必拒」的签名（门卫变绿、真物变红）。
+function strictBase64(value, what) {
+  const text = String(value).trim();
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0) {
+    throw new Error(`${what}不是规范 base64`);
+  }
+  const decoded = Buffer.from(text, 'base64');
+  if (decoded.toString('base64') !== text) throw new Error(`${what}不是规范 base64`);
+  return decoded;
+}
+
 // 解析 tauri.conf.json 的 plugins.updater.pubkey：base64 解码得 minisign .pub 文本，
 // 第二行再 base64 解码为 42 字节 [2B 算法][8B key_id][32B Ed25519 公钥]。
 export function parseUpdaterPublicKey(pubkeyBase64) {
-  const lines = Buffer.from(String(pubkeyBase64).trim(), 'base64').toString('utf8')
+  const lines = strictBase64(pubkeyBase64, '更新器公钥').toString('utf8')
     .split('\n').map(line => line.trim()).filter(Boolean);
   if (lines.length < 2 || !lines[0].startsWith('untrusted comment:')) throw new Error('更新器公钥格式无效');
-  const raw = Buffer.from(lines[1], 'base64');
+  const raw = strictBase64(lines[1], '更新器公钥');
   const algorithm = raw.subarray(0, 2).toString('latin1');
   if (raw.length !== 42 || (algorithm !== 'Ed' && algorithm !== 'ED')) throw new Error('更新器公钥格式无效');
   return {
@@ -94,12 +107,15 @@ export function loadUpdaterPublicKey(configPath = resolve(root, 'app/src-tauri/t
 // 解析 base64 的 minisign SignatureBox：四行分别为 untrusted comment、
 // 74 字节 [2B 算法][8B keynum][64B 签名]、trusted comment 行、64 字节全局签名。
 function decodeSignatureBox(signatureBase64) {
-  const lines = Buffer.from(signatureBase64, 'base64').toString('utf8')
+  const lines = strictBase64(signatureBase64, '更新签名').toString('utf8')
     .split('\n').map(line => line.replace(/\r$/, ''));
   const prefix = 'trusted comment: ';
-  const box1 = Buffer.from(lines[1] || '', 'base64');
-  const globalSignature = Buffer.from(lines[3] || '', 'base64');
-  if (lines.length < 4 || box1.length !== 74 || globalSignature.length !== 64 || !lines[2].startsWith(prefix)) {
+  if (lines.length < 4 || !lines[2].startsWith(prefix)) {
+    throw new Error('更新签名格式无效');
+  }
+  const box1 = strictBase64(lines[1], '更新签名');
+  const globalSignature = strictBase64(lines[3], '更新签名');
+  if (box1.length !== 74 || globalSignature.length !== 64) {
     throw new Error('更新签名格式无效');
   }
   return {

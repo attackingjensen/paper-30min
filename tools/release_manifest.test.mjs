@@ -198,3 +198,41 @@ test('create 与 verify 命令在验签失败时不产出或确认清单', (t) =
   assert.equal(verifyRun.status, 1, verifyRun.stderr);
   assert.match(verifyRun.stderr, /密钥标识|不匹配|验签/);
 });
+
+// ---------------- 畸形输入拒绝（发布审查 #7/#8） ----------------
+
+test('公钥解析拒绝畸形与非规范 base64 输入', () => {
+  assert.throws(() => parseUpdaterPublicKey('不是base64!!!'), /规范 base64/);
+  assert.throws(() => parseUpdaterPublicKey(Buffer.from('只有一行').toString('base64')), /公钥格式无效/);
+  const shortKey = Buffer.from(`untrusted comment: x\n${Buffer.alloc(41).toString('base64')}\n`).toString('base64');
+  assert.throws(() => parseUpdaterPublicKey(shortKey), /公钥格式无效/);
+  const badAlg = Buffer.from(`untrusted comment: x\n${Buffer.concat([Buffer.from('XX'), Buffer.alloc(40)]).toString('base64')}\n`).toString('base64');
+  assert.throws(() => parseUpdaterPublicKey(badAlg), /公钥格式无效/);
+});
+
+test('验签拒绝畸形签名盒与非规范 base64', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const content = Buffer.from('installer-bytes-A');
+  const installer = tempInstaller(t, content);
+  const key = { keyId, keyObject: publicKey };
+  const validBox = Buffer.from(signInstaller(content, privateKey, keyId), 'base64').toString('utf8').split('\n');
+  const encode = lines => Buffer.from(lines.join('\n'), 'utf8').toString('base64');
+
+  // box1 截断 1 字节（73 而非 74）
+  const box1 = Buffer.from(validBox[1], 'base64');
+  await assert.rejects(verifyInstallerSignature(installer, encode([validBox[0], box1.subarray(0, 73).toString('base64'), validBox[2], validBox[3]]), key), /格式无效/);
+  // 缺 trusted comment 前缀
+  await assert.rejects(verifyInstallerSignature(installer, encode([validBox[0], validBox[1], 'timestamp: 1', validBox[3]]), key), /格式无效/);
+  // 算法字节非 Ed/ED
+  const badAlgBox1 = Buffer.concat([Buffer.from('XY'), box1.subarray(2)]);
+  await assert.rejects(verifyInstallerSignature(installer, encode([validBox[0], badAlgBox1.toString('base64'), validBox[2], validBox[3]]), key), /算法不受支持/);
+  // 全局签名非 64 字节
+  await assert.rejects(verifyInstallerSignature(installer, encode([validBox[0], validBox[1], validBox[2], Buffer.alloc(63).toString('base64')]), key), /格式无效/);
+  // 外层签名是非规范 base64：内嵌换行折行（Node 宽松解码会吞掉，客户端必拒）
+  const good = encode(validBox.slice(0, 4));
+  const foldedSig = `${good.slice(0, 20)}\n${good.slice(20)}`;
+  await assert.rejects(verifyInstallerSignature(installer, foldedSig, key), /规范 base64/);
+  // base64url 字符（-/_）不得接受
+  const urlSafe = good.replace(/\+/g, '-').replace(/\//g, '_');
+  if (urlSafe !== good) await assert.rejects(verifyInstallerSignature(installer, urlSafe, key), /规范 base64/);
+});
