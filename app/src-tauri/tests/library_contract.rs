@@ -134,6 +134,23 @@ fn first_launch_creates_versioned_database_and_partitions() {
 }
 
 #[test]
+#[ignore = "requires PAPER30MIN_COMPAT_ROOT pointing to a disposable library copy"]
+fn existing_library_copy_opens_and_attachments_verify() {
+    let root = std::env::var("PAPER30MIN_COMPAT_ROOT").expect("PAPER30MIN_COMPAT_ROOT");
+    let library = Library::open(root).expect("旧书库副本应能迁移并打开");
+    let summaries = library.list_papers().expect("读取论文目录");
+    for summary in &summaries {
+        library.get_paper(&summary.id).expect("读取完整论文及产物");
+        library.get_reading_position(&summary.id).expect("读取阅读位置");
+        for attachment in library.list_attachments(&summary.id).expect("读取附件清单") {
+            library.verify_attachment(&summary.id, &attachment.id).expect("校验附件");
+        }
+    }
+    assert!(!summaries.is_empty(), "兼容性样本应包含论文");
+    assert_eq!(library.info().database_version, 7);
+}
+
+#[test]
 fn put_and_get_paper_round_trips_nested_reading_results() {
     let (registry, library, _dir) = common::env();
     let saved = invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "注意力论文"));
