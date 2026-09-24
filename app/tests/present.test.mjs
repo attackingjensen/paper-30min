@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 
 import {
   NOTES_FORMAT_NOTE,
+  buildMapRetryMeta,
   buildMapStageFlow,
   convertTimingRows,
   deepDiveRunState,
@@ -15,6 +16,7 @@ import {
   roundProgressView,
   warningText,
   roundStartView,
+  retryOutcomeToast,
   roundView,
   synthesizeRunState,
   taskDetailModel,
@@ -695,4 +697,49 @@ test('任务警示文案（#86）：卸参数与改名映射为可读提示，�
     '端点要求以 max_completion_tokens 传递长度上限，已自动改名（原 max_tokens）',
   );
   assert.equal(warningText('scanned_pages_ocr'), 'scanned_pages_ocr');
+});
+
+// ---------------- 任务中心重试（#96） ----------------
+
+test('建图重试（#96）：已确认完整覆盖的任务失败后，重试闭包沿用原 input（含 overwriteConfirmed）', async () => {
+  const started = [];
+  const meta = buildMapRetryMeta({ paperId: 'p1', overwriteConfirmed: true }, async next => {
+    started.push(next);
+    // 旧地图仍在：若重试丢失 overwriteConfirmed，Rust 会以 already_exists 拒绝。
+    return 'failed';
+  });
+  assert.deepEqual(meta.input, { paperId: 'p1', overwriteConfirmed: true });
+  await meta.retry();
+  assert.deepEqual(started, [{ paperId: 'p1', overwriteConfirmed: true }]);
+});
+
+test('建图重试（#96）：取消后的重试同样保留覆盖语义', async () => {
+  const started = [];
+  const { retry } = buildMapRetryMeta({ paperId: 'p1', overwriteConfirmed: true }, async next => {
+    started.push(next);
+    return 'cancelled';
+  });
+  await retry();
+  assert.deepEqual(started, [{ paperId: 'p1', overwriteConfirmed: true }]);
+});
+
+test('建图重试（#96）：普通建图默认 overwriteConfirmed=false', async () => {
+  const started = [];
+  const { retry } = buildMapRetryMeta({ paperId: 'p1' }, async next => {
+    started.push(next);
+    return 'succeeded';
+  });
+  await retry();
+  assert.deepEqual(started, [{ paperId: 'p1', overwriteConfirmed: false }]);
+});
+
+test('重试完成提示（#96）：仅 succeeded 弹成功；failed / cancelled / 未启动不弹', () => {
+  assert.equal(retryOutcomeToast('succeeded'), '重试任务已完成');
+  assert.equal(retryOutcomeToast('failed'), null);
+  assert.equal(retryOutcomeToast('cancelled'), null);
+  assert.equal(retryOutcomeToast(null), null);
+});
+
+test('重试完成提示（#96）：无终态契约的旧 retry 闭包维持原成功提示（失败走抛错分支）', () => {
+  assert.equal(retryOutcomeToast(undefined), '重试任务已完成');
 });

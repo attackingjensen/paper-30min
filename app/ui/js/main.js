@@ -49,12 +49,14 @@ import {
   userBindingView,
 } from './qa.js';
 import {
+  buildMapRetryMeta,
   deepDiveRunState,
   deepDiveStatusLine,
   fmtDate,
   libraryMapState,
   notesMarkdown,
   ratingText,
+  retryOutcomeToast,
   synthesizeRunState,
   taskDetailModel,
   taskKindLabel,
@@ -1316,22 +1318,29 @@ async function queueImportPreflight(paperId) {
   return true;
 }
 
+/**
+ * 启动建图并等到终态。返回终态 status（succeeded / failed / cancelled）；
+ * 前置兜底未启动（守卫拦截、解析未完成）返回 null（#96：任务中心重试据此决定是否弹完成提示）。
+ */
 async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) {
-  if (!paperId || isMappingPaper(paperId) || !ensureSettings()) return;
+  if (!paperId || isMappingPaper(paperId) || !ensureSettings()) return null;
   // 前置兜底：缺块模型且有 PDF 时先补产（#76：只等 convert，预渲染与建图并行）。
   const preflightIds = await paperAttachmentIds(paperId);
   if (!preflightIds.has(BLOCKMODEL_ATTACHMENT_ID) && preflightIds.has('pdf')) {
     if (hasOpenPreflightTask(paperId, 'pdfparse.convert@1')) {
       toast('正在解析 PDF，完成后请再点「开始建图」');
-      return;
+      return null;
     }
     toast('正在准备建图：先解析 PDF…');
     const ready = await ensureBlockModel(paperId);
-    if (!ready.ok) return;
+    if (!ready.ok) return null;
     void ensurePrerender(paperId, { scope: 'pages' });
     void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: ready.doclingJsonPath });
   }
-  const input = { paperId, overwriteConfirmed };
+  // #96：input 与 retry 闭包由 present.js 统一构造，retry 沿用原 input（含覆盖确认），
+  // 「继续建图」不会退化为普通建图被 already_exists 拒绝。
+  const { input, retry } = buildMapRetryMeta({ paperId, overwriteConfirmed },
+    next => startBuildMap(next.paperId, next.overwriteConfirmed));
   let meta = null;
   try {
     const { taskId } = await bridge.start(PROTOCOL_TASKS.buildMap, input);
@@ -1339,7 +1348,7 @@ async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) 
       kind: PROTOCOL_TASKS.buildMap,
       input,
       lastStage: null,
-      retry: () => startBuildMap(paperId),
+      retry,
     };
     registerSessionTask(taskId, meta);
     if (current?.id === paperId) {
@@ -1375,9 +1384,11 @@ async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) 
     }
     if (status === 'failed') toast(error?.message || '建图失败', true);
     else if (status === 'succeeded') toast('建图已完成');
+    return status;
   } catch (err) {
     if (meta && !meta.status) meta.status = 'failed';
     toast(errorText(err), true);
+    return meta?.status ?? 'failed';
   } finally {
     if (current?.id === paperId) {
       reader = view.setMapping(reader, isMappingPaper(paperId));
@@ -3581,8 +3592,9 @@ function renderTaskList(tasks) {
       retry.onclick = async () => {
         retry.disabled = true;
         try {
-          await meta.retry();
-          toast('重试任务已完成');
+          // #96：retry 解出终态时仅成功才弹完成提示；失败/取消已由任务自身呈现，再弹会误导。
+          const done = retryOutcomeToast(await meta.retry());
+          if (done) toast(done);
         } catch (err) {
           if (err.name !== 'AbortError') toast(`重试失败：${err.message}`, true);
         }

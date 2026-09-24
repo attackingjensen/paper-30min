@@ -566,6 +566,30 @@ export function convertTimingRows(result = {}) {
   return rows.filter(row => row.ms != null);
 }
 
+// ---------------- 任务中心重试（#96） ----------------
+
+/**
+ * 建图会话登记的 input 与 retry 闭包：retry 沿用原 input（含 overwriteConfirmed），
+ * 「继续建图」不退化为普通建图——旧地图仍在时普通建图会被 Rust 以 already_exists 拒绝，
+ * 已确认「完整覆盖」的重试必须继续携带 overwriteConfirmed=true。
+ * start 由 main.js 注入：(input) => Promise<终态 status | null>。
+ */
+export function buildMapRetryMeta({ paperId, overwriteConfirmed = false } = {}, start) {
+  const input = { paperId, overwriteConfirmed };
+  return { input, retry: () => start(input) };
+}
+
+/**
+ * 重试结束后的成功提示：retry 解出终态（或 null = 前置兜底未启动）时仅 succeeded
+ * 弹「重试任务已完成」；failed / cancelled / null 不弹——失败已由任务自身 toast 报错，
+ * 再弹成功提示会误导。无终态契约的旧 retry 闭包（解出 undefined）维持原成功提示，
+ * 它们失败会抛错走 catch 分支。
+ */
+export function retryOutcomeToast(result) {
+  if (result === null || result === 'failed' || result === 'cancelled') return null;
+  return '重试任务已完成';
+}
+
 // ---------------- 导出笔记（决策 21） ----------------
 
 /** 导出笔记格式说明：v2 = 协议产物为正源，旧精读结果只读附录。 */
