@@ -1397,8 +1397,9 @@ async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) 
   }
 }
 
+/** 返回终态 status；前置守卫未启动返回 null（#96：任务中心重试据此决定是否弹完成提示）。 */
 async function startSynthesize(overwriteConfirmed) {
-  if (!current || isSynthesizingPaper(current.id) || !ensureSettings()) return;
+  if (!current || isSynthesizingPaper(current.id) || !ensureSettings()) return null;
   const paperId = current.id;
   const input = { paperId, overwriteConfirmed: !!overwriteConfirmed };
   let meta = null;
@@ -1437,9 +1438,11 @@ async function startSynthesize(overwriteConfirmed) {
     await refreshPaperRecord(paperId);
     if (status === 'failed') toast(error?.message || '复述稿生成失败', true);
     else if (status === 'succeeded') toast('复述稿已生成');
+    return status;
   } catch (err) {
     if (meta && !meta.status) meta.status = 'failed';
     toast(errorText(err), true);
+    return meta?.status ?? 'failed';
   } finally {
     if (current?.id === paperId && reader.appView === 'reader') renderMapTab();
   }
@@ -1470,8 +1473,9 @@ async function startSectionDive(overwrite) {
   await startDeepDive(current.id, [reader.sectionId]);
 }
 
+/** 返回终态 status；前置守卫未启动返回 null（#96：同 startBuildMap 的重试契约）。 */
 async function startDeepDive(paperId, partIds) {
-  if (!paperId || !partIds?.length) return;
+  if (!paperId || !partIds?.length) return null;
   const input = { paperId, partIds };
   const batch = partIds.length > 1;
   let meta = null;
@@ -1537,9 +1541,11 @@ async function startDeepDive(paperId, partIds) {
     await refreshPaperRecord(paperId);
     if (status === 'failed') toast(error?.message || '深挖失败', true);
     else if (status === 'succeeded') toast(batch ? '全部深挖已完成' : '深挖已完成');
+    return status;
   } catch (err) {
     if (meta && !meta.status) meta.status = 'failed';
     toast(errorText(err), true);
+    return meta?.status ?? 'failed';
   } finally {
     if (current?.id === paperId && reader.appView === 'reader') renderMapTab();
   }

@@ -733,11 +733,13 @@ test('建图重试（#96）：普通建图默认 overwriteConfirmed=false', asyn
   assert.deepEqual(started, [{ paperId: 'p1', overwriteConfirmed: false }]);
 });
 
-test('重试完成提示（#96）：仅 succeeded 弹成功；failed / cancelled / 未启动不弹', () => {
+test('重试完成提示（#96）：仅 succeeded 弹成功；failed / cancelled / 未启动 / false 不弹', () => {
   assert.equal(retryOutcomeToast('succeeded'), '重试任务已完成');
   assert.equal(retryOutcomeToast('failed'), null);
   assert.equal(retryOutcomeToast('cancelled'), null);
   assert.equal(retryOutcomeToast(null), null);
+  // convert/prerender 等旧闭包失败时解出 false（而非抛错），不得误报成功。
+  assert.equal(retryOutcomeToast(false), null);
 });
 
 test('重试完成提示（#96）：无终态契约的旧 retry 闭包维持原成功提示（失败走抛错分支）', () => {
