@@ -2,6 +2,8 @@
 
 v1.1.0 已发布，客户端实际使用验收通过；安装包见 [GitHub Release](https://github.com/attackingjensen/paper-30min/releases/tag/v1.1.0)。
 
+v2 前置的 Windows 客户端代码品质工作已开始。[审查记录](reviews/2026-09-24-client-quality.md) 保存改动前基线、已确认问题与未完成的原生验证；尚未达到 v2 放行条件。
+
 ## 发布后待补验证
 
 - 升级、干净账户安装和卸载尚未完成走查；安装版解析时侧车无控制台黑窗也需一并确认。

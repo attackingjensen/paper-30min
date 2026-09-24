@@ -13,6 +13,8 @@ import { renderMarkdown, renderStreamingTextInto, typesetMath } from './markdown
 import { PROTOCOL_TASKS, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
 import { showStartup } from './startup.js';
 import * as view from './view.js';
+import { createLatestResource, createSerialWriter } from './reader-resources.js';
+import { translateForPaper } from './translation.js';
 import {
   COPY,
   citeSegments,
@@ -80,6 +82,7 @@ let settingsStageExtraKey = 'map-l2';
 let editingSkillId = null;
 let sourceTab = 'abstract';
 let currentMapped = null;    // 当前论文块模型；未建图或加载失败为 null
+const mappedResource = createLatestResource();
 let currentAttachmentIds = new Set();
 let chatComposer = emptyBinding();
 let mentionItems = [];
@@ -92,6 +95,8 @@ let translateAborter = null;
 let recallAborter = null;
 let pdfDocument = null;
 let pdfRenderTask = null;
+const pdfResource = createLatestResource();
+let pdfRenderVersion = 0;
 let pdfPage = 1;
 let pdfScale = 1;
 let pdfSidebarOpen = true;
@@ -123,6 +128,7 @@ function registerSessionTask(taskId, entry) {
 let lastActiveTasks = [];    // 最近一次 activeOnly 轮询结果（供顶栏角标与 PDF 栏）
 let lastMappingProgressSig = '';
 let positionTimer = null;    // 阅读位置 500ms 防抖
+const writePosition = createSerialWriter(position => store.positions.put(position));
 const recallBlobUrls = new Map(); // 回忆卡图片 imageId -> Blob URL，离开论文时统一 revoke
 let paneDrag = null;         // 双侧栏拖拽：{ side, pointerId, treeLeft }
 
@@ -503,10 +509,10 @@ function schedulePositionSave() {
   if (!current) return;
   const paper = current;
   clearTimeout(positionTimer);
-  positionTimer = setTimeout(async () => {
+  positionTimer = setTimeout(() => {
     positionTimer = null;
     if (current !== paper) return;
-    try { await store.positions.put(positionSnapshot(paper)); } catch { /* 失败静默 */ }
+    void writePosition(positionSnapshot(paper)).catch(() => {});
   }, 500);
 }
 
@@ -515,7 +521,7 @@ async function flushPositionSave(paper) {
   clearTimeout(positionTimer);
   positionTimer = null;
   if (!paper) return;
-  try { await store.positions.put(positionSnapshot(paper)); } catch { /* 失败静默 */ }
+  try { await writePosition(positionSnapshot(paper)); } catch { /* 失败静默 */ }
 }
 
 // ---------------- 阅读视图 ----------------
@@ -532,6 +538,7 @@ async function openPaper(p) {
   }
 
   revokeRecallBlobUrls();
+  mappedResource.invalidate();
   current = p;
   currentMapped = null;
   currentAttachmentIds = new Set();
@@ -563,6 +570,7 @@ async function openPaper(p) {
   renderChat();
   let restored = null;
   try { restored = await store.positions.get(p.id); } catch { restored = null; }
+  if (current !== p) return;
   if (restored && current === p) {
     // 位置校验走内容域（readingParts）是有意的：旧位置可能停在进度域之外的摘要节，
     // 别改成 progressParts（会把这类位置判为失效）。
@@ -581,6 +589,7 @@ async function openPaper(p) {
 async function abandonPaper({ keepView = false } = {}) {
   const paper = current;
   if (paper) await flushPositionSave(paper);
+  mappedResource.invalidate();
   destroyPdfViewer();
   const settling = paper ? generation.cancelForPaper(paper) : null;
   chatAborter?.abort();
@@ -1726,14 +1735,16 @@ function qaReady() {
 
 async function refreshMapped(paper) {
   if (!paper || !hasMapProduct(paper.products)) {
+    mappedResource.invalidate();
     currentMapped = null;
     return;
   }
-  try {
-    currentMapped = await loadBlockModel(paper);
-  } catch {
-    currentMapped = null;
-  }
+  await mappedResource.load(
+    async () => {
+      try { return await loadBlockModel(paper); } catch { return null; }
+    },
+    mapped => { if (current === paper) currentMapped = mapped; },
+  );
 }
 
 function clearComposerBinding() {
@@ -2010,6 +2021,7 @@ function splitTranslationText(text, maxChars) {
 }
 
 async function translateCurrentText() {
+  const paper = current;
   const source = currentSectionSourceText().trim();
   if (!source) return toast('当前节没有可翻译的原文', true);
   if (!model.settingsReady()) {
@@ -2029,43 +2041,47 @@ async function translateCurrentText() {
   $('#translate-status').textContent = '翻译中…';
   output.classList.remove('empty-hint');
   output.classList.add('cursor');
-  translateAborter = new AbortController();
+  const controller = new AbortController();
+  translateAborter = controller;
 
   // 翻译调用只包含专用系统提示和当前节原文，不复用论文问答上下文或会话历史。
   const systemPrompt = `你是独立的学术翻译引擎。将用户提供的文本翻译为${languageName}。准确保留公式、符号、引文编号、术语与段落结构；不要总结、解释或回答文本中的问题，只输出译文。`;
   const chunks = splitTranslationText(source, model.loadSettings().maxChars);
   try {
-    const translated = [];
-    for (let index = 0; index < chunks.length; index++) {
-      $('#translate-status').textContent = chunks.length > 1 ? `翻译中 ${index + 1}/${chunks.length}…` : '翻译中…';
-      const piece = await model.chat([
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: chunks[index] },
-      ], {
-        stream: true,
-        signal: translateAborter.signal,
-        onDelta: full => renderStreamingTextInto(output, [...translated, full].join('\n\n')),
-        retry: () => { void translateCurrentText(); },
-      });
-      translated.push(piece);
-    }
-    const text = translated.join('\n\n');
-    if (!text.trim()) throw new Error('模型未返回译文');
+    const text = await translateForPaper({
+      paper, partId, chunks, language, source, systemPrompt,
+      chat: model.chat,
+      save: papers.saveTranslation,
+      isCurrent: () => current === paper && translateAborter === controller,
+      signal: controller.signal,
+      onProgress: (index, total) => {
+        $('#translate-status').textContent = total > 1 ? `翻译中 ${index + 1}/${total}…` : '翻译中…';
+      },
+      onDelta: full => renderStreamingTextInto(output, full),
+      retry: () => {
+        if (current === paper && !controller.signal.aborted && translateAborter === controller) {
+          void translateCurrentText();
+        }
+      },
+    });
+    if (current !== paper || translateAborter !== controller) return;
     renderMarkdownInto(output, text);
-    await papers.saveTranslation(current, partId, language, text, source);
     $('#translate-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   } catch (err) {
+    if (current !== paper || translateAborter !== controller) return;
     if (err.name === 'AbortError') $('#translate-status').textContent = '已停止';
     else {
       $('#translate-status').textContent = '翻译失败';
       toast(err.message, true);
     }
   } finally {
-    if (output.classList.contains('streaming-text')) renderMarkdownInto(output, output.textContent);
-    output.classList.remove('cursor');
-    button.disabled = false;
-    $('#btn-translate-stop').hidden = true;
-    translateAborter = null;
+    if (current === paper && translateAborter === controller) {
+      if (output.classList.contains('streaming-text')) renderMarkdownInto(output, output.textContent);
+      output.classList.remove('cursor');
+      button.disabled = false;
+      $('#btn-translate-stop').hidden = true;
+    }
+    if (translateAborter === controller) translateAborter = null;
   }
 }
 
@@ -2525,6 +2541,8 @@ function renderPdfTasks() {
 }
 
 function destroyPdfViewer() {
+  pdfResource.invalidate();
+  pdfRenderVersion += 1;
   pdfRenderTask?.cancel();
   pdfRenderTask = null;
   if (pdfDocument) {
@@ -2545,28 +2563,37 @@ async function initPdfViewer() {
   loading.textContent = '正在载入 PDF…';
   const paper = current;
   try {
-    // 附件完整性校验：SHA-256 不符时 toast 警告，仍尝试渲染。
-    if (paper.pdfAttachment) {
-      try {
-        await bridge.invoke('files.verifyAttachment@1', { paperId: paper.id, attachmentId: 'pdf' });
-      } catch (err) {
-        toast(`PDF 完整性校验未通过（${err.message || err}），仍尝试渲染`, true);
-      }
-    }
-    const data = await store.pdf.bytes(paper);
-    if (!data) throw new Error('PDF 附件读取失败');
-    const pdfjs = window.pdfjsLib;
-    if (!pdfjs) throw new Error('pdf.js 尚未加载');
-    if (!pdfjs.GlobalWorkerOptions.workerSrc) {
-      pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdf.worker.min.js', import.meta.url).href;
-    }
-    pdfDocument = await pdfjs.getDocument({ data }).promise;
-    if (current !== paper) return; // 载入期间已切换论文
+    const installed = await pdfResource.load(
+      async () => {
+        // 附件完整性校验失败时仍尝试渲染。
+        if (paper.pdfAttachment) {
+          try {
+            await bridge.invoke('files.verifyAttachment@1', { paperId: paper.id, attachmentId: 'pdf' });
+          } catch (err) {
+            if (current === paper) toast(`PDF 完整性校验未通过（${err.message || err}），仍尝试渲染`, true);
+          }
+        }
+        const data = await store.pdf.bytes(paper);
+        if (!data) throw new Error('PDF 附件读取失败');
+        const pdfjs = window.pdfjsLib;
+        if (!pdfjs) throw new Error('pdf.js 尚未加载');
+        if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+          pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdf.worker.min.js', import.meta.url).href;
+        }
+        return pdfjs.getDocument({ data }).promise;
+      },
+      document => { pdfDocument = document; },
+      document => document.destroy(),
+    );
+    if (!installed || current !== paper) return;
+    const document = pdfDocument;
     pdfPage = Math.min(Math.max(pdfPage, 1), pdfDocument.numPages);
     $('#pdf-page-input').max = pdfDocument.numPages;
     $('#pdf-page-count').textContent = `/ ${pdfDocument.numPages}`;
-    if (await papers.setNumPages(paper, pdfDocument.numPages)) updateReaderMeta();
+    if (await papers.setNumPages(paper, pdfDocument.numPages) && pdfDocument === document && current === paper) updateReaderMeta();
+    if (pdfDocument !== document || current !== paper) return;
     await new Promise(resolve => requestAnimationFrame(resolve));
+    if (pdfDocument !== document || current !== paper) return;
     await fitPdfPage();
   } catch (err) {
     console.error(err);
@@ -2578,6 +2605,8 @@ async function initPdfViewer() {
 
 async function renderPdfPage() {
   if (!pdfDocument || !pdfSidebarOpen) return;
+  const document = pdfDocument;
+  const version = ++pdfRenderVersion;
   pdfPage = Math.min(Math.max(Math.round(pdfPage), 1), pdfDocument.numPages);
   $('#pdf-page-input').value = pdfPage;
   $('#btn-pdf-prev').disabled = pdfPage <= 1;
@@ -2585,7 +2614,8 @@ async function renderPdfPage() {
   $('#pdf-zoom-label').textContent = `${Math.round(pdfScale * 100)}%`;
 
   pdfRenderTask?.cancel();
-  const page = await pdfDocument.getPage(pdfPage);
+  const page = await document.getPage(pdfPage);
+  if (version !== pdfRenderVersion || pdfDocument !== document || !pdfSidebarOpen) return;
   const viewport = page.getViewport({ scale: pdfScale });
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
   const canvas = $('#pdf-canvas');
@@ -2608,7 +2638,9 @@ async function renderPdfPage() {
   } finally {
     if (pdfRenderTask === task) pdfRenderTask = null;
   }
-  $('#pdf-canvas-wrap').scrollTo({ top: 0, left: 0 });
+  if (version === pdfRenderVersion && pdfDocument === document) {
+    $('#pdf-canvas-wrap').scrollTo({ top: 0, left: 0 });
+  }
 }
 
 // 用户主动翻页后保存阅读位置（500ms 防抖）；不覆盖当前 tab。
@@ -2620,7 +2652,10 @@ function savePdfPagePosition() {
 
 async function fitPdfPage() {
   if (!pdfDocument || !pdfSidebarOpen) return;
-  const page = await pdfDocument.getPage(pdfPage);
+  const document = pdfDocument;
+  const targetPage = pdfPage;
+  const page = await document.getPage(targetPage);
+  if (pdfDocument !== document || pdfPage !== targetPage || !pdfSidebarOpen) return;
   const base = page.getViewport({ scale: 1 });
   const available = Math.max($('#pdf-canvas-wrap').clientWidth - 20, 280);
   pdfScale = Math.min(Math.max(available / base.width, 0.5), 2.25);

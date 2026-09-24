@@ -35,6 +35,8 @@ export function trackTask(bridge, taskId, { signal, onChunk, onStatus, onEvent }
   return new Promise((resolve, reject) => {
     let settled = false;
     let unlisten = null;
+    let pollTimer = null;
+    let subscribeFailed = false;
 
     const onAbort = () => {
       bridge.invoke('tasks.cancel@1', { taskId }).catch(err => console.warn('取消任务失败：', err));
@@ -42,6 +44,7 @@ export function trackTask(bridge, taskId, { signal, onChunk, onStatus, onEvent }
 
     const cleanup = () => {
       if (signal) signal.removeEventListener('abort', onAbort);
+      if (pollTimer) clearTimeout(pollTimer);
       if (typeof unlisten === 'function') {
         try { unlisten(); } catch { /* 忽略退订失败 */ }
       }
@@ -77,6 +80,15 @@ export function trackTask(bridge, taskId, { signal, onChunk, onStatus, onEvent }
       })
       .catch(fail);
 
+    const pollWithoutEvents = () => {
+      if (settled) return;
+      pollTimer = setTimeout(async () => {
+        pollTimer = null;
+        await reconcile();
+        pollWithoutEvents();
+      }, 250);
+    };
+
     // start 返回前 signal 可能已 aborted：补发取消而不是等事件。
     if (signal?.aborted) onAbort();
     else if (signal) signal.addEventListener('abort', onAbort, { once: true });
@@ -97,13 +109,15 @@ export function trackTask(bridge, taskId, { signal, onChunk, onStatus, onEvent }
         unlisten = typeof fn === 'function' ? fn : null;
         if (settled && unlisten) { try { unlisten(); } catch { /* 忽略退订失败 */ } }
       },
-      // 订阅建立失败有意不 reject：快照复核仍能收尾（与快照失败不对称——那种情况没有
-      // 别的事实来源，只能 reject 交给调用方）。
-      () => {},
+      // 订阅失败后继续查快照，直到任务终态或查询本身失败。
+      () => { subscribeFailed = true; },
     );
 
     reconcile();
-    listening.then(reconcile);
+    listening.then(async () => {
+      await reconcile();
+      if (subscribeFailed) pollWithoutEvents();
+    });
   });
 }
 

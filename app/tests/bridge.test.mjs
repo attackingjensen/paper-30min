@@ -247,6 +247,31 @@ test('trackTask：任务在订阅建立前瞬时失败，由订阅建立后的�
   assert.equal(outcome.error.code, 'invalid_input');
 });
 
+test('trackTask：事件订阅失败后仍以快照轮询到终态', async () => {
+  let status = 'running';
+  let reads = 0;
+  const bridge = {
+    async subscribe() { throw new Error('WebView 监听失败'); },
+    async invoke(command, input) {
+      assert.equal(command, 'tasks.get@1');
+      reads += 1;
+      return { schemaVersion: 1, task: { taskId: input.taskId, status } };
+    },
+  };
+
+  const outcome = trackTask(bridge, 'task-1');
+  await tick();
+  assert.equal(reads, 2);
+  status = 'succeeded';
+
+  const result = await Promise.race([
+    outcome,
+    sleep(1000).then(() => { throw new Error('订阅失败后未通过快照收尾'); }),
+  ]);
+  assert.equal(result.status, 'succeeded');
+  assert.ok(reads >= 3);
+});
+
 // #91：终态收尾优先于回调副作用——渲染回调抛错不能让任务登记永远停在「开放」。
 test('trackTask：onEvent 抛错不阻断终态收尾', async () => {
   const bridge = createTaskBridge();

@@ -36,3 +36,13 @@ jobs:
       # 纯语法检查，不执行代码；覆盖未被测试导入的入口文件，排除 app/ui/vendor/。
       - name: JavaScript syntax check
         run: node tools/check_syntax.mjs
+
+      - name: Rust contract tests
+        if: runner.os == 'Windows'
+        run: cargo test
+        working-directory: app/src-tauri
+
+      - name: Native bridge smoke
+        if: runner.os == 'Windows'
+        run: npm run smoke
+        working-directory: app
