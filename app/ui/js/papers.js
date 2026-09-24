@@ -510,9 +510,14 @@ function compareProgressIds(a, b) {
  */
 function l2ProgressParts(paper) {
   if (!hasBuiltMap(paper)) return null;
+  const mapBody = (paper.products ?? []).find(item => item?.kind === 'map')?.body;
+  const currentParts = mapBody?.scope === 'abstract-body'
+    ? new Set((paper.parts ?? []).map(part => part.id))
+    : null;
   const ids = [...new Set(
     (paper?.products ?? [])
-      .filter(item => item?.kind === 'l2' && typeof item?.partId === 'string' && item.partId)
+      .filter(item => item?.kind === 'l2' && typeof item?.partId === 'string' && item.partId
+        && (!currentParts || currentParts.has(item.partId)))
       .map(item => item.partId),
   )].sort(compareProgressIds);
   if (!ids.length) return null;

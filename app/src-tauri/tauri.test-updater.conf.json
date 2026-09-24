@@ -1,0 +1,10 @@
+{
+  "productName": "Paper30Min Updater Test",
+  "identifier": "com.paper30min.reader.updater-test",
+  "plugins": {
+    "updater": {
+      "endpoints": ["http://127.0.0.1:18437/latest.json"],
+      "dangerousInsecureTransportProtocol": true
+    }
+  }
+}

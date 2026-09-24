@@ -25,7 +25,8 @@
 //! 回写（幂等），深挖 partIds 的校验域即此映射域；导入预切分只是建图前的占位进度域。
 
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, VecDeque};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -65,7 +66,8 @@ pub(crate) const PAGE_IMAGE_TOKEN_BUDGET: u64 = 1_902;
 pub(crate) const CROP_IMAGE_TOKEN_BUDGET: u64 = 1_024;
 
 /// 章节类型受控词表（建图调用①打标取值域，与 skills/section-focus.json 键一致）。
-pub(crate) const SECTION_TYPES: [&str; 5] = ["abstract", "introduction", "method", "experiments", "part"];
+pub(crate) const SECTION_TYPES: [&str; 5] =
+    ["abstract", "introduction", "method", "experiments", "part"];
 
 const STAGE_MAP_L2: &str = "map-l2";
 const STAGE_MAP_L1: &str = "map-l1";
@@ -78,10 +80,20 @@ const TOOL_READ_SECTION: &str = "read_section";
 const TOOL_SEARCH_PAPER: &str = "search_paper";
 const TOOL_GET_FIGURE: &str = "get_figure";
 const TOOL_GET_PAGE_IMAGE: &str = "get_page_image";
-const TOOL_NAMES: [&str; 4] = [TOOL_READ_SECTION, TOOL_SEARCH_PAPER, TOOL_GET_FIGURE, TOOL_GET_PAGE_IMAGE];
+const TOOL_NAMES: [&str; 4] = [
+    TOOL_READ_SECTION,
+    TOOL_SEARCH_PAPER,
+    TOOL_GET_FIGURE,
+    TOOL_GET_PAGE_IMAGE,
+];
 
 /// 各阶段输出必须包含的固定 Markdown 标题（无工具阶段的完成判据之一）。
-const DEEP_DIVE_HEADERS: [&str; 4] = ["## 核心论点", "## 关键细节", "## 与全局的关系", "## 边界与存疑"];
+const DEEP_DIVE_HEADERS: [&str; 4] = [
+    "## 核心论点",
+    "## 关键细节",
+    "## 与全局的关系",
+    "## 边界与存疑",
+];
 const SYNTHESIZE_HEADERS: [&str; 4] = ["## 问题", "## 方法", "## 证据", "## 边界"];
 
 /// 协议轮次的最小 max_tokens 下限（settings 值更低时抬到该下限，防 JSON/长文截断）。
@@ -242,7 +254,11 @@ impl SkillSet {
             return SECTION_TYPES
                 .iter()
                 .map(|key| {
-                    let label = self.focus_labels.get(*key).map(String::as_str).unwrap_or(*key);
+                    let label = self
+                        .focus_labels
+                        .get(*key)
+                        .map(String::as_str)
+                        .unwrap_or(*key);
                     let items = self.focus.get(*key).cloned().unwrap_or_default();
                     let mut block = format!("{key}（{label}）：");
                     for item in items {
@@ -259,7 +275,11 @@ impl SkillSet {
             } else {
                 "part"
             };
-            let label = self.focus_labels.get(key).map(String::as_str).unwrap_or(key);
+            let label = self
+                .focus_labels
+                .get(key)
+                .map(String::as_str)
+                .unwrap_or(key);
             let mut block = format!("本节类型关注点（{label}）：");
             for item in self.focus.get(key).cloned().unwrap_or_default() {
                 block.push_str(&format!("\n- {item}"));
@@ -271,7 +291,12 @@ impl SkillSet {
 
     /// 装配协议提示词：打底文本 + 占位符注入 + 关注点叠加。覆盖版提示词丢
     /// {sectionFocus} 占位符时关注点块追加到末尾（叠加规则不允许被覆盖丢掉）。
-    fn compose(&self, stage: &str, values: &[(&str, &str)], section_type: &str) -> Result<String, BridgeError> {
+    fn compose(
+        &self,
+        stage: &str,
+        values: &[(&str, &str)],
+        section_type: &str,
+    ) -> Result<String, BridgeError> {
         let base = self
             .prompts
             .get(stage)
@@ -301,7 +326,10 @@ impl SkillSet {
 // 块模型访问：加载、节/部分映射、文本层渲染
 // ============================================================================
 
-fn load_block_model(library: &Library, paper_id: &str) -> Result<MappedPaper, BridgeError> {
+fn load_block_model(
+    library: &Library,
+    paper_id: &str,
+) -> Result<(MappedPaper, String), BridgeError> {
     let attachment = library
         .get_attachment(paper_id, pdfassets::BLOCKMODEL_ATTACHMENT_ID)
         .map_err(|_| {
@@ -319,30 +347,47 @@ fn load_block_model(library: &Library, paper_id: &str) -> Result<MappedPaper, Br
         0,
         attachment.size as u64,
     )?;
-    serde_json::from_slice::<MappedPaper>(&bytes).map_err(|err| {
+    let mapped = serde_json::from_slice::<MappedPaper>(&bytes).map_err(|err| {
         BridgeError::new(
             "block_model_invalid",
             format!("块模型附件解析失败: {err}"),
             false,
         )
-    })
+    })?;
+    Ok((mapped, format!("{:x}", Sha256::digest(&bytes))))
 }
 
-/// 参与 L2 的节：除 References / Acknowledgments 外的全部原文章节（含 Abstract），按阅读顺序。
+/// 新地图仅覆盖摘要与正文，按阅读顺序。
 fn l2_sections(mapped: &MappedPaper) -> Vec<&Section> {
     mapped
         .sections
         .iter()
-        .filter(|section| !matches!(section.role, SectionRole::References | SectionRole::Acknowledgments))
+        .filter(|section| matches!(section.role, SectionRole::Abstract | SectionRole::Body))
         .collect()
 }
 
-/// 内容节：part-N 映射的取值域（role ∈ Body/Appendix，按阅读顺序）。
+fn map_assets<'a>(mapped: &'a MappedPaper, entries: &'a [AssetEntry]) -> Vec<&'a AssetEntry> {
+    let section_ids: HashSet<_> = l2_sections(mapped)
+        .into_iter()
+        .map(|section| section.id.as_str())
+        .collect();
+    entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .section
+                .as_ref()
+                .is_none_or(|id| section_ids.contains(id.as_str()))
+        })
+        .collect()
+}
+
+/// 内容节：part-N 映射的取值域（正文，按阅读顺序）。
 fn content_sections(mapped: &MappedPaper) -> Vec<&Section> {
     mapped
         .sections
         .iter()
-        .filter(|section| matches!(section.role, SectionRole::Body | SectionRole::Appendix))
+        .filter(|section| section.role == SectionRole::Body)
         .collect()
 }
 
@@ -361,7 +406,10 @@ fn part_id_for_section(mapped: &MappedPaper, section: &Section) -> Option<String
 /// 精读部分 id → 节：abstract → role=Abstract 节；part-N → 第 N 个内容节。
 fn section_for_part<'a>(mapped: &'a MappedPaper, part_id: &str) -> Option<&'a Section> {
     if part_id == "abstract" {
-        return mapped.sections.iter().find(|section| section.role == SectionRole::Abstract);
+        return mapped
+            .sections
+            .iter()
+            .find(|section| section.role == SectionRole::Abstract);
     }
     let index: usize = part_id.strip_prefix("part-")?.parse().ok()?;
     if index == 0 {
@@ -424,7 +472,8 @@ fn render_asset_list(entries: &[crate::pdfmap::AssetEntry]) -> String {
 
 /// L2 集合的提示词注入形态：JSON 数组（每条含 secId/title/type/gist/points/keyAssets/pages）。
 fn render_l2_blob(bodies: &[Value]) -> String {
-    serde_json::to_string_pretty(&Value::Array(bodies.to_vec())).unwrap_or_else(|_| "[]".to_string())
+    serde_json::to_string_pretty(&Value::Array(bodies.to_vec()))
+        .unwrap_or_else(|_| "[]".to_string())
 }
 
 // ============================================================================
@@ -464,7 +513,9 @@ fn section_asset_candidates<'a>(
 }
 
 /// 预附图表的帽内 / 帽外切分：帽内随消息附图，帽外列在清单里提示可用 get_figure。
-fn plan_attached_assets<'a>(candidates: &[&'a AssetEntry]) -> (Vec<&'a AssetEntry>, Vec<&'a AssetEntry>) {
+fn plan_attached_assets<'a>(
+    candidates: &[&'a AssetEntry],
+) -> (Vec<&'a AssetEntry>, Vec<&'a AssetEntry>) {
     let split = candidates.len().min(MAX_ATTACHED_ASSETS);
     (candidates[..split].to_vec(), candidates[split..].to_vec())
 }
@@ -487,12 +538,18 @@ fn render_attached_assets(attached: &[&AssetEntry], others: &[String]) -> String
         })
         .collect();
     if attached.is_empty() {
-        lines.push(format!("（本节另有图表：{}，需要时用 get_figure 调取）", others.join("、")));
+        lines.push(format!(
+            "（本节另有图表：{}，需要时用 get_figure 调取）",
+            others.join("、")
+        ));
     } else {
         let extra = if others.is_empty() {
             String::new()
         } else {
-            format!("；本节另有图表：{}，需要时用 get_figure 调取", others.join("、"))
+            format!(
+                "；本节另有图表：{}，需要时用 get_figure 调取",
+                others.join("、")
+            )
         };
         lines.push(format!("（以上已随消息附图，无需再调 get_figure{extra}）"));
     }
@@ -579,7 +636,11 @@ fn align_parts_with_block_model(
         let Some(part_id) = part_id_for_section(mapped, section) else {
             continue;
         };
-        let fallback = if section.role == SectionRole::Abstract { "abstract" } else { "part" };
+        let fallback = if section.role == SectionRole::Abstract {
+            "abstract"
+        } else {
+            "part"
+        };
         parts.push(PartDto {
             id: part_id,
             title: Some(section.title.clone()),
@@ -635,7 +696,10 @@ fn extract_tool_blocks(text: &str) -> Result<Vec<&str>, String> {
         let after = after.trim_start_matches([' ', '\t']);
         let after = after.strip_prefix('\n').unwrap_or(after);
         let end = after.find("```").ok_or_else(|| {
-            format!("第 {} 个工具调用块围栏未闭合（缺少收尾的 ```）", blocks.len() + 1)
+            format!(
+                "第 {} 个工具调用块围栏未闭合（缺少收尾的 ```）",
+                blocks.len() + 1
+            )
         })?;
         blocks.push(after[..end].trim());
         rest = &after[end + 3..];
@@ -687,8 +751,8 @@ fn validate_tool_args(name: &str, args: &Map<String, Value>) -> Result<(), Strin
 
 /// 解析单个 ```tool 围栏内容为工具调用（JSON 对象 {name, args} 校验）。
 fn parse_tool_call(content: &str) -> Result<ToolCall, String> {
-    let value: Value = serde_json::from_str(content)
-        .map_err(|err| format!("工具调用块 JSON 解析失败: {err}"))?;
+    let value: Value =
+        serde_json::from_str(content).map_err(|err| format!("工具调用块 JSON 解析失败: {err}"))?;
     let object = value
         .as_object()
         .ok_or_else(|| "工具调用块必须是一个 JSON 对象".to_string())?;
@@ -765,7 +829,11 @@ fn tool_error_observation(name: &str, code: &str, message: impl Into<String>) ->
 }
 
 /// 读取附件字节；缺失 = None（由调用方决定降级或错误观察）。
-fn read_attachment_bytes(library: &Library, paper_id: &str, attachment_id: &str) -> Option<Vec<u8>> {
+fn read_attachment_bytes(
+    library: &Library,
+    paper_id: &str,
+    attachment_id: &str,
+) -> Option<Vec<u8>> {
     let attachment = library.get_attachment(paper_id, attachment_id).ok()?;
     let (_, bytes) = library
         .read_range(paper_id, attachment_id, 0, attachment.size as u64)
@@ -926,7 +994,12 @@ fn exec_search_paper(mapped: &MappedPaper, args: &Map<String, Value>) -> ToolOut
     }
 }
 
-fn exec_get_figure(library: &Library, paper_id: &str, mapped: &MappedPaper, args: &Map<String, Value>) -> ToolOutcome {
+fn exec_get_figure(
+    library: &Library,
+    paper_id: &str,
+    mapped: &MappedPaper,
+    args: &Map<String, Value>,
+) -> ToolOutcome {
     let fig_id = args.get("fig_id").and_then(Value::as_str).unwrap_or("");
     let entry = mapped
         .figures
@@ -938,7 +1011,9 @@ fn exec_get_figure(library: &Library, paper_id: &str, mapped: &MappedPaper, args
         return tool_error_observation(
             TOOL_GET_FIGURE,
             "unknown_figure",
-            format!("图/表不存在: {fig_id}（清单见 L1 地图 keyEvidence 与 L2 keyAssets；不得猜测地址）"),
+            format!(
+                "图/表不存在: {fig_id}（清单见 L1 地图 keyEvidence 与 L2 keyAssets；不得猜测地址）"
+            ),
         );
     };
     let crop_asset_id = pdfassets::crop_attachment_id(fig_id);
@@ -946,7 +1021,10 @@ fn exec_get_figure(library: &Library, paper_id: &str, mapped: &MappedPaper, args
         return tool_error_observation(
             TOOL_GET_FIGURE,
             "asset_missing",
-            format!("裁切图附件缺失: {crop_asset_id}（可改用 get_page_image 看第 {} 页页图）", entry.page),
+            format!(
+                "裁切图附件缺失: {crop_asset_id}（可改用 get_page_image 看第 {} 页页图）",
+                entry.page
+            ),
         );
     };
     let references: Vec<Value> = entry
@@ -977,7 +1055,12 @@ fn exec_get_figure(library: &Library, paper_id: &str, mapped: &MappedPaper, args
     }
 }
 
-fn exec_get_page_image(library: &Library, paper_id: &str, mapped: &MappedPaper, args: &Map<String, Value>) -> ToolOutcome {
+fn exec_get_page_image(
+    library: &Library,
+    paper_id: &str,
+    mapped: &MappedPaper,
+    args: &Map<String, Value>,
+) -> ToolOutcome {
     let page = args.get("page").and_then(Value::as_u64).unwrap_or(0) as u32;
     if page == 0 || page > mapped.page_count {
         return tool_error_observation(
@@ -1084,7 +1167,13 @@ struct MarkdownPreview {
 
 impl MarkdownPreview {
     fn new(first_heading: &'static str) -> Self {
-        Self { first_heading, last_emit: None, started: false, cleared: false, last_sent: None }
+        Self {
+            first_heading,
+            last_emit: None,
+            started: false,
+            cleared: false,
+            last_sent: None,
+        }
     }
 
     fn on_delta(&mut self, ctx: &RunContext, meta: &RoundCtx, text: &str) {
@@ -1267,7 +1356,14 @@ fn chat_round_retried<F: FnMut(&str, u64)>(
     mut on_progress: Option<&mut F>,
 ) -> Result<RoundOutput, ()> {
     run_with_retry(ctx, |ctx| {
-        chat_round(ctx, env, meta, messages, max_tokens, on_progress.as_deref_mut())
+        chat_round(
+            ctx,
+            env,
+            meta,
+            messages,
+            max_tokens,
+            on_progress.as_deref_mut(),
+        )
     })
 }
 
@@ -1279,7 +1375,12 @@ fn chat_round_retried<F: FnMut(&str, u64)>(
 fn clean_refs(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
-        .map(|refs| refs.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|refs| {
+            refs.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -1364,13 +1465,18 @@ fn validate_l2_output(
             .and_then(Value::as_str)
             .ok_or_else(|| format!("sections[{index}] 缺少字符串字段 secId"))?;
         if !expected.contains(&sec_id) {
-            return Err(format!("sections[{index}] 的 secId「{sec_id}」不在本分片节集内（不得产出分片外的节）"));
+            return Err(format!(
+                "sections[{index}] 的 secId「{sec_id}」不在本分片节集内（不得产出分片外的节）"
+            ));
         }
         if seen.contains(&sec_id) {
             return Err(format!("节「{sec_id}」出现多次（每节恰好一条薄摘要）"));
         }
         seen.push(sec_id);
-        let section = shard.iter().find(|section| section.id == sec_id).expect("已校验在分片内");
+        let section = shard
+            .iter()
+            .find(|section| section.id == sec_id)
+            .expect("已校验在分片内");
         let gist = item
             .get("gist")
             .and_then(Value::as_str)
@@ -1384,7 +1490,11 @@ fn validate_l2_output(
             .ok_or_else(|| format!("节「{sec_id}」需要非空 points 数组"))?;
         let mut clean_points = Vec::new();
         for point in points {
-            let text = point.get("text").and_then(Value::as_str).map(str::trim).unwrap_or("");
+            let text = point
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
             if text.is_empty() {
                 warnings.push(format!("l2_points_dropped:{sec_id}"));
                 continue;
@@ -1414,8 +1524,15 @@ fn validate_l2_output(
             .map(|entry| entry.id.as_str())
             .collect();
         let mut key_assets: Vec<String> = Vec::new();
-        for asset in item.get("keyAssets").and_then(Value::as_array).cloned().unwrap_or_default() {
-            let Some(asset) = asset.as_str() else { continue };
+        for asset in item
+            .get("keyAssets")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let Some(asset) = asset.as_str() else {
+                continue;
+            };
             if known_assets.contains(&asset) {
                 key_assets.push(asset.to_string());
             } else {
@@ -1439,10 +1556,14 @@ fn validate_l2_output(
             "pages": { "start": section.page_start, "end": section.page_end },
         }));
     }
-    let missing: Vec<&str> = expected.iter().copied().filter(|id| !seen.contains(id)).collect();
+    let missing: Vec<&str> = expected
+        .iter()
+        .copied()
+        .filter(|id| !seen.contains(id))
+        .collect();
     if !missing.is_empty() {
         return Err(format!(
-            "薄摘要覆盖不完整：缺少 {}（每个原文章节恰好一条，References/Acknowledgments 除外）",
+            "薄摘要覆盖不完整：缺少 {}（每个摘要或正文节恰好一条）",
             missing.join(", ")
         ));
     }
@@ -1458,8 +1579,14 @@ fn validate_l2_output(
 
 /// L1 输出校验与确定性清理：problem/method 必填 {text, refs[]}；keyEvidence/structure
 /// 的实体 id 过滤到清单/节集（决策 20）；glossary/contributions 逐条清理。
-fn validate_map_output(value: &Value, mapped: &MappedPaper, warnings: &mut Vec<String>) -> Result<Value, String> {
-    let object = value.as_object().ok_or_else(|| "输出必须是 JSON 对象".to_string())?;
+fn validate_map_output(
+    value: &Value,
+    mapped: &MappedPaper,
+    warnings: &mut Vec<String>,
+) -> Result<Value, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "输出必须是 JSON 对象".to_string())?;
     let text_with_refs = |field: &str| -> Result<Value, String> {
         let entry = object
             .get(field)
@@ -1481,13 +1608,15 @@ fn validate_map_output(value: &Value, mapped: &MappedPaper, warnings: &mut Vec<S
             .map(|list| list.iter().filter_map(&mut *keep).collect())
             .unwrap_or_default()
     };
-    let known_assets: Vec<&str> = mapped
-        .figures
-        .iter()
-        .chain(mapped.tables.iter())
+    let known_assets: Vec<&str> = map_assets(mapped, &mapped.figures)
+        .into_iter()
+        .chain(map_assets(mapped, &mapped.tables))
         .map(|entry| entry.id.as_str())
         .collect();
-    let known_sections: Vec<&str> = mapped.sections.iter().map(|section| section.id.as_str()).collect();
+    let known_sections: Vec<&str> = l2_sections(mapped)
+        .iter()
+        .map(|section| section.id.as_str())
+        .collect();
 
     let contributions = clean_list("contributions", &mut |item| {
         let text = item.get("text").and_then(Value::as_str)?.trim().to_string();
@@ -1503,13 +1632,21 @@ fn validate_map_output(value: &Value, mapped: &MappedPaper, warnings: &mut Vec<S
             warnings.push(format!("map_key_evidence_unknown:{asset_id}"));
             return None;
         }
-        let note = item.get("note").and_then(Value::as_str).unwrap_or("").to_string();
+        let note = item
+            .get("note")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let refs: Vec<String> = clean_refs(item.get("refs"));
         Some(json!({ "assetId": asset_id, "note": note, "refs": refs }))
     });
     let glossary = clean_list("glossary", &mut |item| {
         let term = item.get("term").and_then(Value::as_str)?.trim().to_string();
-        let def_ref = item.get("defRef").and_then(Value::as_str)?.trim().to_string();
+        let def_ref = item
+            .get("defRef")
+            .and_then(Value::as_str)?
+            .trim()
+            .to_string();
         if term.is_empty() || def_ref.is_empty() {
             return None;
         }
@@ -1524,6 +1661,7 @@ fn validate_map_output(value: &Value, mapped: &MappedPaper, warnings: &mut Vec<S
         Some(item.clone())
     });
     Ok(json!({
+        "scope": "abstract-body",
         "problem": text_with_refs("problem")?,
         "method": text_with_refs("method")?,
         "contributions": contributions,
@@ -1554,6 +1692,7 @@ fn validate_markdown_headers(text: &str, headers: &[&str]) -> Result<(), String>
 struct ProtocolEnv {
     paper: PaperDto,
     mapped: MappedPaper,
+    source_fingerprint: String,
     skills: SkillSet,
     config: model::ModelConfig,
     endpoint: String,
@@ -1606,7 +1745,7 @@ fn check_hard_top(estimated: u64, stage: &str) -> Result<(), BridgeError> {
 
 fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError> {
     let paper = ctx.library.get_paper(paper_id)?;
-    let mapped = load_block_model(&ctx.library, paper_id)?;
+    let (mapped, source_fingerprint) = load_block_model(&ctx.library, paper_id)?;
     let skills = load_skills(&ctx.library)?;
     let config = model::load_model_config(&ctx.library)?.ok_or_else(model::model_not_configured)?;
     let endpoint = model::normalize_endpoint(&config.base_url, "/chat/completions")?;
@@ -1625,6 +1764,7 @@ fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError
     Ok(ProtocolEnv {
         paper,
         mapped,
+        source_fingerprint,
         skills,
         config,
         endpoint,
@@ -1646,7 +1786,11 @@ pub(crate) fn run_build_map(ctx: &RunContext, paper_id: &str, overwrite_confirme
 
 /// 深挖开工前齐备检查：全部页图 + 图表清单全部裁切图（#74 B1 / #76：从建图迁来）。
 /// 缺失即 preflight_missing，details 列出缺失附件。
-fn preflight_visual_assets(ctx: &RunContext, paper_id: &str, mapped: &MappedPaper) -> Result<(), BridgeError> {
+fn preflight_visual_assets(
+    ctx: &RunContext,
+    paper_id: &str,
+    mapped: &MappedPaper,
+) -> Result<(), BridgeError> {
     let mut missing: Vec<String> = Vec::new();
     for page in 1..=mapped.page_count {
         let asset_id = pdfassets::page_attachment_id(page);
@@ -1673,10 +1817,71 @@ fn preflight_visual_assets(ctx: &RunContext, paper_id: &str, mapped: &MappedPape
 
 /// 调用①分片规划：每个参与 L2 的原文章节自成一片（#79；单节超硬顶由 check_hard_top 拒绝）。
 fn plan_l2_shards<'a>(sections: &[&'a Section]) -> Vec<Vec<&'a Section>> {
-    sections.iter().copied().map(|section| vec![section]).collect()
+    sections
+        .iter()
+        .copied()
+        .map(|section| vec![section])
+        .collect()
 }
 
-fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -> Result<Value, Halt> {
+fn section_for_existing_map<'a>(
+    paper: &PaperDto,
+    mapped: &'a MappedPaper,
+    part_id: &str,
+) -> Option<&'a Section> {
+    if product_body(paper, "map", "")?
+        .get("scope")
+        .and_then(Value::as_str)
+        == Some("abstract-body")
+    {
+        return section_for_part(mapped, part_id);
+    }
+    if part_id == "abstract" {
+        return mapped
+            .sections
+            .iter()
+            .find(|section| section.role == SectionRole::Abstract);
+    }
+    let index = part_id
+        .strip_prefix("part-")?
+        .parse::<usize>()
+        .ok()?
+        .checked_sub(1)?;
+    mapped
+        .sections
+        .iter()
+        .filter(|section| matches!(section.role, SectionRole::Body | SectionRole::Appendix))
+        .nth(index)
+}
+
+fn resumable_l2(body: &Value, section: &Section, fingerprint: &str) -> bool {
+    body["partial"] == true
+        && body["sourceFingerprint"] == fingerprint
+        && body["secId"] == section.id
+        && body["title"] == section.title
+        && body["pages"] == json!({"start": section.page_start, "end": section.page_end})
+        && body["gist"]
+            .as_str()
+            .is_some_and(|text| !text.trim().is_empty())
+        && body["points"].as_array().is_some_and(|points| {
+            !points.is_empty()
+                && points.iter().all(|point| {
+                    point["text"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+        })
+        && body["keyAssets"].as_array().is_some()
+        && body["type"]
+            .as_str()
+            .is_some_and(|kind| SECTION_TYPES.contains(&kind))
+}
+
+fn build_map_main(
+    ctx: &RunContext,
+    paper_id: &str,
+    overwrite_confirmed: bool,
+) -> Result<Value, Halt> {
     if ctx.cancel_checkpoint().is_err() {
         return Err(Halt::Cancelled);
     }
@@ -1691,14 +1896,34 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
     }
     let title = env.paper.title.clone();
     let sections = l2_sections(&env.mapped);
+    if sections.is_empty() {
+        return Err(Halt::Failed(BridgeError::new(
+            "map_sections_missing",
+            "块模型没有可建图的摘要或正文节；附录、参考文献和致谢不参与建图。",
+            false,
+        )));
+    }
     let warnings = Mutex::new(env.mapped.warnings.clone());
 
     // ---- 调用①：每节一片，有界并发，合并为确定性拼装 ----
     let shards = plan_l2_shards(&sections);
     let total_shards = shards.len();
+    let reused: Vec<Value> = if overwrite_confirmed {
+        Vec::new()
+    } else {
+        sections
+            .iter()
+            .filter_map(|section| {
+                let part_id = part_id_for_section(&env.mapped, section)?;
+                let body = product_body(&env.paper, "l2", &part_id)?;
+                resumable_l2(body, section, &env.source_fingerprint).then(|| body.clone())
+            })
+            .collect()
+    };
     let items: Vec<(usize, &Section)> = shards
         .iter()
         .enumerate()
+        .filter(|(_, shard)| !reused.iter().any(|body| body["secId"] == shard[0].id))
         .map(|(index, shard)| (index, shard[0]))
         .collect();
     ctx.emit_detail(
@@ -1706,35 +1931,25 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
         json!({
             "stage": STAGE_MAP_L2,
             "shards": total_shards,
+            "reused": reused.len(),
+            "pending": items.len(),
             "sections": items.iter().map(|(_, section)| section.id.as_str()).collect::<Vec<_>>(),
         }),
     );
     ctx.push_progress(Progress {
-        done: 0,
+        done: reused.len() as u64,
         total: total_shards as u64 + 1,
     });
-    let completed_count = AtomicU64::new(0);
+    let completed_count = AtomicU64::new(reused.len() as u64);
     let concurrency = settings::protocol_concurrency(&ctx.library) as usize;
-    let outcome = run_bounded(ctx, &items, concurrency, true, |ctx, (index, section)| {
-        let shard_no = *index as u64 + 1;
-        let sec_id = section.id.as_str();
-        ctx.emit_detail(
-            "stage",
-            json!({
-                "stage": STAGE_MAP_L2,
-                "shard": shard_no,
-                "shards": total_shards,
-                "secId": sec_id,
-                "shardStatus": "running",
-            }),
-        );
-        let paper_text = render_paper_text(&[*section]);
-        let prompt = env.skills.compose(
-            STAGE_MAP_L2,
-            &[("title", title.as_str()), ("paperText", paper_text.as_str())],
-            "",
-        )?;
-        if let Err(error) = check_hard_top(estimate_text_tokens(&prompt), "建图调用①") {
+    let outcome = run_bounded(
+        ctx,
+        &items,
+        concurrency,
+        true,
+        |ctx, (index, section)| {
+            let shard_no = *index as u64 + 1;
+            let sec_id = section.id.as_str();
             ctx.emit_detail(
                 "stage",
                 json!({
@@ -1742,50 +1957,19 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
                     "shard": shard_no,
                     "shards": total_shards,
                     "secId": sec_id,
-                    "shardStatus": "failed",
+                    "shardStatus": "running",
                 }),
             );
-            return Err(Halt::Failed(error));
-        }
-        let shard_sections = vec![*section];
-        let mut local_warnings = Vec::new();
-        match run_json_call(
-            ctx,
-            &env,
-            "建图调用①",
-            prompt,
-            env.stage_max_tokens(MIN_MAX_TOKENS),
-            RoundCtx {
-                stage: STAGE_MAP_L2,
-                part_id: None,
-                shard: Some(shard_no),
-                sec_id: Some(sec_id),
-            },
-            |value| validate_l2_output(value, &shard_sections, &env.mapped, &mut local_warnings),
-        ) {
-            Ok(entries) => {
-                warnings
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend(local_warnings);
-                ctx.emit_detail(
-                    "stage",
-                    json!({
-                        "stage": STAGE_MAP_L2,
-                        "shard": shard_no,
-                        "shards": total_shards,
-                        "secId": sec_id,
-                        "shardStatus": "done",
-                    }),
-                );
-                let done = completed_count.fetch_add(1, Ordering::SeqCst) + 1;
-                ctx.push_progress(Progress {
-                    done,
-                    total: total_shards as u64 + 1,
-                });
-                Ok(entries)
-            }
-            Err(Halt::Failed(error)) => {
+            let paper_text = render_paper_text(&[*section]);
+            let prompt = env.skills.compose(
+                STAGE_MAP_L2,
+                &[
+                    ("title", title.as_str()),
+                    ("paperText", paper_text.as_str()),
+                ],
+                "",
+            )?;
+            if let Err(error) = check_hard_top(estimate_text_tokens(&prompt), "建图调用①") {
                 ctx.emit_detail(
                     "stage",
                     json!({
@@ -1796,22 +1980,81 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
                         "shardStatus": "failed",
                     }),
                 );
-                Err(Halt::Failed(error))
+                return Err(Halt::Failed(error));
             }
-            Err(other) => Err(other),
-        }
-    },
+            let shard_sections = vec![*section];
+            let mut local_warnings = Vec::new();
+            match run_json_call(
+                ctx,
+                &env,
+                "建图调用①",
+                prompt,
+                env.stage_max_tokens(MIN_MAX_TOKENS),
+                RoundCtx {
+                    stage: STAGE_MAP_L2,
+                    part_id: None,
+                    shard: Some(shard_no),
+                    sec_id: Some(sec_id),
+                },
+                |value| {
+                    validate_l2_output(value, &shard_sections, &env.mapped, &mut local_warnings)
+                },
+            ) {
+                Ok(mut entries) => {
+                    for entry in &mut entries {
+                        entry["sourceFingerprint"] = json!(env.source_fingerprint);
+                    }
+                    warnings
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend(local_warnings);
+                    ctx.emit_detail(
+                        "stage",
+                        json!({
+                            "stage": STAGE_MAP_L2,
+                            "shard": shard_no,
+                            "shards": total_shards,
+                            "secId": sec_id,
+                            "shardStatus": "done",
+                        }),
+                    );
+                    let done = completed_count.fetch_add(1, Ordering::SeqCst) + 1;
+                    ctx.push_progress(Progress {
+                        done,
+                        total: total_shards as u64 + 1,
+                    });
+                    Ok(entries)
+                }
+                Err(Halt::Failed(error)) => {
+                    ctx.emit_detail(
+                        "stage",
+                        json!({
+                            "stage": STAGE_MAP_L2,
+                            "shard": shard_no,
+                            "shards": total_shards,
+                            "secId": sec_id,
+                            "shardStatus": "failed",
+                        }),
+                    );
+                    Err(Halt::Failed(error))
+                }
+                Err(other) => Err(other),
+            }
+        },
         // 建图的落库在收尾统一进行（partial / 全量），收集侧无需逐项动作。
         |_, _| Ok(()),
     );
 
-    let mut warnings = warnings.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut warnings = warnings
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !outcome.failed.is_empty() {
-        let l2_entries: Vec<Value> = outcome
+        let mut l2_entries: Vec<Value> = outcome
             .completed
             .into_iter()
             .flat_map(|(_, entries)| entries)
             .collect();
+        l2_entries.extend(reused.iter().cloned());
         write_partial_l2(ctx, paper_id, &env, l2_entries)?;
         let failed_sections: Vec<Value> = outcome
             .failed
@@ -1839,22 +2082,30 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
         ));
     }
     if outcome.stopped {
-        let l2_entries: Vec<Value> = outcome
+        let mut l2_entries: Vec<Value> = outcome
             .completed
             .into_iter()
             .flat_map(|(_, entries)| entries)
             .collect();
+        l2_entries.extend(reused.iter().cloned());
         write_partial_l2(ctx, paper_id, &env, l2_entries)?;
         if ctx.registry.cancel_requested(&ctx.task_id) {
             return Err(Halt::Cancelled);
         }
         return Err(Halt::Handled);
     }
-    let l2_entries: Vec<Value> = outcome
+    let mut l2_entries: Vec<Value> = outcome
         .completed
         .into_iter()
         .flat_map(|(_, entries)| entries)
         .collect();
+    l2_entries.extend(reused.iter().cloned());
+    l2_entries.sort_by_key(|entry| {
+        sections
+            .iter()
+            .position(|section| entry["secId"] == section.id)
+            .unwrap_or(usize::MAX)
+    });
 
     // 取消点：调用①已完成、调用②未开始 —— 已产出 L2 按中断部分结果落库
     // （partial: true 标记 + partial 打卡），地图不建。
@@ -1872,9 +2123,19 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
         .map(render_section_text)
         .unwrap_or_default();
     let l2_blob = render_l2_blob(&l2_entries);
-    let figure_list = render_asset_list(&env.mapped.figures);
-    let table_list = render_asset_list(&env.mapped.tables);
-    let prompt = env.skills.compose(
+    let figure_list = render_asset_list(
+        &map_assets(&env.mapped, &env.mapped.figures)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let table_list = render_asset_list(
+        &map_assets(&env.mapped, &env.mapped.tables)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let prompt = match env.skills.compose(
         STAGE_MAP_L1,
         &[
             ("title", title.as_str()),
@@ -1884,8 +2145,17 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
             ("tableList", table_list.as_str()),
         ],
         "",
-    )?;
-    check_hard_top(estimate_text_tokens(&prompt), "建图调用②").map_err(Halt::Failed)?;
+    ) {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            write_partial_l2(ctx, paper_id, &env, l2_entries)?;
+            return Err(Halt::Failed(error));
+        }
+    };
+    if let Err(error) = check_hard_top(estimate_text_tokens(&prompt), "建图调用②") {
+        write_partial_l2(ctx, paper_id, &env, l2_entries)?;
+        return Err(Halt::Failed(error));
+    }
     let map_body = match run_json_call(
         ctx,
         &env,
@@ -1902,11 +2172,15 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
     ) {
         Ok(body) => body,
         Err(Halt::Cancelled) => return persist_build_map_partial(ctx, paper_id, &env, l2_entries),
-        Err(other) => return Err(other),
+        Err(other) => {
+            write_partial_l2(ctx, paper_id, &env, l2_entries)?;
+            return Err(other);
+        }
     };
 
     // ---- 落库：map + 全部 l2（一次整记录写入） ----
-    let mut updates: Vec<(String, String, Value)> = vec![("map".to_string(), String::new(), map_body)];
+    let mut updates: Vec<(String, String, Value)> =
+        vec![("map".to_string(), String::new(), map_body)];
     let mut unpersisted: Vec<String> = Vec::new();
     for entry in &l2_entries {
         let sec_id = entry["secId"].as_str().unwrap_or("");
@@ -1917,7 +2191,11 @@ fn build_map_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -
             .find(|section| section.id == sec_id)
             .expect("L2 条目已校验为已知节");
         match part_id_for_section(&env.mapped, section) {
-            Some(part_id) => updates.push(("l2".to_string(), part_id, entry.clone())),
+            Some(part_id) => {
+                let mut body = entry.clone();
+                body.as_object_mut().expect("L2 为对象").remove("partial");
+                updates.push(("l2".to_string(), part_id, body));
+            }
             None => unpersisted.push(sec_id.to_string()),
         }
     }
@@ -1949,7 +2227,12 @@ fn write_partial_l2(
     let mut updates: Vec<(String, String, Value)> = Vec::new();
     for entry in l2_entries {
         let sec_id = entry["secId"].as_str().unwrap_or("").to_string();
-        let Some(section) = env.mapped.sections.iter().find(|section| section.id == sec_id) else {
+        let Some(section) = env
+            .mapped
+            .sections
+            .iter()
+            .find(|section| section.id == sec_id)
+        else {
             continue;
         };
         let Some(part_id) = part_id_for_section(&env.mapped, section) else {
@@ -1957,6 +2240,7 @@ fn write_partial_l2(
         };
         let mut body = entry;
         body["partial"] = json!(true);
+        body["sourceFingerprint"] = json!(env.source_fingerprint);
         updates.push(("l2".to_string(), part_id, body));
     }
     if !updates.is_empty() {
@@ -2049,7 +2333,9 @@ where
                     break;
                 }
                 let index = {
-                    let mut queue = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let mut queue = queue
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
@@ -2137,16 +2423,30 @@ fn run_validated_call<T>(
                 let mut heartbeat = RoundHeartbeat::default();
                 let mut on_progress =
                     |text: &str, elapsed_ms: u64| heartbeat.on_delta(ctx, &meta, text, elapsed_ms);
-                chat_round_retried(ctx, env, &meta, &messages, max_tokens, Some(&mut on_progress))
-                    .map_err(|_| Halt::Handled)?
+                chat_round_retried(
+                    ctx,
+                    env,
+                    &meta,
+                    &messages,
+                    max_tokens,
+                    Some(&mut on_progress),
+                )
+                .map_err(|_| Halt::Handled)?
             }
             StageOutput::Markdown(first_heading) => {
                 let mut preview = MarkdownPreview::new(first_heading);
                 let round = {
                     let mut on_progress =
                         |text: &str, _elapsed_ms: u64| preview.on_delta(ctx, &meta, text);
-                    chat_round_retried(ctx, env, &meta, &messages, max_tokens, Some(&mut on_progress))
-                        .map_err(|_| Halt::Handled)?
+                    chat_round_retried(
+                        ctx,
+                        env,
+                        &meta,
+                        &messages,
+                        max_tokens,
+                        Some(&mut on_progress),
+                    )
+                    .map_err(|_| Halt::Handled)?
                 };
                 preview.flush(ctx, &meta, round.text.trim());
                 round
@@ -2182,7 +2482,10 @@ fn run_validated_call<T>(
             )));
         }
         messages.push(json!({ "role": "assistant", "content": round.text }));
-        messages.push(user_message(error_observation("output_invalid", detail).to_string(), Vec::new()));
+        messages.push(user_message(
+            error_observation("output_invalid", detail).to_string(),
+            Vec::new(),
+        ));
     }
 }
 
@@ -2330,7 +2633,10 @@ fn dive_section(
         .paper
         .products
         .iter()
-        .filter(|product| product.kind == "l2")
+        .filter(|product| {
+            product.kind == "l2"
+                && section_for_existing_map(&env.paper, &env.mapped, &product.part_id).is_some()
+        })
         .map(|product| product.body.clone())
         .collect();
     let map_body = product_body(&env.paper, "map", "")
@@ -2371,9 +2677,13 @@ fn dive_section(
     let last = (section.page_end + 1).min(env.mapped.page_count);
     for page in first..=last {
         let asset_id = pdfassets::page_attachment_id(page);
-        if let Some(bytes) =
-            read_attachment_or_warn(&ctx.library, &env.paper.id, &asset_id, "page_image_missing", warnings)
-        {
+        if let Some(bytes) = read_attachment_or_warn(
+            &ctx.library,
+            &env.paper.id,
+            &asset_id,
+            "page_image_missing",
+            warnings,
+        ) {
             images.push(bytes);
             page_images += 1;
         }
@@ -2383,7 +2693,13 @@ fn dive_section(
     let mut other_ids: Vec<String> = overflow.iter().map(|entry| entry.id.clone()).collect();
     for entry in &planned {
         let crop_asset_id = pdfassets::crop_attachment_id(&entry.id);
-        match read_attachment_or_warn(&ctx.library, &env.paper.id, &crop_asset_id, "crop_missing", warnings) {
+        match read_attachment_or_warn(
+            &ctx.library,
+            &env.paper.id,
+            &crop_asset_id,
+            "crop_missing",
+            warnings,
+        ) {
             Some(bytes) => {
                 attached_entries.push(entry);
                 images.push(bytes);
@@ -2402,7 +2718,10 @@ fn dive_section(
             ("sectionType", section_type.as_str()),
             ("sectionText", section_text.as_str()),
             ("sectionPages", section_pages.as_str()),
-            ("attachedAssets", render_attached_assets(&attached_entries, &other_ids).as_str()),
+            (
+                "attachedAssets",
+                render_attached_assets(&attached_entries, &other_ids).as_str(),
+            ),
         ],
         &section_type,
     )?;
@@ -2446,7 +2765,8 @@ fn dive_section(
         // 轮末 flush 用 trim 后文本，与校验/落库消费的文本一致（最后一条预览 = 产物）。
         let mut preview = MarkdownPreview::new(DEEP_DIVE_HEADERS[0]);
         let round = {
-            let mut on_progress = |text: &str, _elapsed_ms: u64| preview.on_delta(ctx, &round_meta, text);
+            let mut on_progress =
+                |text: &str, _elapsed_ms: u64| preview.on_delta(ctx, &round_meta, text);
             chat_round_retried(
                 ctx,
                 env,
@@ -2536,11 +2856,23 @@ fn dive_section(
                     }
                     steps += 1;
                     tool_calls += 1;
-                    let outcome =
-                        execute_tool(&ctx.library, &env.paper.id, &env.mapped, &call.name, &call.args);
+                    let outcome = execute_tool(
+                        &ctx.library,
+                        &env.paper.id,
+                        &env.mapped,
+                        &call.name,
+                        &call.args,
+                    );
                     ctx.emit_detail(
                         "tool",
-                        tool_event_detail(steps, part_id, &section.id, &call.name, &call.args, &outcome),
+                        tool_event_detail(
+                            steps,
+                            part_id,
+                            &section.id,
+                            &call.name,
+                            &call.args,
+                            &outcome,
+                        ),
                     );
                     observations.push(outcome.observation);
                     observation_images.extend(outcome.images);
@@ -2557,7 +2889,10 @@ fn dive_section(
                         )),
                     );
                 }
-                messages.push(user_message(Value::Object(payload).to_string(), observation_images));
+                messages.push(user_message(
+                    Value::Object(payload).to_string(),
+                    observation_images,
+                ));
             }
         }
     }
@@ -2609,11 +2944,12 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
     // 未知部分 / 缺薄摘要都在开工前拒绝（错误即指令）。
     let mut targets: Vec<(usize, &String, &Section)> = Vec::with_capacity(part_ids.len());
     for part_id in part_ids {
-        let section = section_for_part(&env.mapped, part_id).ok_or_else(|| {
-            Halt::Failed(BridgeError::invalid_input(format!(
-                "未知的精读部分: {part_id}（不在块模型内容节范围，abstract + part-N）"
-            )))
-        })?;
+        let section =
+            section_for_existing_map(&env.paper, &env.mapped, part_id).ok_or_else(|| {
+                Halt::Failed(BridgeError::invalid_input(format!(
+                    "未知的精读部分: {part_id}（不在块模型内容节范围，abstract + part-N）"
+                )))
+            })?;
         if product_body(&env.paper, "l2", part_id).is_none() {
             return Err(Halt::Failed(BridgeError::new(
                 "l2_missing",
@@ -2693,7 +3029,9 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
         },
     );
 
-    let warnings = warnings.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let warnings = warnings
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     // 结果按节序聚合（完成顺序不必等于节序）。
     let mut completed: Vec<String> = Vec::new();
     // #81 遥测：逐节轮数与工具调用数进 result，供改动前后对照（配合 round 事件）。
@@ -2737,7 +3075,10 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
         return Err(Halt::Failed(
             BridgeError::new(
                 "protocol_deep_dive_failed",
-                format!("深挖有 {} 节未通过：{names}；已完成节的产物已保留。", failed_sections.len()),
+                format!(
+                    "深挖有 {} 节未通过：{names}；已完成节的产物已保留。",
+                    failed_sections.len()
+                ),
                 outcome.failed.iter().any(|(_, error)| error.retryable),
             )
             .with_details(json!({ "failedSections": failed_sections })),
@@ -2767,9 +3108,18 @@ pub(crate) fn run_synthesize(ctx: &RunContext, paper_id: &str, overwrite_confirm
 /// 复述稿的深挖材料拼装：按节阅读顺序排列，标注部分身份与节标题。
 fn render_dig_blob(paper: &PaperDto, mapped: &MappedPaper) -> String {
     let mut entries: Vec<(usize, String)> = Vec::new();
-    for product in paper.products.iter().filter(|product| product.kind == "dig") {
-        let order = section_for_part(mapped, &product.part_id)
-            .and_then(|section| mapped.sections.iter().position(|s| s.id == section.id))
+    for product in paper
+        .products
+        .iter()
+        .filter(|product| product.kind == "dig")
+    {
+        let Some(section) = section_for_existing_map(paper, mapped, &product.part_id) else {
+            continue;
+        };
+        let order = mapped
+            .sections
+            .iter()
+            .position(|s| s.id == section.id)
             .unwrap_or(usize::MAX);
         let title = paper
             .parts
@@ -2778,7 +3128,10 @@ fn render_dig_blob(paper: &PaperDto, mapped: &MappedPaper) -> String {
             .and_then(|part| part.title.clone())
             .unwrap_or_default();
         let body = product.body.as_str().unwrap_or_default().to_string();
-        entries.push((order, format!("### {}（{}）\n{}", product.part_id, title, body)));
+        entries.push((
+            order,
+            format!("### {}（{}）\n{}", product.part_id, title, body),
+        ));
     }
     entries.sort_by_key(|(order, _)| *order);
     if entries.is_empty() {
@@ -2791,7 +3144,11 @@ fn render_dig_blob(paper: &PaperDto, mapped: &MappedPaper) -> String {
         .join("\n\n")
 }
 
-fn synthesize_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) -> Result<Value, Halt> {
+fn synthesize_main(
+    ctx: &RunContext,
+    paper_id: &str,
+    overwrite_confirmed: bool,
+) -> Result<Value, Halt> {
     if ctx.cancel_checkpoint().is_err() {
         return Err(Halt::Cancelled);
     }
@@ -2813,7 +3170,10 @@ fn synthesize_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) 
         .paper
         .products
         .iter()
-        .filter(|product| product.kind == "l2")
+        .filter(|product| {
+            product.kind == "l2"
+                && section_for_existing_map(&env.paper, &env.mapped, &product.part_id).is_some()
+        })
         .map(|product| product.body.clone())
         .collect();
     let section_order = |body: &Value| {
@@ -2853,9 +3213,7 @@ fn synthesize_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) 
             sec_id: None,
         },
         StageOutput::Markdown(SYNTHESIZE_HEADERS[0]),
-        |text| {
-            validate_markdown_headers(text, &SYNTHESIZE_HEADERS).map(|_| text.to_string())
-        },
+        |text| validate_markdown_headers(text, &SYNTHESIZE_HEADERS).map(|_| text.to_string()),
     )?;
     persist_products(
         &ctx.library,
@@ -2868,7 +3226,6 @@ fn synthesize_main(ctx: &RunContext, paper_id: &str, overwrite_confirmed: bool) 
         "chars": markdown.chars().count() as u64,
     }))
 }
-
 
 // ============================================================================
 // 单元测试（纯函数：token 估算、工具块解析、输出校验、分片规划、工具窗口/采样）
@@ -2894,7 +3251,14 @@ mod tests {
         }
     }
 
-    fn section(id: &str, ordinal: u32, role: SectionRole, page_start: u32, page_end: u32, blocks: Vec<Block>) -> Section {
+    fn section(
+        id: &str,
+        ordinal: u32,
+        role: SectionRole,
+        page_start: u32,
+        page_end: u32,
+        blocks: Vec<Block>,
+    ) -> Section {
         Section {
             id: id.to_string(),
             ordinal,
@@ -2923,14 +3287,25 @@ mod tests {
             source_name: None,
             page_count: 3,
             sections: vec![
-                section("sec_1_abstract", 1, SectionRole::Abstract, 1, 1, vec![block(1, 1, "摘要文本")]),
+                section(
+                    "sec_1_abstract",
+                    1,
+                    SectionRole::Abstract,
+                    1,
+                    1,
+                    vec![block(1, 1, "摘要文本")],
+                ),
                 section(
                     "sec_2_introduction",
                     2,
                     SectionRole::Body,
                     1,
                     2,
-                    vec![block(1, 1, "引言第一段"), block(2, 2, "引言第二段 attention"), block(3, 2, "引言第三段")],
+                    vec![
+                        block(1, 1, "引言第一段"),
+                        block(2, 2, "引言第二段 attention"),
+                        block(3, 2, "引言第三段"),
+                    ],
                 ),
                 section(
                     "sec_3_method",
@@ -2938,9 +3313,19 @@ mod tests {
                     SectionRole::Body,
                     2,
                     3,
-                    vec![block(1, 2, "方法第一段 attention"), block(2, 3, "方法第二段")],
+                    vec![
+                        block(1, 2, "方法第一段 attention"),
+                        block(2, 3, "方法第二段"),
+                    ],
                 ),
-                section("sec_4_references", 4, SectionRole::References, 3, 3, vec![block(1, 3, "[1] 文献")]),
+                section(
+                    "sec_4_references",
+                    4,
+                    SectionRole::References,
+                    3,
+                    3,
+                    vec![block(1, 3, "[1] 文献")],
+                ),
             ],
             frontmatter: Vec::new(),
             furniture: Vec::new(),
@@ -2951,7 +3336,11 @@ mod tests {
                 page: 2,
                 bbox: [0.0, 0.0, 100.0, 100.0],
                 section: Some("sec_2_introduction".to_string()),
-                references: vec![crate::pdfmap::Citation { sec_id: "sec_2_introduction".to_string(), block_id: 2, page: 2 }],
+                references: vec![crate::pdfmap::Citation {
+                    sec_id: "sec_2_introduction".to_string(),
+                    block_id: 2,
+                    page: 2,
+                }],
             }],
             tables: vec![AssetEntry {
                 id: "tbl_1".to_string(),
@@ -2962,7 +3351,12 @@ mod tests {
                 section: Some("sec_3_method".to_string()),
                 references: Vec::new(),
             }],
-            references: vec![ReferenceEntry { id: "ref_1".to_string(), number: 1, text: "[1] 文献".to_string(), cited_at: Vec::new() }],
+            references: vec![ReferenceEntry {
+                id: "ref_1".to_string(),
+                number: 1,
+                text: "[1] 文献".to_string(),
+                cited_at: Vec::new(),
+            }],
             warnings: Vec::new(),
         }
     }
@@ -3008,7 +3402,9 @@ mod tests {
     fn tool_block_parse_rejects_over_limit_round() {
         let mut text = String::from("一次发太多。\n");
         for _ in 0..4 {
-            text.push_str("```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"x\"}}\n```\n");
+            text.push_str(
+                "```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"x\"}}\n```\n",
+            );
         }
         let error = parse_round_output(&text).expect_err("4 个调用块应整轮拒绝");
         assert!(error.contains("一轮最多 3 个"), "超限文案: {error}");
@@ -3034,9 +3430,14 @@ mod tests {
         // 未知工具
         assert!(parse_round_output("```tool\n{\"name\": \"hack\", \"args\": {}}\n```").is_err());
         // 缺参数
-        assert!(parse_round_output("```tool\n{\"name\": \"get_figure\", \"args\": {}}\n```").is_err());
+        assert!(
+            parse_round_output("```tool\n{\"name\": \"get_figure\", \"args\": {}}\n```").is_err()
+        );
         // args 非对象
-        assert!(parse_round_output("```tool\n{\"name\": \"search_paper\", \"args\": \"x\"}\n```").is_err());
+        assert!(
+            parse_round_output("```tool\n{\"name\": \"search_paper\", \"args\": \"x\"}\n```")
+                .is_err()
+        );
         // read_section offset 非法
         assert!(parse_round_output("```tool\n{\"name\": \"read_section\", \"args\": {\"sec_id\": \"sec_2_introduction\", \"offset\": 0}}\n```").is_err());
     }
@@ -3051,7 +3452,10 @@ mod tests {
     fn read_section_window_caps_chars_and_points_to_page_image() {
         let mapped = sample_mapped();
         // 窗口覆盖前两块（offset=1, limit=2）：footer 指向第 3 块所在页。
-        let args = json!({"sec_id": "sec_2_introduction", "offset": 1, "limit": 2}).as_object().unwrap().clone();
+        let args = json!({"sec_id": "sec_2_introduction", "offset": 1, "limit": 2})
+            .as_object()
+            .unwrap()
+            .clone();
         let outcome = exec_read_section(&mapped, &args);
         assert_eq!(outcome.observation["ok"], json!(true));
         let result = &outcome.observation["result"];
@@ -3060,23 +3464,38 @@ mod tests {
         assert_eq!(result["blocks"][0]["id"], json!(1));
         assert_eq!(result["blocks"][0]["prov"]["page"], json!(1));
         assert!(
-            result["footer"].as_str().unwrap_or("").contains("第 2 页页图"),
+            result["footer"]
+                .as_str()
+                .unwrap_or("")
+                .contains("第 2 页页图"),
             "footer 应指向续读页图: {}",
             result["footer"]
         );
         // 无截断时 footer 为 null。
-        let args = json!({"sec_id": "sec_2_introduction", "offset": 1, "limit": 40}).as_object().unwrap().clone();
+        let args = json!({"sec_id": "sec_2_introduction", "offset": 1, "limit": 40})
+            .as_object()
+            .unwrap()
+            .clone();
         let outcome = exec_read_section(&mapped, &args);
         assert!(outcome.observation["result"]["footer"].is_null());
         // 无效地址 = 结构化错误观察。
         let args = json!({"sec_id": "sec_9_nope"}).as_object().unwrap().clone();
         let outcome = exec_read_section(&mapped, &args);
         assert_eq!(outcome.observation["ok"], json!(false));
-        assert_eq!(outcome.observation["error"]["code"], json!("unknown_section"));
+        assert_eq!(
+            outcome.observation["error"]["code"],
+            json!("unknown_section")
+        );
         // offset 越界。
-        let args = json!({"sec_id": "sec_2_introduction", "offset": 99}).as_object().unwrap().clone();
+        let args = json!({"sec_id": "sec_2_introduction", "offset": 99})
+            .as_object()
+            .unwrap()
+            .clone();
         let outcome = exec_read_section(&mapped, &args);
-        assert_eq!(outcome.observation["error"]["code"], json!("offset_out_of_range"));
+        assert_eq!(
+            outcome.observation["error"]["code"],
+            json!("offset_out_of_range")
+        );
     }
 
     #[test]
@@ -3093,7 +3512,10 @@ mod tests {
         assert_eq!(hits[0]["subsection"], json!("2.1 子节"));
         assert_eq!(outcome.observation["result"]["truncated"], json!(false));
         // 命中不存在 → 空清单。
-        let args = json!({"pattern": "不存在的词"}).as_object().unwrap().clone();
+        let args = json!({"pattern": "不存在的词"})
+            .as_object()
+            .unwrap()
+            .clone();
         let outcome = exec_search_paper(&mapped, &args);
         assert_eq!(outcome.observation["result"]["hits"], json!([]));
     }
@@ -3101,16 +3523,73 @@ mod tests {
     #[test]
     fn part_section_mapping_is_order_based() {
         let mapped = sample_mapped();
-        assert_eq!(section_for_part(&mapped, "abstract").map(|s| s.id.as_str()), Some("sec_1_abstract"));
-        assert_eq!(section_for_part(&mapped, "part-1").map(|s| s.id.as_str()), Some("sec_2_introduction"));
-        assert_eq!(section_for_part(&mapped, "part-2").map(|s| s.id.as_str()), Some("sec_3_method"));
+        assert_eq!(
+            section_for_part(&mapped, "abstract").map(|s| s.id.as_str()),
+            Some("sec_1_abstract")
+        );
+        assert_eq!(
+            section_for_part(&mapped, "part-1").map(|s| s.id.as_str()),
+            Some("sec_2_introduction")
+        );
+        assert_eq!(
+            section_for_part(&mapped, "part-2").map(|s| s.id.as_str()),
+            Some("sec_3_method")
+        );
         assert!(section_for_part(&mapped, "part-3").is_none());
         assert!(section_for_part(&mapped, "part-0").is_none());
         let sec2 = &mapped.sections[1];
-        assert_eq!(part_id_for_section(&mapped, sec2).as_deref(), Some("part-1"));
+        assert_eq!(
+            part_id_for_section(&mapped, sec2).as_deref(),
+            Some("part-1")
+        );
         // References 节不进内容节映射。
         let refs = &mapped.sections[3];
         assert!(part_id_for_section(&mapped, refs).is_none());
+    }
+
+    #[test]
+    fn appendix_stays_in_source_but_out_of_new_map() {
+        let mut mapped = sample_mapped();
+        mapped.sections.insert(
+            3,
+            section(
+                "appendix_a",
+                4,
+                SectionRole::Appendix,
+                3,
+                3,
+                vec![block(1, 3, "附录")],
+            ),
+        );
+        mapped.sections.insert(
+            4,
+            section(
+                "appendix_b",
+                5,
+                SectionRole::Appendix,
+                3,
+                3,
+                vec![block(1, 3, "附录二")],
+            ),
+        );
+        assert_eq!(l2_sections(&mapped).len(), 3);
+        assert_eq!(content_sections(&mapped).len(), 2);
+        assert!(part_id_for_section(&mapped, &mapped.sections[3]).is_none());
+        assert!(section_for_part(&mapped, "part-3").is_none());
+        assert_eq!(mapped.sections.len(), 6);
+        let mut paper = PaperDto::default();
+        paper.products.push(ProductDto {
+            kind: "map".to_string(),
+            part_id: String::new(),
+            body: json!({}),
+            updated_at: String::new(),
+        });
+        assert_eq!(
+            section_for_existing_map(&paper, &mapped, "part-3").map(|section| section.id.as_str()),
+            Some("appendix_a")
+        );
+        paper.products[0].body = json!({ "scope": "abstract-body" });
+        assert!(section_for_existing_map(&paper, &mapped, "part-3").is_none());
     }
 
     #[test]
@@ -3126,7 +3605,8 @@ mod tests {
                   "points": [{"text": "要点", "refs": []}], "keyAssets": ["fig_1"] }
             ]
         });
-        let entries = validate_l2_output(&output, &shard, &mapped, &mut warnings).expect("校验通过");
+        let entries =
+            validate_l2_output(&output, &shard, &mapped, &mut warnings).expect("校验通过");
         // 按分片节序重排（输入先 method 后 introduction）。
         assert_eq!(entries[0]["secId"], json!("sec_2_introduction"));
         assert_eq!(entries[1]["secId"], json!("sec_3_method"));
@@ -3136,7 +3616,9 @@ mod tests {
         assert_eq!(entries[0]["title"], json!("Title of sec_2_introduction"));
         assert_eq!(entries[0]["pages"], json!({"start": 1, "end": 2}));
         assert!(warnings.iter().any(|w| w.starts_with("l2_type_fallback")));
-        assert!(warnings.iter().any(|w| w.starts_with("l2_key_asset_unknown")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.starts_with("l2_key_asset_unknown")));
         // 覆盖缺口 → 错误。
         let missing = json!({"sections": [output["sections"][0].clone()]});
         assert!(validate_l2_output(&missing, &shard, &mapped, &mut warnings).is_err());
@@ -3164,8 +3646,12 @@ mod tests {
         let map = validate_map_output(&output, &mapped, &mut warnings).expect("校验通过");
         assert_eq!(map["keyEvidence"].as_array().unwrap().len(), 1);
         assert_eq!(map["structure"].as_array().unwrap().len(), 1);
-        assert!(warnings.iter().any(|w| w.starts_with("map_key_evidence_unknown")));
-        assert!(warnings.iter().any(|w| w.starts_with("map_structure_unknown")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.starts_with("map_key_evidence_unknown")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.starts_with("map_structure_unknown")));
         // 缺 problem → 错误。
         let broken = json!({"method": {"text": "x", "refs": []}});
         assert!(validate_map_output(&broken, &mapped, &mut warnings).is_err());
@@ -3175,11 +3661,14 @@ mod tests {
     fn extract_json_object_tolerates_fences_and_prose() {
         let plain = extract_json_object("{\"a\": 1}").unwrap();
         assert_eq!(plain["a"], json!(1));
-        let fenced = extract_json_object("前置说明
+        let fenced = extract_json_object(
+            "前置说明
 ```json
 {\"a\": 2}
 ```
-后置").unwrap();
+后置",
+        )
+        .unwrap();
         assert_eq!(fenced["a"], json!(2));
         let braced = extract_json_object("输出：{\"a\": 3} 以上").unwrap();
         assert_eq!(braced["a"], json!(3));
@@ -3197,8 +3686,12 @@ c
 ## 边界与存疑
 d";
         assert!(validate_markdown_headers(ok, &DEEP_DIVE_HEADERS).is_ok());
-        assert!(validate_markdown_headers("## 核心论点
-a", &DEEP_DIVE_HEADERS).is_err());
+        assert!(validate_markdown_headers(
+            "## 核心论点
+a",
+            &DEEP_DIVE_HEADERS
+        )
+        .is_err());
     }
 
     #[test]
@@ -3209,15 +3702,24 @@ a", &DEEP_DIVE_HEADERS).is_err());
         assert_eq!(shards.len(), sections.len());
         assert!(shards.iter().all(|shard| shard.len() == 1));
         assert_eq!(
-            shards.iter().map(|shard| shard[0].id.as_str()).collect::<Vec<_>>(),
-            sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>()
+            shards
+                .iter()
+                .map(|shard| shard[0].id.as_str())
+                .collect::<Vec<_>>(),
+            sections
+                .iter()
+                .map(|section| section.id.as_str())
+                .collect::<Vec<_>>()
         );
     }
 
     fn asset(id: &str, page: u32, y: f64, section: Option<&str>) -> AssetEntry {
         AssetEntry {
             id: id.to_string(),
-            number: id.trim_start_matches("fig_").trim_start_matches("tbl_").to_string(),
+            number: id
+                .trim_start_matches("fig_")
+                .trim_start_matches("tbl_")
+                .to_string(),
             caption: Some(format!("{id} 图注")),
             page,
             bbox: [0.0, y, 100.0, y + 50.0],
@@ -3231,10 +3733,18 @@ a", &DEEP_DIVE_HEADERS).is_err());
         let mut mapped = sample_mapped();
         // 追加构造候选：fig_3(p1) fig_1(p2,y0) fig_2(p2,y300) tbl_1(p3,清单) fig_4(p3,y200)；
         // fig_5 归属 sec_3，用于验证归属过滤。
-        mapped.figures.push(asset("fig_2", 2, 300.0, Some("sec_2_introduction")));
-        mapped.figures.push(asset("fig_3", 1, 80.0, Some("sec_2_introduction")));
-        mapped.figures.push(asset("fig_4", 3, 200.0, Some("sec_2_introduction")));
-        mapped.figures.push(asset("fig_5", 1, 40.0, Some("sec_3_method")));
+        mapped
+            .figures
+            .push(asset("fig_2", 2, 300.0, Some("sec_2_introduction")));
+        mapped
+            .figures
+            .push(asset("fig_3", 1, 80.0, Some("sec_2_introduction")));
+        mapped
+            .figures
+            .push(asset("fig_4", 3, 200.0, Some("sec_2_introduction")));
+        mapped
+            .figures
+            .push(asset("fig_5", 1, 40.0, Some("sec_3_method")));
         let sec2 = &mapped.sections[1];
         // keyAssets 允许指向他节条目（tbl_1 归属 sec_3）、重复与清单外 id（防御性跳过）。
         let key_assets = vec![
@@ -3254,7 +3764,10 @@ a", &DEEP_DIVE_HEADERS).is_err());
         // 帽切分：前 4 附图，其余列清单。
         let (attached, overflow) = plan_attached_assets(&candidates);
         assert_eq!(attached.len(), MAX_ATTACHED_ASSETS);
-        assert_eq!(overflow.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["fig_4"]);
+        assert_eq!(
+            overflow.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            vec!["fig_4"]
+        );
         // 渲染：附图条目 + 帽外提示；两个空集 → （无）。
         let others: Vec<String> = overflow.iter().map(|e| e.id.clone()).collect();
         let text = render_attached_assets(&attached, &others);

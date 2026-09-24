@@ -4,8 +4,9 @@
 //
 // 消费方：本模块测试 + 阅读视图壳（main.js）+ 呈现层纯函数（present.js 复用 mappingStageLabel/productOf）。
 
-import { l2Sections, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
+import { parseRefs, partIdForSection, sectionForPart } from './protocol.js';
 import { cropAttachmentId } from './qa.js';
+import { deepAllPartIds } from './view.js';
 
 export const COPY = {
   startMap: '▶ 开始建图',
@@ -29,7 +30,7 @@ export const COPY = {
   livePreview: '生成中',
 };
 
-const TREE_GREY_ROLES = new Set(['references', 'acknowledgments']);
+const TREE_GREY_ROLES = new Set(['appendix', 'references', 'acknowledgments']);
 const STAGE_LABELS = {
   preflight: '预渲染校验',
   'map-l2': '生成节薄摘要（L2）',
@@ -110,9 +111,8 @@ export function landingModel({ paper, hasMap = false, mapping = false, mappingSt
 }
 
 export function undugStats({ mapped, products } = {}) {
-  const partIds = l2Sections(mapped)
-    .map(section => partIdForSection(mapped, section.id))
-    .filter(Boolean);
+  const legacy = (products ?? []).some(item => item?.kind === 'map' && item?.body?.scope !== 'abstract-body');
+  const partIds = deepAllPartIds(mapped, legacy);
   const dug = new Set((products ?? []).filter(item => item?.kind === 'dig').map(item => item.partId));
   return { undug: partIds.filter(id => !dug.has(id)).length, total: partIds.length };
 }
@@ -235,15 +235,15 @@ export function mapPageModel({ products = [], mapped = null, synthesizing = fals
   };
 }
 
-function resolveSection(mapped, partId) {
+function resolveSection(mapped, partId, legacy = false) {
   if (!mapped || !partId) return null;
   return (mapped.sections ?? []).find(section => section.id === partId)
-    || sectionForPart(mapped, partId)
+    || sectionForPart(mapped, partId, legacy)
     || null;
 }
 
-export function sectionFigures(mapped, partId) {
-  const section = resolveSection(mapped, partId);
+export function sectionFigures(mapped, partId, legacy = false) {
+  const section = resolveSection(mapped, partId, legacy);
   if (!section) return [];
   const entries = [...(mapped?.figures ?? []), ...(mapped?.tables ?? [])]
     .filter(entry => entry?.section === section.id);
@@ -266,8 +266,9 @@ export function sectionPageModel({
   prerenderReady = true,
   runState = null,
 } = {}) {
-  const section = resolveSection(mapped, partId);
-  const grey = !!(section && TREE_GREY_ROLES.has(section.role));
+  const legacy = (products ?? []).some(item => item?.kind === 'map' && item?.body?.scope !== 'abstract-body');
+  const section = resolveSection(mapped, partId, legacy);
+  const grey = !!(section && TREE_GREY_ROLES.has(section.role) && !(legacy && section.role === 'appendix'));
   const l2 = productOf(products, 'l2', partId)?.body;
   const l2Ok = l2 && typeof l2 === 'object' && !Array.isArray(l2) ? l2 : null;
   const analysis = paper?.analyses?.[partId];
@@ -284,7 +285,7 @@ export function sectionPageModel({
       }
       : null,
     deepDive: deepDiveZone({ partId, products, runningPartIds, runningDetail, grey, prerenderReady, runState }),
-    figures: grey ? [] : sectionFigures(mapped, partId),
+    figures: grey ? [] : sectionFigures(mapped, partId, legacy),
     marked: paper?.readMarks?.[partId] != null,
     showMark: !grey && (partId === 'abstract' || /^part-\d+$/.test(partId)),
     legacyAnalysis: (!grey && legacyText)

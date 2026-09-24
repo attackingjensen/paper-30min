@@ -326,6 +326,9 @@ export function taskDetailModel({ task = {}, meta = null } = {}) {
   if (bare === 'paper.build-map') {
     const stageFlow = buildMapStageFlow(lastDetailOf(details, 'stage'), task.status, task.progress);
     const out = {};
+    const plan = details.find(entry => entry?.event === 'stage' && entry.detail?.stage === 'map-l2'
+      && Number.isInteger(entry.detail?.reused))?.detail;
+    if (plan?.reused > 0) out.resumeLine = `已复用 ${plan.reused} 节 · 待补 ${plan.pending} 节`;
     if (stageFlow) out.stageFlow = stageFlow;
     const shardFlow = l2ShardFlow({ details, status: task.status, error: task.error });
     if (shardFlow) out.shardFlow = shardFlow;

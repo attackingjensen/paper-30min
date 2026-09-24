@@ -19,7 +19,6 @@
     <button class="nav-btn" id="nav-tasks" type="button">任务<span class="nav-badge" id="nav-tasks-badge" hidden></span></button>
   </nav>
   <div class="topbar-right">
-    <button class="btn ghost" id="btn-skills" type="button">技能库</button>
     <button class="btn ghost" id="btn-settings" type="button">设置</button>
     <button class="btn ghost" id="btn-startup" type="button" title="回到启动页">退出</button>
   </div>
@@ -114,6 +113,7 @@
       <div id="map-tree-items"></div>
       <div class="tree-foot">
         <button class="btn small primary" id="btn-deep-all" type="button" disabled>▶ 全部深挖</button>
+        <button class="btn small" id="btn-rebuild-map" type="button" title="重新请求所有正文节并覆盖当前地图">重新建图</button>
       </div>
       <div class="tree-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="调节节树宽度" title="拖拽调节节树宽度"></div>
     </aside>
@@ -278,8 +278,47 @@
 
 <!-- ============ 设置弹窗 ============ -->
 <div class="modal-mask" id="modal-settings" hidden>
-  <div class="modal">
-    <h3>设置</h3>
+  <div class="modal settings-modal" role="dialog" aria-modal="true" aria-label="设置">
+    <nav class="settings-nav" role="tablist" aria-label="设置分类">
+      <strong class="settings-nav-title">设置</strong>
+      <button type="button" role="tab" id="settings-tab-service" data-settings-tab="service" aria-controls="settings-service" aria-selected="false">服务</button>
+      <button type="button" role="tab" id="settings-tab-proxy" data-settings-tab="proxy" aria-controls="settings-proxy" aria-selected="false">网络代理</button>
+      <button type="button" role="tab" id="settings-tab-skills" data-settings-tab="skills" aria-controls="settings-skills" aria-selected="false">技能库</button>
+      <button type="button" role="tab" id="settings-tab-about" data-settings-tab="about" aria-controls="settings-about" aria-selected="true">关于</button>
+    </nav>
+    <div class="settings-main">
+      <header class="settings-head">
+        <h3 id="settings-title">关于</h3>
+        <button class="settings-close" data-close type="button" aria-label="关闭设置" title="关闭设置">&times;</button>
+      </header>
+      <div class="settings-scroll">
+  <section id="settings-service" role="tabpanel" aria-labelledby="settings-tab-service" hidden>
+    <div class="service-card">
+      <h4>LLM 模型</h4>
+      <button class="service-entry" id="open-llm-settings" type="button" aria-label="配置 LLM 模型">
+        <span class="service-entry-copy"><strong id="service-llm-name">尚未配置</strong><small id="service-llm-meta">添加模型服务</small></span>
+        <span class="service-entry-status" id="service-llm-status">待配置</span>
+      </button>
+    </div>
+    <div class="service-card">
+      <h4>解析模型</h4>
+      <button class="service-entry" id="open-parser-settings" type="button" aria-label="配置本地解析组件">
+        <span class="service-entry-copy"><strong>本地解析组件</strong></span>
+        <span class="service-entry-status" id="service-parser-meta">正在读取状态…</span>
+      </button>
+      <div class="service-entry service-entry-disabled" aria-disabled="true">
+        <span class="service-entry-copy"><strong>云端解析</strong><small>API 接入服务未开发，敬请期待</small></span>
+        <span class="service-entry-status">未开放</span>
+      </div>
+    </div>
+    <div class="settings-detail-layer" id="settings-detail-layer" hidden>
+      <div class="settings-detail-panel" role="dialog" aria-modal="true" aria-labelledby="settings-detail-title">
+        <header class="settings-detail-head">
+          <h4 id="settings-detail-title">配置服务</h4>
+          <button class="settings-detail-close" id="close-service-detail" type="button" aria-label="返回服务列表" title="返回服务列表">&times;</button>
+        </header>
+        <div class="settings-detail-scroll">
+          <div id="settings-detail-llm" hidden>
     <p class="muted">填写任意 OpenAI 兼容接口（OpenAI / DeepSeek / Moonshot / 阿里云百炼 / Ollama 等）。API Key 仅保存在本机书库中，不会随导出或迁移离开这台电脑。</p>
     <label>API Base URL
       <input id="set-baseurl" placeholder="例如：https://api.deepseek.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1">
@@ -336,8 +375,32 @@
       <p class="muted">当前生效参数（只读）</p>
       <pre class="settings-preview" id="set-extra-preview"></pre>
     </details>
-    <div class="settings-block">
-      <h4>解析</h4>
+    <div class="modal-actions settings-actions">
+      <button class="btn" id="btn-test-api" type="button">测试连接</button>
+      <span class="muted" id="api-test-result"></span>
+      <span class="spacer"></span>
+      <button class="btn primary" id="btn-save-settings" type="button">保存</button>
+    </div>
+          </div>
+          <div id="settings-detail-parser" hidden>
+    <div class="settings-block parser-settings-block">
+      <div class="component-manager">
+        <div class="component-manager-head">
+          <strong>本地解析组件</strong>
+          <span id="component-state" class="muted" role="status">正在读取状态…</span>
+        </div>
+        <p id="component-size" class="muted"></p>
+        <p class="muted">不安装时仍可查看 PDF 和已有阅读内容；新 PDF 的结构化解析与页图生成需要此组件。</p>
+        <progress id="component-progress" max="100" hidden></progress>
+        <p id="component-detail" class="muted" role="status"></p>
+        <div class="component-actions">
+          <button class="btn small primary" id="btn-component-install" type="button">下载安装</button>
+          <button class="btn small" id="btn-component-migrate" type="button" hidden>重试迁移旧版组件</button>
+          <button class="btn small" id="btn-component-local" type="button">从文件安装</button>
+          <button class="btn small" id="btn-component-cancel" type="button" hidden>取消</button>
+          <button class="btn small" id="btn-component-remove" type="button" hidden>卸载组件</button>
+        </div>
+      </div>
       <p class="muted">表格结构识别模式。FAST 更快；复杂合并单元格时精度略降。</p>
       <div class="settings-radios" role="radiogroup" aria-label="表格模式">
         <label class="radio"><input type="radio" name="set-table-mode" value="fast"> FAST（默认，更快）</label>
@@ -349,12 +412,69 @@
       </label>
       <p class="muted" id="set-sidecar-state">常驻侧车状态：…</p>
     </div>
-    <div class="modal-actions">
-      <button class="btn" id="btn-test-api" type="button">测试连接</button>
-      <span class="muted" id="api-test-result"></span>
+    <div class="modal-actions settings-actions">
       <span class="spacer"></span>
-      <button class="btn ghost" data-close type="button">取消</button>
-      <button class="btn primary" id="btn-save-settings" type="button">保存</button>
+      <button class="btn primary" id="btn-save-parser-settings" type="button">保存</button>
+    </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="settings-proxy" role="tabpanel" aria-labelledby="settings-tab-proxy" hidden>
+    <div class="settings-section-title">更新网络</div>
+    <div class="proxy-modes" role="radiogroup" aria-label="代理模式">
+      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="system" checked><span>系统代理</span><small>当前使用</small></label>
+      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="manual"><span>手动代理</span><small>预览</small></label>
+    </div>
+    <div class="proxy-manual" id="proxy-manual" hidden>
+      <label>代理地址<input id="proxy-url" type="text" inputmode="url" placeholder="http://127.0.0.1:7890"></label>
+      <div class="proxy-actions"><button class="btn small" type="button" disabled title="尚未接入本机代理检测">检测本机代理</button></div>
+      <p class="muted" role="status">手动代理尚未接入网络请求，当前仍使用系统代理。</p>
+    </div>
+  </section>
+  <section id="settings-skills" role="tabpanel" aria-labelledby="settings-tab-skills" hidden>
+    <div class="settings-section-title">精读提示词</div>
+    <div class="skills-layout">
+      <div id="skill-list" class="skill-list"></div>
+      <div class="skill-editor">
+        <div class="skill-editor-head">
+          <strong id="skill-edit-name">选择一个技能</strong>
+          <span class="muted" id="skill-edit-desc"></span>
+        </div>
+        <textarea id="skill-edit-prompt" rows="16" placeholder="技能提示词……"></textarea>
+        <div class="modal-actions">
+          <input type="file" id="skill-file" accept=".md,.txt" hidden>
+          <button class="btn" id="btn-skill-import" type="button">导入 .md</button>
+          <button class="btn" id="btn-skill-reset" type="button">恢复默认</button>
+          <span class="spacer"></span>
+          <button class="btn primary" id="btn-skill-save" type="button">保存技能</button>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section id="settings-about" role="tabpanel" aria-labelledby="settings-tab-about">
+    <div class="about-product">
+      <div class="about-mark" aria-hidden="true"><img src="./app-icon.png" alt=""></div>
+      <div class="about-product-name"><strong>Paper30Min</strong><span>论文精读工作台 · v<span id="update-current-version">…</span></span></div>
+      <div class="updater-actions">
+        <button class="btn small" id="btn-check-update" type="button">检查更新</button>
+        <button class="btn small primary" id="btn-install-update" type="button" hidden>安装更新</button>
+      </div>
+    </div>
+    <div class="updater-settings">
+      <p id="update-status" class="muted" role="status">尚未检查更新</p>
+      <progress id="update-progress" max="100" hidden></progress>
+      <pre id="update-notes" class="update-notes" hidden></pre>
+    </div>
+    <div class="about-links">
+      <h4>项目链接</h4>
+      <div class="about-link-row"><span>源代码</span><button class="btn small" type="button" data-external="source">GitHub ↗</button></div>
+      <div class="about-link-row"><span>发布日志</span><button class="btn small" type="button" data-external="releases">GitHub Releases ↗</button></div>
+      <div class="about-link-row"><span>反馈问题</span><button class="btn small" type="button" data-external="issues">GitHub Issues ↗</button></div>
+    </div>
+  </section>
+      </div>
     </div>
   </div>
 </div>
@@ -396,31 +516,6 @@
       <span class="spacer"></span>
       <button class="btn ghost" data-close type="button">取消</button>
       <button class="btn primary" id="btn-organize-save" type="button">保存</button>
-    </div>
-  </div>
-</div>
-
-<!-- ============ 技能库弹窗 ============ -->
-<div class="modal-mask" id="modal-skills" hidden>
-  <div class="modal wide">
-    <h3>技能库（精读提示词模板）</h3>
-    <p class="muted">每个章节对应一个「技能」。可点击编辑、导入 .md 技能文件覆盖，或恢复默认。占位符：<code>{title}</code> = 论文标题，<code>{content}</code> = 章节原文，<code>{section}</code> = 章节名。</p>
-    <div class="skills-layout">
-      <div id="skill-list" class="skill-list"></div>
-      <div class="skill-editor">
-        <div class="skill-editor-head">
-          <strong id="skill-edit-name">选择一个技能</strong>
-          <span class="muted" id="skill-edit-desc"></span>
-        </div>
-        <textarea id="skill-edit-prompt" rows="16" placeholder="技能提示词……"></textarea>
-        <div class="modal-actions">
-          <input type="file" id="skill-file" accept=".md,.txt" hidden>
-          <button class="btn" id="btn-skill-import" type="button">导入 .md</button>
-          <button class="btn" id="btn-skill-reset" type="button">恢复默认</button>
-          <span class="spacer"></span>
-          <button class="btn primary" id="btn-skill-save" type="button">保存技能</button>
-        </div>
-      </div>
     </div>
   </div>
 </div>

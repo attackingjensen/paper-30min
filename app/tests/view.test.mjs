@@ -247,6 +247,20 @@ test('节树：进度状态点灰/橙/绿；References 灰显不参与 L2；全�
   assert.deepEqual(deepAllPartIds(null), []);
 });
 
+test('附录留在原文章节树中但不成为可标记或批量深挖部分', () => {
+  const withAppendix = { ...mapped, sections: [
+    ...mapped.sections.slice(0, 3),
+    { ...mapped.sections[2], id: 'appendix-a', role: 'appendix', title: 'Appendix A' },
+    mapped.sections[3],
+  ] };
+  assert.deepEqual(treeItems(withAppendix).map(item => [item.id, item.grey]), [
+    ['abstract', false], ['part-1', false], ['part-2', false],
+    ['appendix-a', true], ['sec_4_references', true],
+  ]);
+  assert.deepEqual(deepAllPartIds(withAppendix), ['abstract', 'part-1', 'part-2']);
+  assert.deepEqual(treeItems(withAppendix, { legacy: true }).map(item => [item.id, item.grey])[3], ['part-3', false]);
+});
+
 test('进节页时 PDF 对照定位该节起始页；栏收起仍记页码，不自动展开', () => {
   assert.equal(pdfPageForSection(mapped, 'part-2'), 2);
   assert.equal(pdfPageForSection(mapped, 'sec_3_method'), 2);

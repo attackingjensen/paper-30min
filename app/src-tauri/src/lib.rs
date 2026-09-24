@@ -1,4 +1,6 @@
 pub mod bridge;
+pub mod component;
+pub mod component_runtime;
 pub mod error;
 pub mod exports;
 pub mod files;
@@ -16,13 +18,16 @@ pub mod skills;
 pub mod smoke;
 pub mod tasks;
 pub mod testkit;
+pub mod updater;
 
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 
+use component_runtime::ComponentRuntime;
 use error::BridgeError;
 use library::Library;
 use tasks::{EventSink, TaskEvent, TaskRegistry};
@@ -45,6 +50,8 @@ pub struct AppState {
     library: Arc<Library>,
     /// 用户在前端确认过关闭选择后置位，之后 CloseRequested 直接放行。
     force_close: AtomicBool,
+    installing_update: AtomicBool,
+    component: Arc<ComponentRuntime>,
 }
 
 #[tauri::command]
@@ -132,33 +139,198 @@ fn bridge_start(
     kind: String,
     input: Option<Value>,
 ) -> Result<Value, BridgeError> {
+    if state.installing_update.load(Ordering::SeqCst) {
+        return Err(BridgeError::new(
+            "update_busy",
+            "更新安装期间不能启动新任务。",
+            true,
+        ));
+    }
     let sink: Arc<dyn EventSink> = Arc::new(TauriEventSink { app });
-    let task_id = state.registry.start(&kind, input.unwrap_or(Value::Null), sink)?;
+    let task_id = state.component.start_task(|| {
+        state
+            .registry
+            .start(&kind, input.unwrap_or(Value::Null), sink)
+    })?;
     Ok(json!({
         "schemaVersion": bridge::BRIDGE_SCHEMA_VERSION,
         "taskId": task_id,
     }))
 }
 
+#[tauri::command]
+fn updater_info(app: AppHandle) -> Value {
+    updater::info(&app)
+}
+
+#[tauri::command]
+async fn updater_check(app: AppHandle) -> Result<Value, BridgeError> {
+    updater::check(&app).await
+}
+
+#[tauri::command]
+async fn updater_install(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version: String,
+) -> Result<(), BridgeError> {
+    if state.component.is_busy() {
+        return Err(BridgeError::new(
+            "component_busy",
+            "请等待解析组件操作完成后再安装更新。",
+            true,
+        ));
+    }
+    updater::install(&app, &state.registry, &state.installing_update, &version).await
+}
+
+#[tauri::command]
+fn component_status(state: State<'_, AppState>) -> Value {
+    state.component.status()
+}
+
+#[tauri::command]
+fn component_cancel(state: State<'_, AppState>) {
+    state.component.cancel();
+}
+
+#[tauri::command]
+async fn component_install(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source: Option<String>,
+) -> Result<Value, BridgeError> {
+    if state.installing_update.load(Ordering::SeqCst) {
+        return Err(BridgeError::new(
+            "update_busy",
+            "请等待主程序更新完成。",
+            true,
+        ));
+    }
+    let component = Arc::clone(&state.component);
+    let registry = Arc::clone(&state.registry);
+    tauri::async_runtime::spawn_blocking(move || {
+        component.install(&app, &registry, source.as_deref().map(std::path::Path::new))
+    })
+    .await
+    .map_err(|error| BridgeError::internal(format!("组件安装线程失败：{error}")))?
+}
+
+#[tauri::command]
+async fn component_remove(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, BridgeError> {
+    if state.installing_update.load(Ordering::SeqCst) {
+        return Err(BridgeError::new(
+            "update_busy",
+            "请等待主程序更新完成。",
+            true,
+        ));
+    }
+    let component = Arc::clone(&state.component);
+    let registry = Arc::clone(&state.registry);
+    tauri::async_runtime::spawn_blocking(move || component.remove(&app, &registry))
+        .await
+        .map_err(|error| BridgeError::internal(format!("组件卸载线程失败：{error}")))?
+}
+
+#[tauri::command]
+async fn component_migrate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, BridgeError> {
+    let source = component_runtime::legacy_source()
+        .ok_or_else(|| BridgeError::invalid_input("未找到旧版解析组件。"))?;
+    let component = Arc::clone(&state.component);
+    let registry = Arc::clone(&state.registry);
+    tauri::async_runtime::spawn_blocking(move || {
+        component
+            .migrate_legacy(&app, &registry, &source)
+            .map(|_| component.status())
+    })
+    .await
+    .map_err(|error| BridgeError::internal(format!("组件迁移线程失败：{error}")))?
+}
+
+fn external_url(destination: &str) -> Option<&'static str> {
+    match destination {
+        "source" => Some("https://github.com/attackingjensen/paper-30min"),
+        "releases" => Some("https://github.com/attackingjensen/paper-30min/releases"),
+        "issues" => Some("https://github.com/attackingjensen/paper-30min/issues"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn open_external(app: AppHandle, destination: String) -> Result<(), BridgeError> {
+    let url =
+        external_url(&destination).ok_or_else(|| BridgeError::invalid_input("未知的项目链接"))?;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|err| BridgeError::internal(format!("打开链接失败: {err}")))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let root = app.path().app_data_dir()?;
+            let component_root = component::component_root(&app.path().app_local_data_dir()?);
+            pdfparse::set_component_root(component_root.clone());
+            let component = ComponentRuntime::new(component_root);
             let library = Arc::new(Library::open(&root)?);
             let registry = TaskRegistry::new(Arc::clone(&library));
             // 常驻解析侧车启动预热（#84）：侧车就绪且设置开启时后台拉起并加载模型，
             // 第二篇及以后的论文解析免去启动等待；失败只记日志。
-            pdfparse::warm_resident_sidecar(&registry, &library);
+            let legacy = component_runtime::legacy_source();
+            if let Some(source) = legacy.filter(|source| source.is_dir()) {
+                let app_handle = app.handle().clone();
+                let component_for_migration = Arc::clone(&component);
+                let registry_for_migration = Arc::clone(&registry);
+                let library_for_migration = Arc::clone(&library);
+                std::thread::spawn(move || {
+                    if let Err(error) = component_for_migration.migrate_legacy(
+                        &app_handle,
+                        &registry_for_migration,
+                        &source,
+                    ) {
+                        eprintln!("[component] 旧版解析组件迁移失败：{error}");
+                    } else {
+                        pdfparse::warm_resident_sidecar(
+                            &registry_for_migration,
+                            &library_for_migration,
+                        );
+                    }
+                });
+            } else {
+                pdfparse::warm_resident_sidecar(&registry, &library);
+            }
             app.manage(AppState {
                 registry,
                 library,
                 force_close: AtomicBool::new(false),
+                installing_update: AtomicBool::new(false),
+                component,
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![bridge_invoke, bridge_start])
+        .invoke_handler(tauri::generate_handler![
+            bridge_invoke,
+            bridge_start,
+            updater_info,
+            updater_check,
+            updater_install,
+            component_status,
+            component_install,
+            component_cancel,
+            component_remove,
+            component_migrate,
+            open_external
+        ])
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
                 let state = window.state::<AppState>();
@@ -187,4 +359,22 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("Paper30Min 客户端启动失败");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::external_url;
+
+    #[test]
+    fn project_links_are_allowlisted() {
+        assert_eq!(
+            external_url("releases"),
+            Some("https://github.com/attackingjensen/paper-30min/releases")
+        );
+        assert_eq!(
+            external_url("issues"),
+            Some("https://github.com/attackingjensen/paper-30min/issues")
+        );
+        assert_eq!(external_url("https://example.com"), None);
+    }
 }

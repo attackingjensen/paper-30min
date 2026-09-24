@@ -14,6 +14,7 @@ import {
   INPUT_TOKEN_HARD_TOP, CROP_IMAGE_TOKEN_BUDGET,
   estimateTextTokens, l2Sections, contentSections, partIdForSection, sectionForPart,
   renderSectionText, renderPaperText, renderAssetList, sectionAssetCandidates,
+  mapAssets,
   assembleMapL2, validateL2Output, mergeL2ShardOutputs, assembleMapL1,
   assembleDeepDive, renderDigBlob, assembleSynthesize,
   parseToolCallBlocks, parseRefs, validateRefs, validateProduct,
@@ -66,6 +67,24 @@ test('节与精读部分的顺序对应约定', () => {
   assert.equal(sectionForPart(fixture, 'part-2').id, 'sec_3_method');
   assert.equal(sectionForPart(fixture, 'part-3'), null);
   assert.equal(sectionForPart(fixture, 'part-0'), null);
+});
+
+test('附录、文献和致谢保留在块模型但不进入新地图', () => {
+  const mapped = { ...fixture, sections: [
+    ...fixture.sections.slice(0, 3),
+    { ...fixture.sections[2], id: 'appendix-a', role: 'appendix', title: 'Appendix A' },
+    { ...fixture.sections[2], id: 'appendix-b', role: 'appendix', title: 'Appendix B' },
+    fixture.sections[3],
+    { ...fixture.sections[3], id: 'thanks', role: 'acknowledgments', title: 'Acknowledgments' },
+  ] };
+  assert.deepEqual(l2Sections(mapped).map(s => s.id), ['sec_1_abstract', 'sec_2_introduction', 'sec_3_method']);
+  assert.deepEqual(contentSections(mapped).map(s => s.id), ['sec_2_introduction', 'sec_3_method']);
+  assert.equal(partIdForSection(mapped, 'appendix-a'), null);
+  assert.equal(sectionForPart(mapped, 'part-3'), null);
+  assert.equal(assembleMapL2({ title: 'Test', mapped }).shards.length, 3);
+  const assets = [...fixture.figures, { ...fixture.figures[0], id: 'appendix-figure', section: 'appendix-a' }];
+  assert.deepEqual(mapAssets(mapped, assets).map(asset => asset.id), ['fig_1']);
+  assert.ok(!assembleMapL1({ title: 'Test', mapped, figures: assets }).includes('appendix-figure'));
 });
 
 test('文本层渲染格式与 Rust 契约断言锚定', () => {

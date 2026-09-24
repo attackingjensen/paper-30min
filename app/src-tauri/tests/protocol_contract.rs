@@ -38,7 +38,9 @@ static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 取锁宏：容毒（单个用例 panic 不级联后续用例）。
 macro_rules! env_lock {
     () => {
-        ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     };
 }
 
@@ -58,9 +60,27 @@ fn seed_paper(library: &Library) -> String {
         id: "paper-fixture".to_string(),
         title: "Fixture 论文：小样例方法".to_string(),
         parts: vec![
-            PartDto { id: "abstract".to_string(), title: Some("Abstract".to_string()), heading: None, semantic_type: Some("abstract".to_string()), sort_order: 0 },
-            PartDto { id: "part-1".to_string(), title: Some("Introduction".to_string()), heading: None, semantic_type: Some("introduction".to_string()), sort_order: 1 },
-            PartDto { id: "part-2".to_string(), title: Some("Method".to_string()), heading: None, semantic_type: Some("method".to_string()), sort_order: 2 },
+            PartDto {
+                id: "abstract".to_string(),
+                title: Some("Abstract".to_string()),
+                heading: None,
+                semantic_type: Some("abstract".to_string()),
+                sort_order: 0,
+            },
+            PartDto {
+                id: "part-1".to_string(),
+                title: Some("Introduction".to_string()),
+                heading: None,
+                semantic_type: Some("introduction".to_string()),
+                sort_order: 1,
+            },
+            PartDto {
+                id: "part-2".to_string(),
+                title: Some("Method".to_string()),
+                heading: None,
+                semantic_type: Some("method".to_string()),
+                sort_order: 2,
+            },
         ],
         ..Default::default()
     };
@@ -70,7 +90,13 @@ fn seed_paper(library: &Library) -> String {
 /// 块模型附件落库（读磁盘夹具字节）。
 fn seed_block_model(library: &Library, paper_id: &str) {
     let bytes = std::fs::read(fixture_blockmodel()).expect("读取块模型夹具");
-    put_attachment(library, paper_id, "blockmodel.json", "application/json", &bytes);
+    put_attachment(
+        library,
+        paper_id,
+        "blockmodel.json",
+        "application/json",
+        &bytes,
+    );
 }
 
 /// #87 UI 形状论文：parts 是 pdf.js 预切分的真实形状（无 abstract、节集与块模型
@@ -80,9 +106,27 @@ fn seed_ui_shaped_paper(library: &Library) -> String {
         id: "paper-ui-shaped".to_string(),
         title: "UI 导入论文：部分与块模型不对齐".to_string(),
         parts: vec![
-            PartDto { id: "part-1".to_string(), title: Some("Introduction".to_string()), heading: Some("1 Introduction".to_string()), semantic_type: Some("introduction".to_string()), sort_order: 1 },
-            PartDto { id: "part-2".to_string(), title: Some("Method".to_string()), heading: Some("2 Method".to_string()), semantic_type: Some("method".to_string()), sort_order: 2 },
-            PartDto { id: "part-3".to_string(), title: Some("Experiments".to_string()), heading: Some("3 Experiments".to_string()), semantic_type: Some("experiments".to_string()), sort_order: 3 },
+            PartDto {
+                id: "part-1".to_string(),
+                title: Some("Introduction".to_string()),
+                heading: Some("1 Introduction".to_string()),
+                semantic_type: Some("introduction".to_string()),
+                sort_order: 1,
+            },
+            PartDto {
+                id: "part-2".to_string(),
+                title: Some("Method".to_string()),
+                heading: Some("2 Method".to_string()),
+                semantic_type: Some("method".to_string()),
+                sort_order: 2,
+            },
+            PartDto {
+                id: "part-3".to_string(),
+                title: Some("Experiments".to_string()),
+                heading: Some("3 Experiments".to_string()),
+                semantic_type: Some("experiments".to_string()),
+                sort_order: 3,
+            },
         ],
         ..Default::default()
     };
@@ -94,16 +138,41 @@ fn seed_four_section_paper(library: &Library) -> String {
         id: "paper-four".to_string(),
         title: "Fixture 论文：四节并发".to_string(),
         parts: vec![
-            PartDto { id: "abstract".to_string(), title: Some("Abstract".to_string()), heading: None, semantic_type: Some("abstract".to_string()), sort_order: 0 },
-            PartDto { id: "part-1".to_string(), title: Some("Introduction".to_string()), heading: None, semantic_type: Some("introduction".to_string()), sort_order: 1 },
-            PartDto { id: "part-2".to_string(), title: Some("Method".to_string()), heading: None, semantic_type: Some("method".to_string()), sort_order: 2 },
-            PartDto { id: "part-3".to_string(), title: Some("Experiments".to_string()), heading: None, semantic_type: Some("experiments".to_string()), sort_order: 3 },
+            PartDto {
+                id: "abstract".to_string(),
+                title: Some("Abstract".to_string()),
+                heading: None,
+                semantic_type: Some("abstract".to_string()),
+                sort_order: 0,
+            },
+            PartDto {
+                id: "part-1".to_string(),
+                title: Some("Introduction".to_string()),
+                heading: None,
+                semantic_type: Some("introduction".to_string()),
+                sort_order: 1,
+            },
+            PartDto {
+                id: "part-2".to_string(),
+                title: Some("Method".to_string()),
+                heading: None,
+                semantic_type: Some("method".to_string()),
+                sort_order: 2,
+            },
+            PartDto {
+                id: "part-3".to_string(),
+                title: Some("Experiments".to_string()),
+                heading: None,
+                semantic_type: Some("experiments".to_string()),
+                sort_order: 3,
+            },
         ],
         ..Default::default()
     };
     let paper_id = library.put_paper(paper).expect("写入论文").id;
-    let mut mapped: Value = serde_json::from_slice(&std::fs::read(fixture_blockmodel()).expect("读取块模型夹具"))
-        .expect("解析块模型夹具");
+    let mut mapped: Value =
+        serde_json::from_slice(&std::fs::read(fixture_blockmodel()).expect("读取块模型夹具"))
+            .expect("解析块模型夹具");
     let sections = mapped["sections"].as_array_mut().expect("sections");
     let references = sections.pop().expect("references 节");
     sections.push(json!({
@@ -137,7 +206,13 @@ fn seed_four_section_paper(library: &Library) -> String {
 fn seed_assets(library: &Library, paper_id: &str) {
     for page in 1..=3u32 {
         let id = format!("pageimg-{page:04}");
-        put_attachment(library, paper_id, &id, "image/webp", format!("page-{page}").as_bytes());
+        put_attachment(
+            library,
+            paper_id,
+            &id,
+            "image/webp",
+            format!("page-{page}").as_bytes(),
+        );
     }
     put_attachment(library, paper_id, "crop-fig_1", "image/webp", b"crop-fig");
     put_attachment(library, paper_id, "crop-tbl_1", "image/webp", b"crop-tbl");
@@ -223,8 +298,12 @@ fn set_l2_key_assets(library: &Library, paper_id: &str, part_id: &str, key_asset
 /// 解码 data URL 图像字节为字符串（seed_assets 写入可读测试字节）。
 fn decode_image_url(url: &str) -> String {
     use base64::Engine;
-    let encoded = url.strip_prefix("data:image/webp;base64,").expect("data URL 前缀");
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).expect("base64 解码");
+    let encoded = url
+        .strip_prefix("data:image/webp;base64,")
+        .expect("data URL 前缀");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("base64 解码");
     String::from_utf8(bytes).expect("测试字节为 UTF-8")
 }
 
@@ -434,8 +513,17 @@ fn build_map_runs_two_phases_and_persists_products() {
     seed_assets(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let stages = events_named(&sink, "stage");
     let stage_names: Vec<&str> = stages.iter().filter_map(|d| d["stage"].as_str()).collect();
@@ -454,17 +542,30 @@ fn build_map_runs_two_phases_and_persists_products() {
     assert_eq!(maps[0].body["problem"]["text"], json!("小样例问题"));
     let l2s = products_of(&library, &paper_id, "l2");
     assert_eq!(l2s.len(), 3);
-    let abstract_l2 = l2s.iter().find(|p| p.part_id == "abstract").expect("abstract l2");
+    let abstract_l2 = l2s
+        .iter()
+        .find(|p| p.part_id == "abstract")
+        .expect("abstract l2");
     assert_eq!(abstract_l2.body["type"], json!("abstract"));
-    let part1_l2 = l2s.iter().find(|p| p.part_id == "part-1").expect("part-1 l2");
+    let part1_l2 = l2s
+        .iter()
+        .find(|p| p.part_id == "part-1")
+        .expect("part-1 l2");
     assert_eq!(part1_l2.body["title"], json!("Introduction"));
     assert_eq!(part1_l2.body["pages"], json!({"start": 1, "end": 2}));
     assert_eq!(part1_l2.body["points"][0]["refs"], json!(["(p1)"]));
     assert_eq!(part1_l2.body["keyAssets"], json!(["fig_1"]));
     let paper = library.get_paper(&paper_id).unwrap();
-    assert!(paper.activity_days.iter().any(|day| day.kind == "analysis"), "建图完成计入打卡");
+    assert!(
+        paper.activity_days.iter().any(|day| day.kind == "analysis"),
+        "建图完成计入打卡"
+    );
 
-    let result = registry.get(&task_id).unwrap().result.expect("succeeded 应携带 result");
+    let result = registry
+        .get(&task_id)
+        .unwrap()
+        .result
+        .expect("succeeded 应携带 result");
     assert_eq!(result["sections"], json!(3));
     assert_eq!(result["shards"], json!(3));
     let requests = mock.requests();
@@ -486,12 +587,22 @@ fn build_map_runs_two_phases_and_persists_products() {
     for request in &requests {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(json!({}));
         if !l2_sec_ids_in_prompt(&prompt_text(request)).is_empty() {
-            assert_eq!(body["max_tokens"], json!(8192), "调用① max_tokens 下限 8192");
+            assert_eq!(
+                body["max_tokens"],
+                json!(8192),
+                "调用① max_tokens 下限 8192"
+            );
         }
     }
-    assert!(l2_prompts.iter().any(|p| p.contains("Fixture 论文：小样例方法")));
-    assert!(l2_prompts.iter().any(|p| p.contains("## sec_2_introduction Introduction (p1-2)")));
-    assert!(l2_prompts.iter().any(|p| p.contains("本节类型关注点") || p.contains("章节关注点")));
+    assert!(l2_prompts
+        .iter()
+        .any(|p| p.contains("Fixture 论文：小样例方法")));
+    assert!(l2_prompts
+        .iter()
+        .any(|p| p.contains("## sec_2_introduction Introduction (p1-2)")));
+    assert!(l2_prompts
+        .iter()
+        .any(|p| p.contains("本节类型关注点") || p.contains("章节关注点")));
     assert!(l1_prompts[0].contains("sec_3_method"), "调用②含全部 L2");
     assert!(l1_prompts[0].contains("fig_1"), "调用②含图表清单");
 }
@@ -523,8 +634,17 @@ fn build_map_shards_concurrently_with_bounded_inflight() {
     configure_model(&registry, &library, &mock.url(""));
     configure_concurrency(&registry, &library, 2);
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let requests = mock.requests();
     let l2_requests: Vec<_> = requests
@@ -533,15 +653,30 @@ fn build_map_shards_concurrently_with_bounded_inflight() {
         .collect();
     assert_eq!(l2_requests.len(), 4, "总 L2 请求数 = 4");
     for request in &l2_requests {
-        assert_eq!(l2_sec_ids_in_prompt(&prompt_text(request)).len(), 1, "每个请求体只含一节文本");
+        assert_eq!(
+            l2_sec_ids_in_prompt(&prompt_text(request)).len(),
+            1,
+            "每个请求体只含一节文本"
+        );
     }
-    assert!(max_in_flight.load(Ordering::SeqCst) <= 2, "同时在飞 L2 请求数 ≤ 2，实际 {}", max_in_flight.load(Ordering::SeqCst));
-    assert!(max_in_flight.load(Ordering::SeqCst) >= 2, "并发上限 2 时应真正并行");
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) <= 2,
+        "同时在飞 L2 请求数 ≤ 2，实际 {}",
+        max_in_flight.load(Ordering::SeqCst)
+    );
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) >= 2,
+        "并发上限 2 时应真正并行"
+    );
 
     let l2s = products_of(&library, &paper_id, "l2");
     assert_eq!(l2s.len(), 4);
     let order: Vec<&str> = l2s.iter().map(|p| p.part_id.as_str()).collect();
-    assert_eq!(order, vec!["abstract", "part-1", "part-2", "part-3"], "产物按节序");
+    assert_eq!(
+        order,
+        vec!["abstract", "part-1", "part-2", "part-3"],
+        "产物按节序"
+    );
 
     let progresses: Vec<u64> = sink
         .events()
@@ -550,9 +685,17 @@ fn build_map_shards_concurrently_with_bounded_inflight() {
         .collect();
     assert!(!progresses.is_empty());
     for window in progresses.windows(2) {
-        assert!(window[1] >= window[0], "进度 done 应单调递增: {progresses:?}");
+        assert!(
+            window[1] >= window[0],
+            "进度 done 应单调递增: {progresses:?}"
+        );
     }
-    let last = sink.events().iter().rev().find_map(|event| event.progress.clone()).expect("应有进度");
+    let last = sink
+        .events()
+        .iter()
+        .rev()
+        .find_map(|event| event.progress.clone())
+        .expect("应有进度");
     assert_eq!(last.done, last.total);
     assert_eq!(last.total, 5, "total = 4 节 + 调用②");
     let result = registry.get(&task_id).unwrap().result.unwrap();
@@ -568,11 +711,19 @@ fn build_map_rejects_rerun_without_overwrite_confirmation() {
     seed_block_model(&library, &paper_id);
     seed_assets(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
-    let (first, _) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    let (first, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &first), TaskStatus::Succeeded);
 
     // 重跑未确认 → already_exists 错误即指令（不再调用模型）。
-    let (second, _) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    let (second, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &second), TaskStatus::Failed);
     let error = registry.get(&second).unwrap().error.unwrap();
     assert_eq!(error.code, "already_exists");
@@ -586,7 +737,11 @@ fn build_map_rejects_rerun_without_overwrite_confirmation() {
         json!({ "paperId": paper_id, "overwriteConfirmed": true }),
     );
     assert_eq!(terminal(&registry, &third), TaskStatus::Succeeded);
-    assert_eq!(products_of(&library, &paper_id, "map").len(), 1, "重跑覆盖不留版本");
+    assert_eq!(
+        products_of(&library, &paper_id, "map").len(),
+        1,
+        "重跑覆盖不留版本"
+    );
 }
 
 #[test]
@@ -598,13 +753,25 @@ fn build_map_preflight_missing_block_model_fails_with_instruction() {
     configure_model(&registry, &library, &mock.url(""));
 
     // 缺块模型附件 → preflight_missing（#76：建图只等块模型）。
-    let (task_id, _) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
     let error = registry.get(&task_id).unwrap().error.unwrap();
     assert_eq!(error.code, "preflight_missing");
     assert!(!error.retryable);
-    assert!(error.message.contains("blockmodel.json"), "错误即指令: {}", error.message);
-    assert!(error.message.contains("pdfparse.convert@1"), "错误即指令: {}", error.message);
+    assert!(
+        error.message.contains("blockmodel.json"),
+        "错误即指令: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("pdfparse.convert@1"),
+        "错误即指令: {}",
+        error.message
+    );
     assert_eq!(mock.hits(), 0, "preflight 失败不调用模型");
 }
 
@@ -617,8 +784,17 @@ fn build_map_succeeds_with_only_block_model() {
     seed_block_model(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
     assert_eq!(products_of(&library, &paper_id, "map").len(), 1);
     assert_eq!(products_of(&library, &paper_id, "l2").len(), 3);
     assert_eq!(mock.hits(), 4);
@@ -636,16 +812,46 @@ fn build_map_rewrites_ui_shaped_parts_to_block_model() {
     seed_assets(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let parts = library.get_paper(&paper_id).unwrap().parts;
     let aligned = vec![
-        PartDto { id: "abstract".to_string(), title: Some("Abstract".to_string()), heading: None, semantic_type: Some("abstract".to_string()), sort_order: 0 },
-        PartDto { id: "part-1".to_string(), title: Some("Introduction".to_string()), heading: None, semantic_type: Some("introduction".to_string()), sort_order: 1 },
-        PartDto { id: "part-2".to_string(), title: Some("Method".to_string()), heading: None, semantic_type: Some("method".to_string()), sort_order: 2 },
+        PartDto {
+            id: "abstract".to_string(),
+            title: Some("Abstract".to_string()),
+            heading: None,
+            semantic_type: Some("abstract".to_string()),
+            sort_order: 0,
+        },
+        PartDto {
+            id: "part-1".to_string(),
+            title: Some("Introduction".to_string()),
+            heading: None,
+            semantic_type: Some("introduction".to_string()),
+            sort_order: 1,
+        },
+        PartDto {
+            id: "part-2".to_string(),
+            title: Some("Method".to_string()),
+            heading: None,
+            semantic_type: Some("method".to_string()),
+            sort_order: 2,
+        },
     ];
-    assert_eq!(parts, aligned, "建图后 parts 与块模型内容节同构（semanticType 取 L2 type）");
+    assert_eq!(
+        parts, aligned,
+        "建图后 parts 与块模型内容节同构（semanticType 取 L2 type）"
+    );
 
     // 确认覆盖重跑：parts 已对齐则幂等，不重写也不变形。
     let (rerun, _) = start_task(
@@ -654,7 +860,11 @@ fn build_map_rewrites_ui_shaped_parts_to_block_model() {
         json!({ "paperId": paper_id, "overwriteConfirmed": true }),
     );
     assert_eq!(terminal(&registry, &rerun), TaskStatus::Succeeded);
-    assert_eq!(library.get_paper(&paper_id).unwrap().parts, aligned, "重跑后 parts 保持对齐");
+    assert_eq!(
+        library.get_paper(&paper_id).unwrap().parts,
+        aligned,
+        "重跑后 parts 保持对齐"
+    );
 
     // 全链验收：UI 导入 → 建图 → 「全部深挖」按前端 deepAllPartIds 域（含 abstract）批量跑通。
     let dive = MockHttp::start(|_request, _hit| sse_text(DIG_MARKDOWN));
@@ -664,10 +874,19 @@ fn build_map_rewrites_ui_shaped_parts_to_block_model() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["abstract", "part-1", "part-2"] }),
     );
-    assert_eq!(terminal(&registry, &dive_task), TaskStatus::Succeeded, "事件流: {:?}", dive_sink.events());
+    assert_eq!(
+        terminal(&registry, &dive_task),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        dive_sink.events()
+    );
     assert_eq!(
         dug_part_ids(&library, &paper_id),
-        vec!["abstract".to_string(), "part-1".to_string(), "part-2".to_string()],
+        vec![
+            "abstract".to_string(),
+            "part-1".to_string(),
+            "part-2".to_string()
+        ],
         "逐节落库"
     );
 }
@@ -684,14 +903,23 @@ fn build_map_hard_top_rejects_oversized_prompt() {
     seed_assets(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, _) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
     let error = registry.get(&task_id).unwrap().error.unwrap();
     assert_eq!(error.code, "protocol_shard_failed");
     assert!(!error.retryable, "硬顶拒绝不截断也不可自动重试");
-    let failed = error.details.expect("失败节清单")["failedSections"].as_array().cloned().unwrap();
+    let failed = error.details.expect("失败节清单")["failedSections"]
+        .as_array()
+        .cloned()
+        .unwrap();
     assert!(!failed.is_empty());
-    assert!(failed.iter().all(|item| item["code"] == json!("input_too_large")));
+    assert!(failed
+        .iter()
+        .all(|item| item["code"] == json!("input_too_large")));
     assert_eq!(mock.hits(), 0, "硬顶检查发生在调用模型之前");
 }
 
@@ -724,9 +952,18 @@ fn deep_dive_preflight_missing_visual_assets_fails_with_instruction() {
         "错误即指令: {}",
         error.message
     );
-    let missing = error.details.expect("缺失清单")["missing"].as_array().unwrap().clone();
-    assert!(missing.contains(&json!("pageimg-0001")), "缺失清单含页图: {missing:?}");
-    assert!(missing.contains(&json!("crop-fig_1")), "缺失清单含裁切图: {missing:?}");
+    let missing = error.details.expect("缺失清单")["missing"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        missing.contains(&json!("pageimg-0001")),
+        "缺失清单含页图: {missing:?}"
+    );
+    assert!(
+        missing.contains(&json!("crop-fig_1")),
+        "缺失清单含裁切图: {missing:?}"
+    );
     assert_eq!(mock.hits(), 0, "preflight 失败不调用模型");
 }
 
@@ -734,10 +971,12 @@ fn deep_dive_preflight_missing_visual_assets_fails_with_instruction() {
 fn deep_dive_tool_loop_completes_and_persists() {
     let (registry, library, _dir) = common::env();
     let _lock = env_lock!();
-    let mock = MockHttp::start(|_request, hit| match hit {
+    let mock = MockHttp::start(|_request, hit| {
+        match hit {
         1 => sse_text("先读方法节。\n```tool\n{\"name\": \"read_section\", \"args\": {\"sec_id\": \"sec_3_method\", \"offset\": 1, \"limit\": 10}}\n```"),
         2 => sse_text("再看图。\n```tool\n{\"name\": \"get_figure\", \"args\": {\"fig_id\": \"fig_1\"}}\n```"),
         _ => sse_text(DIG_MARKDOWN),
+    }
     });
     let paper_id = seed_paper(&library);
     seed_block_model(&library, &paper_id);
@@ -750,7 +989,12 @@ fn deep_dive_tool_loop_completes_and_persists() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     // 工具轨迹：两步，均 ok，含结果摘要。
     let tools = events_named(&sink, "tool");
@@ -788,7 +1032,10 @@ fn deep_dive_tool_loop_completes_and_persists() {
     let body = digs[0].body.as_str().expect("dig 为 Markdown 字符串");
     assert!(body.contains("## 核心论点") && body.contains("## 边界与存疑"));
     for pointer in ["(L1)", "(fig_1)", "(sec_2:L1)"] {
-        assert!(body.contains(pointer), "产物应保留出处指针 {pointer}: {body}");
+        assert!(
+            body.contains(pointer),
+            "产物应保留出处指针 {pointer}: {body}"
+        );
     }
     let paper = library.get_paper(&paper_id).unwrap();
     assert!(paper.activity_days.iter().any(|day| day.kind == "analysis"));
@@ -797,38 +1044,87 @@ fn deep_dive_tool_loop_completes_and_persists() {
     let requests = mock.requests();
     assert_eq!(requests.len(), 3);
     let body0: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    let first_content = body0["messages"][0]["content"].as_array().expect("深挖首条消息为多模态分段");
+    let first_content = body0["messages"][0]["content"]
+        .as_array()
+        .expect("深挖首条消息为多模态分段");
     assert_eq!(first_content[0]["type"], json!("text"));
     let prompt = first_content[0]["text"].as_str().unwrap();
-    assert!(prompt.contains("L1 (p1)：研究背景"), "当前节原文全送且块号以 L 标注: {prompt}");
-    assert!(prompt.contains("小节类型关注点") || prompt.contains("本节类型关注点"), "深挖叠加本节类型关注点");
+    assert!(
+        prompt.contains("L1 (p1)：研究背景"),
+        "当前节原文全送且块号以 L 标注: {prompt}"
+    );
+    assert!(
+        prompt.contains("小节类型关注点") || prompt.contains("本节类型关注点"),
+        "深挖叠加本节类型关注点"
+    );
     // #81 配方预附：fig_1 归属 sec_2_introduction（图表清单），裁切图随首条消息附上。
-    assert!(prompt.contains("已附本节图表：- fig_1（p2）：图 1：样例架构图。"), "清单段: {prompt}");
+    assert!(
+        prompt.contains("已附本节图表：- fig_1（p2）：图 1：样例架构图。"),
+        "清单段: {prompt}"
+    );
     assert!(prompt.contains("无需再调 get_figure"));
-    let images = first_content.iter().filter(|part| part["type"] == "image_url").count();
-    assert_eq!(images, 4, "当前节页图 ±1 页（p1-2 → p1..p3）+ 预附 crop-fig_1");
+    let images = first_content
+        .iter()
+        .filter(|part| part["type"] == "image_url")
+        .count();
+    assert_eq!(
+        images, 4,
+        "当前节页图 ±1 页（p1-2 → p1..p3）+ 预附 crop-fig_1"
+    );
 
     // #81 遥测：轮数与工具调用数进 result。
-    let result = registry.get(&task_id).unwrap().result.expect("succeeded 携带 result");
+    let result = registry
+        .get(&task_id)
+        .unwrap()
+        .result
+        .expect("succeeded 携带 result");
     assert_eq!(result["roundsPerSection"]["part-1"], json!(3));
     assert_eq!(result["toolCallsPerSection"]["part-1"], json!(2));
 
     let body1: Value = serde_json::from_slice(&requests[1].body).unwrap();
-    let roles: Vec<&str> = body1["messages"].as_array().unwrap().iter().filter_map(|m| m["role"].as_str()).collect();
+    let roles: Vec<&str> = body1["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["role"].as_str())
+        .collect();
     assert_eq!(roles, vec!["user", "assistant", "user"], "工具循环消息交替");
     let observation = body1["messages"][2]["content"].as_str().unwrap();
-    assert!(observation.contains("\"tool\":\"read_section\""), "观察为工具结果 JSON: {observation}");
-    assert!(observation.contains("\"total\":3"), "观察含块窗口: {observation}");
-    assert!(observation.contains("\"observations\""), "多工具续回为 observations 数组（#81）");
+    assert!(
+        observation.contains("\"tool\":\"read_section\""),
+        "观察为工具结果 JSON: {observation}"
+    );
+    assert!(
+        observation.contains("\"total\":3"),
+        "观察含块窗口: {observation}"
+    );
+    assert!(
+        observation.contains("\"observations\""),
+        "多工具续回为 observations 数组（#81）"
+    );
 
     let body2: Value = serde_json::from_slice(&requests[2].body).unwrap();
-    let last = body2["messages"].as_array().unwrap().last().unwrap().clone();
+    let last = body2["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
     let parts = last["content"].as_array().unwrap();
-    assert!(parts[0]["text"].as_str().unwrap().contains("crop-fig_1"), "get_figure 观察含裁切图指针");
-    assert!(parts.iter().any(|part| part["type"] == "image_url"), "get_figure 观察随附裁切图");
+    assert!(
+        parts[0]["text"].as_str().unwrap().contains("crop-fig_1"),
+        "get_figure 观察含裁切图指针"
+    );
+    assert!(
+        parts.iter().any(|part| part["type"] == "image_url"),
+        "get_figure 观察随附裁切图"
+    );
 
     // 深挖中间轮不产生对外 chunk（决策 4）。
-    assert!(sink.events().iter().all(|event| event.event != "chunk"), "深挖无对外 chunk");
+    assert!(
+        sink.events().iter().all(|event| event.event != "chunk"),
+        "深挖无对外 chunk"
+    );
 
     // 快照 details 日志：阶段、轮次开始（#80）、正文开始与工具轨迹随快照可回看——JS 订阅
     // 建立前发出的事件不经通道重放，任务中心以快照日志为完整源（#72 走查实测订阅窗口丢事件
@@ -839,16 +1135,46 @@ fn deep_dive_tool_loop_completes_and_persists() {
     let events: Vec<&str> = details.iter().filter_map(|d| d["event"].as_str()).collect();
     assert_eq!(
         events,
-        vec!["stage", "stage", "round-start", "content", "round", "tool",
-             "round-start", "content", "round", "tool",
-             "round-start", "content", "preview", "round", "stage"]
+        vec![
+            "stage",
+            "stage",
+            "round-start",
+            "content",
+            "round",
+            "tool",
+            "round-start",
+            "content",
+            "round",
+            "tool",
+            "round-start",
+            "content",
+            "preview",
+            "round",
+            "stage"
+        ]
     );
-    assert_eq!(details[0]["detail"]["stage"], json!("deep-dive-queued"), "开工前列出全部目标（#83）");
+    assert_eq!(
+        details[0]["detail"]["stage"],
+        json!("deep-dive-queued"),
+        "开工前列出全部目标（#83）"
+    );
     assert_eq!(details[1]["detail"]["stage"], json!("deep-dive"));
-    assert_eq!(details[2]["detail"]["round"], json!(1), "round-start 轮号从 1 起");
+    assert_eq!(
+        details[2]["detail"]["round"],
+        json!(1),
+        "round-start 轮号从 1 起"
+    );
     assert_eq!(details[9]["detail"]["name"], json!("get_figure"));
-    assert_eq!(details[12]["detail"]["text"], json!(DIG_MARKDOWN.trim()), "preview 携带最终稿全文");
-    assert_eq!(details[14]["detail"]["sectionStatus"], json!("done"), "收尾标记本节完成");
+    assert_eq!(
+        details[12]["detail"]["text"],
+        json!(DIG_MARKDOWN.trim()),
+        "preview 携带最终稿全文"
+    );
+    assert_eq!(
+        details[14]["detail"]["sectionStatus"],
+        json!("done"),
+        "收尾标记本节完成"
+    );
 }
 
 // ============================================================================
@@ -873,16 +1199,33 @@ fn deep_dive_pre_attaches_section_assets() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let request = &mock.requests()[0];
     let prompt = prompt_text(request);
-    assert!(prompt.contains("已附本节图表：- fig_1（p2）：图 1：样例架构图。"), "清单段: {prompt}");
-    assert!(prompt.contains("- tbl_1（p3）：表 1：样例结果。"), "清单段含 keyAssets 跨节条目: {prompt}");
-    assert!(prompt.contains("（以上已随消息附图，无需再调 get_figure）"), "已附无需再调提示: {prompt}");
+    assert!(
+        prompt.contains("已附本节图表：- fig_1（p2）：图 1：样例架构图。"),
+        "清单段: {prompt}"
+    );
+    assert!(
+        prompt.contains("- tbl_1（p3）：表 1：样例结果。"),
+        "清单段含 keyAssets 跨节条目: {prompt}"
+    );
+    assert!(
+        prompt.contains("（以上已随消息附图，无需再调 get_figure）"),
+        "已附无需再调提示: {prompt}"
+    );
     // 图像顺序：页图 p1..p3 在前，预附裁切图（阅读序 fig_1 → tbl_1）在后。
     let payloads = first_message_image_payloads(request);
-    assert_eq!(payloads, vec!["page-1", "page-2", "page-3", "crop-fig", "crop-tbl"]);
+    assert_eq!(
+        payloads,
+        vec!["page-1", "page-2", "page-3", "crop-fig", "crop-tbl"]
+    );
 }
 
 #[test]
@@ -915,7 +1258,12 @@ fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1", "part-2"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let result = registry.get(&task_id).unwrap().result.expect("result");
     let warnings = result["warnings"].as_array().cloned().unwrap();
@@ -931,7 +1279,11 @@ fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
         "缺附件条目列帽外: {part2_prompt}"
     );
     let payloads = first_message_image_payloads(&requests[1]);
-    assert_eq!(payloads, vec!["page-1", "page-2", "page-3"], "仅页图，无预附裁切图");
+    assert_eq!(
+        payloads,
+        vec!["page-1", "page-2", "page-3"],
+        "仅页图，无预附裁切图"
+    );
 }
 
 #[test]
@@ -960,7 +1312,12 @@ fn deep_dive_multi_tool_round_executes_all_and_feeds_observations() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let tools = events_named(&sink, "tool");
     assert_eq!(tools.len(), 2, "两个工具块各发一条 tool 事件");
@@ -977,12 +1334,23 @@ fn deep_dive_multi_tool_round_executes_all_and_feeds_observations() {
         .iter()
         .filter_map(|m| m["role"].as_str())
         .collect();
-    assert_eq!(roles, vec!["user", "assistant", "user"], "一轮多工具仍是一条续回消息");
-    let last = body1["messages"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(
+        roles,
+        vec!["user", "assistant", "user"],
+        "一轮多工具仍是一条续回消息"
+    );
+    let last = body1["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
     let parts = last["content"].as_array().expect("观察消息多模态分段");
-    let observations: Value =
-        serde_json::from_str(parts[0]["text"].as_str().expect("text 段")).expect("observations JSON");
-    let entries = observations["observations"].as_array().expect("observations 数组");
+    let observations: Value = serde_json::from_str(parts[0]["text"].as_str().expect("text 段"))
+        .expect("observations JSON");
+    let entries = observations["observations"]
+        .as_array()
+        .expect("observations 数组");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0]["tool"], json!("get_figure"));
     assert_eq!(entries[1]["tool"], json!("get_page_image"));
@@ -992,7 +1360,11 @@ fn deep_dive_multi_tool_round_executes_all_and_feeds_observations() {
         .filter_map(|part| part["image_url"]["url"].as_str())
         .collect();
     assert_eq!(image_urls.len(), 2, "两件工具各附一图");
-    assert_eq!(decode_image_url(image_urls[0]), "crop-fig", "裁切图在前（get_figure 先执行）");
+    assert_eq!(
+        decode_image_url(image_urls[0]),
+        "crop-fig",
+        "裁切图在前（get_figure 先执行）"
+    );
     assert_eq!(decode_image_url(image_urls[1]), "page-2", "页图在后");
     // #81 遥测：一轮 2 个调用、共 2 轮。
     let result = registry.get(&task_id).unwrap().result.expect("result");
@@ -1008,8 +1380,12 @@ fn deep_dive_over_limit_tool_blocks_is_parse_failure() {
     // 一轮 4 个工具块 → 整轮按解析失败处理（不执行任何工具），观察说明上限；一轮后恢复。
     let mock = MockHttp::start(move |_request, hit| {
         if hit == 1 {
-            let blocks = "```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"样例\"}}\n```";
-            let text = (0..4).map(|_| blocks.to_string()).collect::<Vec<_>>().join("\n");
+            let blocks =
+                "```tool\n{\"name\": \"search_paper\", \"args\": {\"pattern\": \"样例\"}}\n```";
+            let text = (0..4)
+                .map(|_| blocks.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
             sse_text(&text)
         } else {
             sse_text(DIG_MARKDOWN)
@@ -1027,14 +1403,24 @@ fn deep_dive_over_limit_tool_blocks_is_parse_failure() {
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
     // 超限整轮只计一次连续失败（连续 2 次才收尾）：下一轮恢复即证明计数为 1 而非 2。
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "一次解析失败后恢复");
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "一次解析失败后恢复"
+    );
     let tools = events_named(&sink, "tool");
     assert_eq!(tools.len(), 0, "超限轮不执行任何工具");
     assert_eq!(mock.hits(), 2);
     let request2: Value = serde_json::from_slice(&mock.requests()[1].body).unwrap();
     let observation = request2["messages"][2]["content"].as_str().unwrap();
-    assert!(observation.contains("parse_failed"), "按解析失败喂回: {observation}");
-    assert!(observation.contains("一轮最多 3 个"), "错误观察说明上限: {observation}");
+    assert!(
+        observation.contains("parse_failed"),
+        "按解析失败喂回: {observation}"
+    );
+    assert!(
+        observation.contains("一轮最多 3 个"),
+        "错误观察说明上限: {observation}"
+    );
     assert_eq!(products_of(&library, &paper_id, "dig").len(), 1);
 }
 
@@ -1062,8 +1448,15 @@ fn deep_dive_step_limit_fails_and_keeps_trajectory() {
     assert_eq!(error.code, "step_limit_exceeded");
     assert!(error.retryable, "超限保留可手动重试");
     let tools = events_named(&sink, "tool");
-    assert_eq!(tools.len(), protocol::MAX_TOOL_STEPS as usize, "工具轨迹记录到上限为止");
-    assert!(products_of(&library, &paper_id, "dig").is_empty(), "未完成的节不落产物");
+    assert_eq!(
+        tools.len(),
+        protocol::MAX_TOOL_STEPS as usize,
+        "工具轨迹记录到上限为止"
+    );
+    assert!(
+        products_of(&library, &paper_id, "dig").is_empty(),
+        "未完成的节不落产物"
+    );
 }
 
 #[test]
@@ -1093,7 +1486,10 @@ fn deep_dive_parse_failure_recovers_once_then_fails_after_two() {
     // 错误观察喂回模型自我纠正。
     let request2: Value = serde_json::from_slice(&mock.requests()[1].body).unwrap();
     let observation = request2["messages"][2]["content"].as_str().unwrap();
-    assert!(observation.contains("parse_failed"), "解析失败观察: {observation}");
+    assert!(
+        observation.contains("parse_failed"),
+        "解析失败观察: {observation}"
+    );
     assert_eq!(products_of(&library, &paper_id, "dig").len(), 1);
 
     // 连续两次非法 → protocol_parse_failed。
@@ -1137,14 +1533,21 @@ fn deep_dive_invalid_address_is_error_observation_not_parse_failure() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "无效地址是结构化错误观察，不计入解析失败");
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "无效地址是结构化错误观察，不计入解析失败"
+    );
     let tools = events_named(&sink, "tool");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["ok"], json!(false));
     assert_eq!(tools[0]["error"]["code"], json!("unknown_section"));
     let request2: Value = serde_json::from_slice(&mock.requests()[1].body).unwrap();
     let observation = request2["messages"][2]["content"].as_str().unwrap();
-    assert!(observation.contains("unknown_section"), "错误观察含结构化错误码: {observation}");
+    assert!(
+        observation.contains("unknown_section"),
+        "错误观察含结构化错误码: {observation}"
+    );
 }
 
 #[test]
@@ -1237,13 +1640,21 @@ fn deep_dive_batch_runs_with_bounded_inflight() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1", "part-2", "part-3"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
     assert!(
         max_in_flight.load(Ordering::SeqCst) <= 2,
         "同时在飞深挖请求数 ≤ 2，实际 {}",
         max_in_flight.load(Ordering::SeqCst)
     );
-    assert!(max_in_flight.load(Ordering::SeqCst) >= 2, "并发上限 2 时应真正并行");
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) >= 2,
+        "并发上限 2 时应真正并行"
+    );
     assert_eq!(mock.hits(), 3, "每节一轮最终稿");
 
     // 三节全部落库（完成顺序不必等于节序，按集合断言）。
@@ -1260,14 +1671,25 @@ fn deep_dive_batch_runs_with_bounded_inflight() {
         .collect();
     assert!(!progresses.is_empty());
     for window in progresses.windows(2) {
-        assert!(window[1] >= window[0], "进度 done 应单调递增: {progresses:?}");
+        assert!(
+            window[1] >= window[0],
+            "进度 done 应单调递增: {progresses:?}"
+        );
     }
-    let last = sink.events().iter().rev().find_map(|event| event.progress.clone()).expect("应有进度");
+    let last = sink
+        .events()
+        .iter()
+        .rev()
+        .find_map(|event| event.progress.clone())
+        .expect("应有进度");
     assert_eq!((last.done, last.total), (3, 3));
 
     // 开工事件列出全部目标；每节的 stage 事件按 partId 可区分（开工 + 完成各一条）。
     let stages = events_named(&sink, "stage");
-    let queued = stages.iter().find(|d| d["stage"] == json!("deep-dive-queued")).expect("开工事件");
+    let queued = stages
+        .iter()
+        .find(|d| d["stage"] == json!("deep-dive-queued"))
+        .expect("开工事件");
     assert_eq!(queued["total"], json!(3));
     let targets = queued["targets"].as_array().expect("targets 列表");
     assert_eq!(targets.len(), 3);
@@ -1293,7 +1715,11 @@ fn deep_dive_batch_runs_with_bounded_inflight() {
     }
 
     // #81 遥测随批量结果聚合（completed 按节序，与完成顺序无关）。
-    let result = registry.get(&task_id).unwrap().result.expect("succeeded 携带 result");
+    let result = registry
+        .get(&task_id)
+        .unwrap()
+        .result
+        .expect("succeeded 携带 result");
     assert_eq!(result["completed"], json!(["part-1", "part-2", "part-3"]));
     assert_eq!(result["roundsPerSection"]["part-3"], json!(1));
     assert_eq!(result["toolCallsPerSection"]["part-1"], json!(0));
@@ -1322,7 +1748,12 @@ fn deep_dive_batch_section_failure_does_not_stop_others() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1", "part-2", "part-3"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Failed,
+        "事件流: {:?}",
+        sink.events()
+    );
     let error = registry.get(&task_id).unwrap().error.unwrap();
     assert_eq!(error.code, "protocol_deep_dive_failed");
     assert!(error.retryable, "步数上限可重试 → 批量失败同样可重试");
@@ -1368,20 +1799,38 @@ fn deep_dive_requires_map_and_known_parts() {
     configure_model(&registry, &library, &mock.url(""));
 
     // 未建图 → map_required（错误即指令）。
-    let (task_id, _) = start_task(&registry, protocol::TASK_DEEP_DIVE, json!({ "paperId": paper_id, "partIds": ["part-1"] }));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-1"] }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
-    assert_eq!(registry.get(&task_id).unwrap().error.unwrap().code, "map_required");
+    assert_eq!(
+        registry.get(&task_id).unwrap().error.unwrap().code,
+        "map_required"
+    );
 
     // 已建图但目标部分未知 → invalid_input。
     seed_built_products(&library, &paper_id);
-    let (task_id, _) = start_task(&registry, protocol::TASK_DEEP_DIVE, json!({ "paperId": paper_id, "partIds": ["part-9"] }));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_DEEP_DIVE,
+        json!({ "paperId": paper_id, "partIds": ["part-9"] }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
-    assert_eq!(registry.get(&task_id).unwrap().error.unwrap().code, "invalid_input");
+    assert_eq!(
+        registry.get(&task_id).unwrap().error.unwrap().code,
+        "invalid_input"
+    );
     assert_eq!(mock.hits(), 0, "门禁失败不调用模型");
 
     // 计划阶段拒绝非法 partIds。
     let error = registry
-        .start(protocol::TASK_DEEP_DIVE, json!({ "paperId": paper_id, "partIds": [] }), Collector::new())
+        .start(
+            protocol::TASK_DEEP_DIVE,
+            json!({ "paperId": paper_id, "partIds": [] }),
+            Collector::new(),
+        )
         .expect_err("空 partIds 应在计划阶段拒绝");
     assert_eq!(error.code, "invalid_input");
 }
@@ -1406,7 +1855,12 @@ fn deep_dive_ui_shaped_parts_validate_against_block_model_domain() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["abstract", "part-1", "part-2"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
     let queued = events_named(&sink, "stage")
         .into_iter()
         .find(|detail| detail["stage"] == json!("deep-dive-queued"))
@@ -1414,7 +1868,11 @@ fn deep_dive_ui_shaped_parts_validate_against_block_model_domain() {
     assert_eq!(queued["total"], json!(3), "开工前列出全部目标");
     assert_eq!(
         dug_part_ids(&library, &paper_id),
-        vec!["abstract".to_string(), "part-1".to_string(), "part-2".to_string()],
+        vec![
+            "abstract".to_string(),
+            "part-1".to_string(),
+            "part-2".to_string()
+        ],
         "逐节落库"
     );
     // 记录 parts 不被深挖改写（对齐回写只在建图缝发生）。
@@ -1427,10 +1885,18 @@ fn deep_dive_ui_shaped_parts_validate_against_block_model_domain() {
             protocol::TASK_DEEP_DIVE,
             json!({ "paperId": paper_id, "partIds": [part_id] }),
         );
-        assert_eq!(terminal(&registry, &unknown), TaskStatus::Failed, "{part_id} 应开工前拒绝");
+        assert_eq!(
+            terminal(&registry, &unknown),
+            TaskStatus::Failed,
+            "{part_id} 应开工前拒绝"
+        );
         let error = registry.get(&unknown).unwrap().error.unwrap();
         assert_eq!(error.code, "invalid_input");
-        assert!(error.message.contains("未知的精读部分"), "错误即指令: {}", error.message);
+        assert!(
+            error.message.contains("未知的精读部分"),
+            "错误即指令: {}",
+            error.message
+        );
     }
 }
 
@@ -1449,9 +1915,16 @@ fn synthesize_writes_retell_and_respects_gates() {
     configure_model(&registry, &library, &mock.url(""));
 
     // 未建图 → map_required。
-    let (task_id, _) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_SYNTHESIZE,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
-    assert_eq!(registry.get(&task_id).unwrap().error.unwrap().code, "map_required");
+    assert_eq!(
+        registry.get(&task_id).unwrap().error.unwrap().code,
+        "map_required"
+    );
 
     // 已建图 + 一节深挖 → 复述稿落库。
     seed_built_products(&library, &paper_id);
@@ -1464,8 +1937,17 @@ fn synthesize_writes_retell_and_respects_gates() {
     });
     library.put_paper(paper).unwrap();
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_SYNTHESIZE,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
     let synth_rounds = events_named(&sink, "round");
     assert_eq!(synth_rounds.len(), 1, "复述稿每轮一条 round");
     assert_eq!(synth_rounds[0]["stage"], json!("synthesize"));
@@ -1480,9 +1962,16 @@ fn synthesize_writes_retell_and_respects_gates() {
     assert!(prompt.contains("核心论点"), "复述稿输入含已有深挖结果");
 
     // 重跑未确认 → already_exists；确认后覆盖。
-    let (task_id, _) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_SYNTHESIZE,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
-    assert_eq!(registry.get(&task_id).unwrap().error.unwrap().code, "already_exists");
+    assert_eq!(
+        registry.get(&task_id).unwrap().error.unwrap().code,
+        "already_exists"
+    );
     let (task_id, _) = start_task(
         &registry,
         protocol::TASK_SYNTHESIZE,
@@ -1516,7 +2005,11 @@ fn build_map_cancel_after_first_call_persists_partial_l2() {
     seed_assets(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, _sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    let (task_id, _sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
         let has_l1 = mock
@@ -1526,29 +2019,45 @@ fn build_map_cancel_after_first_call_persists_partial_l2() {
         if has_l1 {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "应先进入调用②的在途轮");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "应先进入调用②的在途轮"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     registry.request_cancel(&task_id).expect("请求取消");
     gate.store(true, Ordering::SeqCst);
 
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Cancelled);
-    assert!(products_of(&library, &paper_id, "map").is_empty(), "取消不建地图");
+    assert!(
+        products_of(&library, &paper_id, "map").is_empty(),
+        "取消不建地图"
+    );
     let l2s = products_of(&library, &paper_id, "l2");
     assert_eq!(l2s.len(), 3, "已产出 L2 按中断部分结果落库");
-    assert!(l2s.iter().all(|p| p.body["partial"] == json!(true)), "中断部分结果带警示标记");
+    assert!(
+        l2s.iter().all(|p| p.body["partial"] == json!(true)),
+        "中断部分结果带警示标记"
+    );
     let paper = library.get_paper(&paper_id).unwrap();
-    assert!(paper.activity_days.iter().any(|day| day.kind == "partial"), "中断保留计 partial 打卡");
+    assert!(
+        paper.activity_days.iter().any(|day| day.kind == "partial"),
+        "中断保留计 partial 打卡"
+    );
 }
 
 #[test]
 fn build_map_shard_parse_failure_stops_and_persists_completed_partial() {
     let (registry, library, _dir) = common::env();
     let _lock = env_lock!();
-    let mock = MockHttp::start(|request, _hit| {
+    let fail_intro = Arc::new(AtomicBool::new(true));
+    let fail_in_mock = Arc::clone(&fail_intro);
+    let mock = MockHttp::start(move |request, _hit| {
         let prompt = prompt_text(request);
         let ids = l2_sec_ids_in_prompt(&prompt);
-        if ids.first().map(String::as_str) == Some("sec_2_introduction") {
+        if fail_in_mock.load(Ordering::SeqCst)
+            && ids.first().map(String::as_str) == Some("sec_2_introduction")
+        {
             return sse_text("这不是 json");
         }
         if ids.len() == 1 {
@@ -1562,21 +2071,35 @@ fn build_map_shard_parse_failure_stops_and_persists_completed_partial() {
     configure_model(&registry, &library, &mock.url(""));
     configure_concurrency(&registry, &library, 2);
 
-    let (task_id, _sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    let (task_id, _sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Failed);
     let error = registry.get(&task_id).unwrap().error.unwrap();
     assert_eq!(error.code, "protocol_shard_failed");
-    let failed_sections = error.details.expect("失败节")["failedSections"].as_array().cloned().unwrap();
+    let failed_sections = error.details.expect("失败节")["failedSections"]
+        .as_array()
+        .cloned()
+        .unwrap();
     assert!(
-        failed_sections.iter().any(|item| item["secId"] == json!("sec_2_introduction")),
+        failed_sections
+            .iter()
+            .any(|item| item["secId"] == json!("sec_2_introduction")),
         "details 应列出失败节: {failed_sections:?}"
     );
 
-    assert!(products_of(&library, &paper_id, "map").is_empty(), "失败不建地图");
+    assert!(
+        products_of(&library, &paper_id, "map").is_empty(),
+        "失败不建地图"
+    );
     let l2s = products_of(&library, &paper_id, "l2");
     assert!(!l2s.is_empty(), "已完成节应 partial 落库");
     assert!(l2s.iter().all(|p| p.body["partial"] == json!(true)));
-    assert!(l2s.iter().all(|p| p.body["secId"] != json!("sec_2_introduction")));
+    assert!(l2s
+        .iter()
+        .all(|p| p.body["secId"] != json!("sec_2_introduction")));
     let paper = library.get_paper(&paper_id).unwrap();
     assert!(paper.activity_days.iter().any(|day| day.kind == "partial"));
 
@@ -1585,12 +2108,241 @@ fn build_map_shard_parse_failure_stops_and_persists_completed_partial() {
         .iter()
         .flat_map(|request| l2_sec_ids_in_prompt(&prompt_text(request)))
         .collect();
-    let intro_hits = l2_ids.iter().filter(|id| *id == "sec_2_introduction").count();
+    let intro_hits = l2_ids
+        .iter()
+        .filter(|id| *id == "sec_2_introduction")
+        .count();
     assert_eq!(intro_hits, 2, "失败节连续两次非法 JSON 后停: {l2_ids:?}");
     assert!(
         !l2_ids.contains(&"sec_4_experiments".to_string()),
         "协作停止后不应再取队列末节: {l2_ids:?}"
     );
+
+    fail_intro.store(false, Ordering::SeqCst);
+    let retained: Vec<String> = l2s
+        .iter()
+        .filter_map(|product| product.body["secId"].as_str().map(str::to_string))
+        .collect();
+    let before = mock.requests().len();
+    let (retry_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(terminal(&registry, &retry_id), TaskStatus::Succeeded);
+    let retry_ids: Vec<String> = mock.requests()[before..]
+        .iter()
+        .flat_map(|request| l2_sec_ids_in_prompt(&prompt_text(request)))
+        .collect();
+    assert!(
+        retained.iter().all(|id| !retry_ids.contains(id)),
+        "已保存节不得再次请求: {retry_ids:?}"
+    );
+    assert_eq!(products_of(&library, &paper_id, "map").len(), 1);
+}
+
+#[test]
+fn build_map_skips_appendices_references_and_acknowledgments() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|request, _| map_or_l2_response(request));
+    let paper_id = seed_paper(&library);
+    let mut mapped: Value =
+        serde_json::from_slice(&std::fs::read(fixture_blockmodel()).unwrap()).unwrap();
+    let sections = mapped["sections"].as_array_mut().unwrap();
+    let reference = sections.pop().unwrap();
+    for (index, role) in ["appendix", "appendix", "acknowledgments"]
+        .iter()
+        .enumerate()
+    {
+        let mut extra = reference.clone();
+        extra["id"] = json!(format!("extra_{index}"));
+        extra["role"] = json!(role);
+        extra["ordinal"] = json!(index + 4);
+        sections.push(extra);
+    }
+    sections.push(reference);
+    put_attachment(
+        &library,
+        &paper_id,
+        "blockmodel.json",
+        "application/json",
+        &serde_json::to_vec(&mapped).unwrap(),
+    );
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 4, "三节 L2 加一次 L1");
+    assert!(requests
+        .iter()
+        .all(|request| !prompt_text(request).contains("extra_")));
+    let paper = library.get_paper(&paper_id).unwrap();
+    assert_eq!(
+        paper
+            .parts
+            .iter()
+            .map(|part| part.id.as_str())
+            .collect::<Vec<_>>(),
+        ["abstract", "part-1", "part-2"]
+    );
+    assert_eq!(products_of(&library, &paper_id, "l2").len(), 3);
+    assert_eq!(
+        products_of(&library, &paper_id, "map")[0].body["scope"],
+        json!("abstract-body")
+    );
+    assert_eq!(
+        mapped["sections"].as_array().unwrap().len(),
+        7,
+        "原块模型仍有全部节"
+    );
+}
+
+#[test]
+fn build_map_l1_failure_keeps_l2_for_retry() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let fail_l1 = Arc::new(AtomicBool::new(true));
+    let fail_in_mock = Arc::clone(&fail_l1);
+    let mock = MockHttp::start(move |request, _| {
+        let prompt = prompt_text(request);
+        if l2_sec_ids_in_prompt(&prompt).is_empty() && fail_in_mock.load(Ordering::SeqCst) {
+            return sse_text("invalid L1");
+        }
+        map_or_l2_response(request)
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+    let (first_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(terminal(&registry, &first_id), TaskStatus::Failed);
+    assert_eq!(products_of(&library, &paper_id, "l2").len(), 3);
+    fail_l1.store(false, Ordering::SeqCst);
+    let before = mock.requests().len();
+    let (retry_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(terminal(&registry, &retry_id), TaskStatus::Succeeded);
+    assert_eq!(mock.requests()[before..].len(), 1, "完整 L2 只应重试 L1");
+}
+
+#[test]
+fn build_map_rejects_partial_from_replaced_block_model() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let fail_l1 = Arc::new(AtomicBool::new(true));
+    let fail_in_mock = Arc::clone(&fail_l1);
+    let mock = MockHttp::start(move |request, _| {
+        if l2_sec_ids_in_prompt(&prompt_text(request)).is_empty()
+            && fail_in_mock.load(Ordering::SeqCst)
+        {
+            return sse_text("invalid L1");
+        }
+        map_or_l2_response(request)
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+    let (first_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(terminal(&registry, &first_id), TaskStatus::Failed);
+    let mut mapped: Value =
+        serde_json::from_slice(&std::fs::read(fixture_blockmodel()).unwrap()).unwrap();
+    mapped["sections"][1]["blocks"][0]["text"] = json!("原文已经变化");
+    put_attachment(
+        &library,
+        &paper_id,
+        "blockmodel.json",
+        "application/json",
+        &serde_json::to_vec(&mapped).unwrap(),
+    );
+    fail_l1.store(false, Ordering::SeqCst);
+    let before = mock.requests().len();
+    let (retry_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(terminal(&registry, &retry_id), TaskStatus::Succeeded);
+    let retry_l2 = mock.requests()[before..]
+        .iter()
+        .filter(|request| !l2_sec_ids_in_prompt(&prompt_text(request)).is_empty())
+        .count();
+    assert_eq!(retry_l2, 3, "附件被替换后不得复用旧 L2");
+}
+
+#[test]
+fn build_map_rejects_legacy_and_malformed_partial_entries() {
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let fail_l1 = Arc::new(AtomicBool::new(true));
+    let fail_in_mock = Arc::clone(&fail_l1);
+    let mock = MockHttp::start(move |request, _| {
+        if l2_sec_ids_in_prompt(&prompt_text(request)).is_empty()
+            && fail_in_mock.load(Ordering::SeqCst)
+        {
+            return sse_text("invalid L1");
+        }
+        map_or_l2_response(request)
+    });
+    let paper_id = seed_paper(&library);
+    seed_block_model(&library, &paper_id);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+    let (first_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(terminal(&registry, &first_id), TaskStatus::Failed);
+    let mut paper = library.get_paper(&paper_id).unwrap();
+    paper
+        .products
+        .iter_mut()
+        .find(|product| product.part_id == "abstract")
+        .unwrap()
+        .body
+        .as_object_mut()
+        .unwrap()
+        .remove("sourceFingerprint");
+    paper
+        .products
+        .iter_mut()
+        .find(|product| product.part_id == "part-1")
+        .unwrap()
+        .body["gist"] = json!("");
+    library.put_paper(paper).unwrap();
+    fail_l1.store(false, Ordering::SeqCst);
+    let before = mock.requests().len();
+    let (retry_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(terminal(&registry, &retry_id), TaskStatus::Succeeded);
+    let retry_l2: Vec<String> = mock.requests()[before..]
+        .iter()
+        .flat_map(|request| l2_sec_ids_in_prompt(&prompt_text(request)))
+        .collect();
+    assert_eq!(retry_l2.len(), 2);
+    assert!(retry_l2.contains(&"sec_1_abstract".to_string()));
+    assert!(retry_l2.contains(&"sec_2_introduction".to_string()));
 }
 
 #[test]
@@ -1625,7 +2377,11 @@ fn build_map_cancel_after_partial_shards_persists_completed() {
     configure_model(&registry, &library, &mock.url(""));
     configure_concurrency(&registry, &library, 1);
 
-    let (task_id, _sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    let (task_id, _sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
     let deadline = std::time::Instant::now() + TIMEOUT;
     while !started_second.load(Ordering::SeqCst) {
         assert!(std::time::Instant::now() < deadline, "应进入第二片在途轮");
@@ -1648,8 +2404,15 @@ fn protocol_task_kinds_registered_in_app_info() {
     let _lock = env_lock!();
     let info = bridge::invoke(&registry, &library, "app.info@1", &json!({})).unwrap();
     let kinds = info["taskKinds"].as_array().unwrap();
-    for kind in [protocol::TASK_BUILD_MAP, protocol::TASK_DEEP_DIVE, protocol::TASK_SYNTHESIZE] {
-        assert!(kinds.iter().any(|item| item == kind), "app.info 未列出 {kind}");
+    for kind in [
+        protocol::TASK_BUILD_MAP,
+        protocol::TASK_DEEP_DIVE,
+        protocol::TASK_SYNTHESIZE,
+    ] {
+        assert!(
+            kinds.iter().any(|item| item == kind),
+            "app.info 未列出 {kind}"
+        );
     }
 }
 
@@ -1689,25 +2452,54 @@ fn build_map_emits_round_telemetry_and_omits_missing_usage() {
     seed_assets(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let rounds = events_named(&sink, "round");
     assert_eq!(rounds.len(), 4, "三节 L2 + 调用② 各一条 round");
-    let l2_rounds: Vec<&Value> = rounds.iter().filter(|d| d["stage"] == json!("map-l2")).collect();
+    let l2_rounds: Vec<&Value> = rounds
+        .iter()
+        .filter(|d| d["stage"] == json!("map-l2"))
+        .collect();
     assert_eq!(l2_rounds.len(), 3);
     assert!(l2_rounds.iter().all(|round| round["round"] == json!(1)));
-    assert!(l2_rounds.iter().all(|round| round["promptTokens"] == json!(100)));
-    assert!(l2_rounds.iter().all(|round| round["completionTokens"] == json!(40)));
-    assert!(l2_rounds.iter().all(|round| round["cachedTokens"] == json!(20)));
-    assert!(l2_rounds.iter().all(|round| round.get("secId").and_then(Value::as_str).is_some()));
-    let l1 = rounds.iter().find(|d| d["stage"] == json!("map-l1")).expect("调用② round");
-    assert!(l1.get("promptTokens").is_none(), "无 usage 时 token 字段缺省");
+    assert!(l2_rounds
+        .iter()
+        .all(|round| round["promptTokens"] == json!(100)));
+    assert!(l2_rounds
+        .iter()
+        .all(|round| round["completionTokens"] == json!(40)));
+    assert!(l2_rounds
+        .iter()
+        .all(|round| round["cachedTokens"] == json!(20)));
+    assert!(l2_rounds
+        .iter()
+        .all(|round| round.get("secId").and_then(Value::as_str).is_some()));
+    let l1 = rounds
+        .iter()
+        .find(|d| d["stage"] == json!("map-l1"))
+        .expect("调用② round");
+    assert!(
+        l1.get("promptTokens").is_none(),
+        "无 usage 时 token 字段缺省"
+    );
     assert!(l1.get("cachedTokens").is_none());
 
     let snapshot = registry.get(&task_id).unwrap();
     let details = snapshot.details.expect("快照应带 details");
-    let round_in_log = details.iter().filter(|entry| entry["event"] == json!("round")).count();
+    let round_in_log = details
+        .iter()
+        .filter(|entry| entry["event"] == json!("round"))
+        .count();
     assert_eq!(round_in_log, 4);
 
     let body: Value = serde_json::from_slice(&mock.requests()[0].body).unwrap();
@@ -1730,7 +2522,12 @@ fn deep_dive_round_events_carry_part_id() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
     let rounds = events_named(&sink, "round");
     assert!(!rounds.is_empty());
     assert_eq!(rounds[0]["stage"], json!("deep-dive"));
@@ -1759,7 +2556,11 @@ fn protocol_stages_default_to_enable_thinking_false() {
     seed_assets(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, _) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
     let (task_id, _) = start_task(
         &registry,
@@ -1767,7 +2568,11 @@ fn protocol_stages_default_to_enable_thinking_false() {
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
-    let (task_id, _) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
+    let (task_id, _) = start_task(
+        &registry,
+        protocol::TASK_SYNTHESIZE,
+        json!({ "paperId": paper_id }),
+    );
     assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
 
     let bodies: Vec<Value> = mock
@@ -1802,8 +2607,17 @@ fn build_map_stage_model_applies_only_to_first_call_and_round_model_matches() {
     )
     .expect("写入阶段模型");
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 4);
@@ -1826,7 +2640,10 @@ fn build_map_stage_model_applies_only_to_first_call_and_round_model_matches() {
     for round in rounds.iter().filter(|d| d["stage"] == json!("map-l2")) {
         assert_eq!(round["model"], json!("fast-x"));
     }
-    let l1 = rounds.iter().find(|d| d["stage"] == json!("map-l1")).unwrap();
+    let l1 = rounds
+        .iter()
+        .find(|d| d["stage"] == json!("map-l1"))
+        .unwrap();
     assert_eq!(l1["model"], json!("qwen-protocol"));
 }
 
@@ -1860,17 +2677,32 @@ fn synthesize_emits_thinking_then_content_and_round_reasoning_ms() {
     library.put_paper(paper).unwrap();
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_SYNTHESIZE,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let events = sink.events();
     let thinking_at = events.iter().position(|event| event.event == "thinking");
     let content_at = events.iter().position(|event| event.event == "content");
     assert!(thinking_at.is_some(), "应发出 thinking");
     assert!(content_at.is_some(), "正文开始应发出 content");
-    assert!(thinking_at.unwrap() < content_at.unwrap(), "thinking 应早于 content");
     assert!(
-        events.iter().skip(content_at.unwrap()).all(|event| event.event != "thinking"),
+        thinking_at.unwrap() < content_at.unwrap(),
+        "thinking 应早于 content"
+    );
+    assert!(
+        events
+            .iter()
+            .skip(content_at.unwrap())
+            .all(|event| event.event != "thinking"),
         "正文到达后不应再有 thinking"
     );
 
@@ -1926,9 +2758,11 @@ fn deep_dive_final_round_streams_markdown_preview() {
     let _lock = env_lock!();
     // 最终稿分 3 段返回（段间隔远小于 500ms 节流窗：验证节流生效 + 收尾补发累计全文）。
     let segments = split3(DIG_MARKDOWN);
-    let mock = MockHttp::start(move |_request, hit| match hit {
+    let mock = MockHttp::start(move |_request, hit| {
+        match hit {
         1 => sse_text("先读方法节。\n```tool\n{\"name\": \"read_section\", \"args\": {\"sec_id\": \"sec_3_method\", \"offset\": 1, \"limit\": 10}}\n```"),
         _ => sse_segments(&segments, Duration::from_millis(1)),
+    }
     });
     let paper_id = seed_paper(&library);
     seed_block_model(&library, &paper_id);
@@ -1941,7 +2775,12 @@ fn deep_dive_final_round_streams_markdown_preview() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     // 每轮开工发 round-start：轮号递增、携带上下文 token 估算。
     let starts = events_named(&sink, "round-start");
@@ -1959,14 +2798,25 @@ fn deep_dive_final_round_streams_markdown_preview() {
         assert_eq!(preview["stage"], json!("deep-dive"));
         assert_eq!(preview["partId"], json!("part-1"));
         let text = preview["text"].as_str().expect("本用例 preview 均为文本");
-        assert!(text.trim_start().starts_with("## 核心论点"), "预览以首固定标题开头: {text}");
+        assert!(
+            text.trim_start().starts_with("## 核心论点"),
+            "预览以首固定标题开头: {text}"
+        );
         assert!(!text.contains("```tool"), "预览不含工具围栏: {text}");
     }
-    assert_eq!(previews.last().unwrap()["text"], json!(DIG_MARKDOWN.trim()), "最后一条 preview 等于最终产物");
+    assert_eq!(
+        previews.last().unwrap()["text"],
+        json!(DIG_MARKDOWN.trim()),
+        "最后一条 preview 等于最终产物"
+    );
 
     let digs = products_of(&library, &paper_id, "dig");
     assert_eq!(digs.len(), 1);
-    assert_eq!(digs[0].body.as_str().unwrap(), DIG_MARKDOWN.trim(), "产物与预览全文一致");
+    assert_eq!(
+        digs[0].body.as_str().unwrap(),
+        DIG_MARKDOWN.trim(),
+        "产物与预览全文一致"
+    );
 }
 
 #[test]
@@ -1974,7 +2824,8 @@ fn deep_dive_tool_fence_mid_round_clears_preview() {
     let (registry, library, _dir) = common::env();
     let _lock = env_lock!();
     // 第 1 轮以最终稿标题开头、中途转工具调用：预览先出，出现 ```tool 即以 text:null 清空。
-    let mock = MockHttp::start(|_request, hit| match hit {
+    let mock = MockHttp::start(|_request, hit| {
+        match hit {
         1 => sse_segments(
             &[
                 "## 核心论点\n已有初步判断，先取证确认。\n".to_string(),
@@ -1983,6 +2834,7 @@ fn deep_dive_tool_fence_mid_round_clears_preview() {
             Duration::from_millis(1),
         ),
         _ => sse_text(DIG_MARKDOWN),
+    }
     });
     let paper_id = seed_paper(&library);
     seed_block_model(&library, &paper_id);
@@ -1995,7 +2847,12 @@ fn deep_dive_tool_fence_mid_round_clears_preview() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let previews = events_named(&sink, "preview");
     let null_at = previews
@@ -2022,7 +2879,8 @@ fn deep_dive_preview_resumes_after_mid_round_retry() {
     let _lock = env_lock!();
     // 第 1 次尝试：以最终稿标题开头 → 出预览 → 转工具围栏清空 → 断连（retryable）。
     // 重试的第 2 次尝试返回干净最终稿：预览状态必须随新尝试复位，不能卡在清空态。
-    let mock = MockHttp::start(|_request, hit| match hit {
+    let mock = MockHttp::start(|_request, hit| {
+        match hit {
         1 => MockResponse::sse_aborted(
             vec![
                 json!({"choices": [{"delta": {"content": "## 核心论点\n先取证确认。"}}]}).to_string(),
@@ -2031,6 +2889,7 @@ fn deep_dive_preview_resumes_after_mid_round_retry() {
             Duration::from_millis(1),
         ),
         _ => sse_text(DIG_MARKDOWN),
+    }
     });
     let paper_id = seed_paper(&library);
     seed_block_model(&library, &paper_id);
@@ -2043,11 +2902,19 @@ fn deep_dive_preview_resumes_after_mid_round_retry() {
         protocol::TASK_DEEP_DIVE,
         json!({ "paperId": paper_id, "partIds": ["part-1"] }),
     );
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
     assert_eq!(mock.hits(), 2, "断连后应重试一次");
 
     let previews = events_named(&sink, "preview");
-    assert!(previews.iter().any(|p| p["text"].is_null()), "首次尝试的工具围栏应清空: {previews:?}");
+    assert!(
+        previews.iter().any(|p| p["text"].is_null()),
+        "首次尝试的工具围栏应清空: {previews:?}"
+    );
     assert_eq!(
         previews.last().unwrap()["text"],
         json!(DIG_MARKDOWN.trim()),
@@ -2075,20 +2942,42 @@ fn build_map_emits_round_progress_heartbeats_without_preview() {
     seed_assets(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_BUILD_MAP, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_BUILD_MAP,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let progress = events_named(&sink, "round-progress");
-    assert!(progress.len() >= 4, "三节 L2 + 调用② 各有心跳: {progress:?}");
+    assert!(
+        progress.len() >= 4,
+        "三节 L2 + 调用② 各有心跳: {progress:?}"
+    );
     for event in &progress {
-        assert!(matches!(event["stage"].as_str(), Some("map-l2") | Some("map-l1")));
+        assert!(matches!(
+            event["stage"].as_str(),
+            Some("map-l2") | Some("map-l1")
+        ));
         assert!(event["receivedChars"].as_u64().unwrap() > 0);
         assert!(event["elapsedMs"].is_u64());
     }
-    let l2: Vec<&Value> = progress.iter().filter(|event| event["stage"] == json!("map-l2")).collect();
-    assert!(!l2.is_empty() && l2.iter().all(|event| event["shard"].is_u64()), "L2 心跳带 shard: {l2:?}");
+    let l2: Vec<&Value> = progress
+        .iter()
+        .filter(|event| event["stage"] == json!("map-l2"))
+        .collect();
+    assert!(
+        !l2.is_empty() && l2.iter().all(|event| event["shard"].is_u64()),
+        "L2 心跳带 shard: {l2:?}"
+    );
     // 同一 (stage, shard) 键内 receivedChars 严格递增。
-    let mut last_by_key: std::collections::HashMap<(String, Option<u64>), u64> = std::collections::HashMap::new();
+    let mut last_by_key: std::collections::HashMap<(String, Option<u64>), u64> =
+        std::collections::HashMap::new();
     for event in &progress {
         let key = (
             event["stage"].as_str().unwrap().to_string(),
@@ -2096,12 +2985,18 @@ fn build_map_emits_round_progress_heartbeats_without_preview() {
         );
         let chars = event["receivedChars"].as_u64().unwrap();
         if let Some(prev) = last_by_key.insert(key, chars) {
-            assert!(chars > prev, "同一键内 receivedChars 单调递增: {progress:?}");
+            assert!(
+                chars > prev,
+                "同一键内 receivedChars 单调递增: {progress:?}"
+            );
         }
     }
     // JSON 阶段不发 preview；round-start 是深挖专属事件。
     assert!(events_named(&sink, "preview").is_empty(), "建图无 preview");
-    assert!(events_named(&sink, "round-start").is_empty(), "建图无 round-start");
+    assert!(
+        events_named(&sink, "round-start").is_empty(),
+        "建图无 round-start"
+    );
 }
 
 #[test]
@@ -2109,25 +3004,45 @@ fn synthesize_streams_markdown_preview() {
     let (registry, library, _dir) = common::env();
     let _lock = env_lock!();
     let segments = split3(RETELL_MARKDOWN);
-    let mock = MockHttp::start(move |_request, _hit| sse_segments(&segments, Duration::from_millis(1)));
+    let mock =
+        MockHttp::start(move |_request, _hit| sse_segments(&segments, Duration::from_millis(1)));
     let paper_id = seed_paper(&library);
     seed_block_model(&library, &paper_id);
     seed_assets(&library, &paper_id);
     seed_built_products(&library, &paper_id);
     configure_model(&registry, &library, &mock.url(""));
 
-    let (task_id, sink) = start_task(&registry, protocol::TASK_SYNTHESIZE, json!({ "paperId": paper_id }));
-    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded, "事件流: {:?}", sink.events());
+    let (task_id, sink) = start_task(
+        &registry,
+        protocol::TASK_SYNTHESIZE,
+        json!({ "paperId": paper_id }),
+    );
+    assert_eq!(
+        terminal(&registry, &task_id),
+        TaskStatus::Succeeded,
+        "事件流: {:?}",
+        sink.events()
+    );
 
     let previews = events_named(&sink, "preview");
     assert!(!previews.is_empty(), "复述稿应产生 preview 事件");
     for preview in &previews {
         assert_eq!(preview["stage"], json!("synthesize"));
-        assert!(preview.get("partId").is_none(), "复述稿无 partId: {preview:?}");
+        assert!(
+            preview.get("partId").is_none(),
+            "复述稿无 partId: {preview:?}"
+        );
         let text = preview["text"].as_str().expect("复述稿 preview 均为文本");
-        assert!(text.trim_start().starts_with("## 问题"), "预览以首固定标题开头: {text}");
+        assert!(
+            text.trim_start().starts_with("## 问题"),
+            "预览以首固定标题开头: {text}"
+        );
     }
-    assert_eq!(previews.last().unwrap()["text"], json!(RETELL_MARKDOWN.trim()), "最后一条 preview 等于最终产物");
+    assert_eq!(
+        previews.last().unwrap()["text"],
+        json!(RETELL_MARKDOWN.trim()),
+        "最后一条 preview 等于最终产物"
+    );
     // Markdown 阶段不发 JSON 心跳；round-start 是深挖专属事件。
     assert!(events_named(&sink, "round-progress").is_empty());
     assert!(events_named(&sink, "round-start").is_empty());

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paper30Min v2.0.0 方向建议</title>
+  <style>
+    :root { color-scheme: light; --ink:#202a2b; --muted:#596768; --line:#d9e2e0; --paper:#fff; --surface:#f5f8f7; --teal:#116f68; --teal-soft:#e7f3f0; --amber:#8d5b19; --amber-soft:#fbf2df; --plum:#7c455c; --plum-soft:#f7edf1; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--paper); color:var(--ink); font:15px/1.7 "Microsoft YaHei UI","PingFang SC",system-ui,sans-serif; letter-spacing:0; }
+    a { color:var(--teal); text-underline-offset:3px; }
+    a:hover { color:#084c47; }
+    .wrap { width:min(100% - 40px, 980px); margin-inline:auto; }
+    header { border-bottom:1px solid var(--line); background:var(--surface); padding:38px 0 30px; }
+    .eyebrow { margin:0 0 8px; color:var(--teal); font-size:12px; font-weight:700; }
+    h1 { margin:0; font-size:29px; line-height:1.3; }
+    .lede { max-width:780px; margin:14px 0 22px; color:#405052; font-size:16px; }
+    .meta { display:flex; flex-wrap:wrap; gap:8px 20px; margin:0; color:var(--muted); font-size:13px; }
+    .meta dt { font-weight:700; color:var(--ink); }
+    .meta dd { margin:0 0 0 5px; }
+    .meta div { display:flex; }
+    .section-nav { display:flex; flex-wrap:wrap; gap:8px; margin-top:24px; }
+    .section-nav a { display:inline-block; padding:5px 10px; border:1px solid var(--line); border-radius:5px; background:#fff; font-size:13px; text-decoration:none; }
+    main section { padding:30px 0; border-bottom:1px solid var(--line); }
+    h2 { margin:0 0 15px; font-size:21px; line-height:1.35; }
+    h3 { margin:0; font-size:18px; line-height:1.4; }
+    p { margin:8px 0 13px; }
+    ul { margin:8px 0 0; padding-left:21px; }
+    li { margin:5px 0; }
+    .intro { padding:15px 18px; background:var(--teal-soft); border-radius:6px; }
+    .intro strong { color:var(--ink); }
+    .signals { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:18px; }
+    .signal { padding:11px 13px; border:1px solid var(--line); border-radius:6px; min-width:0; }
+    .signal b { display:block; font-size:18px; line-height:1.2; }
+    .signal span { display:block; color:var(--muted); font-size:12px; margin-top:4px; }
+    .axes { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; padding:0; list-style:none; }
+    .axes li { display:flex; align-items:center; justify-content:center; min-height:68px; margin:0; padding:10px; text-align:center; border-radius:6px; background:var(--surface); border:1px solid var(--line); font-weight:650; font-size:13px; line-height:1.4; }
+    .idea-nav { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px 18px; margin:0 0 22px; padding-left:20px; }
+    .idea-nav li { margin:0; }
+    .idea { margin:0 0 16px; padding:20px 22px; border:1px solid var(--line); border-radius:7px; background:#fff; }
+    .idea:last-child { margin-bottom:0; }
+    .idea-head { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:8px 16px; }
+    .rank { color:var(--teal); font-weight:800; margin-right:6px; }
+    .tags { display:flex; flex-wrap:wrap; gap:6px; }
+    .tag { display:inline-block; border-radius:4px; padding:2px 7px; background:var(--teal-soft); color:#145951; font-size:12px; font-weight:650; }
+    .tag.amber { background:var(--amber-soft); color:var(--amber); }
+    .tag.plum { background:var(--plum-soft); color:var(--plum); }
+    .idea dl { display:grid; grid-template-columns:78px minmax(0,1fr); gap:7px 12px; margin:14px 0 0; }
+    .idea dt { color:var(--muted); font-size:13px; font-weight:700; }
+    .idea dd { margin:0; min-width:0; }
+    .idea dd p { margin:0; }
+    .idea dd a { overflow-wrap:anywhere; }
+    .flow { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:15px 0 0; color:var(--muted); font-size:12px; }
+    .flow span { padding:4px 8px; background:var(--surface); border:1px solid var(--line); border-radius:4px; color:var(--ink); }
+    .flow i { font-style:normal; }
+    .note { margin:15px 0 0; padding:11px 14px; border-radius:6px; background:var(--amber-soft); color:#59451e; font-size:13px; }
+    table { border-collapse:collapse; width:100%; font-size:13px; }
+    th,td { padding:10px 9px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); }
+    th { background:var(--surface); }
+    tbody tr:nth-child(even) { background:#fafcfc; }
+    .small { color:var(--muted); font-size:13px; }
+    footer { padding:20px 0 30px; color:var(--muted); font-size:12px; }
+    @media(max-width:700px) { .wrap { width:min(100% - 24px,980px); } header { padding-top:24px; } h1 { font-size:24px; } .signals { grid-template-columns:1fr; } .axes { grid-template-columns:repeat(2,minmax(0,1fr)); } .idea-nav { grid-template-columns:1fr; } .idea { padding:16px; } .idea dl { grid-template-columns:1fr; gap:2px; } .idea dt { margin-top:8px; } table { display:block; overflow-x:auto; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">版本方向讨论</p>
+      <h1>Paper30Min v2.0.0：从生成精读稿走向可验证的理解</h1>
+      <p class="note">后续反馈已调整版本重点：请先阅读<a href="2026-09-24-paper30min-v2-revision.md">v2.0.0 方向修订</a>。本页保留初版探索与当时的候选排序。</p>
+      <p class="lede">建议把下一次版本跃迁放在读者自己能否讲清论文，以及关键论断是否得到原文支持。Android 接续阅读是另一条成立的大版本主线，现有规格已经明确，但需要单独衡量交付和长期运维成本。</p>
+      <dl class="meta">
+        <div><dt>日期</dt><dd><time datetime="2026-09-24">2026-09-24</time></dd></div>
+        <div><dt>主题</dt><dd>paper30min-v2</dd></div>
+        <div><dt>焦点</dt><dd>v1.1.0 发布后的 v2.0.0 建议</dd></div>
+        <div><dt>模式</dt><dd>repo-grounded</dd></div>
+      </dl>
+      <nav class="section-nav" aria-label="文档导航">
+        <a href="#grounding">项目依据</a><a href="#axes">讨论维度</a><a href="#ideas">建议方向</a><a href="#rejected">未保留的方向</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <section id="grounding">
+      <h2>Grounding Context</h2>
+      <div class="intro"><strong>Codebase Context。</strong>产品目标是让个人读者能复述一篇论文的「问题、方法、证据、边界」。现有 Windows 客户端已有阅读地图、节摘要、按需深挖、复述稿、原文出处跳转、问答和回想卡。v1.1.0 的主要变化是缩短等待：3 篇论文的同机对照中，全链耗时约为旧版的 1/8，提速 8.0–8.4 倍。这些样本不能证明「30 分钟读完」，也没有验证理解质量。</div>
+      <div class="signals"><div class="signal"><b>8.0–8.4×</b><span>v1.1.0 全链同机对照提速；仅 3 篇样本</span></div><div class="signal"><b>5 条</b><span>独立取证维度，覆盖阅读与交付</span></div><div class="signal"><b>6 / 13</b><span>合并后的候选中保留 6 个方向</span></div></div>
+      <ul>
+        <li><strong>定位：</strong>Windows 本地书库是论文内容权威来源。产品围绕单篇论文精读，由 1 人开发维护；Android 首版只做已选论文的阅读伴侣。来源：<a href="../../STRATEGY.md">STRATEGY.md</a>、<a href="../../CONCEPTS.md">CONCEPTS.md</a>。</li>
+        <li><strong>理解缺口：</strong>复述稿由模型生成；回想卡可手写，也可由 AI 起草并覆盖现有正文。当前没有统一的理解质量采集或评分。来源：<a href="../../app/ui/js/main.js">main.js:1619</a>、<a href="../../STRATEGY.md">STRATEGY.md:39</a>。</li>
+        <li><strong>证据缺口：</strong>出处指针目前主要核验页、图表或文本块地址存在，尚不能判断引用是否真的支持句子的意思。来源：<a href="../../app/ui/js/protocol.js">protocol.js:432</a>。</li>
+        <li><strong>可靠性缺口：</strong>「导出整库」只显式打包 PDF；当前迁入面向旧浏览器书库，按论文 ID 跳过既有记录，也只创建 PDF 附件。现有路径不能证明 Windows 书库完整恢复。来源：<a href="../../app/ui/js/papers.js">papers.js:384</a>、<a href="../../app/src-tauri/src/migration.rs">migration.rs:727</a>。</li>
+        <li><strong>既定方向：</strong>云同步与 Android 的 <a href="https://github.com/attackingjensen/paper-30min/issues/25">#25</a>、<a href="https://github.com/attackingjensen/paper-30min/issues/26">#26</a> 仍未启动。升级、干净安装、卸载及安装版侧车检查亦未完成。来源：<a href="../current.md">current.md</a>。</li>
+      </ul>
+      <p class="small">外部竞品调研未完成：本次环境没有可用的专用网页搜索和抓取工具。下文「价值」与置信度是基于项目目标、现状和实现差距的判断，不是用户偏好、准确率或市场需求的实测结果。</p>
+    </section>
+
+    <section id="axes">
+      <h2>Topic Axes</h2>
+      <ol class="axes"><li>原文与证据可信度</li><li>从阅读到复述的理解闭环</li><li>阅读交互与连续性</li><li>跨设备接续阅读</li><li>本地书库与交付可靠性</li></ol>
+    </section>
+
+    <section id="ideas">
+      <h2>Ranked Ideas</h2>
+      <ol class="idea-nav"><li><a href="#idea-1">用户自主复述与证据对照</a></li><li><a href="#idea-2">关键论断的证据质询</a></li><li><a href="#idea-3">可验证的整库恢复</a></li><li><a href="#idea-4">精选论文的 Android 接续</a></li><li><a href="#idea-5">带未解问题的续读</a></li><li><a href="#idea-6">原文校勘与产物复核</a></li></ol>
+
+      <article class="idea" id="idea-1">
+        <div class="idea-head"><h3><span class="rank">1.</span>用户自主复述与证据对照</h3><div class="tags"><span class="tag">理解闭环</span><span class="tag">置信度 82%</span><span class="tag amber">复杂度 中</span></div></div>
+        <dl><dt>描述</dt><dd>读者自愿写下「问题、方法、证据、边界」的简短解释，再与现有 AI 复述稿和原文出处对照。系统指出遗漏、冲突和缺少证据的地方，保存读者修订前后的说法；不把 AI 草稿或「已读完」标记当作理解成绩。</dd>
+          <dt>轴</dt><dd>从阅读到复述的理解闭环</dd>
+          <dt>依据</dt><dd><strong>direct:</strong> <a href="../../STRATEGY.md">STRATEGY.md:18、39</a> 把「能讲清」作为目标，同时承认没有采集机制；<a href="../../app/ui/js/papers.js">papers.js:202</a> 的回想卡只有当前正文、图片和更新时间。<strong>reasoned:</strong>读者自己先说明白，才有可观察的理解差距；模型代写的稿件不能替代这个信号。</dd>
+          <dt>价值</dt><dd>让产品第一次直接服务于「用户本人能否复述」，而不只是产出一篇看似完整的讲解。它复用现有回想卡、复述稿和出处跳转。</dd>
+          <dt>代价</dt><dd>需要避免强制向导和伪精确分数；模型指出的差异也必须允许读者回查、否定。真实用户是否愿意主动写一段复述，尚未验证。</dd></dl>
+        <div class="flow" aria-label="方向示意"><span>读者自己的解释</span><i>→</i><span>AI 稿与原文对照</span><i>→</i><span>缺口回访</span><i>→</i><span>读者修订</span></div>
+      </article>
+
+      <article class="idea" id="idea-2">
+        <div class="idea-head"><h3><span class="rank">2.</span>关键论断的证据质询</h3><div class="tags"><span class="tag">证据质量</span><span class="tag">置信度 85%</span><span class="tag amber">复杂度 高</span></div></div>
+        <dl><dt>描述</dt><dd>针对地图、深挖和复述稿中最重要的论断，让读者并排查看引用的文本块或图表，标记「支持、部分支持、冲突」。遇到「方法为何有效」的主张，再明确它对应的实验、比较基线和论文承认的限制；没有这类实验的论文不强套模板。</dd>
+          <dt>轴</dt><dd>原文与证据可信度</dd>
+          <dt>依据</dt><dd><strong>direct:</strong> <a href="../../app/ui/js/protocol.js">protocol.js:432–483</a> 只检查出处地址有效；<a href="../../STRATEGY.md">STRATEGY.md:12、41</a> 要求把方法和实验依据联系起来，却尚无准确率指标。<strong>reasoned:</strong>合法出处可能只沾边，不能证明句子没有夸大结果。</dd>
+          <dt>价值</dt><dd>把「有引文」推进到「读者知道这条引文能证明什么」。它与方向 1 互补：自主复述暴露缺口，证据质询帮助填补缺口。</dd>
+          <dt>代价</dt><dd>自动判断语义支持容易再次引入模型错误；应先聚焦少量关键论断与人工核对。逐条建立论断和图表关系的成本较高。</dd></dl>
+      </article>
+
+      <article class="idea" id="idea-3">
+        <div class="idea-head"><h3><span class="rank">3.</span>可验证的整库恢复</h3><div class="tags"><span class="tag plum">书库可靠性</span><span class="tag">置信度 95%</span><span class="tag amber">复杂度 中</span></div></div>
+        <dl><dt>描述</dt><dd>让「导出整库」对应一条真正能恢复的路径：备份论文记录、阅读位置、PDF、页图、裁切图和回想卡图片等被引用的附件，并附完整性清单。在干净账户恢复后核对记录和哈希；旧浏览器书库迁入保留独立语义。</dd>
+          <dt>轴</dt><dd>本地书库与交付可靠性</dd>
+          <dt>依据</dt><dd><strong>direct:</strong> <a href="../../app/ui/js/papers.js">papers.js:384–426</a> 的导出只显式收 PDF；<a href="../../app/src-tauri/src/migration.rs">migration.rs:727–771、985–1050</a> 只为新增 ID 创建 PDF 附件；<a href="../../STRATEGY.md">STRATEGY.md:29</a> 指定本地书库为内容权威来源。</dd>
+          <dt>价值</dt><dd>保护用户累积的唯一权威内容，也为未来移动副本和版本升级提供可验证的退路。这是当前按钮文案应兑现的能力，适合按风险尽快交付，不必等待 v2.0.0。</dd>
+          <dt>代价</dt><dd>需要明确现有同 ID 记录、设置和 API Key 的恢复语义；大附件使备份体积与恢复时间增加。现有代码判断仍需完整恢复演练确认。</dd></dl>
+      </article>
+
+      <article class="idea" id="idea-4">
+        <div class="idea-head"><h3><span class="rank">4.</span>精选论文的 Android 接续</h3><div class="tags"><span class="tag plum">跨设备</span><span class="tag">置信度 75%</span><span class="tag amber">复杂度 高</span></div></div>
+        <dl><dt>描述</dt><dd>Windows 只发布用户主动选定的论文，手机读取完整、不可变的原文与阅读产物副本；离线时继续读旧的完整版本，回网后同步阅读位置。Android 不导入、编辑或生成论文，也不接收模型密钥。这一方向延续现有 <a href="https://github.com/attackingjensen/paper-30min/issues/25">#25</a> 和 <a href="https://github.com/attackingjensen/paper-30min/issues/26">#26</a>，不是新发现。</dd>
+          <dt>轴</dt><dd>跨设备接续阅读</dd>
+          <dt>依据</dt><dd><strong>direct:</strong> <a href="../../STRATEGY.md">STRATEGY.md:29–33</a> 确定 Windows 权威源和 Android 阅读伴侣；#25/#26 明确选定论文、完整版本、离线缓存与旧位置不回退。<strong>reasoned:</strong>先用单篇论文的真机离线接续验证价值，可避免在需求未证实时承担完整服务运维。</dd>
+          <dt>价值</dt><dd>满足已经确认的跨设备继续阅读需求；如果实际使用频繁，它可以独立成为 v2 的主线。</dd>
+          <dt>代价</dt><dd>涉及同步服务、账号、版本原子性、移动缓存和两类真机验证，单人维护成本高。它可能占据整个大版本的开发容量。</dd></dl>
+        <p class="note">版本取舍：若优先实现 Android，宜把它视为与「自主复述 + 证据核对」竞争资源的主线，而非默认同时承诺两套完整能力。</p>
+      </article>
+
+      <article class="idea" id="idea-5">
+        <div class="idea-head"><h3><span class="rank">5.</span>带未解问题的续读</h3><div class="tags"><span class="tag">阅读连续性</span><span class="tag">置信度 76%</span><span class="tag amber">复杂度 中</span></div></div>
+        <dl><dt>描述</dt><dd>读者把「我还没弄懂什么」留在某个原文块、图表或节上。下次打开论文，先回到这个问题和证据现场；补读后写下自己的解释并关闭它。精确到块的阅读断点是这个体验的支撑，而非单独追求滚动位置像素级还原。</dd>
+          <dt>轴</dt><dd>阅读交互与连续性</dd>
+          <dt>依据</dt><dd><strong>direct:</strong> <a href="../../app/ui/js/papers.js">papers.js:221–227</a> 的问答只保留最近 40 条；<a href="../../app/ui/js/view.js">view.js:259–272</a> 的位置只存视图、节和 PDF 页；<a href="../../skills/synthesize.md">synthesize.md:12</a> 已有「未经深挖核验」标记。<strong>reasoned:</strong>阅读中断后，找回尚未回答的问题通常比只找回页码更接近继续思考。</dd>
+          <dt>价值</dt><dd>把瞬时问答和未核验标记变成可积累、可完成的个人理解线索，同时直接服务每天继续读同一篇论文。</dd>
+          <dt>代价</dt><dd>需要避免演变成通用任务清单；问题的来源锚点遇到原文修订时要有降级规则。真实使用频率尚待观察。</dd></dl>
+      </article>
+
+      <article class="idea" id="idea-6">
+        <div class="idea-head"><h3><span class="rank">6.</span>原文校勘与产物复核</h3><div class="tags"><span class="tag">证据质量</span><span class="tag">置信度 81%</span><span class="tag amber">复杂度 高</span></div></div>
+        <dl><dt>描述</dt><dd>允许读者修正解析后的原文块，同时保留 PDF 原貌、机器抽取文字和人工修订版。与该块有关的摘要、深挖、翻译和复述稿显示「需重新核对」；图表与公式仍能回到原始 PDF。先以单块修订及保守提示为边界，不预设完整依赖图。</dd>
+          <dt>轴</dt><dd>原文与证据可信度</dd>
+          <dt>依据</dt><dd><strong>direct:</strong> <a href="../current.md">current.md:11</a> 已列「编辑原文入口」；<a href="../../app/src-tauri/src/pdfmap.rs">pdfmap.rs:88–109</a> 的块号、页码和图表位置承载引用地址；<a href="../../CONCEPTS.md">CONCEPTS.md:16</a> 禁止把推测当作已提取事实。</dd>
+          <dt>价值</dt><dd>修复原文抽取错误时不悄悄改写证据，降低错误沿 L2、深挖和复述稿传播的风险。</dd>
+          <dt>代价</dt><dd>文本块身份、重解析与历史出处的关系难处理；如果不控制范围，会变成庞大的版本管理系统。编辑入口本身已属现有待办，新增价值在可追溯和失效提示。</dd></dl>
+      </article>
+    </section>
+
+    <section id="rejected">
+      <h2>Rejection Summary</h2>
+      <p class="small">六组视角产生约 48 条原始提议；合并重复表达后得到 13 个候选，保留上面 6 个。下表记录另外 7 个的去向。</p>
+      <table><thead><tr><th>候选</th><th>筛选结论</th></tr></thead><tbody>
+        <tr><td>通用「方法—实验」图谱</td><td>与方向 2 合并。不是所有论文都有同形的对照、实验或消融；先核对重要论断。</td></tr>
+        <tr><td>只改进页内滚动位置</td><td>与方向 5 合并。精确位置有用，但单独不足以成为 v2 方向。</td></tr>
+        <tr><td>单篇移动离线试验</td><td>纳入方向 4 的判断依据，不作为发布功能；#26 已要求先用伪服务和确定性材料验证。</td></tr>
+        <tr><td>任务中断后自动续跑</td><td>进程内任务记录消失的问题属实；不同解析和模型任务的安全续跑边界不同。先把持久终态和重试语义作为可靠性工作。</td></tr>
+        <tr><td>安装版升级、干净账户、卸载走查</td><td>必须完成的发布验证，<a href="../current.md">current.md</a> 已明确列出；不是新的 v2 产品方向。</td></tr>
+        <tr><td>PDF 按字节范围读取</td><td>已列待办；先测大 PDF 打开时间和内存，再判断实现投入。它不改变产品核心价值。</td></tr>
+        <tr><td>代表论文的质量哨兵</td><td>可作为解析与出处的回归门槛；与现有夹具和发布验证相邻，不单列为用户方向。</td></tr>
+      </tbody></table>
+      <p class="small">独立核对指出：方向 1 不应变成强制先写的向导；方向 4 与现有规格高度重合；方向 3 的恢复缺口需用真实书库演练确认。这些限制已计入排序和代价。</p>
+    </section>
+  </main>
+  <footer class="wrap">Composed 2026-09-24T00:20Z by ce-ideate from the Paper30Min v1.1.0 repository and user request.</footer>
+</body>
+</html>

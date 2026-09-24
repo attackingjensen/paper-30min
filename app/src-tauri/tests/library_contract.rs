@@ -127,7 +127,10 @@ fn first_launch_creates_versioned_database_and_partitions() {
     assert_eq!(root, dir.path().to_string_lossy().as_ref());
     let partitions = info["partitions"].as_array().expect("partitions");
     for name in ["database", "attachments", "operations", "exports"] {
-        assert!(partitions.iter().any(|item| item == name), "缺少分区 {name}");
+        assert!(
+            partitions.iter().any(|item| item == name),
+            "缺少分区 {name}"
+        );
         assert!(dir.path().join(name).is_dir(), "未创建目录 {name}");
     }
     assert!(dir.path().join("database").join("library.sqlite").is_file());
@@ -141,9 +144,13 @@ fn existing_library_copy_opens_and_attachments_verify() {
     let summaries = library.list_papers().expect("读取论文目录");
     for summary in &summaries {
         library.get_paper(&summary.id).expect("读取完整论文及产物");
-        library.get_reading_position(&summary.id).expect("读取阅读位置");
+        library
+            .get_reading_position(&summary.id)
+            .expect("读取阅读位置");
         for attachment in library.list_attachments(&summary.id).expect("读取附件清单") {
-            library.verify_attachment(&summary.id, &attachment.id).expect("校验附件");
+            library
+                .verify_attachment(&summary.id, &attachment.id)
+                .expect("校验附件");
         }
     }
     assert!(!summaries.is_empty(), "兼容性样本应包含论文");
@@ -153,7 +160,12 @@ fn existing_library_copy_opens_and_attachments_verify() {
 #[test]
 fn put_and_get_paper_round_trips_nested_reading_results() {
     let (registry, library, _dir) = common::env();
-    let saved = invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "注意力论文"));
+    let saved = invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-a", "注意力论文"),
+    );
     assert_eq!(saved["schemaVersion"], json!(1));
     let paper = &saved["paper"];
     assert_eq!(paper["id"], json!("paper-a"));
@@ -163,9 +175,17 @@ fn put_and_get_paper_round_trips_nested_reading_results() {
     assert_eq!(paper["translations"][0]["language"], json!("zh"));
     assert_eq!(paper["recallCard"]["markdown"], json!("回想要点"));
     assert_eq!(paper["chat"][1]["role"], json!("assistant"));
-    assert!(paper.get("categories_json").is_none(), "SQLite 列名不应出现在 DTO 中");
+    assert!(
+        paper.get("categories_json").is_none(),
+        "SQLite 列名不应出现在 DTO 中"
+    );
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-a" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert_eq!(loaded["paper"], saved["paper"]);
     assert_eq!(loaded["paper"]["parts"][0]["sortOrder"], json!(0));
 
@@ -175,15 +195,31 @@ fn put_and_get_paper_round_trips_nested_reading_results() {
         { "id": "a-section", "sourceText": "后写入" }
     ]);
     invoke(&registry, &library, "library.putPaper@1", ordered);
-    let ordered_loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-order" }));
-    assert_eq!(ordered_loaded["paper"]["sections"][0]["id"], json!("z-section"));
-    assert_eq!(ordered_loaded["paper"]["sections"][1]["id"], json!("a-section"));
+    let ordered_loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-order" }),
+    );
+    assert_eq!(
+        ordered_loaded["paper"]["sections"][0]["id"],
+        json!("z-section")
+    );
+    assert_eq!(
+        ordered_loaded["paper"]["sections"][1]["id"],
+        json!("a-section")
+    );
 }
 
 #[test]
 fn list_papers_returns_newest_first_summaries_without_body() {
     let (registry, library, _dir) = common::env();
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("old", "旧论文"));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("old", "旧论文"),
+    );
     let newer = sample_paper("new", "新论文");
     // 较新的 addedAt 应排在前面。
     let mut newer = newer;
@@ -206,7 +242,12 @@ fn list_papers_returns_newest_first_summaries_without_body() {
 #[test]
 fn put_paper_replaces_nested_records_in_one_transaction() {
     let (registry, library, _dir) = common::env();
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "注意力论文"));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-a", "注意力论文"),
+    );
     let mut updated = sample_paper("paper-a", "注意力论文（修订）");
     updated["paper"]["analyses"] = json!([
         { "sectionId": "part-1", "text": "新精读", "updatedAt": "2026-09-02T09:00:00Z" }
@@ -215,7 +256,12 @@ fn put_paper_replaces_nested_records_in_one_transaction() {
     updated["paper"]["updatedAt"] = json!("2026-09-02T09:00:00Z");
     invoke(&registry, &library, "library.putPaper@1", updated);
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-a" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert_eq!(loaded["paper"]["title"], json!("注意力论文（修订）"));
     assert_eq!(loaded["paper"]["analyses"].as_array().unwrap().len(), 1);
     assert_eq!(loaded["paper"]["analyses"][0]["sectionId"], json!("part-1"));
@@ -225,7 +271,12 @@ fn put_paper_replaces_nested_records_in_one_transaction() {
 #[test]
 fn delete_paper_removes_record_and_reading_position() {
     let (registry, library, _dir) = common::env();
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "注意力论文"));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-a", "注意力论文"),
+    );
     invoke(
         &registry,
         &library,
@@ -240,21 +291,41 @@ fn delete_paper_removes_record_and_reading_position() {
             }
         }),
     );
-    let deleted = invoke(&registry, &library, "library.deletePaper@1", json!({ "paperId": "paper-a" }));
+    let deleted = invoke(
+        &registry,
+        &library,
+        "library.deletePaper@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert_eq!(deleted["deleted"], json!(true));
     assert_eq!(deleted["cleanupPending"], json!(false));
-    let error = invoke_err(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-a" }));
+    let error = invoke_err(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert_eq!(error.code, "not_found");
     assert!(!error.retryable);
     assert_eq!(error.details.unwrap()["paperId"], json!("paper-a"));
-    let position = invoke(&registry, &library, "library.getReadingPosition@1", json!({ "paperId": "paper-a" }));
+    let position = invoke(
+        &registry,
+        &library,
+        "library.getReadingPosition@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert!(position["position"].is_null());
 }
 
 #[test]
 fn missing_paper_and_invalid_dto_are_classified() {
     let (registry, library, _dir) = common::env();
-    let missing = invoke_err(&registry, &library, "library.getPaper@1", json!({ "paperId": "nope" }));
+    let missing = invoke_err(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "nope" }),
+    );
     assert_eq!(missing.code, "not_found");
     assert!(!missing.retryable);
 
@@ -306,13 +377,21 @@ fn missing_paper_and_invalid_dto_are_classified() {
         }),
     );
     assert_eq!(with_frac["paper"]["id"], json!("frac"));
-    assert_eq!(with_frac["paper"]["addedAt"], json!("2026-09-05T12:00:00.123Z"));
+    assert_eq!(
+        with_frac["paper"]["addedAt"],
+        json!("2026-09-05T12:00:00.123Z")
+    );
 }
 
 #[test]
 fn reading_position_round_trips_for_existing_paper() {
     let (registry, library, _dir) = common::env();
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "注意力论文"));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-a", "注意力论文"),
+    );
     let saved = invoke(
         &registry,
         &library,
@@ -329,9 +408,17 @@ fn reading_position_round_trips_for_existing_paper() {
     );
     assert_eq!(saved["position"]["view"], json!("pdf"));
     assert_eq!(saved["position"]["pdfPage"], json!(4));
-    assert!(saved["position"]["updatedAt"].as_str().unwrap().ends_with('Z'));
+    assert!(saved["position"]["updatedAt"]
+        .as_str()
+        .unwrap()
+        .ends_with('Z'));
 
-    let loaded = invoke(&registry, &library, "library.getReadingPosition@1", json!({ "paperId": "paper-a" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getReadingPosition@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert_eq!(loaded["position"]["paperId"], json!("paper-a"));
     assert_eq!(loaded["position"]["pdfPage"], json!(4));
     assert_eq!(loaded["position"]["contentVersion"], json!("v2"));
@@ -343,7 +430,12 @@ fn reading_position_round_trips_for_existing_paper() {
         json!({ "paperId": "paper-a" }),
     );
     assert_eq!(deleted["deleted"], json!(true));
-    let cleared = invoke(&registry, &library, "library.getReadingPosition@1", json!({ "paperId": "paper-a" }));
+    let cleared = invoke(
+        &registry,
+        &library,
+        "library.getReadingPosition@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert!(cleared["position"].is_null());
 }
 
@@ -364,7 +456,12 @@ fn restart_restores_paper_and_reading_position() {
     let dir = tempfile::tempdir().unwrap();
     let library = Arc::new(Library::open(dir.path()).unwrap());
     let registry = TaskRegistry::new(Arc::clone(&library));
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "注意力论文"));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-a", "注意力论文"),
+    );
     invoke(
         &registry,
         &library,
@@ -379,11 +476,21 @@ fn restart_restores_paper_and_reading_position() {
     );
     // 另开一条连接只读到已提交数据，验证落盘持久化。
     let library = Library::open(dir.path()).unwrap();
-    let paper = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-a" }));
+    let paper = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert_eq!(paper["paper"]["title"], json!("注意力论文"));
     assert_eq!(paper["paper"]["analyses"][0]["text"], json!("精读结果"));
     assert_eq!(paper["paper"]["chat"].as_array().unwrap().len(), 2);
-    let position = invoke(&registry, &library, "library.getReadingPosition@1", json!({ "paperId": "paper-a" }));
+    let position = invoke(
+        &registry,
+        &library,
+        "library.getReadingPosition@1",
+        json!({ "paperId": "paper-a" }),
+    );
     assert_eq!(position["position"]["view"], json!("digest"));
     assert_eq!(position["position"]["sectionId"], json!("abstract"));
 }
@@ -391,7 +498,12 @@ fn restart_restores_paper_and_reading_position() {
 #[test]
 fn concurrent_puts_of_same_paper_do_not_tear_nested_records() {
     let (registry, library, _dir) = common::env();
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-a", "初始"));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-a", "初始"),
+    );
 
     let mut handles = Vec::new();
     for label in ["A", "B"] {
@@ -416,10 +528,18 @@ fn concurrent_puts_of_same_paper_do_not_tear_nested_records() {
         handle.join().unwrap();
     }
 
-    let loaded = invoke(&registry, library.as_ref(), "library.getPaper@1", json!({ "paperId": "paper-a" }));
+    let loaded = invoke(
+        &registry,
+        library.as_ref(),
+        "library.getPaper@1",
+        json!({ "paperId": "paper-a" }),
+    );
     let title = loaded["paper"]["title"].as_str().unwrap();
     let analysis = loaded["paper"]["analyses"][0]["text"].as_str().unwrap();
-    assert_eq!(title, analysis, "同一论文的标题与精读结果应来自同一次完整写入");
+    assert_eq!(
+        title, analysis,
+        "同一论文的标题与精读结果应来自同一次完整写入"
+    );
     assert!(title == "A" || title == "B");
 }
 
@@ -451,7 +571,12 @@ fn read_marks_and_activity_days_round_trip_through_put_paper() {
         ])
     );
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-marks" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-marks" }),
+    );
     assert_eq!(loaded["paper"], saved["paper"]);
 }
 
@@ -472,7 +597,12 @@ fn read_marks_snapshot_rewrite_revokes_missing_rows() {
     ]);
     invoke(&registry, &library, "library.putPaper@1", revoked);
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-marks" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-marks" }),
+    );
     assert_eq!(
         loaded["paper"]["readMarks"],
         json!([{ "partId": "abstract", "markedAt": "2026-09-02T10:00:00Z" }])
@@ -496,7 +626,12 @@ fn activity_days_are_append_only_and_idempotent() {
     subset["paper"]["activityDays"] = json!([{ "day": "2026-09-01", "kind": "import" }]);
     invoke(&registry, &library, "library.putPaper@1", subset);
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-days" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-days" }),
+    );
     assert_eq!(
         loaded["paper"]["activityDays"],
         json!([
@@ -515,11 +650,26 @@ fn delete_paper_cascades_read_marks_and_activity_days() {
     ]);
     input["paper"]["activityDays"] = json!([{ "day": "2026-09-01", "kind": "import" }]);
     invoke(&registry, &library, "library.putPaper@1", input);
-    invoke(&registry, &library, "library.deletePaper@1", json!({ "paperId": "paper-cascade" }));
+    invoke(
+        &registry,
+        &library,
+        "library.deletePaper@1",
+        json!({ "paperId": "paper-cascade" }),
+    );
 
     // 同 id 重建一篇无标记论文：若旧行未随论文级联删除，这里会读出残留行。
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-cascade", "级联论文"));
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-cascade" }));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-cascade", "级联论文"),
+    );
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-cascade" }),
+    );
     assert_eq!(loaded["paper"]["readMarks"], json!([]));
     assert_eq!(loaded["paper"]["activityDays"], json!([]));
 }
@@ -627,7 +777,12 @@ fn products_round_trip_through_put_paper() {
         ])
     );
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-products" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-products" }),
+    );
     assert_eq!(loaded["paper"], saved["paper"]);
 }
 
@@ -656,7 +811,12 @@ fn products_snapshot_rewrite_overwrites_without_history() {
     ]);
     invoke(&registry, &library, "library.putPaper@1", rerun);
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-products" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-products" }),
+    );
     assert_eq!(
         loaded["paper"]["products"],
         json!([
@@ -682,11 +842,26 @@ fn delete_paper_cascades_protocol_products() {
     let mut input = sample_paper("paper-cascade", "级联论文");
     input["paper"]["products"] = sample_products();
     invoke(&registry, &library, "library.putPaper@1", input);
-    invoke(&registry, &library, "library.deletePaper@1", json!({ "paperId": "paper-cascade" }));
+    invoke(
+        &registry,
+        &library,
+        "library.deletePaper@1",
+        json!({ "paperId": "paper-cascade" }),
+    );
 
     // 同 id 重建一篇无产物论文：若旧行未随论文级联删除，这里会读出残留行。
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-cascade", "级联论文"));
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-cascade" }));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-cascade", "级联论文"),
+    );
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-cascade" }),
+    );
     assert_eq!(loaded["paper"]["products"], json!([]));
 }
 
@@ -802,7 +977,12 @@ fn chat_bindings_round_trip_through_put_paper() {
         ])
     );
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-chat" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-chat" }),
+    );
     assert_eq!(loaded["paper"], saved["paper"]);
 }
 
@@ -836,10 +1016,18 @@ fn chat_snapshot_rewrite_drops_bindings_with_messages() {
     ]);
     invoke(&registry, &library, "library.putPaper@1", trimmed);
 
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-chat" }));
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-chat" }),
+    );
     assert_eq!(loaded["paper"]["chat"].as_array().unwrap().len(), 1);
     assert_eq!(loaded["paper"]["chat"][0]["bindingKind"], json!("fragment"));
-    assert_eq!(loaded["paper"]["chat"][0]["assetIds"], json!(["crop-fig_1"]));
+    assert_eq!(
+        loaded["paper"]["chat"][0]["assetIds"],
+        json!(["crop-fig_1"])
+    );
 }
 
 #[test]
@@ -848,10 +1036,25 @@ fn delete_paper_cascades_chat_bindings() {
     let mut input = sample_paper("paper-cascade", "级联论文");
     input["paper"]["chat"] = sample_chat_bindings();
     invoke(&registry, &library, "library.putPaper@1", input);
-    invoke(&registry, &library, "library.deletePaper@1", json!({ "paperId": "paper-cascade" }));
+    invoke(
+        &registry,
+        &library,
+        "library.deletePaper@1",
+        json!({ "paperId": "paper-cascade" }),
+    );
 
-    invoke(&registry, &library, "library.putPaper@1", sample_paper("paper-cascade", "级联论文"));
-    let loaded = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "paper-cascade" }));
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-cascade", "级联论文"),
+    );
+    let loaded = invoke(
+        &registry,
+        &library,
+        "library.getPaper@1",
+        json!({ "paperId": "paper-cascade" }),
+    );
     // 同 id 重建后只有 sample_paper 的两条无绑定消息，不得读出旧绑定行。
     assert_eq!(loaded["paper"]["chat"].as_array().unwrap().len(), 2);
     assert_eq!(loaded["paper"]["chat"][0]["bindingKind"], json!("none"));
@@ -874,7 +1077,12 @@ fn invalid_chat_bindings_are_rejected() {
     section_without_id["paper"]["chat"] = json!([
         { "role": "user", "content": "q", "createdAt": "2026-09-11T08:00:00Z", "bindingKind": "section" }
     ]);
-    let error = invoke_err(&registry, &library, "library.putPaper@1", section_without_id);
+    let error = invoke_err(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        section_without_id,
+    );
     assert_eq!(error.code, "invalid_input");
     assert!(error.message.contains("chat.secId"));
 
@@ -882,7 +1090,12 @@ fn invalid_chat_bindings_are_rejected() {
     fragment_without_text["paper"]["chat"] = json!([
         { "role": "user", "content": "q", "createdAt": "2026-09-11T08:00:00Z", "bindingKind": "fragment" }
     ]);
-    let error = invoke_err(&registry, &library, "library.putPaper@1", fragment_without_text);
+    let error = invoke_err(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        fragment_without_text,
+    );
     assert_eq!(error.code, "invalid_input");
     assert!(error.message.contains("chat.fragmentText"));
 }
@@ -904,6 +1117,9 @@ fn app_info_lists_library_commands() {
         "files.putAttachment@1",
         "files.readRange@1",
     ] {
-        assert!(commands.iter().any(|item| item == name), "app.info 未列出 {name}");
+        assert!(
+            commands.iter().any(|item| item == name),
+            "app.info 未列出 {name}"
+        );
     }
 }

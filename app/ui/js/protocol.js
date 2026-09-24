@@ -38,29 +38,29 @@ export function estimateTextTokens(text) {
 }
 
 // ---------- 节 ↔ 精读部分映射（顺序对应约定，与 Rust 同规则） ----------
-const CONTENT_ROLES = new Set(['body', 'appendix']);
+const CONTENT_ROLES = new Set(['body']);
 
-/** 参与 L2 的节：除 References / Acknowledgments 外的全部原文章节（含 Abstract）。 */
+/** 新地图仅覆盖摘要与正文。 */
 export function l2Sections(mapped) {
-  return (mapped?.sections ?? []).filter(s => s.role !== 'references' && s.role !== 'acknowledgments');
+  return (mapped?.sections ?? []).filter(s => s.role === 'abstract' || s.role === 'body');
 }
 
-/** 内容节：part-N 映射的取值域（role ∈ body/appendix，按阅读顺序）。 */
-export function contentSections(mapped) {
-  return (mapped?.sections ?? []).filter(s => CONTENT_ROLES.has(s.role));
+/** 内容节：part-N 映射的取值域（正文，按阅读顺序）。 */
+export function contentSections(mapped, legacy = false) {
+  return (mapped?.sections ?? []).filter(s => CONTENT_ROLES.has(s.role) || (legacy && s.role === 'appendix'));
 }
 
 /** 节 → 精读部分 id：abstract → 'abstract'；第 i 个内容节 → part-{i+1}；映射不到为 null。 */
-export function partIdForSection(mapped, secId) {
+export function partIdForSection(mapped, secId, legacy = false) {
   const section = (mapped?.sections ?? []).find(s => s.id === secId);
   if (!section) return null;
   if (section.role === 'abstract') return 'abstract';
-  const index = contentSections(mapped).findIndex(s => s.id === secId);
+  const index = contentSections(mapped, legacy).findIndex(s => s.id === secId);
   return index === -1 ? null : `part-${index + 1}`;
 }
 
 /** 精读部分 id → 节：'abstract' → abstract 节；'part-N' → 第 N 个内容节；无效为 null。 */
-export function sectionForPart(mapped, partId) {
+export function sectionForPart(mapped, partId, legacy = false) {
   if (partId === 'abstract') {
     return (mapped?.sections ?? []).find(s => s.role === 'abstract') ?? null;
   }
@@ -68,7 +68,7 @@ export function sectionForPart(mapped, partId) {
   if (!match) return null;
   const index = Number(match[1]);
   if (index < 1) return null;
-  return contentSections(mapped)[index - 1] ?? null;
+  return contentSections(mapped, legacy)[index - 1] ?? null;
 }
 
 // ---------- 文本层渲染（与 Rust render_section_text / render_paper_text 同格式） ----------
@@ -92,6 +92,11 @@ export function renderAssetList(entries) {
   return entries
     .map(entry => `- ${entry.id}（p${entry.page}，属于 ${entry.section ?? '（首节之前）'}）：${entry.caption ?? '（无图注）'}（正文引用 ${entry.references?.length ?? 0} 处）`)
     .join('\n');
+}
+
+export function mapAssets(mapped, entries) {
+  const included = new Set(l2Sections(mapped).map(section => section.id));
+  return (entries ?? []).filter(entry => !entry.section || included.has(entry.section));
 }
 
 // ---------- 配方装配（协议提示词 + 关注点叠加经 skills.js composePrompt） ----------
@@ -177,7 +182,7 @@ export function validateL2Output(output, shardSections, mapped) {
   }
   const missing = expected.filter(id => !seen.has(id));
   if (missing.length) {
-    throw new Error(`薄摘要覆盖不完整：缺少 ${missing.join(', ')}（每个原文章节恰好一条，References/Acknowledgments 除外）`);
+    throw new Error(`薄摘要覆盖不完整：缺少 ${missing.join(', ')}（每个摘要或正文节恰好一条）`);
   }
   entries.sort((a, b) => expected.indexOf(a.secId) - expected.indexOf(b.secId));
   return { entries, warnings };
@@ -196,14 +201,14 @@ export function mergeL2ShardOutputs(outputs, shardGroups, mapped) {
 }
 
 /** 建图调用②装配：全部 L2 + 图表清单 + 摘要 → L1 阅读地图。 */
-export function assembleMapL1({ title, abstract, l2Entries, figures, tables } = {}) {
+export function assembleMapL1({ title, abstract, l2Entries, figures, tables, mapped } = {}) {
   return composePrompt('map-l1', {
     values: {
       title,
       abstract: abstract ?? '',
       l2Summaries: JSON.stringify(l2Entries ?? [], null, 2),
-      figureList: renderAssetList(figures),
-      tableList: renderAssetList(tables),
+      figureList: renderAssetList(mapped ? mapAssets(mapped, figures) : figures),
+      tableList: renderAssetList(mapped ? mapAssets(mapped, tables) : tables),
     },
   });
 }

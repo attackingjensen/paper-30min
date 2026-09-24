@@ -12,6 +12,7 @@ import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, renderStreamingTextInto, typesetMath } from './markdown.js';
 import { PROTOCOL_TASKS, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
 import { showStartup } from './startup.js';
+import { updateState, updateStatusText } from './updater.js';
 import * as view from './view.js';
 import { createLatestResource, createSerialWriter } from './reader-resources.js';
 import { translateForPaper } from './translation.js';
@@ -61,6 +62,8 @@ import {
 } from './present.js';
 
 const bridge = createBridge(window.__TAURI__);
+let updaterState = updateState();
+let componentState = { ready: false, phase: 'idle', error: '' };
 let store = null; // createTauriStore(bridge)，启动序列中创建
 
 const $ = sel => document.querySelector(sel);
@@ -154,7 +157,7 @@ function toast(msg, isError = false) {
 function ensureSettings() {
   if (model.settingsReady()) return true;
   toast('请先在「设置」中配置 API', true);
-  openSettingsModal();
+  void openSettingsModal('service').then(() => openServiceDetail('llm'));
   return false;
 }
 
@@ -637,8 +640,12 @@ function updateReaderMeta() {
 }
 
 // ---------------- 地图 tab（落地 / 地图页 / 节页内容） ----------------
+function isLegacyMap() {
+  return (current?.products ?? []).some(item => item?.kind === 'map' && item?.body?.scope !== 'abstract-body');
+}
+
 function mapNavItems() {
-  if (currentMapped?.sections?.length) return view.treeItems(currentMapped);
+  if (currentMapped?.sections?.length) return view.treeItems(currentMapped, { legacy: isLegacyMap() });
   // 未建图：节树与进度域同源（都走 readingParts 投影）；建图后两者改由块模型决定。
   return papers.readingParts(current).map(part => ({
     id: part.id,
@@ -958,7 +965,7 @@ function focusAsset(assetId) {
 
 function currentSecIdForCite() {
   if (!reader.sectionId) return null;
-  return sectionForPart(currentMapped, reader.sectionId)?.id
+  return sectionForPart(currentMapped, reader.sectionId, isLegacyMap())?.id
     || (currentMapped?.sections ?? []).find(section => section.id === reader.sectionId)?.id
     || null;
 }
@@ -1087,10 +1094,12 @@ function renderMapTab() {
     };
     items.appendChild(button);
   }
-  const partIds = view.deepAllPartIds(currentMapped);
+  const partIds = view.deepAllPartIds(currentMapped, isLegacyMap());
   const deepBtn = $('#btn-deep-all');
+  const rebuildBtn = $('#btn-rebuild-map');
   const prerenderReady = prerenderAssetsReady(currentMapped, currentAttachmentIds);
   deepBtn.disabled = !reader.hasMap || partIds.length === 0 || isDeepDivingPaper(current.id) || !prerenderReady;
+  rebuildBtn.disabled = isMappingPaper(current.id);
   if (surface === 'map') renderMapPage();
   if (surface === 'section') renderSectionPage();
   updateReaderMeta();
@@ -1098,7 +1107,7 @@ function renderMapTab() {
 }
 
 function drillSection(sectionId) {
-  commitReader(view.openSection(reader, sectionId, { mapped: currentMapped }));
+  commitReader(view.openSection(reader, sectionId, { mapped: currentMapped, legacy: isLegacyMap() }));
   if (pdfSidebarOpen && pdfDocument && Number.isFinite(pdfPage)) renderPdfPage();
 }
 
@@ -1107,7 +1116,7 @@ function backToMap() {
 }
 
 function readSectionSource(partId) {
-  const section = sectionForPart(currentMapped, partId)
+  const section = sectionForPart(currentMapped, partId, isLegacyMap())
     || (currentMapped?.sections ?? []).find(item => item.id === partId);
   const secId = section?.id || partId;
   commitReader(view.setSourceSection(view.switchTab(reader, 'source'), secId));
@@ -1199,6 +1208,7 @@ async function ensureBlockModel(paperId) {
   if (ids.has(BLOCKMODEL_ATTACHMENT_ID)) return { ok: true, doclingJsonPath: null };
   if (!ids.has('pdf')) return { ok: false };
   if (hasOpenPreflightTask(paperId, 'pdfparse.convert@1')) return { ok: false };
+  if (!await ensureParserReady()) return { ok: false };
   try {
     const convertInput = { paperId };
     const { taskId: convertId } = await bridge.start('pdfparse.convert@1', convertInput);
@@ -1233,6 +1243,7 @@ async function ensurePrerender(paperId, { scope = 'all', doclingJsonPath = null,
   if (!paperId) return false;
   if (scope !== 'pages' && !doclingJsonPath) return false;
   if (hasOpenPreflightTask(paperId, 'pdfassets.prerender@1', scope)) return false;
+  if (!await ensureParserReady()) return false;
   if (!force) {
     const ids = await paperAttachmentIds(paperId);
     const mapped = await readBlockModelJson(paperId);
@@ -1297,6 +1308,7 @@ async function trackPrerender(paperId, prerenderId, scope = 'all') {
 
 /** 导入后：页图与解析并行；解析完成后补渲染图表裁切图。 */
 async function queueImportPreflight(paperId) {
+  if (!await ensureParserReady()) return false;
   void ensurePrerender(paperId, { scope: 'pages' });
   const ready = await ensureBlockModel(paperId);
   if (!ready.ok) return false;
@@ -1304,9 +1316,8 @@ async function queueImportPreflight(paperId) {
   return true;
 }
 
-async function startBuildMap() {
-  if (!current || isMappingPaper(current.id) || !ensureSettings()) return;
-  const paperId = current.id;
+async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) {
+  if (!paperId || isMappingPaper(paperId) || !ensureSettings()) return;
   // 前置兜底：缺块模型且有 PDF 时先补产（#76：只等 convert，预渲染与建图并行）。
   const preflightIds = await paperAttachmentIds(paperId);
   if (!preflightIds.has(BLOCKMODEL_ATTACHMENT_ID) && preflightIds.has('pdf')) {
@@ -1320,7 +1331,7 @@ async function startBuildMap() {
     void ensurePrerender(paperId, { scope: 'pages' });
     void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: ready.doclingJsonPath });
   }
-  const input = { paperId, overwriteConfirmed: false };
+  const input = { paperId, overwriteConfirmed };
   let meta = null;
   try {
     const { taskId } = await bridge.start(PROTOCOL_TASKS.buildMap, input);
@@ -1328,12 +1339,14 @@ async function startBuildMap() {
       kind: PROTOCOL_TASKS.buildMap,
       input,
       lastStage: null,
-      retry: () => startBuildMap(),
+      retry: () => startBuildMap(paperId),
     };
     registerSessionTask(taskId, meta);
-    reader = view.setMapping(reader, true);
-    renderMapTab();
-    toast('已开始建图');
+    if (current?.id === paperId) {
+      reader = view.setMapping(reader, true);
+      renderMapTab();
+    }
+    toast(overwriteConfirmed ? '已开始重新建图' : '已开始建图');
     const { status, error } = await trackTask(bridge, taskId, {
       onEvent: event => {
         if (event.progress) {
@@ -1427,7 +1440,7 @@ async function startDeepAll() {
     toast(COPY.prerenderPending, true);
     return;
   }
-  const partIds = view.deepAllPartIds(currentMapped);
+  const partIds = view.deepAllPartIds(currentMapped, isLegacyMap());
   if (!partIds.length || isDeepDivingPaper(current.id)) return;
   await startDeepDive(current.id, partIds);
 }
@@ -1889,7 +1902,7 @@ function mappedSourceTab() {
   if (sections.some(section => section.id === sourceTab)) return sourceTab;
   const byRole = sections.find(section => section.role === sourceTab);
   if (byRole) return byRole.id;
-  const fromPart = sectionForPart(currentMapped, sourceTab);
+  const fromPart = sectionForPart(currentMapped, sourceTab, isLegacyMap());
   return fromPart?.id || '__full';
 }
 
@@ -1971,7 +1984,7 @@ function renderSource() {
 
 function translationPartId() {
   if (sourceTab === '__full') return '__full';
-  if (currentMapped) return partIdForSection(currentMapped, sourceTab) || sourceTab;
+  if (currentMapped) return partIdForSection(currentMapped, sourceTab, isLegacyMap()) || sourceTab;
   return sourceTab;
 }
 
@@ -2027,7 +2040,7 @@ async function translateCurrentText() {
   if (!source) return toast('当前节没有可翻译的原文', true);
   if (!model.settingsReady()) {
     toast('请先在「设置」中配置 API', true);
-    openSettingsModal();
+    void openSettingsModal('service').then(() => openServiceDetail('llm'));
     return;
   }
   reader = view.toggleTranslateCompare(reader, true);
@@ -3015,7 +3028,178 @@ function refreshSettingsDerived() {
   updateExtraPreview();
 }
 
-async function openSettingsModal() {
+function renderUpdaterState() {
+  $('#update-current-version').textContent = updaterState.currentVersion || '…';
+  $('#update-status').textContent = updateStatusText(updaterState);
+  $('#btn-check-update').disabled = ['checking', 'downloading', 'installing'].includes(updaterState.status);
+  const install = $('#btn-install-update');
+  install.hidden = !['available', 'install-error'].includes(updaterState.status);
+  install.textContent = updaterState.status === 'install-error' ? '重试安装' : '安装更新';
+  const notes = $('#update-notes');
+  notes.hidden = !updaterState.notes || !updaterState.version;
+  notes.textContent = updaterState.notes;
+  const progress = $('#update-progress');
+  progress.hidden = !['downloading', 'installing'].includes(updaterState.status);
+  if (updaterState.total > 0) progress.value = Math.min(100, updaterState.downloaded / updaterState.total * 100);
+  else progress.removeAttribute('value');
+}
+
+function formatComponentBytes(bytes) {
+  return Number.isFinite(bytes) && bytes > 0 ? `${(bytes / 1024 / 1024).toFixed(0)} MB` : '待获取';
+}
+
+function renderComponentState() {
+  const busy = ['downloading', 'verifying', 'installing', 'migrating'].includes(componentState.phase);
+  const labels = {
+    idle: componentState.ready ? `已就绪 · ${componentState.installedVersion || '本地版本'}` : '未安装',
+    downloading: '正在下载', verifying: '正在校验', installing: '正在安装', migrating: '正在迁移旧版组件',
+  };
+  $('#component-state').textContent = labels[componentState.phase] || (componentState.ready ? '已就绪' : '未安装');
+  $('#component-size').textContent = `下载量 ${formatComponentBytes(componentState.archiveBytes)} · 预计占用 ${formatComponentBytes(componentState.unpackedBytes)}`;
+  $('#component-detail').textContent = componentState.error || componentState.message || '';
+  $('#service-parser-meta').textContent = busy
+    ? $('#component-state').textContent
+    : (componentState.ready ? `已就绪 · ${componentState.installedVersion || '本地版本'}` : '未安装 · 按需配置');
+  const progress = $('#component-progress');
+  progress.hidden = !busy;
+  if (componentState.total > 0) progress.value = Math.min(100, componentState.downloaded / componentState.total * 100);
+  else progress.removeAttribute('value');
+  $('#btn-component-install').hidden = componentState.ready || busy;
+  $('#btn-component-migrate').hidden = !componentState.legacyAvailable || busy;
+  $('#btn-component-local').hidden = busy;
+  $('#btn-component-cancel').hidden = !busy;
+  $('#btn-component-remove').hidden = !componentState.ready || busy;
+}
+
+async function refreshComponentStatus() {
+  try {
+    componentState = { ...componentState, ...await bridge.componentStatus() };
+  } catch (err) {
+    componentState = { ...componentState, error: errorText(err) };
+  }
+  renderComponentState();
+}
+
+async function installParserComponent(source = null) {
+  if (!confirm(source ? '从选定文件安装本地解析组件？' : '下载并安装本地解析组件？')) return;
+  componentState = { ...componentState, phase: source ? 'verifying' : 'downloading', error: '' };
+  renderComponentState();
+  try {
+    await bridge.installComponent(source);
+    await refreshComponentStatus();
+    toast('本地解析组件已就绪');
+  } catch (err) {
+    componentState = { ...componentState, phase: 'idle', error: errorText(err) };
+    renderComponentState();
+  }
+}
+
+async function ensureParserReady() {
+  try {
+    const status = await bridge.invoke('pdfparse.status@1', {});
+    if (status?.sidecar?.ready) return true;
+  } catch (err) {
+    toast(`读取解析组件状态失败：${errorText(err)}`, true);
+    return false;
+  }
+  toast('需要安装本地解析组件才能解析新 PDF；原 PDF 和已有内容仍可查看', true);
+    void openSettingsModal('service').then(() => openServiceDetail('parser'));
+  return false;
+}
+
+async function refreshUpdaterVersion() {
+  try {
+    const info = await bridge.updateInfo();
+    updaterState = updateState(updaterState, { type: 'info', version: info.version });
+  } catch (err) {
+    updaterState = updateState(updaterState, { type: 'check-error', error: errorText(err) });
+  }
+  renderUpdaterState();
+}
+
+async function checkForUpdate() {
+  updaterState = updateState(updaterState, { type: 'checking' });
+  renderUpdaterState();
+  try {
+    const result = await bridge.checkUpdate();
+    updaterState = updateState(updaterState, result.available
+      ? { type: 'available', version: result.version, notes: result.notes }
+      : { type: 'none' });
+  } catch (err) {
+    updaterState = updateState(updaterState, { type: 'check-error', error: errorText(err) });
+  }
+  renderUpdaterState();
+}
+
+async function installAvailableUpdate() {
+  const version = updaterState.version;
+  if (!version || !confirm(`安装 Paper30Min ${version}？应用会退出并重新启动。`)) return;
+  try {
+    const active = activeTasks((await bridge.invoke('tasks.list@1', { activeOnly: true })).tasks ?? []);
+    if (active.length) {
+      if (!confirm(`有 ${active.length} 个任务正在运行。取消任务并等待结束后安装更新？`)) return;
+      await Promise.all(active.map(task => bridge.invoke('tasks.cancel@1', { taskId: task.taskId })));
+      await waitForActiveTasks(bridge);
+    }
+    updaterState = updateState(updaterState, { type: 'installing' });
+    renderUpdaterState();
+    await bridge.installUpdate(version);
+    updaterState = updateState(updaterState, { type: 'installed' });
+  } catch (err) {
+    updaterState = updateState(updaterState, { type: 'install-error', error: errorText(err) });
+  }
+  renderUpdaterState();
+}
+
+function selectSettingsTab(tab) {
+  const titles = { service: '服务', proxy: '网络代理', skills: '技能库', about: '关于' };
+  if (!titles[tab]) return;
+  closeServiceDetail(false);
+  for (const name of Object.keys(titles)) {
+    $(`#settings-${name}`).hidden = name !== tab;
+    const button = $(`#settings-tab-${name}`);
+    button.setAttribute('aria-selected', String(name === tab));
+    button.tabIndex = name === tab ? 0 : -1;
+  }
+  $('#settings-title').textContent = titles[tab];
+  $('.settings-scroll').scrollTop = 0;
+  if (tab === 'skills') {
+    renderSkillList();
+    const first = effectiveSkills()[0];
+    if (first && !editingSkillId) selectSkill(first.id);
+  }
+  if (tab === 'about') void refreshUpdaterVersion();
+}
+
+let activeServiceDetail = null;
+
+function openServiceDetail(detail) {
+  if (!['llm', 'parser'].includes(detail)) return;
+  activeServiceDetail = detail;
+  $('#settings-detail-title').textContent = detail === 'llm' ? 'LLM 模型' : '解析模型';
+  $('#settings-detail-llm').hidden = detail !== 'llm';
+  $('#settings-detail-parser').hidden = detail !== 'parser';
+  $('#settings-detail-layer').hidden = false;
+  $('.settings-detail-scroll').scrollTop = 0;
+  $('#close-service-detail').focus();
+}
+
+function closeServiceDetail(restoreFocus = true) {
+  $('#settings-detail-layer').hidden = true;
+  if (restoreFocus && activeServiceDetail) {
+    $(`#open-${activeServiceDetail === 'llm' ? 'llm' : 'parser'}-settings`).focus();
+  }
+  activeServiceDetail = null;
+}
+
+function refreshServiceSummary() {
+  const settings = model.loadSettings();
+  $('#service-llm-name').textContent = settings.model || '尚未配置';
+  $('#service-llm-meta').textContent = settings.baseUrl || '添加模型服务';
+  $('#service-llm-status').textContent = model.settingsReady() ? '已配置' : '待配置';
+}
+
+async function openSettingsModal(tab = 'about') {
   const s = model.loadSettings();
   $('#set-baseurl').value = s.baseUrl;
   $('#set-apikey').value = s.apiKey;
@@ -3052,7 +3236,12 @@ async function openSettingsModal() {
   $('#set-idle-minutes').value = String(idleMinutes);
   $('#set-sidecar-state').textContent = '常驻侧车状态：…';
   refreshSidecarState();
+  void refreshComponentStatus();
   $('#modal-settings').hidden = false;
+  selectSettingsTab(tab);
+  refreshServiceSummary();
+  renderComponentState();
+  renderUpdaterState();
 }
 
 const SIDECAR_STATE_LABELS = {
@@ -3110,11 +3299,19 @@ async function saveSettings() {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 6) {
     throw new Error('协议并发须为 1–6 的整数');
   }
+  await model.saveSettings(collectSettingsForm());
+  await bridge.invoke('settings.putProtocol@1', { settings: { concurrency } });
+  refreshServiceSummary();
+  closeServiceDetail();
+  refreshLibrary();
+  toast('模型设置已保存');
+}
+
+async function saveParserSettings() {
   const idleMinutes = Math.round(Number($('#set-idle-minutes').value));
   if (!Number.isInteger(idleMinutes) || idleMinutes < 1 || idleMinutes > 240) {
     throw new Error('空闲释放须为 1–240 的整数分钟');
   }
-  await model.saveSettings(collectSettingsForm());
   await bridge.invoke('settings.putPdfparse@1', {
     settings: {
       tableMode: selectedTableMode(),
@@ -3122,25 +3319,16 @@ async function saveSettings() {
       idleShutdownMinutes: idleMinutes,
     },
   });
-  await bridge.invoke('settings.putProtocol@1', { settings: { concurrency } });
-  $('#modal-settings').hidden = true;
-  refreshLibrary();
-  toast('设置已保存');
-}
-
-// ---------------- 技能库弹窗 ----------------
-function openSkillsModal() {
-  renderSkillList();
-  const first = effectiveSkills()[0];
-  if (first) selectSkill(first.id);
-  $('#modal-skills').hidden = false;
+  closeServiceDetail();
+  toast('解析设置已保存');
 }
 
 function renderSkillList() {
   const wrap = $('#skill-list');
   wrap.innerHTML = '';
   for (const s of effectiveSkills()) {
-    const div = document.createElement('div');
+    const div = document.createElement('button');
+    div.type = 'button';
     div.className = 'skill-item' + (s.customized ? ' custom' : '') + (s.id === editingSkillId ? ' active' : '');
     const name = document.createElement('div');
     name.className = 'si-name';
@@ -3383,11 +3571,13 @@ function renderTaskList(tasks) {
       };
       actions.appendChild(cancel);
     }
-    if (task.status === 'failed' && task.error?.retryable && meta?.retry) {
+    const canRetry = task.status === 'cancelled'
+      || (task.status === 'failed' && (task.error?.retryable || String(task.kind || '').startsWith('paper.build-map')));
+    if (canRetry && meta?.retry) {
       const retry = document.createElement('button');
       retry.className = 'btn small primary';
       retry.type = 'button';
-      retry.textContent = '重试';
+      retry.textContent = String(task.kind || '').startsWith('paper.build-map') ? '继续建图' : '重试';
       retry.onclick = async () => {
         retry.disabled = true;
         try {
@@ -3436,6 +3626,12 @@ function renderTaskList(tasks) {
         flow.appendChild(chip);
       }
       row.appendChild(flow);
+    }
+    if (detail.resumeLine) {
+      const resume = document.createElement('div');
+      resume.className = 'task-sub-progress';
+      resume.textContent = detail.resumeLine;
+      row.appendChild(resume);
     }
     if (detail.subProgress) {
       const sub = document.createElement('div');
@@ -3646,7 +3842,7 @@ function bindEvents() {
   $('#btn-migrate-pick').onclick = pickMigrationFile;
   $('#btn-migrate-commit').onclick = commitMigration;
   $('#btn-export-library').onclick = exportLibrary;
-  $('#api-warning').onclick = openSettingsModal;
+  $('#api-warning').onclick = () => { void openSettingsModal('service').then(() => openServiceDetail('llm')); };
   $('#library-search').oninput = e => {
     libraryQuery = e.target.value;
     refreshLibrary();
@@ -3673,7 +3869,78 @@ function bindEvents() {
     $('#filter-done').value = '';
     refreshLibrary();
   };
-  $('#btn-settings').onclick = openSettingsModal;
+  $('#btn-settings').onclick = () => openSettingsModal();
+  $('#open-llm-settings').onclick = () => openServiceDetail('llm');
+  $('#open-parser-settings').onclick = () => openServiceDetail('parser');
+  $('#close-service-detail').onclick = () => closeServiceDetail();
+  $('#settings-detail-layer').onclick = event => {
+    if (event.target === $('#settings-detail-layer')) closeServiceDetail();
+  };
+  $$('[data-settings-tab]').forEach(button => {
+    button.onclick = () => selectSettingsTab(button.dataset.settingsTab);
+    button.onkeydown = event => {
+      if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const tabs = $$('[data-settings-tab]');
+      const index = tabs.indexOf(button);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+        : (index + (['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].focus();
+      selectSettingsTab(tabs[next].dataset.settingsTab);
+    };
+  });
+  $$('input[name="proxy-mode"]').forEach(input => {
+    input.onchange = () => { $('#proxy-manual').hidden = input.value !== 'manual'; };
+  });
+  $$('[data-external]').forEach(button => {
+    button.onclick = () => bridge.openExternal(button.dataset.external)
+      .catch(err => toast(`打开链接失败：${errorText(err)}`, true));
+  });
+  $('#btn-check-update').onclick = () => { void checkForUpdate(); };
+  $('#btn-install-update').onclick = () => { void installAvailableUpdate(); };
+  $('#btn-component-install').onclick = () => { void installParserComponent(); };
+  $('#btn-component-migrate').onclick = async () => {
+    try {
+      await bridge.migrateComponent();
+      await refreshComponentStatus();
+    } catch (err) {
+      componentState = { ...componentState, phase: 'idle', error: errorText(err) };
+      renderComponentState();
+    }
+  };
+  $('#btn-component-local').onclick = async () => {
+    try {
+      const picked = await bridge.invoke('dialog.pickFile@1', {
+        title: '选择本地解析组件包',
+        filters: [{ name: '解析组件 ZIP', extensions: ['zip'] }],
+      });
+      if (picked?.path) void installParserComponent(picked.path);
+    } catch (err) {
+      toast(`选择组件包失败：${errorText(err)}`, true);
+    }
+  };
+  $('#btn-component-cancel').onclick = () => bridge.cancelComponentInstall()
+    .catch(err => toast(`取消失败：${errorText(err)}`, true));
+  $('#btn-component-remove').onclick = async () => {
+    if (!confirm('卸载本地解析组件？已有论文、PDF 和阅读内容会保留，但新 PDF 无法解析。')) return;
+    try {
+      await bridge.removeComponent();
+      await refreshComponentStatus();
+      toast('本地解析组件已卸载');
+    } catch (err) {
+      toast(`卸载失败：${errorText(err)}`, true);
+    }
+  };
+  void bridge.onComponentProgress(progress => {
+    componentState = { ...componentState, ...progress };
+    renderComponentState();
+  }).catch(err => console.warn('组件进度订阅失败：', err));
+  void bridge.onUpdateProgress(progress => {
+    updaterState = updateState(updaterState, progress.finished
+      ? { type: 'downloaded' }
+      : { type: 'progress', downloaded: progress.downloaded, total: progress.total });
+    renderUpdaterState();
+  }).catch(err => console.warn('更新进度订阅失败：', err));
   $('#set-model').addEventListener('input', refreshSettingsDerived);
   $('#set-extra-body').addEventListener('input', updateExtraPreview);
   $('#set-stage-extra-body').addEventListener('input', updateExtraPreview);
@@ -3692,12 +3959,16 @@ function bindEvents() {
   $('#btn-save-settings').onclick = async () => {
     try { await saveSettings(); } catch (err) { toast('设置保存失败：' + errorText(err), true); }
   };
+  $('#btn-save-parser-settings').onclick = async () => {
+    try { await saveParserSettings(); } catch (err) { toast('解析设置保存失败：' + errorText(err), true); }
+  };
   $('#btn-test-api').onclick = async () => {
     const r = $('#api-test-result');
     r.textContent = '测试中…';
     // 先保存再测试：测试连接读取的是已落库的设置。
     try {
       await model.saveSettings(collectSettingsForm());
+      refreshServiceSummary();
       r.textContent = await model.testConnection();
     } catch (err) {
       r.textContent = '❌ ' + (err?.message || err);
@@ -3741,6 +4012,10 @@ function bindEvents() {
   $('#btn-back-map').onclick = backToMap;
   $('#btn-deep-all').onclick = () => startDeepAll().catch(err => toast(errorText(err), true));
   $('#btn-build-map').onclick = () => startBuildMap().catch(err => toast(errorText(err), true));
+  $('#btn-rebuild-map').onclick = () => {
+    if (!current || !confirm('重新建图会重新请求全部摘要和正文节，并覆盖当前地图。继续吗？')) return;
+    void startBuildMap(current.id, true).catch(err => toast(errorText(err), true));
+  };
   $('#map-page-body').onclick = onProtocolContentClick;
   $('#section-page-body').onclick = onProtocolContentClick;
   bindPaneResizer($('#tree-resizer'), 'tree');
@@ -3855,7 +4130,6 @@ function bindEvents() {
     }
   });
 
-  $('#btn-skills').onclick = openSkillsModal;
   $('#btn-startup').onclick = showStartup;
   $('#btn-skill-save').onclick = async () => {
     if (!editingSkillId) return;
@@ -3884,14 +4158,31 @@ function bindEvents() {
   };
 
   // 点击遮罩或「取消」按钮关闭弹窗；关闭确认弹窗的遮罩点击等同「取消关闭」。
-  for (const id of ['modal-arxiv', 'modal-settings', 'modal-skills', 'modal-organize', 'modal-migrate', 'modal-close']) {
+  for (const id of ['modal-arxiv', 'modal-settings', 'modal-organize', 'modal-migrate', 'modal-close']) {
     const mask = $(`#${id}`);
     mask.addEventListener('click', e => { if (e.target === mask) mask.hidden = true; });
     mask.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { mask.hidden = true; });
   }
   document.addEventListener('keydown', e => {
+    if (e.key === 'Tab' && !$('#settings-detail-layer').hidden) {
+      const focusable = [...$('#settings-detail-layer').querySelectorAll('button, input, select, textarea, summary')]
+        .filter(element => !element.disabled && element.getClientRects().length);
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (first && (e.shiftKey && document.activeElement === first)) {
+        e.preventDefault();
+        last.focus();
+      } else if (last && !e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
     if (e.key === 'Escape') {
-      for (const id of ['modal-arxiv', 'modal-settings', 'modal-skills', 'modal-organize', 'modal-migrate', 'modal-close']) {
+      if (!$('#settings-detail-layer').hidden) {
+        closeServiceDetail();
+        return;
+      }
+      for (const id of ['modal-arxiv', 'modal-settings', 'modal-organize', 'modal-migrate', 'modal-close']) {
         $(`#${id}`).hidden = true;
       }
     }

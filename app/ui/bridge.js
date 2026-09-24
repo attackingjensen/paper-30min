@@ -22,6 +22,20 @@ export function createBridge(tauri) {
     // 用户在关闭提示中选择后调用：cancelTasks=true 停止任务并退出，false 任务已结束直接退出。
     closeWindow: (cancelTasks) =>
       invoke('bridge_invoke', { command: 'app.close-window@1', input: { cancelTasks } }),
+
+    updateInfo: () => invoke('updater_info'),
+    checkUpdate: () => invoke('updater_check'),
+    installUpdate: (version) => invoke('updater_install', { version }),
+    openExternal: (destination) => invoke('open_external', { destination }),
+    componentStatus: () => invoke('component_status'),
+    installComponent: (source = null) => invoke('component_install', { source }),
+    cancelComponentInstall: () => invoke('component_cancel'),
+    migrateComponent: () => invoke('component_migrate'),
+    removeComponent: () => invoke('component_remove'),
+    onComponentProgress: (handler) =>
+      listen('app:component-progress', (event) => handler(event.payload)),
+    onUpdateProgress: (handler) =>
+      listen('app:update-progress', (event) => handler(event.payload)),
   };
 }
 

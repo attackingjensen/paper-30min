@@ -400,6 +400,15 @@ pub struct SidecarPool {
 }
 
 impl SidecarPool {
+    pub fn release(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(child) = state.child.take() {
+            reap_child(child);
+        }
+        state.idle_deadline = None;
+        drop(state);
+        self.set_status(ResidentState::Released);
+    }
     pub fn new() -> Arc<Self> {
         let pool = Arc::new(Self {
             state: Mutex::new(PoolState {
@@ -429,10 +438,7 @@ impl SidecarPool {
     }
 
     fn resident_state(&self) -> ResidentState {
-        *self
-            .status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        *self.status.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn status_json(&self) -> Value {
@@ -486,7 +492,9 @@ impl SidecarPool {
                             .map(|detail| format!(": {detail}"))
                             .unwrap_or_default()
                     ),
-                    _ => eprintln!("[pdfpool] 常驻侧车预热未生效（忽略，首个解析任务按需冷启或回退）"),
+                    _ => eprintln!(
+                        "[pdfpool] 常驻侧车预热未生效（忽略，首个解析任务按需冷启或回退）"
+                    ),
                 }
             });
     }
@@ -573,7 +581,9 @@ impl SidecarPool {
                 if count_fallback {
                     self.note_fallback();
                 }
-                return PoolOutcome::Fallback(FallbackInfo::new("spawn_failed").with_detail(reason));
+                return PoolOutcome::Fallback(
+                    FallbackInfo::new("spawn_failed").with_detail(reason),
+                );
             }
         };
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;

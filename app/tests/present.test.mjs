@@ -170,6 +170,13 @@ test('任务中心：建图 L2 按 secId 显示排队 / 生成中 / 完成 / 失
   );
 });
 
+test('任务中心：续跑显示复用和待补节数', () => {
+  const task = taskSnapshot({ details: [
+    { event: 'stage', detail: { stage: 'map-l2', shards: 16, reused: 15, pending: 1, sections: ['sec_16'] } },
+  ] });
+  assert.equal(taskDetailModel({ task }).resumeLine, '已复用 15 节 · 待补 1 节');
+});
+
 test('任务中心：批量深挖呈现逐节子进度与工具步骤流', () => {
   const task = taskSnapshot({ kind: 'paper.deep-dive@1', progress: { done: 1, total: 3 } });
   const meta = {

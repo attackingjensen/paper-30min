@@ -114,7 +114,13 @@ fn insert_paper(conn: &Connection, id: &str, title: &str, added_at: &str) {
     .expect("插入夹具论文");
 }
 
-fn insert_analysis(conn: &Connection, paper_id: &str, section_id: &str, body: &str, updated_at: &str) {
+fn insert_analysis(
+    conn: &Connection,
+    paper_id: &str,
+    section_id: &str,
+    body: &str,
+    updated_at: &str,
+) {
     conn.execute(
         "INSERT INTO analyses(paper_id, section_id, body, updated_at) VALUES(?1, ?2, ?3, ?4)",
         rusqlite::params![paper_id, section_id, body, updated_at],
@@ -131,14 +137,49 @@ fn create_v3_fixture(dir: &Path) {
     conn.execute_batch(V3_SCHEMA).expect("写入 v3 快照结构");
 
     insert_paper(&conn, "paper-normal", "正常结果", "2026-08-01T08:00:00Z");
-    insert_analysis(&conn, "paper-normal", "abstract", "摘要精读结果", "2026-08-02T09:00:00Z");
-    insert_analysis(&conn, "paper-normal", "part-1", "第一节精读结果", "2026-08-03T09:00:00Z");
-    insert_analysis(&conn, "paper-normal", "part-2", "同日第二节精读结果", "2026-08-03T18:30:00Z");
+    insert_analysis(
+        &conn,
+        "paper-normal",
+        "abstract",
+        "摘要精读结果",
+        "2026-08-02T09:00:00Z",
+    );
+    insert_analysis(
+        &conn,
+        "paper-normal",
+        "part-1",
+        "第一节精读结果",
+        "2026-08-03T09:00:00Z",
+    );
+    insert_analysis(
+        &conn,
+        "paper-normal",
+        "part-2",
+        "同日第二节精读结果",
+        "2026-08-03T18:30:00Z",
+    );
 
-    insert_paper(&conn, "paper-partial", "中断部分结果", "2026-08-05T08:00:00Z");
+    insert_paper(
+        &conn,
+        "paper-partial",
+        "中断部分结果",
+        "2026-08-05T08:00:00Z",
+    );
     let partial_body = format!("已生成的前半部分内容{PARTIAL_MARKER}");
-    insert_analysis(&conn, "paper-partial", "abstract", &partial_body, "2026-08-06T10:00:00Z");
-    insert_analysis(&conn, "paper-partial", "part-1", "完整精读结果", "2026-08-07T10:00:00Z");
+    insert_analysis(
+        &conn,
+        "paper-partial",
+        "abstract",
+        &partial_body,
+        "2026-08-06T10:00:00Z",
+    );
+    insert_analysis(
+        &conn,
+        "paper-partial",
+        "part-1",
+        "完整精读结果",
+        "2026-08-07T10:00:00Z",
+    );
 
     insert_paper(&conn, "paper-empty", "无结果", "2026-08-10T08:00:00Z");
 }
@@ -258,7 +299,11 @@ fn failed_migration_rolls_back_and_refuses_startup() {
         Ok(_) => panic!("迁移失败应拒绝启动"),
         Err(error) => error,
     };
-    assert!(error.message.contains("时间戳"), "错误应指认失败原因: {}", error.message);
+    assert!(
+        error.message.contains("时间戳"),
+        "错误应指认失败原因: {}",
+        error.message
+    );
 
     // 整体回滚：user_version 仍为 3，read_marks/activity_days 两表不存在。
     let conn = Connection::open(dir.path().join("database").join("library.sqlite")).unwrap();
@@ -267,12 +312,14 @@ fn failed_migration_rolls_back_and_refuses_startup() {
         .unwrap();
     assert_eq!(version, 3, "失败迁移不得推进 user_version");
     assert!(
-        conn.query_row("SELECT COUNT(1) FROM read_marks", [], |row| row.get::<_, i64>(0))
+        conn.query_row("SELECT COUNT(1) FROM read_marks", [], |row| row
+            .get::<_, i64>(0))
             .is_err(),
         "失败迁移不得留下 read_marks 表"
     );
     assert!(
-        conn.query_row("SELECT COUNT(1) FROM activity_days", [], |row| row.get::<_, i64>(0))
+        conn.query_row("SELECT COUNT(1) FROM activity_days", [], |row| row
+            .get::<_, i64>(0))
             .is_err(),
         "失败迁移不得留下 activity_days 表"
     );

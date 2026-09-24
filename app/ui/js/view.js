@@ -86,9 +86,9 @@ export function switchTab(state, tab) {
   return patch(state, { tab, citeFocus: null });
 }
 
-export function openSection(state, sectionId, { mapped = null } = {}) {
+export function openSection(state, sectionId, { mapped = null, legacy = false } = {}) {
   if (!state.hasMap || !sectionId) return state;
-  const page = pdfPageForSection(mapped, sectionId);
+  const page = pdfPageForSection(mapped, sectionId, legacy);
   const updates = { appView: 'reader', tab: 'map', sectionId, citeFocus: null };
   if (Number.isFinite(page) && page >= 1) updates.pdfPage = page;
   return patch(state, updates);
@@ -117,10 +117,10 @@ export function setPdfPage(state, pdfPage) {
 }
 
 /** 节起始页：接受精读部分 id 或原文章节 id。 */
-export function pdfPageForSection(mapped, sectionOrPartId) {
+export function pdfPageForSection(mapped, sectionOrPartId, legacy = false) {
   if (!mapped || !sectionOrPartId) return null;
   const byId = (mapped.sections ?? []).find(section => section.id === sectionOrPartId);
-  const section = byId || sectionForPart(mapped, sectionOrPartId);
+  const section = byId || sectionForPart(mapped, sectionOrPartId, legacy);
   const page = section?.pageStart;
   return Number.isFinite(page) && page >= 1 ? page : null;
 }
@@ -179,13 +179,13 @@ export function paneFabVisibility(state) {
   };
 }
 
-const TREE_GREY_ROLES = new Set(['references', 'acknowledgments']);
+const TREE_GREY_ROLES = new Set(['appendix', 'references', 'acknowledgments']);
 
-/** 节树条目：L2 节用精读部分 id；References / Acknowledgments 灰显并保留节 id。 */
-export function treeItems(mapped) {
+/** 节树条目：L2 节用精读部分 id；非地图节灰显并保留节 id。 */
+export function treeItems(mapped, { legacy = false } = {}) {
   return (mapped?.sections ?? []).map(section => {
-    const grey = TREE_GREY_ROLES.has(section.role);
-    const partId = partIdForSection(mapped, section.id);
+    const grey = TREE_GREY_ROLES.has(section.role) && !(legacy && section.role === 'appendix');
+    const partId = partIdForSection(mapped, section.id, legacy);
     return {
       id: partId || section.id,
       title: section.title || section.id,
@@ -203,9 +203,12 @@ export function treeItemStatus(partId, { readMarks = {}, products = [], grey = f
 }
 
 /** 「全部深挖」的 partIds：参与 L2 的节，按阅读顺序。 */
-export function deepAllPartIds(mapped) {
-  return l2Sections(mapped)
-    .map(section => partIdForSection(mapped, section.id))
+export function deepAllPartIds(mapped, legacy = false) {
+  const sections = legacy
+    ? (mapped?.sections ?? []).filter(section => ['abstract', 'body', 'appendix'].includes(section.role))
+    : l2Sections(mapped);
+  return sections
+    .map(section => partIdForSection(mapped, section.id, legacy))
     .filter(Boolean);
 }
 

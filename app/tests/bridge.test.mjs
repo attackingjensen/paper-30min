@@ -281,6 +281,42 @@ test('trackTask：任务在订阅建立前瞬时失败，由订阅建立后的�
   assert.equal(outcome.error.code, 'invalid_input');
 });
 
+test('更新器桥接通过专用 Rust 命令与进度事件', async () => {
+  const tauri = createTauriStub();
+  const bridge = createBridge(tauri);
+  await bridge.updateInfo();
+  await bridge.checkUpdate();
+  await bridge.installUpdate('1.2.1');
+  await bridge.onUpdateProgress(() => {});
+  assert.deepEqual(tauri.calls.map(call => call.cmd), ['updater_info', 'updater_check', 'updater_install']);
+  assert.deepEqual(tauri.calls[2].args, { version: '1.2.1' });
+  assert.ok(tauri.listeners.has('app:update-progress'));
+});
+
+test('解析组件桥接覆盖状态、下载、本地安装、迁移、取消与卸载', async () => {
+  const tauri = createTauriStub();
+  const bridge = createBridge(tauri);
+  await bridge.componentStatus();
+  await bridge.installComponent();
+  await bridge.installComponent('D:/parser.zip');
+  await bridge.migrateComponent();
+  await bridge.cancelComponentInstall();
+  await bridge.removeComponent();
+  await bridge.onComponentProgress(() => {});
+  assert.deepEqual(tauri.calls.map(call => call.cmd), [
+    'component_status', 'component_install', 'component_install',
+    'component_migrate', 'component_cancel', 'component_remove',
+  ]);
+  assert.deepEqual(tauri.calls[2].args, { source: 'D:/parser.zip' });
+  assert.ok(tauri.listeners.has('app:component-progress'));
+});
+
+test('项目链接经受限的原生命令打开', async () => {
+  const tauri = createTauriStub();
+  await createBridge(tauri).openExternal('issues');
+  assert.deepEqual(tauri.calls[0], { cmd: 'open_external', args: { destination: 'issues' } });
+});
+
 test('trackTask：事件订阅失败后仍以快照轮询到终态', async () => {
   let status = 'running';
   let reads = 0;

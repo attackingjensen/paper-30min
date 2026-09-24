@@ -4,6 +4,7 @@
 
 - `plans/`：技能按需生成统一计划，探索与实施设计在同一产物中推进。
 - `solutions/`：ce-compound 按条件沉淀经验证的项目经验。
+- `reviews/`：代码审查与发布前风险记录；当前重点见 [v1.2.0 发布前审查](reviews/2026-09-24-v1.2-pre-release.md)。
 - 其他产物目录由相应技能按需创建；不预建完整目录树或空白模板。
 
 项目介绍见 [README](../README.md)，当前进度见 [current.md](current.md)，产品定位与方向见 [STRATEGY.md](../STRATEGY.md)，业务概念与既有取舍见 [CONCEPTS.md](../CONCEPTS.md)，运行和测试见 [客户端 README](../app/README.md)。工作上下文来自当前任务、相关计划、代码、测试和必要的 Issue；`current.md` 只保留简短的项目进度，提交前按实际变化更新。

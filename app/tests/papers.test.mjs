@@ -299,6 +299,22 @@ test('progressParts：已建图进度域与节树可标记节点同集合（跨�
   assert.equal(papers.isPaperRead(paper), true);
 });
 
+test('新地图进度排除保留的旧附录产物和已读标记', () => {
+  const paper = progressFixture();
+  paper.parts = [{ id: 'abstract' }, { id: 'part-1' }];
+  paper.products = [
+    { kind: 'map', partId: '', body: { scope: 'abstract-body' } },
+    { kind: 'l2', partId: 'abstract', body: {} },
+    { kind: 'l2', partId: 'part-1', body: {} },
+    { kind: 'l2', partId: 'part-2', body: { secId: 'old-appendix' } },
+    { kind: 'dig', partId: 'part-2', body: '旧附录深挖' },
+  ];
+  paper.readMarks = { 'part-2': 1 };
+  assert.deepEqual(papers.progressParts(paper).map(part => part.id), ['abstract', 'part-1']);
+  assert.deepEqual(papers.readingProgress(paper), { done: 0, total: 2 });
+  assert.equal(paper.products.find(item => item.kind === 'dig').body, '旧附录深挖');
+});
+
 // ---------------- 四写入缝的活动日行生成（规格 #51 决策 5） ----------------
 
 function parsedFixture() {

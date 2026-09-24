@@ -245,6 +245,27 @@ test('节页：L2 卡、图表区、标记与旧精读折叠；灰显节无 L2',
   assert.equal(refs.figures.length, 0);
 });
 
+test('旧地图附录 L2 和深挖仍可读，新地图附录只在原文保留', () => {
+  const appendix = { ...mapped.sections[2], id: 'appendix-a', role: 'appendix', title: 'Appendix A' };
+  const withAppendix = { ...mapped, sections: [
+    ...mapped.sections.slice(0, 3), appendix, mapped.sections[3],
+  ] };
+  const historical = [
+    ...products,
+    { kind: 'l2', partId: 'part-3', body: { secId: 'appendix-a', gist: '旧附录摘要', points: [{ text: '旧要点', refs: [] }] } },
+    { kind: 'dig', partId: 'part-3', body: '旧附录深挖' },
+  ];
+  const oldPage = sectionPageModel({ partId: 'part-3', mapped: withAppendix, products: historical });
+  assert.equal(oldPage.title, 'Appendix A');
+  assert.equal(oldPage.l2.gist, '旧附录摘要');
+  assert.equal(oldPage.deepDive.state, 'done');
+  const newProducts = historical.map(item => item.kind === 'map'
+    ? { ...item, body: { ...item.body, scope: 'abstract-body' } } : item);
+  const newPage = sectionPageModel({ partId: 'appendix-a', mapped: withAppendix, products: newProducts });
+  assert.equal(newPage.grey, true);
+  assert.equal(newPage.l2, null);
+});
+
 test('该节图表取自清单归属，不把别节的表算进来', () => {
   const introFigs = sectionFigures(mapped, 'part-1');
   assert.deepEqual(introFigs.map(item => item.id), ['fig_1']);

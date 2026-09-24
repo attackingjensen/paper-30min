@@ -191,8 +191,13 @@ fn v4_snapshot_migrates_to_v5_and_products_round_trip() {
             "updatedAt": "2026-09-10T09:00:00Z"
         }
     ]);
-    let saved = bridge::invoke(&registry, &library, "library.putPaper@1", &json!({ "paper": updated }))
-        .expect("library.putPaper@1");
+    let saved = bridge::invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        &json!({ "paper": updated }),
+    )
+    .expect("library.putPaper@1");
     assert_eq!(saved["paper"]["products"].as_array().unwrap().len(), 2);
 
     let loaded = get_paper(&registry, &library, "paper-a");
@@ -210,8 +215,13 @@ fn migrated_v5_library_reopens_without_remigrating() {
         updated["products"] = json!([
             { "kind": "retell", "partId": "", "body": "# 复述稿", "updatedAt": "2026-09-10T08:00:00Z" }
         ]);
-        bridge::invoke(&registry, &library, "library.putPaper@1", &json!({ "paper": updated }))
-            .expect("library.putPaper@1");
+        bridge::invoke(
+            &registry,
+            &library,
+            "library.putPaper@1",
+            &json!({ "paper": updated }),
+        )
+        .expect("library.putPaper@1");
     }
 
     // 再次打开：version == DATABASE_VERSION 短路，不重复迁移；已落库产物原样读回。

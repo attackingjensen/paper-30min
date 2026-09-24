@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::error::BridgeError;
@@ -34,9 +35,14 @@ pub const TASK_BOOTSTRAP: &str = "pdfparse.bootstrap@1";
 pub const SIDECAR_HOME_ENV: &str = "PAPER30MIN_PDFPARSE_HOME";
 /// 模型目录环境变量；缺省时优先书库下运行时下载目录，其次侧车自带目录。
 pub const MODELS_DIR_ENV: &str = "PAPER30MIN_PDFPARSE_MODELS";
+static COMPONENT_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_component_root(root: PathBuf) {
+    let _ = COMPONENT_ROOT.set(root);
+}
 
 /// 与侧车 REQUIRED_MODEL_FILES 保持一致（Rust 侧做快速文件系统检查）。
-const REQUIRED_MODEL_FILES: [&str; 11] = [
+pub(crate) const REQUIRED_MODEL_FILES: [&str; 11] = [
     "docling-project--docling-layout-heron/model.safetensors",
     "docling-project--docling-layout-heron/config.json",
     "docling-project--docling-layout-heron/preprocessor_config.json",
@@ -69,19 +75,20 @@ pub struct SidecarLayout {
     pub variant: Option<String>,
 }
 
-/// 侧车目录候选：环境变量 → 可执行文件旁（随包安装布局）→ 仓库开发目录。
+/// 侧车目录候选：已激活组件 → 环境变量 → 仅开发构建的仓库目录。
 fn sidecar_root_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    if let Some(root) = COMPONENT_ROOT.get() {
+        if let Ok(Some(active)) = crate::component::active_component(root) {
+            candidates.push(active);
+        }
+    }
     if let Ok(value) = std::env::var(SIDECAR_HOME_ENV) {
         if !value.trim().is_empty() {
             candidates.push(PathBuf::from(value));
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("sidecar").join("pdfparse"));
-        }
-    }
+    #[cfg(debug_assertions)]
     candidates.push(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("sidecar")
@@ -283,14 +290,18 @@ pub(crate) fn spawn_child(mut command: Command) -> Result<ChildHarness, BridgeEr
                         .unwrap_or("")
                         .to_string();
                     {
-                        let mut log = progress_log_writer.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut log = progress_log_writer
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         log.push((stage, Instant::now()));
                     }
                     let _ = progress_tx.send(Progress { done, total });
                 }
                 continue;
             }
-            let mut lines = stdout_lines_writer.lock().unwrap_or_else(|e| e.into_inner());
+            let mut lines = stdout_lines_writer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if lines.len() < STDOUT_LINE_LIMIT {
                 lines.push(line);
             }
@@ -386,7 +397,10 @@ fn result_line_of(harness: &ChildHarness) -> Option<String> {
 }
 
 /// 读取结构化结果：优先 result.json 文件，退回 stdout 的 PDFPARSE_RESULT 行。
-pub(crate) fn read_sidecar_result(result_dir: &Path, harness: &ChildHarness) -> Option<SidecarResult> {
+pub(crate) fn read_sidecar_result(
+    result_dir: &Path,
+    harness: &ChildHarness,
+) -> Option<SidecarResult> {
     if let Ok(text) = std::fs::read_to_string(result_dir.join("result.json")) {
         if let Ok(parsed) = serde_json::from_str::<SidecarResult>(&text) {
             return Some(parsed);
@@ -404,8 +418,12 @@ pub(crate) fn map_failure(result: &SidecarResult, harness: &ChildHarness) -> Bri
         }
         return mapped;
     }
-    BridgeError::new("sidecar_result_invalid", "侧车失败结果缺少 error 字段", true)
-        .with_details(json!({ "stderrTail": stderr_tail_of(harness) }))
+    BridgeError::new(
+        "sidecar_result_invalid",
+        "侧车失败结果缺少 error 字段",
+        true,
+    )
+    .with_details(json!({ "stderrTail": stderr_tail_of(harness) }))
 }
 
 pub(crate) fn crashed_error(exit_code: i32, harness: &ChildHarness) -> BridgeError {
