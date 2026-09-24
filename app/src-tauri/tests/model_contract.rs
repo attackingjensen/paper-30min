@@ -739,6 +739,29 @@ fn chat_stage_qa_injects_enable_thinking_true() {
 }
 
 #[test]
+fn chat_stage_translate_disables_thinking_by_default() {
+    let (registry, library, _dir) = common::env();
+    let mock = MockHttp::start(|_request, _hit| {
+        sse_chat(vec![json!({"choices": [{"delta": {"content": "译文"}}]}).to_string()])
+    });
+    configure_model(&registry, &library, &mock.url(""));
+    let task_id = registry
+        .start(
+            "model.chat@1",
+            json!({"messages": [{"role": "user", "content": "source"}], "stage": "translate"}),
+            Collector::new(),
+        )
+        .unwrap();
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let snapshot = registry.get(&task_id).unwrap();
+    assert!(snapshot.details.unwrap_or_default().iter().any(|entry| {
+        entry["event"] == "stage" && entry["detail"]["stage"] == "translate"
+    }));
+    let body: Value = serde_json::from_slice(&mock.requests()[0].body).unwrap();
+    assert_eq!(body["enable_thinking"], json!(false));
+}
+
+#[test]
 fn chat_stage_extra_body_overrides_and_null_deletes_protected_keys() {
     let (registry, library, _dir) = common::env();
     let mock = MockHttp::start(|_request, _hit| {

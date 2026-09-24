@@ -220,6 +220,7 @@ test('推理家族提示：qwen3.8-flash 须命中，普通 gpt-4o-mini 不命�
 
 test('当前生效参数预览：内建默认 + extraBody + 阶段覆盖，null 删键，保护三键', () => {
   assert.deepEqual(mergeExtraBody('map-l2'), { enable_thinking: false });
+  assert.deepEqual(mergeExtraBody('translate'), { enable_thinking: false });
   assert.deepEqual(mergeExtraBody('qa'), { enable_thinking: true });
   assert.deepEqual(mergeExtraBody(undefined, { foo: 1 }), { foo: 1 });
   assert.deepEqual(
@@ -234,6 +235,7 @@ test('当前生效参数预览：内建默认 + extraBody + 阶段覆盖，null 
   assert.equal(preview['map-l1'].enable_thinking, false);
   assert.equal(preview.synthesize.enable_thinking, false);
   assert.equal(preview.qa.enable_thinking, true);
+  assert.equal(preview.translate.enable_thinking, false);
 });
 
 test('思考心跳归约：thinking 激活，chunk/round/content 清除', () => {

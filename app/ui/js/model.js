@@ -15,7 +15,7 @@ export const DEFAULT_SETTINGS = {
   stageExtraBody: {},
 };
 
-export const MODEL_STAGES = ['map-l2', 'map-l1', 'deep-dive', 'synthesize', 'qa'];
+export const MODEL_STAGES = ['map-l2', 'map-l1', 'deep-dive', 'synthesize', 'qa', 'translate'];
 export const REASONING_FAMILY_RE = /qwen3\.\d|qwen-(plus|flash|max)|deepseek|glm-?\d|kimi|r1|reasoner|thinking|o[134]\b|gpt-5/i;
 const PROTECTED_BODY_KEYS = new Set(['model', 'messages', 'stream']);
 
@@ -24,7 +24,7 @@ export function isReasoningFamily(model) {
 }
 
 export function builtinExtraBody(stage) {
-  if (stage === 'map-l2' || stage === 'map-l1' || stage === 'deep-dive' || stage === 'synthesize') {
+  if (stage === 'map-l2' || stage === 'map-l1' || stage === 'deep-dive' || stage === 'synthesize' || stage === 'translate') {
     return { enable_thinking: false };
   }
   if (stage === 'qa') return { enable_thinking: true };

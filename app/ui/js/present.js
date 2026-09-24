@@ -64,10 +64,16 @@ export function prerenderTaskLabel(scope) {
   return '预渲染';
 }
 
+function isTranslationModel(input, details = []) {
+  return input?.stage === 'translate'
+    || (Array.isArray(details) && details.some(entry => entry?.event === 'stage' && entry.detail?.stage === 'translate'));
+}
+
 /** 任务 kind → 中文名；prerender 再按 input.scope 细分。 */
-export function taskKindLabel(kind, input = {}) {
+export function taskKindLabel(kind, input = {}, details = []) {
   const bare = String(kind || '').replace(/@\d+$/, '');
   if (bare === 'pdfassets.prerender') return prerenderTaskLabel(input?.scope);
+  if (bare === 'model.chat' && isTranslationModel(input, details)) return '翻译';
   if (TASK_KIND_LABELS[bare]) return TASK_KIND_LABELS[bare];
   if (bare.startsWith('demo.')) return '演示任务';
   return bare || '未知任务';
@@ -313,12 +319,35 @@ function lastDetailOf(details, event) {
 /**
  * 协议任务在任务中心的附加呈现模型。task 为 tasks.list@1 快照条目（含 details 日志），
  * meta 为会话登记（可缺失——缺失时回退重建）。返回 { stageFlow?, shardFlow?, subProgress?, steps?,
- * stepsTotal?, trace?, timings? }；非协议/解析任务返回 {}。
+ * stepsTotal?, trace?, timings? }；翻译任务提供 liveLine，其余非协议/解析任务返回 {}。
  * trace 按 details 原序把 round / tool 插成一行，供阶段流/轨迹流就地插入轮次行。
  */
-export function taskDetailModel({ task = {}, meta = null } = {}) {
+export function taskDetailModel({ task = {}, meta = null, now = Date.now() } = {}) {
   const bare = String(task.kind || '').replace(/@\d+$/, '');
   const details = taskDetails(task, meta);
+  if (bare === 'model.chat' && isTranslationModel(meta?.input, details)) {
+    const result = task.result;
+    if (task.status === 'succeeded' && result) {
+      const usage = result.usage || {};
+      let line = `模型首个响应 ${formatSeconds(result.ttftMs)} s · 总 ${formatSeconds(result.elapsedMs)} s`;
+      if (Number.isFinite(Number(usage.promptTokens)) || Number.isFinite(Number(usage.completionTokens))) {
+        line += ` · 输入 ${usage.promptTokens ?? '—'} / 输出 ${usage.completionTokens ?? '—'} token`;
+      }
+      if (Number(result.reasoningMs) > 0) line += ` · 思考 ${formatSeconds(result.reasoningMs)} s`;
+      return { liveLine: line };
+    }
+    if (task.status === 'running' || task.status === 'queued' || task.status === 'retry_waiting') {
+      const elapsed = Math.max(0, now - Date.parse(task.createdAt));
+      if (Number.isFinite(elapsed)) {
+        const chunks = Number(task.progress?.done) || 0;
+        const state = chunks > 0
+          ? `正在接收译文 · ${chunks} 个流式片段`
+          : details.some(entry => entry?.event === 'thinking') ? '模型思考中' : '等待模型响应';
+        return { liveLine: `${state} · 已 ${formatSeconds(elapsed)} s` };
+      }
+    }
+    return {};
+  }
   if (bare === 'pdfparse.convert') {
     const timings = convertTimingRows(task.result);
     return timings.length ? { timings } : {};

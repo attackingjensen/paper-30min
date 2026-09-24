@@ -248,7 +248,7 @@ impl ChatCompletion {
 }
 
 /// 可按阶段覆盖的模型调用阶段（设置键与 `model.chat@1` 的 `stage` 共用）。
-pub(crate) const MODEL_STAGES: [&str; 5] = ["map-l2", "map-l1", "deep-dive", "synthesize", "qa"];
+pub(crate) const MODEL_STAGES: [&str; 6] = ["map-l2", "map-l1", "deep-dive", "synthesize", "qa", "translate"];
 const PROTECTED_BODY_KEYS: [&str; 3] = ["model", "messages", "stream"];
 const THINKING_HEARTBEAT: Duration = Duration::from_secs(1);
 
@@ -291,7 +291,7 @@ pub(crate) fn chat_request_body(
 fn builtin_stage_extra(stage: Option<&str>) -> Map<String, Value> {
     let mut extra = Map::new();
     match stage {
-        Some("map-l2" | "map-l1" | "deep-dive" | "synthesize") => {
+        Some("map-l2" | "map-l1" | "deep-dive" | "synthesize" | "translate") => {
             extra.insert("enable_thinking".into(), json!(false));
         }
         Some("qa") => {
@@ -381,7 +381,7 @@ pub(crate) fn parse_chat_stage(value: Option<&Value>) -> Result<Option<String>, 
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(stage)) if is_model_stage(stage) => Ok(Some(stage.clone())),
         _ => Err(BridgeError::invalid_input(
-            "stage 必须是 map-l2 / map-l1 / deep-dive / synthesize / qa",
+            "stage 必须是 map-l2 / map-l1 / deep-dive / synthesize / qa / translate",
         )),
     }
 }
@@ -931,6 +931,9 @@ pub(crate) fn run_chat(
     stream: bool,
     stage: Option<&str>,
 ) {
+    if let Some(stage) = stage {
+        ctx.emit_detail("stage", json!({ "stage": stage }));
+    }
     let config = match load_model_config(&ctx.library) {
         Ok(Some(config)) => config,
         Ok(None) => return ctx.fail(model_not_configured()),

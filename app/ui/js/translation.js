@@ -14,6 +14,7 @@ export async function translateForPaper({
       { role: 'user', content: chunks[index] },
     ], {
       stream: true,
+      stage: 'translate',
       signal,
       onDelta: full => {
         if (!signal?.aborted && isCurrent()) onDelta?.([...translated, full].join('\n\n'));

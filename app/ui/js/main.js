@@ -3563,7 +3563,7 @@ function renderTaskList(tasks) {
     const kind = document.createElement('span');
     kind.className = 'task-kind';
     const meta = sessionTasks.get(task.taskId);
-    kind.textContent = taskKindLabel(task.kind, meta?.input || task.input);
+    kind.textContent = taskKindLabel(task.kind, meta?.input || task.input, task.details);
     const id = document.createElement('span');
     id.className = 'task-id';
     id.textContent = task.taskId;

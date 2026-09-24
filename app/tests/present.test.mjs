@@ -713,6 +713,36 @@ test('建图重试（#96）：已确认完整覆盖的任务失败后，重试�
   assert.deepEqual(started, [{ paperId: 'p1', overwriteConfirmed: true }]);
 });
 
+test('翻译任务显示独立名称、等待时长和成功后的模型计时', () => {
+  const meta = { input: { stage: 'translate' } };
+  assert.equal(taskKindLabel('model.chat@1', meta.input), '翻译');
+  const running = taskSnapshot({ kind: 'model.chat@1', progress: { done: 0, total: 0 } });
+  assert.equal(taskDetailModel({ task: running, meta, now: Date.parse('2026-09-12T01:00:12Z') }).liveLine,
+    '等待模型响应 · 已 12.0 s');
+  const receiving = taskSnapshot({ kind: 'model.chat@1', progress: { done: 2, total: 0 } });
+  assert.equal(taskDetailModel({ task: receiving, meta, now: Date.parse('2026-09-12T01:00:15Z') }).liveLine,
+    '正在接收译文 · 2 个流式片段 · 已 15.0 s');
+  const thinking = taskSnapshot({
+    kind: 'model.chat@1',
+    details: [{ event: 'thinking', detail: { elapsedMs: 9000, reasoningChars: 30 } }],
+  });
+  assert.equal(taskDetailModel({ task: thinking, meta, now: Date.parse('2026-09-12T01:00:10Z') }).liveLine,
+    '模型思考中 · 已 10.0 s');
+  const done = taskSnapshot({
+    kind: 'model.chat@1', status: 'succeeded',
+    result: { ttftMs: 1200, elapsedMs: 5800, usage: { promptTokens: 900, completionTokens: 180 } },
+  });
+  assert.equal(taskDetailModel({ task: done, meta }).liveLine,
+    '模型首个响应 1.2 s · 总 5.8 s · 输入 900 / 输出 180 token');
+  const reloaded = taskSnapshot({
+    kind: 'model.chat@1',
+    details: [{ event: 'stage', detail: { stage: 'translate' } }],
+  });
+  assert.equal(taskKindLabel(reloaded.kind, {}, reloaded.details), '翻译');
+  assert.equal(taskDetailModel({ task: reloaded, meta: null, now: Date.parse('2026-09-12T01:00:12Z') }).liveLine,
+    '等待模型响应 · 已 12.0 s');
+});
+
 test('建图重试（#96）：取消后的重试同样保留覆盖语义', async () => {
   const started = [];
   const { retry } = buildMapRetryMeta({ paperId: 'p1', overwriteConfirmed: true }, async next => {

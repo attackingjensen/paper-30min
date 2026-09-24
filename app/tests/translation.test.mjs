@@ -42,6 +42,21 @@ test('translation saves the captured paper after all chunks succeed', async () =
   assert.deepEqual(saved, [[paper, 'part-1', 'zh', result, 'one two']]);
 });
 
+test('translation uses the fast translation stage for each model request', async () => {
+  const stages = [];
+  await translateForPaper({
+    paper: { id: 'paper' }, partId: 'part-1', chunks: ['one', 'two'], language: 'zh', source: 'one two', systemPrompt: 'translate',
+    chat: async (_messages, options) => {
+      stages.push(options.stage);
+      return '译文';
+    },
+    save: async () => {},
+    isCurrent: () => true,
+    signal: new AbortController().signal,
+  });
+  assert.deepEqual(stages, ['translate', 'translate']);
+});
+
 test('cancelled translation does not start another chunk or save', async () => {
   const paper = { id: 'paper' };
   const controller = new AbortController();
