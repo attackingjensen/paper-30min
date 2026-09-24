@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::ZipArchive;
 
-pub const COMPONENT_VERSION: &str = "1.2.0";
-pub const ARCHIVE_NAME: &str = "Paper30Min_pdfparse_1.2.0_windows-x86_64.zip";
-pub const MANIFEST_NAME: &str = "Paper30Min_pdfparse_1.2.0_windows-x86_64.manifest.json";
+pub const COMPONENT_VERSION: &str = "1.2.0-beta.1";
+pub const ARCHIVE_NAME: &str = "Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip";
+pub const MANIFEST_NAME: &str = "Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json";
 const MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_UNPACKED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 200_000;

@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 
-VERSION = "1.2.0"
+VERSION = "1.2.0-beta.1"
 ARCHIVE_NAME = f"Paper30Min_pdfparse_{VERSION}_windows-x86_64.zip"
 MANIFEST_NAME = f"Paper30Min_pdfparse_{VERSION}_windows-x86_64.manifest.json"
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)

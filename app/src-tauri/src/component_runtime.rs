@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-const DOWNLOAD_URL: &str = "https://github.com/attackingjensen/paper-30min/releases/download/v1.2.0/Paper30Min_pdfparse_1.2.0_windows-x86_64.zip";
+const DOWNLOAD_URL: &str = "https://github.com/attackingjensen/paper-30min/releases/download/v1.2.0-beta.1/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip";
 
 /// 组件包下载等待上限（#94）：连接与「每次读取」各有有界等待，停流/断网可在预期时间内退出。
 /// 刻意不设整包期限：组件包约 885 MB，慢速但持续有字节的下载必须能完成。
@@ -276,7 +276,7 @@ impl ComponentRuntime {
             component::migrate_legacy_sidecar_cancellable(&self.root, source, self_check, || {
                 self.checkpoint()
             })
-            .and_then(|_| fs::write(self.root.join("legacy-migrated"), b"1.2.0\n"))
+            .and_then(|_| fs::write(self.root.join("legacy-migrated"), b"1.2.0-beta.1\n"))
             .map_err(component_error);
         *self.error.lock().unwrap_or_else(|error| error.into_inner()) = result
             .as_ref()
@@ -365,7 +365,7 @@ fn verify_total_bytes(done: u64, total: u64) -> Result<(), BridgeError> {
 
 /// 组件包下载（#94 可测缝）：异步客户端以获得按读超时——reqwest 阻塞客户端只有整包期限，
 /// 会在慢速网络上误杀 885 MB 的正常下载；按读超时只掐断连续无字节的停流。
-/// 每次读取前先过 `checkpoint` 响应取消；块大小核对与本地来源路径共用 account_chunk。
+/// 读取期间也轮询 `checkpoint`，使停流时的取消无需等待按读超时。
 pub fn download_archive(
     url: &str,
     output: &mut File,
@@ -390,7 +390,17 @@ pub fn download_archive(
         let mut done = 0_u64;
         loop {
             checkpoint().map_err(component_error)?;
-            let Some(chunk) = response.chunk().await.map_err(component_error)? else {
+            let next = response.chunk();
+            tokio::pin!(next);
+            let chunk = loop {
+                tokio::select! {
+                    result = &mut next => break result.map_err(component_error)?,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                        checkpoint().map_err(component_error)?;
+                    }
+                }
+            };
+            let Some(chunk) = chunk else {
                 break;
             };
             account_chunk(output, &chunk, &mut done, total)?;

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign as ed25519Sign } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,17 +67,17 @@ function runCli(args) {
 }
 
 const artifact = {
-  version: '1.2.0', filename: 'Paper30Min_1.2.0_x64-setup.exe',
-  signature: 'signed-content', tag: 'v1.2.0', arch: 'x86_64',
+  version: '1.2.0-beta.1', filename: 'Paper30Min_1.2.0-beta.1_x64-setup.exe',
+  signature: 'signed-content', tag: 'v1.2.0-beta.1', arch: 'x86_64',
 };
 
 test('Windows NSIS 清单绑定版本、架构、附件 URL 和签名', () => {
   const manifest = createManifest(artifact);
   assert.deepEqual(manifest, {
-    version: '1.2.0',
+    version: '1.2.0-beta.1',
     platforms: { 'windows-x86_64': {
       signature: 'signed-content',
-      url: 'https://github.com/attackingjensen/paper-30min/releases/download/v1.2.0/Paper30Min_1.2.0_x64-setup.exe',
+      url: 'https://github.com/attackingjensen/paper-30min/releases/download/v1.2.0-beta.1/Paper30Min_1.2.0-beta.1_x64-setup.exe',
     } },
   });
   assert.doesNotThrow(() => verifyManifest(manifest, artifact));
@@ -89,18 +89,18 @@ test('版本、架构和签名缺失时拒绝生成清单', () => {
   assert.throws(() => createManifest({ ...artifact, filename: 'Paper30Min_1.1.0_x64-setup.exe' }), /不匹配/);
   assert.throws(() => createManifest({ ...artifact, arch: 'i686' }), /不匹配/);
   assert.throws(() => createManifest({ ...artifact, signature: '' }), /签名缺失/);
-  assert.throws(() => createManifest({ ...artifact, tag: 'v1.2.1' }), /不一致/);
+  assert.throws(() => createManifest({ ...artifact, tag: 'v1.2.0' }), /不一致/);
 });
 
 test('组件包必须与主程序内置可信清单一致', () => {
   const component = {
-    schemaVersion: 1, component: 'pdfparse', version: '1.2.0', platform: 'windows', arch: 'x86_64',
-    archive: 'Paper30Min_pdfparse_1.2.0_windows-x86_64.zip', archiveBytes: 12,
+    schemaVersion: 1, component: 'pdfparse', version: '1.2.0-beta.1', platform: 'windows', arch: 'x86_64',
+    archive: 'Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip', archiveBytes: 12,
     sha256: 'a'.repeat(64), unpackedBytes: 24,
   };
-  assert.doesNotThrow(() => verifyComponentRelease(component, component, component.archive, 12, component.sha256, '1.2.0'));
-  assert.throws(() => verifyComponentRelease(component, component, component.archive, 12, 'b'.repeat(64), '1.2.0'), /不一致/);
-  assert.throws(() => verifyComponentRelease({ ...component, arch: 'aarch64' }, component, component.archive, 12, component.sha256, '1.2.0'), /不一致/);
+  assert.doesNotThrow(() => verifyComponentRelease(component, component, component.archive, 12, component.sha256, '1.2.0-beta.1'));
+  assert.throws(() => verifyComponentRelease(component, component, component.archive, 12, 'b'.repeat(64), '1.2.0-beta.1'), /不一致/);
+  assert.throws(() => verifyComponentRelease({ ...component, arch: 'aarch64' }, component, component.archive, 12, component.sha256, '1.2.0-beta.1'), /不一致/);
 });
 
 test('当前安装包与签名通过更新器公钥验签', async (t) => {
@@ -109,6 +109,33 @@ test('当前安装包与签名通过更新器公钥验签', async (t) => {
   const installer = tempInstaller(t, content);
   const signature = signInstaller(content, privateKey, keyId);
   await verifyInstallerSignature(installer, signature, { keyId, keyObject: publicKey });
+});
+
+test('旧版已签名安装包改名后不得冒充新版', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const content = Buffer.from('old-installer-bytes');
+  const oldPath = tempInstaller(t, content);
+  const signature = signInstaller(content, privateKey, keyId);
+  const renamedPath = join(resolve(oldPath, '..'), 'Paper30Min_1.2.0-beta.1_x64-setup.exe');
+  renameSync(oldPath, renamedPath);
+  await assert.rejects(
+    verifyInstallerSignature(renamedPath, signature, { keyId, keyObject: publicKey }, '1.2.0-beta.1'),
+    /文件名.*不匹配/,
+  );
+});
+
+test('签名注释含版本时必须匹配发布版本', async (t) => {
+  const { publicKey, privateKey, keyId } = makeKeyMaterial();
+  const content = Buffer.from('installer-bytes-A');
+  const installer = tempInstaller(t, content);
+  const signature = signInstaller(content, privateKey, keyId, {
+    trustedComment: 'timestamp:1760000000\tfile:Paper30Min_9.9.9_x64-setup.exe\tversion:9.9.9',
+  });
+  await assert.rejects(
+    verifyInstallerSignature(installer, signature, { keyId, keyObject: publicKey }, '1.2.0-beta.1'),
+    /版本.*不匹配/,
+  );
+  await verifyInstallerSignature(installer, signature, { keyId, keyObject: publicKey }, '9.9.9');
 });
 
 test('同名同版本重建的安装包不得沿用旧签名', async (t) => {

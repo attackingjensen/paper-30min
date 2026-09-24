@@ -6,7 +6,7 @@
 
 从 [GitHub Releases](https://github.com/attackingjensen/paper-30min/releases) 下载最新的 `Paper30Min_x.x.x_x64-setup.exe`，双击安装即可（免管理员权限）。安装包内置文档解析引擎与全部模型，装完即用，无需联网下载组件。
 
-当前正式版为 v1.1.0。开发中的 v1.2.0 将把本地解析组件改为按需安装；发布前进度及限制见 [docs/current.md](docs/current.md)。
+当前正式版为 v1.1.0。v1.2.0-beta.1 用于安装版验收，本地解析组件改为按需安装；进度及限制见 [docs/current.md](docs/current.md)。
 
 首次启动书库内置一份「使用说明」。使用前打开右上角「设置」，填入任意 **OpenAI 兼容** 的大模型接口并「连接测试」：
 

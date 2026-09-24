@@ -9,7 +9,7 @@ use paper30min_lib::testkit::{MockBody, MockHttp, MockResponse};
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -148,6 +148,44 @@ fn cancel_stops_download_promptly() {
         started.elapsed() < Duration::from_secs(15),
         "取消应及时生效，不应等整包（约 20 秒）完成"
     );
+    assert!(error.message.contains("取消"), "错误应体现取消：{error}");
+}
+
+#[test]
+fn cancel_during_stalled_stream_does_not_wait_for_read_timeout() {
+    let server = MockHttp::start(|_, _| MockResponse {
+        status: 200,
+        headers: vec![("Content-Type".to_string(), "application/zip".to_string())],
+        body: MockBody::Stall { prefix: vec![7_u8; 4096] },
+    });
+    let dir = tempfile::tempdir().expect("临时目录");
+    let mut output = File::create(dir.path().join("component.zip.part")).expect("创建暂存文件");
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancel_flag = Arc::clone(&cancelled);
+    let trigger = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        cancel_flag.store(true, Ordering::SeqCst);
+    });
+
+    let started = Instant::now();
+    let error = download_archive(
+        &server.url("/component.zip"),
+        &mut output,
+        885_407_140,
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        &move || {
+            if cancelled.load(Ordering::SeqCst) {
+                Err(io::Error::new(io::ErrorKind::Interrupted, "组件安装已取消"))
+            } else {
+                Ok(())
+            }
+        },
+        &|_| {},
+    )
+    .expect_err("停流期间取消应立即退出");
+    trigger.join().expect("取消线程结束");
+    assert!(started.elapsed() < Duration::from_secs(3), "取消不得等待 10 秒按读超时");
     assert!(error.message.contains("取消"), "错误应体现取消：{error}");
 }
 

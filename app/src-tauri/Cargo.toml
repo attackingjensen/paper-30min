@@ -1,6 +1,6 @@
 [package]
 name = "paper30min"
-version = "1.2.0"
+version = "1.2.0-beta.1"
 description = "论文精读 Windows 正式客户端"
 edition = "2021"
 
@@ -23,6 +23,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "time"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

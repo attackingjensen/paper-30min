@@ -49,20 +49,20 @@ npm run smoke          # 不开窗口的桥接冒烟检查（debug 构建，退�
 
 ## Windows 更新与发版核对
 
-v1.2.0 是首个带应用内更新器的版本。v1.1.0 用户需要手动安装一次 v1.2.0；此后在设置中检查稳定版更新、阅读说明并确认安装。更新沿用 `com.paper30min.reader` 的 currentUser NSIS 安装身份，书库仍位于 Tauri 应用数据目录。主程序安装包不含 Docling：新安装用户可在设置的「服务」页按需下载或选择本地 ZIP 安装解析组件。未安装组件时仍可查看 PDF 与已有阅读内容，新 PDF 的结构化解析和页图生成不可用。v1.1.0 原地升级时安装器锁定旧安装目录并保留旧侧车，首次启动复制到用户本地组件目录；迁移失败可在设置中重试。安装前应备份现有书库，并等待生成任务完成或确认取消。
+v1.2.0-beta.1 是首个带应用内更新器的预发布版本，供云主机验收；正式版是否发布待验收后决定。v1.1.0 用户需要手动安装一次 Beta；Beta 不进入稳定版更新端点。更新沿用 `com.paper30min.reader` 的 currentUser NSIS 安装身份，书库仍位于 Tauri 应用数据目录。主程序安装包不含 Docling：新安装用户可在设置的「服务」页按需下载或选择本地 ZIP 安装解析组件。未安装组件时仍可查看 PDF 与已有阅读内容，新 PDF 的结构化解析和页图生成不可用。v1.1.0 原地升级时安装器锁定旧安装目录并保留旧侧车，首次启动复制到用户本地组件目录；迁移失败可在设置中重试。安装前应备份现有书库，并等待生成任务完成或确认取消。
 
 1. 将 Tauri updater 私钥及密码保存在仓库外并独立备份；公钥在 `src-tauri/tauri.conf.json`。私钥丢失后，已安装版本将无法验证后续更新。Windows 代码签名与 updater 的 `.sig` 是不同事项，应分别核对。不要把私钥、密码或组件包提交到仓库。
 2. 核对 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 都是同一版本。使用 `TAURI_SIGNING_PRIVATE_KEY`（私钥路径或内容）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量运行 `npm run tauri build`，不要把凭据写进 `.env`、命令日志或仓库。
-3. 用 `python tools/pdfparse-sidecar/package_component.py create --source app/src-tauri/sidecar/pdfparse --archive app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0_windows-x86_64.zip --manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0_windows-x86_64.manifest.json` 构建组件包，再用同脚本 `verify` 校验。核对生成的组件清单与 `src-tauri/component-release.json` 一致，后者的 SHA-256 编入主程序用于下载安装和本地 ZIP 安装校验。
-4. 核对 `src-tauri/target/release/bundle/nsis/Paper30Min_<version>_x64-setup.exe` 与相邻 `.sig`。在仓库根目录运行以下清单一致性检查；当前 `verify` 尚未对安装包执行密码学验签，须先修复 [#95](https://github.com/attackingjensen/paper-30min/issues/95) 才能作为发布放行依据：
+3. 用 `python tools/pdfparse-sidecar/package_component.py create --source app/src-tauri/sidecar/pdfparse --archive app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json` 构建组件包，再用同脚本 `verify` 校验。核对生成的组件清单与 `src-tauri/component-release.json` 一致，后者的 SHA-256 编入主程序用于下载安装和本地 ZIP 安装校验。
+4. 核对 `src-tauri/target/release/bundle/nsis/Paper30Min_<version>_x64-setup.exe` 与相邻 `.sig`。在仓库根目录运行以下检查；`verify` 会用更新器公钥核对安装包字节、签名注释中的文件名及清单一致性：
 
    ```powershell
-   node tools/release_manifest.mjs create --installer app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0_x64-setup.exe --component app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0_windows-x86_64.zip --component-manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0_windows-x86_64.manifest.json --tag v1.2.0 --manifest latest.json
-   node tools/release_manifest.mjs verify --installer app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0_x64-setup.exe --component app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0_windows-x86_64.zip --component-manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0_windows-x86_64.manifest.json --tag v1.2.0 --manifest latest.json
+   node tools/release_manifest.mjs create --installer app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0-beta.1_x64-setup.exe --component app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --component-manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json --tag v1.2.0-beta.1 --manifest app/src-tauri/target/release/latest-beta.json
+   node tools/release_manifest.mjs verify --installer app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0-beta.1_x64-setup.exe --component app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --component-manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json --tag v1.2.0-beta.1 --manifest app/src-tauri/target/release/latest-beta.json
    ```
 
 5. 用 `src-tauri/tauri.test-updater.conf.json` 构建隔离安装身份，并由本机测试端点 `127.0.0.1:18437` 提供较新版本的签名清单和安装包，实际走查下载、签名拒绝、安装及书库保留。正式构建不使用该测试配置。
-6. 先处理[发布前审查](../docs/reviews/2026-09-24-v1.2-pre-release.md)中的阻断项并复审，再重新构建安装包和签名。本机 `node --test`、`cargo test`、`npm run smoke`、语法检查和 Windows 安装版走查通过后，再发布主程序安装包、组件 ZIP、组件清单、`.sig`、`latest.json` 到同一个 GitHub Release；只有附件已可下载且相互匹配时才让稳定版端点指向它。GitHub CI 当前因账户问题不可用，不记录为通过。
+6. 先处理[发布前审查](../docs/reviews/2026-09-24-v1.2-pre-release.md)中的阻断项并复审，再重新构建安装包和签名。Beta Release 标为 GitHub 预发布，附上主程序安装包、组件 ZIP、组件清单、`.sig` 和独立的 `latest-beta.json`；不要上传 `latest.json`，稳定版端点保持指向正式版。云主机完成安装版走查后再决定是否发布 v1.2.0 正式版；正式版须重新构建、签名和复核。本机与 GitHub CI 的实际检查状态分别记录，CI 因账户问题不可用时不记为通过。
 
 ## 界面结构（`ui/`）
 

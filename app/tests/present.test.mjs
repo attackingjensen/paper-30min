@@ -742,6 +742,6 @@ test('重试完成提示（#96）：仅 succeeded 弹成功；failed / cancelled
   assert.equal(retryOutcomeToast(false), null);
 });
 
-test('重试完成提示（#96）：无终态契约的旧 retry 闭包维持原成功提示（失败走抛错分支）', () => {
-  assert.equal(retryOutcomeToast(undefined), '重试任务已完成');
+test('重试完成提示：无终态契约的旧 retry 闭包不能提前报完成', () => {
+  assert.equal(retryOutcomeToast(undefined), null);
 });

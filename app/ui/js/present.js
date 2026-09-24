@@ -583,11 +583,10 @@ export function buildMapRetryMeta({ paperId, overwriteConfirmed = false } = {}, 
  * 重试结束后的成功提示：retry 解出终态（或 null = 前置兜底未启动）时仅 succeeded
  * 弹「重试任务已完成」；failed / cancelled / null / false 不弹——失败已由任务自身
  * toast 报错，再弹成功提示会误导（false 来自 convert/prerender 等返回布尔结果的旧闭包）。
- * 无终态契约的旧 retry 闭包（解出 undefined，多为发射后不管的重新提交）维持原成功提示，
- * 它们失败会抛错走 catch 分支。
+ * 无终态契约的旧 retry 闭包解出 undefined，不能据此判断任务已完成。
  */
 export function retryOutcomeToast(result) {
-  if (result === null || result === false || result === 'failed' || result === 'cancelled') return null;
+  if (result == null || result === false || result === 'failed' || result === 'cancelled') return null;
   return '重试任务已完成';
 }
 

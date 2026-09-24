@@ -27,7 +27,7 @@ class ComponentPackageTests(unittest.TestCase):
         first = component.create(self.source, self.archive, self.manifest)
         self.assertEqual(first["schemaVersion"], 1)
         self.assertEqual(first["component"], "pdfparse")
-        self.assertEqual(first["version"], "1.2.0")
+        self.assertEqual(first["version"], "1.2.0-beta.1")
         self.assertEqual(first["arch"], "x86_64")
         self.assertEqual(first, component.verify(self.archive, self.manifest))
         with zipfile.ZipFile(self.archive) as package:

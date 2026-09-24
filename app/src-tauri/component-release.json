@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "component": "pdfparse",
-  "version": "1.2.0",
+  "version": "1.2.0-beta.1",
   "platform": "windows",
   "arch": "x86_64",
-  "archive": "Paper30Min_pdfparse_1.2.0_windows-x86_64.zip",
+  "archive": "Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip",
   "archiveBytes": 885407140,
   "sha256": "bfd484849477db56eefdec3eab8e80380a20653231efc6e47682c6b266d95223",
   "unpackedBytes": 1668938420

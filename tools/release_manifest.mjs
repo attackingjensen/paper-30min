@@ -130,7 +130,7 @@ function decodeSignatureBox(signatureBase64) {
 // 用更新器公钥对当前安装包字节实际验签，语义对齐 tauri-plugin-updater 的 minisign-verify：
 // keynum 必须等于公钥 key_id；主签名覆盖安装包的 BLAKE2b-512 摘要（流式计算，避免大文件入内存）；
 // 全局签名覆盖 主签名+trusted comment。任一失败即抛错。
-export async function verifyInstallerSignature(installerPath, signatureBase64, publicKey) {
+export async function verifyInstallerSignature(installerPath, signatureBase64, publicKey, expectedVersion) {
   const box = decodeSignatureBox(signatureBase64);
   if (!box.keyId.equals(publicKey.keyId)) throw new Error('更新签名的密钥标识与更新器公钥不匹配');
   // tauri-cli 产出的安装包签名恒为预哈希（ED）格式。legacy（Ed）需对原始字节验签、
@@ -146,6 +146,16 @@ export async function verifyInstallerSignature(installerPath, signatureBase64, p
   if (!ed25519Verify(null, globalMessage, publicKey.keyObject, box.globalSignature)) {
     throw new Error('更新签名的全局签名验签失败');
   }
+  const fields = box.trustedComment.split('\t');
+  const signedFiles = fields.filter(field => field.startsWith('file:'));
+  if (signedFiles.length !== 1 || signedFiles[0].slice(5) !== basename(installerPath)) {
+    throw new Error('更新签名中的安装包文件名与当前产物不匹配');
+  }
+  const signedVersions = fields.filter(field => field.startsWith('version:'));
+  if (signedVersions.length > 1 || (signedVersions.length === 1
+      && expectedVersion && signedVersions[0].slice(8) !== expectedVersion)) {
+    throw new Error('更新签名中的版本与当前产物不匹配');
+  }
 }
 
 async function artifactInputs(values) {
@@ -153,8 +163,8 @@ async function artifactInputs(values) {
   const signatureFile = resolve(values.signature || `${installer}.sig`);
   if (statSync(installer).size === 0) throw new Error('安装包为空');
   const signature = readFileSync(signatureFile, 'utf8').trim();
-  await verifyInstallerSignature(installer, signature, loadUpdaterPublicKey());
   const version = releaseVersions();
+  await verifyInstallerSignature(installer, signature, loadUpdaterPublicKey(), version);
   const componentPath = resolve(values.component);
   const componentManifest = JSON.parse(readFileSync(resolve(values['component-manifest']), 'utf8'));
   const trusted = JSON.parse(readFileSync(resolve(root, 'app/src-tauri/component-release.json'), 'utf8'));

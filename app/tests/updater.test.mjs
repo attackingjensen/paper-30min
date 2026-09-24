@@ -7,8 +7,8 @@ test('更新器初始状态可在页面启动时直接创建', () => {
 });
 
 test('更新状态区分无更新、检查失败与可安装版本', () => {
-  const initial = updateState(null, { type: 'info', version: '1.2.0' });
-  assert.equal(initial.currentVersion, '1.2.0');
+  const initial = updateState(null, { type: 'info', version: '1.2.0-beta.1' });
+  assert.equal(initial.currentVersion, '1.2.0-beta.1');
   assert.equal(updateState(initial, { type: 'none' }).status, 'current');
   assert.equal(updateState(initial, { type: 'check-error', error: '离线' }).status, 'error');
   const available = updateState(initial, { type: 'available', version: '1.2.1', notes: '修复说明' });
