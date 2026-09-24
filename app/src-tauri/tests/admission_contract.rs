@@ -7,7 +7,7 @@ use paper30min_lib::admission::AdmissionGate;
 use paper30min_lib::component_runtime::ComponentRuntime;
 use paper30min_lib::error::BridgeError;
 use paper30min_lib::tasks::{TaskRegistry, TaskStatus};
-use paper30min_lib::testkit::{wait_terminal, Collector};
+use paper30min_lib::testkit::{wait_terminal, Collector, NoopComponentSink};
 use serde_json::json;
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
@@ -140,8 +140,7 @@ fn simultaneous_task_and_update_admission_are_mutually_exclusive() {
 
 /// ComponentRuntime 的任务入口同样走准入门：更新安装或组件操作占用时拒绝新任务。
 #[test]
-fn component_runtime_task_entry_respects_gate() {
-    let (registry, _library, dir) = common::env();
+fn component_runtime_task_entry_respects_gate() {    let (registry, _library, dir) = common::env();
     let gate = AdmissionGate::new();
     let component = ComponentRuntime::new(dir.path().join("component"), Arc::clone(&gate));
 
@@ -163,4 +162,34 @@ fn component_runtime_task_entry_respects_gate() {
         .start_task(|| start_long_task(&registry))
         .expect("准入空闲后任务可注册");
     finish_task(&registry, &task_id);
+}
+
+/// 旧版组件迁移同样走准入门（#93 验收：自动与手动迁移同约束）：
+/// 任务活跃或更新安装占用时拒绝，且不落下任何迁移标记。
+#[test]
+fn migrate_legacy_respects_admission_gate() {
+    let (registry, _library, dir) = common::env();
+    let gate = AdmissionGate::new();
+    let root = dir.path().join("component");
+    let component = ComponentRuntime::new(root.clone(), Arc::clone(&gate));
+    let source = dir.path().join("legacy");
+    std::fs::create_dir_all(&source).expect("造旧版组件目录");
+
+    let task_id = gate
+        .admit_task(|| start_long_task(&registry))
+        .expect("注册占位任务");
+    let err = component
+        .migrate_legacy(&NoopComponentSink, &registry, &source)
+        .unwrap_err();
+    assert_eq!(err.code, "tasks_active");
+    assert!(!root.join("legacy-migrated").exists());
+    finish_task(&registry, &task_id);
+
+    let claim = gate.admit_update(&registry).unwrap();
+    let err = component
+        .migrate_legacy(&NoopComponentSink, &registry, &source)
+        .unwrap_err();
+    assert_eq!(err.code, "update_busy");
+    assert!(!root.join("legacy-migrated").exists());
+    drop(claim);
 }

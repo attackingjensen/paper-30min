@@ -93,10 +93,14 @@ fn stalled_stream_times_out_within_read_timeout() {
     let elapsed = started.elapsed();
 
     assert!(
-        elapsed >= read_timeout && elapsed < Duration::from_secs(20),
+        elapsed >= read_timeout && elapsed < read_timeout * 3 + Duration::from_secs(2),
         "停流应在按读超时附近退出，实际 {elapsed:?}"
     );
-    assert!(error.message.contains("组件") || !error.message.is_empty());
+    assert_eq!(error.code, "component_failed");
+    assert!(
+        !error.message.contains("大小"),
+        "停流错误不应落入大小核对分支：{error}"
+    );
     assert_eq!(
         fs::metadata(&target).expect("暂存文件仍在").len(),
         prefix.len() as u64,
@@ -167,6 +171,78 @@ fn truncated_download_is_rejected() {
     .expect_err("截断下载必须报错");
 
     assert!(error.message.contains("大小"), "错误应体现大小不符：{error}");
+}
+
+/// 服务端字节数超过可信清单上限：在读取流中提前拒绝，不把超限字节写到底。
+#[test]
+fn oversize_download_is_rejected() {
+    let server = MockHttp::start(|_, _| MockResponse::bytes(200, "application/zip", vec![1_u8; 256]));
+    let dir = tempfile::tempdir().expect("临时目录");
+    let target = dir.path().join("component.zip.part");
+    let mut output = File::create(&target).expect("创建暂存文件");
+
+    let error = download_archive(
+        &server.url("/component.zip"),
+        &mut output,
+        128,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        &ok_checkpoint(),
+        &|_| {},
+    )
+    .expect_err("超限下载必须报错");
+
+    assert!(error.message.contains("超出"), "错误应体现超限：{error}");
+}
+
+/// HTTP 错误状态（如 Release 资产 404/500）必须映射为组件错误而非静默成功。
+#[test]
+fn http_error_status_is_rejected() {
+    let server = MockHttp::start(|_, _| MockResponse::bytes(500, "text/plain", b"boom".to_vec()));
+    let dir = tempfile::tempdir().expect("临时目录");
+    let target = dir.path().join("component.zip.part");
+    let mut output = File::create(&target).expect("创建暂存文件");
+
+    let error = download_archive(
+        &server.url("/component.zip"),
+        &mut output,
+        885_407_140,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        &ok_checkpoint(),
+        &|_| {},
+    )
+    .expect_err("HTTP 500 必须报错");
+
+    assert_eq!(error.code, "component_failed");
+}
+
+/// 断网/连接被拒：连接超时有界报错，不挂起（#94 的另一半场景）。
+#[test]
+fn connect_failure_is_bounded() {
+    // 绑定后立即释放的本地端口：连接被快速拒绝。
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑定临时端口");
+        listener.local_addr().expect("读取端口").port()
+    };
+    let dir = tempfile::tempdir().expect("临时目录");
+    let target = dir.path().join("component.zip.part");
+    let mut output = File::create(&target).expect("创建暂存文件");
+
+    let started = Instant::now();
+    let error = download_archive(
+        &format!("http://127.0.0.1:{port}/component.zip"),
+        &mut output,
+        885_407_140,
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+        &ok_checkpoint(),
+        &|_| {},
+    )
+    .expect_err("连接失败必须报错");
+
+    assert!(started.elapsed() < Duration::from_secs(10), "连接失败应有界退出");
+    assert_eq!(error.code, "component_failed");
 }
 
 /// 安装失败（本地来源字节数不足可信清单）后：busy 复位、暂存文件清理、错误进入状态（#94 验收）。

@@ -262,6 +262,15 @@ impl ComponentRuntime {
             return Ok(());
         }
         let _guard = self.begin(registry)?;
+        // 准入后复查：守卫求值与取得占用之间，状态可能已被并发迁移或卸载改变。
+        if component::active_component(&self.root)
+            .ok()
+            .flatten()
+            .is_some()
+            || self.root.join("legacy-migrated").exists()
+        {
+            return Ok(());
+        }
         self.emit(sink, "migrating", 0, 0, "正在迁移旧版解析组件");
         let result =
             component::migrate_legacy_sidecar_cancellable(&self.root, source, self_check, || {
@@ -326,15 +335,28 @@ fn copy_progress<R: Read>(
         if count == 0 {
             break;
         }
-        done = done.saturating_add(count as u64);
-        if done > total {
-            return Err(BridgeError::invalid_input("组件包大小超出可信清单。"));
-        }
-        output
-            .write_all(&buffer[..count])
-            .map_err(component_error)?;
+        account_chunk(output, &buffer[..count], &mut done, total)?;
         runtime.emit(sink, phase, done, total, "");
     }
+    verify_total_bytes(done, total)
+}
+
+/// 本地拷贝与下载共用的大小记账（#94 审查 #9）：累加、超可信清单上限拒绝、写入。
+fn account_chunk(
+    output: &mut File,
+    chunk: &[u8],
+    done: &mut u64,
+    total: u64,
+) -> Result<(), BridgeError> {
+    *done = done.saturating_add(chunk.len() as u64);
+    if *done > total {
+        return Err(BridgeError::invalid_input("组件包大小超出可信清单。"));
+    }
+    output.write_all(chunk).map_err(component_error)
+}
+
+/// 终量核对：字节数必须与可信清单一致。
+fn verify_total_bytes(done: u64, total: u64) -> Result<(), BridgeError> {
     if done != total {
         return Err(BridgeError::invalid_input("组件包大小与可信清单不符。"));
     }
@@ -343,7 +365,7 @@ fn copy_progress<R: Read>(
 
 /// 组件包下载（#94 可测缝）：异步客户端以获得按读超时——reqwest 阻塞客户端只有整包期限，
 /// 会在慢速网络上误杀 885 MB 的正常下载；按读超时只掐断连续无字节的停流。
-/// 每次读取前先过 `checkpoint` 响应取消；块大小核对与本地来源路径一致。
+/// 每次读取前先过 `checkpoint` 响应取消；块大小核对与本地来源路径共用 account_chunk。
 pub fn download_archive(
     url: &str,
     output: &mut File,
@@ -371,17 +393,10 @@ pub fn download_archive(
             let Some(chunk) = response.chunk().await.map_err(component_error)? else {
                 break;
             };
-            done = done.saturating_add(chunk.len() as u64);
-            if done > total {
-                return Err(BridgeError::invalid_input("组件包大小超出可信清单。"));
-            }
-            output.write_all(&chunk).map_err(component_error)?;
+            account_chunk(output, &chunk, &mut done, total)?;
             progress(done);
         }
-        if done != total {
-            return Err(BridgeError::invalid_input("组件包大小与可信清单不符。"));
-        }
-        Ok(())
+        verify_total_bytes(done, total)
     })
 }
 

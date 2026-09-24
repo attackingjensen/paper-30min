@@ -33,6 +33,13 @@ impl EventSink for Collector {
     }
 }
 
+/// 丢弃组件进度事件的出口：供不关注事件的组件测试使用。
+pub struct NoopComponentSink;
+
+impl crate::component_runtime::ComponentSink for NoopComponentSink {
+    fn component_progress(&self, _value: serde_json::Value) {}
+}
+
 /// 轮询直到任务到达终态或超时；超时返回 None。
 pub fn wait_terminal(registry: &Arc<TaskRegistry>, task_id: &str, timeout: Duration) -> Option<TaskStatus> {
     let deadline = Instant::now() + timeout;
