@@ -20,7 +20,7 @@ tags:
 
 ## Context
 
-v1.2.0 首轮发布审查在已有测试和安装器试构建之后确认了四项 P1，其中发布校验曾接受与安装包字节不匹配的非空签名。审查、修复和复审完成后才重新构建发布包。后来 Beta.2 升正式版时主程序运行时代码不变，仅将版本元数据改为正式版，仍需重新构建、签名并生成稳定通道的更新清单。[首轮审查](../../reviews/2026-09-24-v1.2-pre-release.md)、[正式版差异审查](../../reviews/2026-09-24-v1.2-final-metadata.md)记录了这两次边界。
+v1.2.0 首轮发布审查在已有测试和安装器试构建之后确认了四项 P1，其中发布校验曾接受与安装包字节不匹配的非空签名。审查、修复和复审完成后才重新构建发布包。后来 Beta.2 升正式版时主程序运行时代码不变，仅将版本元数据改为正式版，仍需重新构建、签名并生成稳定通道的更新清单。[首轮审查](https://github.com/attackingjensen/paper-30min/blob/894f51a/docs/reviews/2026-09-24-v1.2-pre-release.md)、[正式版差异审查](https://github.com/attackingjensen/paper-30min/blob/894f51a/docs/reviews/2026-09-24-v1.2-final-metadata.md)保留了当时的证据。
 
 ## Guidance
 
