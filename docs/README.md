@@ -1,10 +1,10 @@
 # 文档
 
-开发直接使用已安装的 Compound Engineering（CE）技能。需求探索、计划、实施、审查和经验沉淀的步骤与产物格式由技能管理，仓库不维护第二套流程。
+开发使用已安装的 NexusKit 技能。需求探索、计划、实施、审查和经验沉淀的步骤与新产物格式由技能管理，仓库不维护第二套流程。已有 CE 产物保留原始格式，使用前核对适用范围与当前代码。
 
-- `plans/`：技能按需生成统一计划，探索与实施设计在同一产物中推进。
-- `solutions/`：ce-compound 按条件沉淀经验证的项目经验。
-- `reviews/`：代码审查与发布前风险记录；当前重点见 [v1.2.0 发布前审查](reviews/2026-09-24-v1.2-pre-release.md)。
+- `plans/`：需求和实施设计在同一计划中推进；现存 CE 计划属于历史或待复核材料。
+- `solutions/`：`nk-compound` 按准入条件沉淀可复用经验，既有条目继续按适用条件检索。
+- `reviews/`：代码审查与发布前风险记录；待复核的客户端问题见[代码品质审查](reviews/2026-09-24-client-quality.md)。
 - `releases/`：预发布说明与安装版验收范围；当前见 [v1.2.0-beta.2](releases/v1.2.0-beta.2.md)，解析组件说明见 [v1.2.0-beta.1](releases/v1.2.0-beta.1.md)。
 - 其他产物目录由相应技能按需创建；不预建完整目录树或空白模板。
 
@@ -12,7 +12,7 @@
 
 每版一个版本分支和一个代码 PR；合并、正式发布及 `current.md` 最终更新的顺序见[版本交付约定](release-workflow.md)。
 
-2026-09-23 从旧文档体系迁移至 CE。迁移前的 ADR、背景调研、验证记录、状态与草稿不再保留于工作区，可从 [Git 历史 35324e7](https://github.com/attackingjensen/paper-30min/tree/35324e785c16059e6d4932ab5b483024733c1f01/docs) 或原始 Issue 查阅；仍适用的进度和领域语义分别见 [current.md](current.md) 与 [CONCEPTS.md](../CONCEPTS.md)。
+2026-09-23 从旧文档体系迁移至 CE；2026-09-29 起开发入口转为 NexusKit，已有 CE 产物不批量改写。首次迁移前的 ADR、背景调研、验证记录、状态与草稿不再保留于工作区，可从 [Git 历史 35324e7](https://github.com/attackingjensen/paper-30min/tree/35324e785c16059e6d4932ab5b483024733c1f01/docs) 或原始 Issue 查阅；仍适用的进度和领域语义分别见 [current.md](current.md) 与 [CONCEPTS.md](../CONCEPTS.md)。
 
 ## 历史资料索引
 
@@ -23,4 +23,4 @@
 - 侧车发版与升级核对：[模型权重再分发许可核实](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/background/2026-09-10-docling-sidecar/model-license-review.md)、[打包体积与速度复核](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/background/2026-09-10-docling-sidecar/packaging-measurements.md)。
 - 性能对照：[v1.0.0 与 #74 优化后的 #85 走查](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/draft/2026-09-19-issue85-walkthrough.md)。
 
-CE 配置使用默认值，产物根目录默认是 `docs/`。可选设置见 `.compound-engineering/config.example.yaml`。已启用的自动经验沉淀和汇报写作约定保留在 [AGENTS.md](../AGENTS.md)。
+`.compound-engineering/config.yaml` 与 `config.example.yaml` 是旧 CE 配置及示例，不控制 NexusKit。现行开发入口和知识检索约定见 [AGENTS.md](../AGENTS.md)。

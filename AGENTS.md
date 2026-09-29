@@ -1,11 +1,11 @@
 # Paper30Min
 
-论文精读应用：Windows Tauri 客户端。开发流程直接使用已安装的 Compound Engineering 技能，不在仓库另定义阶段或文档审批链。
+论文精读应用：Windows Tauri 客户端。开发使用已安装的 NexusKit 技能；项目特有的版本与发布边界见下文，不另建竞争的阶段或审批链。
 
 ## 项目事实
 
 - Windows 本地书库是论文内容权威来源；Rust 负责存储、文件、网络、模型和阅读协议运行，JavaScript 负责界面与前端状态。
-- `app/` 是 Windows 客户端，`skills/` 是产品阅读提示词，不能与 CE 开发技能混用。
+- `app/` 是 Windows 客户端，`skills/` 是产品阅读提示词，不能与 NexusKit 开发技能混用。
 - 下一版本起，从 `main` 创建版本分支；同一分支可由多个对话串行实施多份 plan，最终集中在一个面向 `main` 的版本 PR。v1.2.0 的 `steven123397/dev` 属于历史开发分支，不再作为长期开发入口。
 - `steven123397` 独立承担全部开发和维护；仓库持有者 [attackingjensen](https://github.com/attackingjensen) 仅作为产品体验者，不参与开发或 PR。
 
@@ -22,7 +22,7 @@ GitHub CI 因账户问题暂不可用。恢复前以本机检查记录验证结�
 
 ## 工作约定
 
-- 文档默认中文；标识符与 CE frontmatter 保留技能自身格式。
+- 文档默认中文；标识符与技能 frontmatter 保留技能自身格式。
 - 技能不可用时说明情况，不谎称已调用。
 - 无法运行的检查说明原因，不标为通过。
 - 小型明确修复不为凑流程创建计划或额外产物。
@@ -31,10 +31,8 @@ GitHub CI 因账户问题暂不可用。恢复前以本机检查记录验证结�
 
 ## 项目知识
 
-`STRATEGY.md` 承接已确认的产品定位、用户、边界和方向，供 CE 探索与规划使用。`CONCEPTS.md` 提供阅读模型、关键术语与既有取舍。当前进度见 [docs/current.md](docs/current.md)，历史资料索引见 [docs/README.md](docs/README.md)。
+`STRATEGY.md` 承接已确认的产品定位、用户、边界和方向，供探索与规划使用。[CONCEPTS.md](CONCEPTS.md) 提供阅读模型、关键术语与既有取舍。接手前先读 [docs/current.md](docs/current.md)，历史资料索引见 [docs/README.md](docs/README.md)。
 
-`docs/solutions/` 是 CE 经验库，按类别与 `module`、`tags`、`problem_type` 等 YAML 元数据检索，供相关实现和调试复用。
+`docs/solutions/` 是长期经验库。涉及设计取舍、非琐碎实现或排障时，按主题、模块或症状定向检索标题、`module`、`tags`、`problem_type` 等元数据，精读并复用匹配条目；无匹配时照常推进。
 
-解决并验证问题后，仅当符合 `ce-compound` 技能的持久经验门槛时，才在收尾以 `mode:non-interactive` 自动调用；产物随对应提交交付。
-
-面向用户的汇报、总结和交接使用 `ce-noslop`；代码、配置和逐字引用不适用。
+经验沉淀按 `nk-compound` 的准入与授权边界执行，不因完成普通任务自动建档。所有本地提交通过 `nk-commit`，按实际变化维护 `docs/current.md`；`nk-handoff` 仅在明确要求时调用。
