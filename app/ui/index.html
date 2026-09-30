@@ -243,6 +243,11 @@
           <span id="pdf-page-count">/ 1</span>
         </label>
         <button class="pdf-icon-btn" id="btn-pdf-next" type="button" title="下一页" aria-label="下一页">›</button>
+        <div class="pdf-tools" role="group" aria-label="PDF 工具">
+          <button class="pdf-icon-btn" id="pdf-tool-text" type="button" title="选择文字" aria-label="选择文字" aria-pressed="true"><img src="vendor/icons/text-cursor.svg" alt=""></button>
+          <button class="pdf-icon-btn" id="pdf-tool-area" type="button" title="框选区域" aria-label="框选区域" aria-pressed="false"><img src="vendor/icons/square-dashed-mouse-pointer.svg" alt=""></button>
+          <button class="pdf-icon-btn" id="pdf-tool-hand" type="button" title="抓手平移" aria-label="抓手平移" aria-pressed="false"><img src="vendor/icons/hand.svg" alt=""></button>
+        </div>
         <span class="spacer"></span>
         <button class="pdf-icon-btn" id="btn-pdf-zoom-out" type="button" title="缩小" aria-label="缩小">−</button>
         <span id="pdf-zoom-label" class="pdf-zoom-label">100%</span>
@@ -264,6 +269,18 @@
   <button class="pane-fab left" id="tree-fab" type="button" hidden title="展开节树">»</button>
   <button class="pane-fab right" id="pdf-fab" type="button" hidden title="展开 PDF 对照">«</button>
 </main>
+<div id="pdf-selection-popup" class="pdf-selection-popup" hidden>
+  <div class="pdf-selection-actions">
+    <select id="pdf-selection-language" aria-label="翻译语言"><option value="zh">中文</option><option value="en">English</option></select>
+    <button id="pdf-selection-translate" class="btn small primary" type="button">翻译</button>
+    <button id="pdf-selection-ask" class="btn small" type="button">提问</button>
+    <button id="pdf-selection-stop" class="btn small danger" type="button" hidden>停止</button>
+    <button id="pdf-selection-close" class="btn ghost pdf-icon-btn" type="button" title="关闭选区" aria-label="关闭选区">×</button>
+  </div>
+  <div id="pdf-selection-preview" class="pdf-selection-preview"></div>
+  <div id="pdf-selection-status" role="status" class="muted"></div>
+  <div id="pdf-selection-result" class="md pdf-selection-result" hidden></div>
+</div>
 
 <!-- ============ arXiv 导入弹窗 ============ -->
 <div class="modal-mask" id="modal-arxiv" hidden>

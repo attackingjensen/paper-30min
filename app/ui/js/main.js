@@ -16,6 +16,7 @@ import { updateState, updateStatusText } from './updater.js';
 import * as view from './view.js';
 import { createLatestResource, createSerialWriter } from './reader-resources.js';
 import { createPdfReader } from './pdf-reader.js';
+import { createPdfSelection, selectionBinding, selectionImages } from './pdf-selection.js';
 import { translateForPaper } from './translation.js';
 import {
   COPY,
@@ -33,6 +34,7 @@ import {
 } from './skills.js';
 import {
   QA_GATE_MESSAGE,
+  CHAT_HISTORY_WINDOW,
   BLOCKMODEL_ATTACHMENT_ID,
   applyMention,
   assembleQaContext,
@@ -105,10 +107,18 @@ let pdfPage = 1;
 let pdfScale = 1;
 let pdfZoomRevision = 0;
 let pdfSidebarOpen = true;
+let pdfSelection = null;
+let selectedPdf = null;
+let selectionAborter = null;
+let selectionRevision = 0;
 const pdfReader = createPdfReader({
   scroll: $('#pdf-canvas-wrap'),
   pages: $('#pdf-pages'),
   loading: $('#pdf-loading'),
+  renderTextLayer: options => window.pdfjsLib.renderTextLayer(options),
+  getPinnedPages: () => pdfSelection?.pinnedPages() || [],
+  onInvalidate: () => pdfSelection?.clear(),
+  onPaint: () => pdfSelection?.repaint(),
   onEvidence(message) {
     $('#pdf-evidence-status').textContent = message;
     $('#pdf-evidence-status').hidden = !message;
@@ -124,6 +134,17 @@ const pdfReader = createPdfReader({
     $('#pdf-render-error-message').textContent = `PDF 页面渲染失败：${error.message || error}`;
   },
 });
+pdfSelection = createPdfSelection({ scroll: $('#pdf-canvas-wrap'), pages: $('#pdf-pages'),
+  onSelection: showPdfSelection,
+  onClear() {
+    selectionRevision++;
+    selectionAborter?.abort();
+    selectionAborter = null;
+    selectedPdf = null;
+    $('#pdf-selection-popup').hidden = true;
+  },
+});
+pdfSelection.setTool('text');
 let libraryQuery = '';
 let categoryFilter = '';
 let ratingFilter = 0;
@@ -276,6 +297,7 @@ function setWindowTitle(title) {
 }
 
 function showView(name) {
+  if (name !== 'reader') pdfSelection.clear();
   if (current && name !== 'reader') void flushPositionSave(current);
   commitReader(view.switchAppView(reader, name), { restore: true });
   // 窗口标题：书库/任务中心显示产品名；阅读页显示「论文标题 · Paper30Min」（打磨批改名条款）。
@@ -1848,6 +1870,11 @@ function startFragmentAsk(hits) {
 
 function locateBinding(locate) {
   if (!locate) return;
+  if (locate.type === 'pdf') {
+    const page = locate.selection?.regions?.[0]?.page;
+    if (page) void applyCite(`(p${page})`);
+    return;
+  }
   if (!currentMapped) {
     toast('无法定位：块模型未加载', true);
     return;
@@ -2211,7 +2238,16 @@ async function loadCropDataUrls(paper, cropAssetIds) {
 
 async function assembleCurrentQa(paper, question, binding) {
   const mapped = await loadBlockModel(paper, { recoverSource: false });
-  const history = (paper.chat || []).slice(0, -1);
+  const hydrate = async message => {
+    if (!message.pdfSelection?.images?.length) return message;
+    const images = await Promise.all(message.pdfSelection.images.map(async image => {
+      const crops = await loadCropDataUrls(paper, [image.attachmentId]);
+      if (!crops[image.attachmentId]) throw new Error('问答选区截图缺失，请重新框选。');
+      return { ...image, dataUrl: crops[image.attachmentId] };
+    }));
+    return { ...message, pdfSelection: { ...message.pdfSelection, images } };
+  };
+  const history = await Promise.all((paper.chat || []).slice(0, -1).slice(-CHAT_HISTORY_WINDOW).map(hydrate));
   const input = {
     title: paper.title,
     mapped,
@@ -2220,6 +2256,7 @@ async function assembleCurrentQa(paper, question, binding) {
     question,
     binding,
   };
+  input.binding = await hydrate(binding);
   const assembled = assembleQaContext(input);
   if (!assembled.cropAssetIds.length) return assembled.messages;
   const crops = await loadCropDataUrls(paper, assembled.cropAssetIds);
@@ -2293,6 +2330,16 @@ function renderBindingView(view, { composer = false, messageIndex = -1 } = {}) {
   body.append(first, cite);
   if (!composer) body.onclick = () => locateBinding(view.locate);
   quote.append(body);
+  for (const image of view.images || []) {
+    const img = document.createElement('img');
+    img.className = 'chat-pdf-image'; img.alt = 'PDF 选区截图';
+    if (image.dataUrl) img.src = image.dataUrl;
+    else if (image.attachmentId && current) {
+      const paper = current;
+      void loadCropDataUrls(paper, [image.attachmentId]).then(crops => { if (current === paper) img.src = crops[image.attachmentId] || ''; });
+    }
+    quote.append(img);
+  }
   const clearBinding = clearComposerBinding;
   if (composer) {
     const clear = document.createElement('button');
@@ -2431,7 +2478,9 @@ function chooseMention(section) {
   input.setSelectionRange(applied.cursor, applied.cursor);
 }
 
+let chatSaving = false;
 async function sendChat() {
+  if (chatSaving) return;
   hideMentionMenu();
   const input = $('#chat-input');
   const q = input.value.trim();
@@ -2441,13 +2490,39 @@ async function sendChat() {
     return;
   }
   const paper = current;
-  const userMsg = composerMessage(q, chatComposer);
-  input.value = '';
-  chatComposer = emptyBinding();
+  const snapshot = chatComposer;
+  const created = [];
+  chatSaving = true;
+  let userMsg;
+  try {
+    if (snapshot.pdfSelection?.images?.some(image => image.dataUrl)) {
+      const images = [];
+      for (const image of snapshot.pdfSelection.images) {
+        const id = `pdf-selection-${crypto.randomUUID()}`;
+        await bridge.invoke('files.putAttachment@1', { paperId: paper.id, attachment: {
+          id, name: `${id}.webp`, contentType: 'image/webp', contentBase64: image.dataUrl.split(',')[1],
+        } });
+        created.push(id);
+        images.push({ page: image.page, attachmentId: id });
+      }
+      if (current !== paper || chatComposer !== snapshot) return;
+      userMsg = composerMessage(q, { ...snapshot, pdfSelection: { ...snapshot.pdfSelection, images } });
+    }
+    userMsg ||= composerMessage(q, snapshot);
+    await papers.appendChatMessage(paper, userMsg);
+  } catch (err) {
+    toast(`问题保存失败：${err.message}`, true);
+    return;
+  } finally {
+    if (created.length) await store.selectionAttachments.cleanup(paper.id, created).catch(err => console.warn('选区附件清理失败', err));
+    chatSaving = false;
+  }
+  if (current !== paper) return;
+  if (input.value.trim() === q) input.value = '';
+  if (chatComposer === snapshot) chatComposer = emptyBinding();
   composerQuoteExpanded = false;
   hideMentionMenu();
   renderChatComposer();
-  await papers.appendChatMessage(paper, userMsg);
   appendChatBubble(userMsg, '', (paper.chat || []).length - 1);
   const bubble = appendChatBubble({ role: 'assistant', content: '…' });
   bubble.dataset.citeSection = userMsg.secId || userMsg.cite?.startSecId || '';
@@ -2494,6 +2569,84 @@ async function sendChat() {
 }
 
 // ---------------- PDF 对照阅读 ----------------
+function showPdfSelection(selection) {
+  selectionAborter?.abort();
+  selectionAborter = null;
+  selectionRevision++;
+  selectedPdf = selection;
+  const popup = $('#pdf-selection-popup');
+  $('#pdf-selection-preview').textContent = selection.text || `PDF 区域 · ${[...new Set(selection.regions.map(region => `p${region.page}`))].join('、')}`;
+  $('#pdf-selection-status').textContent = '';
+  $('#pdf-selection-result').hidden = true;
+  $('#pdf-selection-stop').hidden = true;
+  $('#pdf-selection-translate').disabled = false;
+  $('#pdf-selection-ask').disabled = !qaReady();
+  if (!qaReady()) $('#pdf-selection-status').textContent = QA_GATE_MESSAGE;
+  popup.hidden = false;
+  const last = selection.regions.at(-1);
+  const slot = $('#pdf-pages').querySelector(`[data-page="${last.page}"]`);
+  const box = slot?.getBoundingClientRect();
+  const x = box ? box.left + last.bbox[0] / (last.pageSize[0] * 2) * box.width : 20;
+  const y = box ? box.top + (last.bbox[1] + last.bbox[3]) / (last.pageSize[1] * 2) * box.height + 8 : 20;
+  popup.style.left = `${Math.max(12, Math.min(x, window.innerWidth - popup.offsetWidth - 12))}px`;
+  popup.style.top = `${Math.max(12, Math.min(y, window.innerHeight - popup.offsetHeight - 12))}px`;
+  pdfReader.schedule();
+}
+
+async function translatePdfSelection() {
+  if (!selectedPdf || !pdfDocument || !current) return;
+  const selection = selectedPdf, doc = pdfDocument, paper = current;
+  selectionAborter?.abort();
+  const controller = new AbortController();
+  selectionAborter = controller;
+  const revision = ++selectionRevision;
+  const active = () => revision === selectionRevision && !controller.signal.aborted && selectedPdf === selection && pdfDocument === doc && current === paper;
+  const result = $('#pdf-selection-result');
+  result.hidden = false; result.textContent = '';
+  $('#pdf-selection-status').textContent = '翻译中…';
+  $('#pdf-selection-stop').hidden = false;
+  $('#pdf-selection-translate').disabled = true;
+  try {
+    const images = selection.kind === 'area' ? await selectionImages(doc, selection) : [];
+    if (!active()) return;
+    const content = images.length ? [{ type: 'text', text: '翻译截图中可辨认的文字。' },
+      ...images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } }))] : selection.text;
+    const language = $('#pdf-selection-language').value === 'en' ? 'English' : '简体中文';
+    const text = await model.chat([{ role: 'system', content: `你是学术翻译引擎。将用户选中的内容翻译为${language}。保留公式、术语和段落结构，只输出译文。图像中文字无法辨认时如实说明，禁止猜测。` },
+      { role: 'user', content }], { stream: true, stage: 'translate', signal: controller.signal,
+      onDelta: full => { if (active()) renderStreamingTextInto(result, full); } });
+    if (!active()) return;
+    if (!text?.trim()) throw new Error('模型未返回译文');
+    renderMarkdownInto(result, text);
+    $('#pdf-selection-status').textContent = '';
+  } catch (err) {
+    if (revision === selectionRevision && selectedPdf === selection) $('#pdf-selection-status').textContent = err.name === 'AbortError' ? '已停止' : `翻译失败：${err.message}`;
+  } finally {
+    if (revision === selectionRevision) { $('#pdf-selection-stop').hidden = true; $('#pdf-selection-translate').disabled = false; }
+    if (selectionAborter === controller) selectionAborter = null;
+  }
+}
+
+async function askPdfSelection() {
+  if (!selectedPdf || !qaReady() || !pdfDocument) return;
+  const selection = selectedPdf, doc = pdfDocument, paper = current;
+  const revision = selectionRevision;
+  $('#pdf-selection-ask').disabled = true;
+  $('#pdf-selection-status').textContent = '准备选区…';
+  try {
+    const images = selection.kind === 'area' ? await selectionImages(doc, selection) : [];
+    if (revision !== selectionRevision || selectedPdf !== selection || current !== paper || pdfDocument !== doc) return;
+    chatComposer = selectionBinding({ ...selection, ...(images.length ? { images } : {}) }, currentMapped);
+    composerQuoteExpanded = false;
+    switchTab('chat');
+    renderChatComposer();
+    $('#pdf-selection-status').textContent = '';
+    $('#chat-input').focus();
+  } catch (err) {
+    if (revision === selectionRevision) $('#pdf-selection-status').textContent = `选区准备失败：${err.message}`;
+  } finally { if (revision === selectionRevision) $('#pdf-selection-ask').disabled = false; }
+}
+
 function hasPdf(paper = current) {
   return store.pdf.has(paper);
 }
@@ -2579,12 +2732,13 @@ function bindPaneResizer(handle, side) {
 
 function togglePdfSidebar(force) {
   commitReader(view.togglePdf(reader, force), { restore: true });
-  if (!pdfSidebarOpen) cancelCiteNavigation();
+  if (!pdfSidebarOpen) { cancelCiteNavigation(); pdfSelection.clear(); }
   if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
   if (pdfSidebarOpen && pdfDocument) pdfReader.schedule();
 }
 
 function collapsePdfPane() {
+  pdfSelection.clear();
   cancelCiteNavigation();
   commitReader(view.collapsePdf(reader), { restore: true });
 }
@@ -2596,6 +2750,7 @@ function expandPdfPane() {
 }
 
 function togglePdfMode() {
+  pdfSelection.clear();
   const anchor = pdfReader.captureAnchor();
   pdfZoomRevision++;
   commitReader(view.setPdfMode(reader, reader.pdfMode === 'full' ? 'side' : 'full'));
@@ -4064,6 +4219,17 @@ function bindEvents() {
   };
   $('#btn-pdf-toggle').onclick = () => togglePdfSidebar();
   $('#btn-pdf-close').onclick = collapsePdfPane;
+  for (const tool of ['text', 'area', 'hand']) $('#pdf-tool-' + tool).onclick = () => {
+    pdfSelection.setTool(tool);
+    for (const value of ['text', 'area', 'hand']) $('#pdf-tool-' + value).setAttribute('aria-pressed', String(value === tool));
+  };
+  $('#pdf-selection-translate').onclick = translatePdfSelection;
+  $('#pdf-selection-ask').onclick = askPdfSelection;
+  $('#pdf-selection-stop').onclick = () => selectionAborter?.abort();
+  $('#pdf-selection-close').onclick = () => pdfSelection.clear();
+  $('#pdf-selection-language').onchange = () => { selectionAborter?.abort(); };
+  $('#pdf-selection-popup').addEventListener('mousedown', event => { if (event.target.closest('button')) event.preventDefault(); });
+  window.addEventListener('resize', () => pdfSelection.clear());
   $('#btn-pdf-mode').onclick = togglePdfMode;
   $('#pdf-canvas-wrap').addEventListener('wheel', event => {
     if (!event.ctrlKey || !pdfDocument) return;

@@ -23,7 +23,8 @@ export function pageWindow(bottoms, top, height) {
   return pages;
 }
 
-export function createPdfReader({ scroll, pages, loading, onPageChange, onError, onEvidence = () => {} }) {
+export function createPdfReader({ scroll, pages, loading, onPageChange, onError, onEvidence = () => {},
+  renderTextLayer = null, getPinnedPages = () => [], onInvalidate = () => {}, onPaint = () => {} }) {
   let document = null;
   let slots = [];
   let tasks = new Map();
@@ -55,6 +56,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
   }
 
   function clear() {
+    onInvalidate();
     clearEvidence();
     epoch++;
     clearTimeout(zoomTimer);
@@ -105,9 +107,22 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
       await task.promise;
       // Publish only a complete frame; canceled or obsolete renders stay offscreen.
       if (generation !== epoch || tasks.get(index) !== entry) return;
-      slot.replaceChildren(canvas);
+      let layer = null;
+      if (renderTextLayer) {
+        const content = await page.getTextContent();
+        if (generation !== epoch || tasks.get(index) !== entry) return;
+        layer = window.document.createElement('div');
+        layer.className = 'pdf-text-layer';
+        layer.style.setProperty('--scale-factor', String(viewport.scale));
+        const textTask = renderTextLayer({ textContentSource: content, container: layer, viewport });
+        entry.task = textTask;
+        await textTask.promise;
+        if (generation !== epoch || tasks.get(index) !== entry) return;
+      }
+      slot.replaceChildren(...(layer ? [canvas, layer] : [canvas]));
       paintedPages.add(index);
       paintEvidence(index);
+      onPaint();
       schedule();
     } catch (error) {
       if (generation !== epoch || tasks.get(index) !== entry) return;
@@ -124,6 +139,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
     if (!document || !slots.length || !scroll.clientHeight) return;
     reflow();
     const wanted = new Set(pageWindow(positions, scroll.scrollTop, scroll.clientHeight));
+    for (const page of getPinnedPages()) if (Number.isInteger(page) && page >= 1 && page <= slots.length) wanted.add(page - 1);
     for (const index of new Set([...tasks.keys(), ...paintedPages])) if (!wanted.has(index)) release(index);
     for (const index of wanted) {
       if (!zoomTimer && !tasks.has(index) && !failedPages.has(index)) {
@@ -171,6 +187,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
   }
 
   function jump(pageNumber) {
+    onInvalidate();
     clearEvidence();
     if (!document) return;
     const nextPage = Math.min(Math.max(Math.round(pageNumber), 1), document.numPages);
@@ -216,12 +233,14 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
   function reflow() {
     if (!scroll.clientWidth || !scroll.clientHeight) return;
     if (stableAnchor && (stableAnchor.width !== scroll.clientWidth || stableAnchor.height !== scroll.clientHeight)) {
+      onInvalidate();
       restoreAnchor(stableAnchor.anchor);
     }
   }
 
   function resize(nextScale, point) {
     if (!document || nextScale === scale) return;
+    onInvalidate();
     cancelLocate();
     const anchor = captureAnchor(point);
     scale = nextScale;
@@ -236,6 +255,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
       schedule();
     }, 120);
     for (const slot of slots) {
+      for (const node of [...slot.children]) if (node.className === 'pdf-text-layer') node.remove();
       slot.style.width = `${Math.ceil(Number(slot.dataset.baseWidth) * scale)}px`;
       slot.style.height = `${Math.ceil(Number(slot.dataset.baseHeight) * scale)}px`;
     }

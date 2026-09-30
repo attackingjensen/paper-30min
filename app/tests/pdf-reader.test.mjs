@@ -16,10 +16,10 @@ test('current page follows the visible position across unequal page heights', ()
   assert.equal(pageAtOffset(bottoms, 2050), 2);
 });
 
-function readerFixture() {
+function readerFixture(options = {}) {
   const frames = [];
   const makeElement = () => ({
-    children: [], style: {}, dataset: {}, hidden: false,
+    children: [], style: { setProperty(key, value) { this[key] = value; } }, dataset: {}, hidden: false,
     replaceChildren(...nodes) {
       this.children = nodes.flatMap(node => node.fragment ? node.children : [node]);
       for (const child of this.children) child.parent = this;
@@ -56,7 +56,7 @@ function readerFixture() {
   const errors = [];
   const seen = [];
   const evidenceStates = [];
-  const reader = createPdfReader({ scroll, pages, loading: makeElement(), onPageChange: page => seen.push(page), onError: error => errors.push(error), onEvidence: state => evidenceStates.push(state) });
+  const reader = createPdfReader({ scroll, pages, loading: makeElement(), onPageChange: page => seen.push(page), onError: error => errors.push(error), onEvidence: state => evidenceStates.push(state), ...options });
   const doc = count => ({
     numPages: count,
     async getPage() {
@@ -74,6 +74,42 @@ function readerFixture() {
   }
   return { reader, scroll, pages, seen, errors, evidenceStates, doc, flush };
 }
+
+test('PDF text layers publish with their canvas and selected pages remain pinned', async () => {
+  let invalidations = 0;
+  const f = readerFixture({ renderTextLayer: () => ({ promise: Promise.resolve(), cancel() {} }),
+    getPinnedPages: () => [1], onInvalidate: () => invalidations++ });
+  const doc = f.doc(12), original = doc.getPage;
+  doc.getPage = async number => ({ ...await original(number), getTextContent: async () => ({ items: [] }),
+    getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale, scale }) });
+  await f.reader.open(doc, 1, 1); await f.flush();
+  assert.equal(f.pages.children[0].children[1]?.className, 'pdf-text-layer');
+  f.scroll.scrollTop = 8 * 812; f.scroll.onScroll(); await f.flush();
+  assert.equal(f.pages.children[0].children[1]?.className, 'pdf-text-layer');
+  f.reader.resize(2);
+  assert.equal(f.pages.children[0].children.some(node => node.className === 'pdf-text-layer'), false);
+  assert.ok(invalidations >= 2);
+  f.reader.clear();
+});
+
+test('obsolete PDF text fetches and text render tasks never publish partial frames', async () => {
+  for (const stage of ['fetch', 'render']) {
+    let resolve, canceled = 0;
+    const held = new Promise(done => { resolve = done; });
+    const f = readerFixture({ renderTextLayer: () => ({ promise: stage === 'render' ? held : Promise.resolve(), cancel() { canceled++; } }) });
+    const doc = f.doc(1), original = doc.getPage;
+    doc.getPage = async number => ({ ...await original(number),
+      getTextContent: () => stage === 'fetch' ? held : Promise.resolve({ items: [] }) });
+    await f.reader.open(doc, 1, 1); await f.flush();
+    const slot = f.pages.children[0];
+    assert.equal(slot.children.length, 0, `${stage} must finish before canvas publication`);
+    f.reader.clear();
+    resolve({ items: [] }); await f.flush();
+    assert.equal(slot.children.length, 0);
+    assert.equal(f.pages.children.length, 0);
+    if (stage === 'render') assert.equal(canceled, 1);
+  }
+});
 
 test('evidence overlay uses trusted geometry, survives zoom and redraw, and page-only navigation clears it', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

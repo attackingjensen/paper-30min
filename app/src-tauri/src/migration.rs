@@ -529,6 +529,7 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
                 fragment_text: convert_optional_text(item.get("fragmentText")),
                 cite: convert_cite(item.get("cite")),
                 asset_ids: convert_asset_ids(item.get("assetIds")),
+                pdf_selection: item.get("pdfSelection").filter(|value| value.is_object()).cloned(),
             };
             // 清洗而非拒绝整篇：缺必备字段的绑定降为 none，旧导出无绑定列也走这条。
             if message.binding_kind == "section" && message.sec_id.is_none() {
@@ -537,11 +538,13 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
             if message.binding_kind == "fragment" && message.fragment_text.is_none() {
                 message.binding_kind = "none".to_string();
             }
+            if message.binding_kind == "pdf" && message.pdf_selection.is_none() { message.binding_kind = "none".to_string(); }
             if message.binding_kind == "none" {
                 message.sec_id = None;
                 message.fragment_text = None;
                 message.cite = None;
                 message.asset_ids.clear();
+                message.pdf_selection = None;
             }
             Some(message)
         })

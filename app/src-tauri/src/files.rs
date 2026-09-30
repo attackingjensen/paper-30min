@@ -310,6 +310,41 @@ pub(crate) fn insert_attachment_row(
 }
 
 impl Library {
+    /// Only remove caller-owned selection images which no saved chat references.
+    pub fn cleanup_pdf_selections(&self, paper_id: &str, ids: &[String]) -> Result<(), BridgeError> {
+        require_safe_segment(paper_id, "paperId")?;
+        for id in ids {
+            require_safe_segment(id, "attachmentId")?;
+            if !id.starts_with("pdf-selection-") {
+                return Err(BridgeError::invalid_input("只能清理 PDF 选区截图"));
+            }
+        }
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare("SELECT pdf_selection_json FROM chat_messages WHERE paper_id = ?1 AND pdf_selection_json IS NOT NULL").map_err(sqlite_error)?;
+        let selections = stmt.query_map(params![paper_id], |row| row.get::<_, String>(0)).map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>().map_err(sqlite_error)?;
+        let mut referenced = std::collections::HashSet::new();
+        for raw in selections {
+            let selection: serde_json::Value = serde_json::from_str(&raw).map_err(|err| BridgeError::internal(err.to_string()))?;
+            if let Some(images) = selection.get("images").and_then(|v| v.as_array()) {
+                for image in images {
+                    if let Some(id) = image.get("attachmentId").and_then(|v| v.as_str()) { referenced.insert(id.to_string()); }
+                }
+            }
+        }
+        for id in ids {
+            if referenced.contains(id) { continue; }
+            let path = attachment_path(self.root(), paper_id, id)?;
+            match fs::remove_file(path) {
+                Ok(()) => {},
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {},
+                Err(err) => return Err(io_error(err)),
+            }
+            conn.execute("DELETE FROM attachments WHERE paper_id = ?1 AND attachment_id = ?2", params![paper_id, id]).map_err(sqlite_error)?;
+        }
+        Ok(())
+    }
+
     pub fn put_attachment(
         &self,
         paper_id: &str,

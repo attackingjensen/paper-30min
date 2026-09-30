@@ -27,6 +27,7 @@ pub fn available_commands() -> &'static [&'static str] {
         "library.putReadingPosition@1",
         "library.deleteReadingPosition@1",
         "files.putAttachment@1",
+        "files.cleanupPdfSelections@1",
         "files.listAttachments@1",
         "files.getAttachment@1",
         "files.readRange@1",
@@ -166,6 +167,12 @@ pub fn invoke(
                 "schemaVersion": BRIDGE_SCHEMA_VERSION,
                 "attachment": library.put_attachment(paper_id, attachment)?,
             }))
+        }
+        "files.cleanupPdfSelections@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let ids = parse_dto::<Vec<String>>(command, input, "attachmentIds")?;
+            library.cleanup_pdf_selections(paper_id, &ids)?;
+            Ok(json!({ "schemaVersion": 1 }))
         }
         "files.listAttachments@1" => {
             let paper_id = required_string(command, input, "paperId")?;

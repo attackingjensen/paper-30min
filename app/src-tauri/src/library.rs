@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 
 use crate::error::BridgeError;
 
-pub const DATABASE_VERSION: i32 = 7;
+pub const DATABASE_VERSION: i32 = 8;
 pub const LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 /// activity_days.kind 的合法取值：导入论文 / 精读结果 / 中断保留的部分结果 / 设置已读完标记。
@@ -24,7 +24,7 @@ pub(crate) const ACTIVITY_DAY_KINDS: &[&str] = &["import", "analysis", "partial"
 pub(crate) const PRODUCT_KINDS: &[&str] = &["map", "l2", "dig", "retell"];
 
 /// chat_messages.binding_kind 的合法取值：无绑定（全文提问）/ @节 / 选中片段（规格 #52 决策 1）。
-pub(crate) const BINDING_KINDS: &[&str] = &["none", "section", "fragment"];
+pub(crate) const BINDING_KINDS: &[&str] = &["none", "section", "fragment", "pdf"];
 
 fn default_binding_kind() -> String {
     "none".to_string()
@@ -156,6 +156,8 @@ pub struct ChatMessageDto {
     pub cite: Option<ChatCiteDto>,
     #[serde(default)]
     pub asset_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_selection: Option<Value>,
 }
 
 /// 已读完标记：用户对单个精读部分的手动完成记录，可撤销（撤销 = 快照少一行）。
@@ -742,6 +744,17 @@ fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     migrate_protocol_products(conn)?;
     migrate_chat_bindings(conn)?;
     migrate_pending_file_cleanup(conn)?;
+    migrate_pdf_selections(conn)?;
+    Ok(())
+}
+
+fn migrate_pdf_selections(conn: &mut Connection) -> Result<(), BridgeError> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).map_err(sqlite_error)?;
+    if version >= 8 { return Ok(()); }
+    let tx = conn.transaction().map_err(sqlite_error)?;
+    tx.execute_batch("ALTER TABLE chat_messages ADD COLUMN pdf_selection_json TEXT;").map_err(sqlite_error)?;
+    tx.pragma_update(None, "user_version", 8).map_err(sqlite_error)?;
+    tx.commit().map_err(sqlite_error)?;
     Ok(())
 }
 
@@ -1141,6 +1154,7 @@ fn clear_chat_binding(message: &mut ChatMessageDto) {
     message.fragment_text = None;
     message.cite = None;
     message.asset_ids.clear();
+    message.pdf_selection = None;
 }
 
 fn normalize_chat_binding(message: &mut ChatMessageDto) -> Result<(), BridgeError> {
@@ -1170,21 +1184,60 @@ fn normalize_chat_binding(message: &mut ChatMessageDto) -> Result<(), BridgeErro
         message.fragment_text = None;
         message.cite = None;
         message.asset_ids.clear();
+        message.pdf_selection = None;
     } else if message.binding_kind == "section" {
         if message.sec_id.is_none() {
             return Err(BridgeError::invalid_input("chat.secId：@节绑定需要节 id"));
         }
         message.fragment_text = None;
+        message.pdf_selection = None;
+    } else if message.binding_kind == "pdf" {
+        let selection = message.pdf_selection.as_ref().ok_or_else(|| BridgeError::invalid_input("PDF 选区缺失"))?;
+        validate_pdf_selection(selection)?;
+        message.cite = None;
+        message.sec_id = None;
+        message.asset_ids.clear();
     } else if message.fragment_text.is_none() {
         return Err(BridgeError::invalid_input(
             "chat.fragmentText：片段绑定需要选中原文",
         ));
+    }
+    if message.binding_kind == "fragment" {
+        if let Some(selection) = &message.pdf_selection { validate_pdf_selection(selection)?; }
     }
     if let Some(cite) = &message.cite {
         if cite.start_sec_id.trim().is_empty() || cite.end_sec_id.trim().is_empty() {
             return Err(BridgeError::invalid_input("chat.cite 需要起止节 id"));
         }
     }
+    Ok(())
+}
+
+fn validate_pdf_selection(selection: &Value) -> Result<(), BridgeError> {
+    let invalid = || BridgeError::invalid_input("PDF 选区格式无效");
+    let kind = selection.get("kind").and_then(Value::as_str).ok_or_else(invalid)?;
+    if !matches!(kind, "text" | "area") { return Err(invalid()); }
+    let regions = selection.get("regions").and_then(Value::as_array).ok_or_else(invalid)?;
+    if regions.is_empty() { return Err(invalid()); }
+    for region in regions {
+        if region.get("page").and_then(Value::as_u64).unwrap_or(0) == 0 { return Err(invalid()); }
+        let bbox = region.get("bbox").and_then(Value::as_array).ok_or_else(invalid)?;
+        let size = region.get("pageSize").and_then(Value::as_array).ok_or_else(invalid)?;
+        if bbox.len() != 4 || size.len() != 2 { return Err(invalid()); }
+        let coordinates: Vec<f64> = bbox.iter().chain(size).map(|v| v.as_f64().unwrap_or(f64::NAN)).collect();
+        if !coordinates.iter().all(|v| v.is_finite()) || coordinates[0] < 0.0 || coordinates[1] < 0.0
+            || coordinates[2..].iter().any(|v| *v <= 0.0)
+            || coordinates[0] + coordinates[2] > coordinates[4] * 2.0 + 0.1
+            || coordinates[1] + coordinates[3] > coordinates[5] * 2.0 + 0.1 { return Err(invalid()); }
+    }
+    if let Some(images) = selection.get("images") {
+        for image in images.as_array().ok_or_else(invalid)? {
+            let id = image.get("attachmentId").and_then(Value::as_str).ok_or_else(invalid)?;
+            crate::files::require_safe_segment(id, "attachmentId")?;
+            if !id.starts_with("pdf-selection-") || image.get("dataUrl").is_some() { return Err(invalid()); }
+        }
+    }
+    if kind == "area" && selection.get("images").and_then(Value::as_array).is_none_or(|images| images.is_empty()) { return Err(invalid()); }
     Ok(())
 }
 
@@ -1362,8 +1415,8 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
         tx.execute(
             "INSERT INTO chat_messages(
                 paper_id, seq, role, content, created_at,
-                binding_kind, sec_id, fragment_text, cite_json, asset_ids_json
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                binding_kind, sec_id, fragment_text, cite_json, asset_ids_json, pdf_selection_json
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 paper.id,
                 seq as i64,
@@ -1374,7 +1427,8 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
                 message.sec_id,
                 message.fragment_text,
                 cite_json,
-                json_text(&message.asset_ids)?
+                json_text(&message.asset_ids)?,
+                message.pdf_selection.as_ref().map(json_text).transpose()?
             ],
         )
         .map_err(sqlite_error)?;
@@ -1539,7 +1593,7 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
 
     let mut chat_stmt = conn
         .prepare(
-            "SELECT role, content, created_at, binding_kind, sec_id, fragment_text, cite_json, asset_ids_json
+            "SELECT role, content, created_at, binding_kind, sec_id, fragment_text, cite_json, asset_ids_json, pdf_selection_json
              FROM chat_messages WHERE paper_id = ?1 ORDER BY seq",
         )
         .map_err(sqlite_error)?;
@@ -1554,6 +1608,7 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })
         .map_err(sqlite_error)?
@@ -1570,6 +1625,7 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
                 fragment_text,
                 cite_json,
                 asset_ids_json,
+                pdf_selection_json,
             )| {
                 Ok(ChatMessageDto {
                     role,
@@ -1580,6 +1636,7 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
                     fragment_text,
                     cite: parse_cite_json(cite_json)?,
                     asset_ids: parse_string_list(&asset_ids_json)?,
+                    pdf_selection: pdf_selection_json.map(|text| serde_json::from_str(&text).map_err(|err| BridgeError::internal(format!("选区解析失败: {err}")))).transpose()?,
                 })
             },
         )
