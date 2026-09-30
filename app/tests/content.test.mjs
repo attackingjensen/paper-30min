@@ -14,7 +14,6 @@ import {
   citeSegments,
   deepDiveZone,
   landingModel,
-  linkifyCiteHtml,
   mapPageModel,
   runningDeepDivePartIds,
   sectionFigures,
@@ -212,7 +211,6 @@ test('节页：L2 卡、图表区、标记与旧精读折叠；灰显节无 L2',
       analyses: { 'part-1': { text: '旧版引言精读。', updatedAt: 9 } },
     },
     runningPartIds: [],
-    citeFocus: { type: 'asset', assetId: 'fig_1' },
   });
   assert.equal(intro.grey, false);
   assert.equal(intro.title, 'Introduction');
@@ -228,7 +226,6 @@ test('节页：L2 卡、图表区、标记与旧精读折叠；灰显节无 L2',
   assert.equal(intro.marked, true);
   assert.equal(intro.showMark, true);
   assert.equal(intro.legacyAnalysis.text, '旧版引言精读。');
-  assert.equal(intro.focusAssetId, 'fig_1');
 
   const refs = sectionPageModel({
     partId: 'sec_4_references',
@@ -274,7 +271,7 @@ test('该节图表取自清单归属，不把别节的表算进来', () => {
   assert.equal(sectionFigures(mapped, 'abstract').length, 0);
 });
 
-test('出处分段：文本块 / 图表 / 页码可交给 routeCite 三分定位', () => {
+test('出处分段：文本块 / 图表 / 页码统一进入 PDF', () => {
   const parts = citeSegments('方法见 (sec_3:L1-3) 与 (fig_1)，对照 (p2)。');
   assert.deepEqual(parts.map(part => part.type), ['text', 'ref', 'text', 'ref', 'text', 'ref', 'text']);
   const block = parts[1];
@@ -286,14 +283,15 @@ test('出处分段：文本块 / 图表 / 页码可交给 routeCite 三分定位
   assert.equal(page.pointer.kind, 'page');
 
   const toSource = routeCite(reader(), block.pointer, { mapped });
-  assert.equal(toSource.tab, 'source');
-  assert.equal(toSource.sourceSectionId, 'sec_3_method');
-  assert.deepEqual(toSource.citeFocus, { type: 'blocks', secId: 'sec_3_method', start: 1, end: 3 });
+  assert.equal(toSource.tab, 'map');
+  assert.equal(toSource.pdfPage, 2);
+  assert.deepEqual(toSource.citeFocus.target, { page: 2 });
 
   const toFig = routeCite(openSection(reader(), 'part-2'), fig.pointer, { mapped });
   assert.equal(toFig.tab, 'map');
-  assert.equal(toFig.sectionId, partIdForSection(mapped, 'sec_2_introduction'));
-  assert.deepEqual(toFig.citeFocus, { type: 'asset', assetId: 'fig_1' });
+  assert.equal(toFig.sectionId, 'part-2');
+  assert.equal(toFig.pdfPage, 2);
+  assert.equal(toFig.citeFocus.type, 'pdf');
 
   const toPage = routeCite(reader(), page.pointer, { mapped });
   assert.equal(toPage.pdfOpen, true);
@@ -305,17 +303,17 @@ test('出处分段：文本块 / 图表 / 页码可交给 routeCite 三分定位
     mapped,
     currentSecId: 'sec_2_introduction',
   });
-  assert.equal(fromSection.sourceSectionId, 'sec_2_introduction');
-  assert.equal(fromSection.citeFocus.start, 2);
+  assert.equal(fromSection.sectionId, 'part-1');
+  assert.equal(fromSection.pdfPage, 2);
 });
 
-test('Markdown 产物里的出处指针变成可点击 data-cite', () => {
-  const html = linkifyCiteHtml('<p>见图 (fig_1) 与 (p2)</p>');
-  assert.match(html, /data-cite="\(fig_1\)"/);
-  assert.match(html, /data-cite="\(p2\)"/);
-  assert.match(html, /class="cite-chip"/);
+test('Markdown 正文与表格中的出处共用分段语法', () => {
+  const refs = citeSegments('见图 (fig_1) 与 (p2)').filter(segment => segment.type === 'ref');
+  assert.deepEqual(refs.map(segment => segment.raw), ['(fig_1)', '(p2)']);
   assert.equal(citeSegments('无出处').length, 1);
   assert.equal(citeSegments('无出处')[0].type, 'text');
+  const table = citeSegments('| 证据 | 出处 |\n| --- | --- |\n| 表格 | (tbl_1) |');
+  assert.deepEqual(table.filter(segment => segment.type === 'ref').map(segment => segment.raw), ['(tbl_1)']);
 });
 
 test('假任务快照：批量深挖的 partIds 驱动进行中；取证轨迹指向对应任务', () => {

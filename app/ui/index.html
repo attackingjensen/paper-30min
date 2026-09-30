@@ -249,7 +249,8 @@
         <button class="pdf-icon-btn" id="btn-pdf-zoom-in" type="button" title="放大" aria-label="放大">＋</button>
         <button class="pdf-icon-btn" id="btn-pdf-fit" type="button" title="适配宽度" aria-label="适配宽度">⇹</button>
       </div>
-      <div class="pdf-canvas-wrap" id="pdf-canvas-wrap">
+      <div id="pdf-evidence-status" class="pdf-evidence-status" role="status" hidden></div>
+      <div class="pdf-canvas-wrap" id="pdf-canvas-wrap" tabindex="0">
         <div id="pdf-loading" class="pdf-loading">正在载入 PDF…</div>
         <div id="pdf-render-error" class="pdf-render-error" hidden>
           <span id="pdf-render-error-message"></span>

@@ -1,3 +1,5 @@
+import { evidenceRects } from './pdf-evidence.js';
+
 // Page indices are zero-based inside the renderer; the toolbar uses one-based page numbers.
 export function pageAtOffset(bottoms, offset) {
   let low = 0;
@@ -21,7 +23,7 @@ export function pageWindow(bottoms, top, height) {
   return pages;
 }
 
-export function createPdfReader({ scroll, pages, loading, onPageChange, onError }) {
+export function createPdfReader({ scroll, pages, loading, onPageChange, onError, onEvidence = () => {} }) {
   let document = null;
   let slots = [];
   let tasks = new Map();
@@ -31,6 +33,9 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
   let currentPage = 1;
   let stableAnchor = null;
   let zoomTimer = null;
+  let evidenceRevision = 0;
+  let evidence = null;
+  let pendingEvidence = null;
   const paintedPages = new Set();
   const failedPages = new Set();
   const positions = {
@@ -50,6 +55,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
   }
 
   function clear() {
+    clearEvidence();
     epoch++;
     clearTimeout(zoomTimer);
     zoomTimer = null;
@@ -80,7 +86,10 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
       slot.dataset.baseHeight = String(viewport.height / scale);
       slot.style.width = `${Math.ceil(viewport.width)}px`;
       slot.style.height = `${Math.ceil(viewport.height)}px`;
-      if (beforeViewport) scroll.scrollTop += slot.offsetHeight - previousHeight;
+      if (beforeViewport) {
+        scroll.scrollTop += slot.offsetHeight - previousHeight;
+        if (pendingEvidence) pendingEvidence.top = scroll.scrollTop;
+      }
       const canvas = window.document.createElement('canvas');
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.ceil(viewport.width * ratio);
@@ -98,6 +107,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
       if (generation !== epoch || tasks.get(index) !== entry) return;
       slot.replaceChildren(canvas);
       paintedPages.add(index);
+      paintEvidence(index);
       schedule();
     } catch (error) {
       if (generation !== epoch || tasks.get(index) !== entry) return;
@@ -161,6 +171,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
   }
 
   function jump(pageNumber) {
+    clearEvidence();
     if (!document) return;
     const nextPage = Math.min(Math.max(Math.round(pageNumber), 1), document.numPages);
     const changed = nextPage !== currentPage;
@@ -189,6 +200,10 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
     const viewport = scroll.getBoundingClientRect();
     scroll.scrollTop += box.top + anchor.y * box.height - viewport.top - scroll.clientTop - anchor.viewY * scroll.clientHeight;
     scroll.scrollLeft += box.left + anchor.x * box.width - viewport.left - scroll.clientLeft - anchor.viewX * scroll.clientWidth;
+    if (pendingEvidence) {
+      pendingEvidence.top = scroll.scrollTop;
+      pendingEvidence.left = scroll.scrollLeft;
+    }
     rememberAnchor();
     schedule();
   }
@@ -207,6 +222,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
 
   function resize(nextScale, point) {
     if (!document || nextScale === scale) return;
+    cancelLocate();
     const anchor = captureAnchor(point);
     scale = nextScale;
     if (!slots.length) return;
@@ -223,6 +239,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
       slot.style.width = `${Math.ceil(Number(slot.dataset.baseWidth) * scale)}px`;
       slot.style.height = `${Math.ceil(Number(slot.dataset.baseHeight) * scale)}px`;
     }
+    if (evidence) paintEvidence(evidence.page - 1);
     restoreAnchor(anchor);
   }
 
@@ -232,6 +249,81 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
     schedule();
   }
 
-  scroll.addEventListener('scroll', schedule, { passive: true });
-  return { clear, open, jump, resize, retry, schedule, captureAnchor, restoreAnchor, reflow };
+  scroll.addEventListener('scroll', () => {
+    if (pendingEvidence && (scroll.scrollTop !== pendingEvidence.top || scroll.scrollLeft !== pendingEvidence.left)) cancelLocate();
+    schedule();
+  }, { passive: true });
+  scroll.addEventListener('wheel', cancelLocate, { passive: true });
+  scroll.addEventListener('pointerdown', cancelLocate);
+  scroll.addEventListener('keydown', event => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelLocate();
+  });
+
+  function cancelLocate() {
+    if (!pendingEvidence) return;
+    pendingEvidence = null;
+    evidenceRevision++;
+    onEvidence('');
+  }
+
+  function clearEvidence() {
+    evidenceRevision++;
+    pendingEvidence = null;
+    if (evidence) {
+      const index = evidence.page - 1;
+      evidence = null;
+      paintEvidence(index);
+    }
+    onEvidence('');
+  }
+
+  function paintEvidence(index) {
+    const slot = slots[index];
+    if (!slot) return;
+    for (const node of [...slot.children]) if (node.className === 'pdf-evidence-highlight') node.remove();
+    if (!evidence || evidence.page !== index + 1 || !paintedPages.has(index)) return;
+    for (const [x, y, width, height] of evidence.rects) {
+      const node = window.document.createElement('div');
+      node.className = 'pdf-evidence-highlight';
+      node.style.left = `${x * scale}px`;
+      node.style.top = `${y * scale}px`;
+      node.style.width = `${width * scale}px`;
+      node.style.height = `${height * scale}px`;
+      slot.appendChild(node);
+    }
+  }
+
+  async function locate(target) {
+    if (!document || !slots.length || target.page < 1 || target.page > document.numPages) return false;
+    jump(target.page);
+    const revision = evidenceRevision;
+    const doc = document;
+    pendingEvidence = { top: scroll.scrollTop, left: scroll.scrollLeft };
+    onEvidence('正在定位出处…');
+    try {
+      const page = await doc.getPage(target.page);
+      const viewport = page.getViewport({ scale: 1 });
+      const content = target.text ? await page.getTextContent() : null;
+      // null means a newer navigation superseded this lookup, not an invalid page.
+      if (revision !== evidenceRevision || document !== doc) return null;
+      pendingEvidence = null;
+      const rects = evidenceRects(target, viewport, content);
+      evidence = { page: target.page, rects };
+      paintEvidence(target.page - 1);
+      if (rects.length) {
+        const [x, y, width, height] = rects[0];
+        restoreAnchor({ index: target.page - 1, x: (x + width / 2) / viewport.width,
+          y: (y + height / 2) / viewport.height, viewX: 0.5, viewY: 0.35 });
+      }
+      onEvidence(rects.length ? '已定位出处' : '仅页级定位');
+      return true;
+    } catch {
+      if (revision !== evidenceRevision || document !== doc) return null;
+      pendingEvidence = null;
+      onEvidence('仅页级定位');
+      return true;
+    }
+  }
+
+  return { clear, open, jump, locate, cancelLocate, resize, retry, schedule, captureAnchor, restoreAnchor, reflow };
 }

@@ -183,8 +183,8 @@ U1 建立连续阅读状态与可见页调度；U2 完成双模式和缩放位�
 - **Goal:** 正文和表格中的出处统一落到 PDF 可信位置。
 - **Requirements:** R4, R5, R10；F1；AE1-AE3。
 - **Dependencies:** U1, U2。
-- **Files:** `app/ui/js/view.js`, `app/ui/js/main.js`, `app/ui/js/protocol.js`, `app/ui/js/content.js`, `app/tests/view.test.mjs`；必要时新增定位规则的纯逻辑文件与对应测试。
-- **Approach:** 按 KTD3 使用已有页码、图表矩形和可验证的文字匹配；引用路由保留产物上下文，并在侧栏或全页定位。精度不足时显示“仅页级定位”，不画猜测区域。
+- **Files:** `app/ui/js/view.js`, `app/ui/js/main.js`, `app/ui/js/content.js`, `app/ui/js/pdf-reader.js`, `app/ui/js/pdf-evidence.js`, `app/ui/index.html`, `app/ui/style.css`；对应 `view`、`content`、`pdf-reader`、`pdf-evidence` 测试。复用 `protocol.js` 既有出处语法，不增加解析协议或 Rust DTO。
+- **Approach:** 按 KTD3 使用已有页码、图表矩形和可验证的文字匹配；引用路由保留产物 DOM、页签与节上下文，并在侧栏或全页定位。图表坐标沿用书库的 PDF.js `scale=2`、左上角 `[x, y, w, h]` 契约，按真实页面尺寸验证。文本只在页内唯一匹配、规范化后至少 12 字符、完整覆盖 PDF 文本项且横向几何与字体度量可核实时高亮；部分文本项、短文本、重复匹配、跨页块、旋转页或缺少可信坐标时保守降级为“仅页级定位”。Markdown 出处通过渲染后的文本节点增强，覆盖表格单元格，跳过链接与代码。加载期间主动改页、切论文和取消操作均使旧定位失效；内部布局恢复不取消自己的定位。
 - **Test scenarios:** Covers AE1-AE3. 表格单元格图表出处高亮可信矩形；普通文本唯一匹配才高亮；旧块歧义和单页引用只跳页；无 PDF 附件给出明确反馈。
 - **Verification:** 每个高亮能追溯可信坐标；页级路径无误导性区域高亮。
 

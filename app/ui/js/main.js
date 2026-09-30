@@ -21,7 +21,6 @@ import {
   COPY,
   citeSegments,
   landingModel,
-  linkifyCiteHtml,
   mapPageModel,
   runningDeepDivePartIds,
   sectionPageModel,
@@ -100,6 +99,7 @@ let composerQuoteExpanded = false;
 let translateAborter = null;
 let recallAborter = null;
 let pdfDocument = null;
+let pdfOpening = null;
 const pdfResource = createLatestResource();
 let pdfPage = 1;
 let pdfScale = 1;
@@ -109,6 +109,10 @@ const pdfReader = createPdfReader({
   scroll: $('#pdf-canvas-wrap'),
   pages: $('#pdf-pages'),
   loading: $('#pdf-loading'),
+  onEvidence(message) {
+    $('#pdf-evidence-status').textContent = message;
+    $('#pdf-evidence-status').hidden = !message;
+  },
   onPageChange(page) {
     pdfPage = page;
     updatePdfPageControls();
@@ -779,9 +783,28 @@ function refsHtml(refs) {
 }
 
 function renderCitedMarkdownInto(element, text) {
-  element.classList.remove('streaming-text');
-  element.innerHTML = linkifyCiteHtml(renderMarkdown(text));
-  typesetMath(element);
+  renderMarkdownInto(element, text);
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (node.parentElement.closest('a, button, code, pre, mjx-container')) continue;
+    const segments = citeSegments(node.textContent);
+    if (!segments.some(segment => segment.type === 'ref')) continue;
+    const fragment = document.createDocumentFragment();
+    for (const segment of segments) {
+      if (segment.type === 'text') fragment.append(document.createTextNode(segment.text));
+      else {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'cite-chip';
+        button.dataset.cite = segment.raw;
+        button.textContent = segment.raw;
+        fragment.append(button);
+      }
+    }
+    node.replaceWith(fragment);
+  }
 }
 
 function renderLanding(surface) {
@@ -874,7 +897,6 @@ function renderSectionPage() {
     paper: current,
     runningPartIds: runningDeepDivePartIds(sessionTaskList(), current.id),
     runningDetail: diveRunningDetail(current.id, reader.sectionId),
-    citeFocus: reader.citeFocus,
     prerenderReady: prerenderAssetsReady(currentMapped, currentAttachmentIds),
     runState: diveLiveState(current.id, reader.sectionId),
   });
@@ -922,9 +944,8 @@ function renderSectionPage() {
   let figs = '';
   if (model.figures.length) {
     const cards = model.figures.map(item => {
-      const focus = model.focusAssetId === item.id ? ' is-locate' : '';
       const cap = `${escapeTemplate(item.caption)}${item.page ? ` (p${item.page})` : ''}`;
-      return `<div class="fig-box${focus}" id="asset-${escapeTemplate(item.id)}">
+      return `<div class="fig-box" id="asset-${escapeTemplate(item.id)}">
         <img alt="${escapeTemplate(item.caption)}" data-crop-id="${escapeTemplate(item.cropAssetId)}">
         <div class="fig-cap">${cap} ${citeChipHtml(`(${item.id})`)}</div>
       </div>`;
@@ -954,10 +975,7 @@ function renderSectionPage() {
   }
   const legacyBody = body.querySelector('.legacy-body');
   if (legacyBody) renderCitedMarkdownInto(legacyBody, model.legacyAnalysis.text);
-  fillCropImages(body, paper).then(() => {
-    if (current !== paper) return;
-    focusAsset(model.focusAssetId);
-  });
+  void fillCropImages(body, paper);
 }
 
 async function fillCropImages(root, paper) {
@@ -973,14 +991,6 @@ async function fillCropImages(root, paper) {
   }
 }
 
-function focusAsset(assetId) {
-  if (!assetId) return;
-  const el = document.getElementById(`asset-${assetId}`);
-  if (!el) return;
-  el.classList.add('is-locate');
-  el.scrollIntoView({ block: 'center' });
-}
-
 function currentSecIdForCite() {
   if (!reader.sectionId) return null;
   return sectionForPart(currentMapped, reader.sectionId, isLegacyMap())?.id
@@ -988,35 +998,32 @@ function currentSecIdForCite() {
     || null;
 }
 
-function applyCite(raw) {
+async function applyCite(raw, currentSecId = currentSecIdForCite()) {
   const pointer = typeof raw === 'string' ? parseRefs(raw)[0] : raw;
   if (!pointer) return;
-  const next = view.routeCite(reader, pointer, { mapped: currentMapped, currentSecId: currentSecIdForCite() });
-  commitReader(next);
+  const next = view.routeCite(reader, pointer, { mapped: currentMapped, currentSecId });
+  if (next === reader) { toast('出处缺少可信页码，无法定位 PDF', true); return; }
+  if (!hasPdf()) { toast('这篇论文没有 PDF 附件，请先关联 PDF', true); return; }
+  const paper = current;
+  reader = next;
+  syncReaderLocals();
+  updatePdfSidebar();
+  updatePaneFabs();
+  schedulePositionSave();
   const focus = next.citeFocus;
-  if (focus?.type === 'blocks') {
-    renderSource();
-    highlightLocate({
-      cite: {
-        startSecId: focus.secId,
-        startBlock: focus.start,
-        endSecId: focus.secId,
-        endBlock: focus.end,
-      },
-    });
-  } else if (focus?.type === 'asset') {
-    focusAsset(focus.assetId);
-  } else if (focus?.type === 'page') {
-    if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
-    else if (pdfDocument) renderPdfPage();
-  }
+  if (!pdfDocument || pdfOpening) await initPdfViewer();
+  if (current !== paper || reader.citeFocus !== focus || !pdfDocument || !pdfSidebarOpen) return;
+  const result = await pdfReader.locate(focus.target);
+  if (current !== paper || reader.citeFocus !== focus) return;
+  if (result === false) toast('出处页码不在 PDF 范围内', true);
 }
 
 function onProtocolContentClick(event) {
   const cite = event.target.closest('[data-cite]');
   if (cite) {
     event.preventDefault();
-    applyCite(cite.dataset.cite);
+    const owner = cite.closest('[data-cite-section]');
+    void applyCite(cite.dataset.cite, owner ? owner.dataset.citeSection || null : currentSecIdForCite());
     return;
   }
   const btn = event.target.closest('[data-action]');
@@ -2318,7 +2325,9 @@ function appendChatBubble(message, extraClass = '', messageIndex = -1) {
     text.textContent = message.content;
     div.appendChild(text);
   } else {
-    renderMarkdownInto(div, message.content);
+    renderCitedMarkdownInto(div, message.content);
+    const prior = current.chat?.slice(0, messageIndex).findLast(item => item.role === 'user');
+    div.dataset.citeSection = prior?.secId || prior?.cite?.startSecId || '';
   }
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
@@ -2428,6 +2437,7 @@ async function sendChat() {
   await papers.appendChatMessage(paper, userMsg);
   appendChatBubble(userMsg, '', (paper.chat || []).length - 1);
   const bubble = appendChatBubble({ role: 'assistant', content: '…' });
+  bubble.dataset.citeSection = userMsg.secId || userMsg.cite?.startSecId || '';
 
   const askOnce = async () => {
     chatAborter = new AbortController();
@@ -2452,7 +2462,7 @@ async function sendChat() {
         },
         retry: () => { void askOnce(); },
       });
-      renderMarkdownInto(bubble, text || '（无回复）');
+      renderCitedMarkdownInto(bubble, text || '（无回复）');
       await papers.appendChatMessage(paper, { role: 'assistant', content: text, bindingKind: 'none' });
     } catch (err) {
       bubble.classList.add('err');
@@ -2556,11 +2566,13 @@ function bindPaneResizer(handle, side) {
 
 function togglePdfSidebar(force) {
   commitReader(view.togglePdf(reader, force), { restore: true });
+  if (!pdfSidebarOpen) cancelCiteNavigation();
   if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
   if (pdfSidebarOpen && pdfDocument) pdfReader.schedule();
 }
 
 function collapsePdfPane() {
+  cancelCiteNavigation();
   commitReader(view.collapsePdf(reader), { restore: true });
 }
 
@@ -2602,6 +2614,7 @@ function renderPdfTasks() {
 }
 
 function destroyPdfViewer() {
+  pdfOpening = null;
   pdfResource.invalidate();
   pdfReader.clear();
   if (pdfDocument) {
@@ -2612,6 +2625,14 @@ function destroyPdfViewer() {
 }
 
 async function initPdfViewer() {
+  if (pdfOpening?.paper === current) return pdfOpening.promise;
+  const pending = { paper: current };
+  pending.promise = loadPdfViewer().finally(() => { if (pdfOpening === pending) pdfOpening = null; });
+  pdfOpening = pending;
+  return pending.promise;
+}
+
+async function loadPdfViewer() {
   destroyPdfViewer();
   updatePdfSidebar();
   if (!current || !hasPdf()) return;
@@ -2679,14 +2700,21 @@ function updatePdfPageControls() {
 }
 
 function renderPdfPage() {
+  cancelCiteNavigation();
   if (!pdfDocument || !pdfSidebarOpen) return;
   updatePdfPageControls();
+  savePdfPagePosition();
   pdfReader.jump(pdfPage);
+}
+
+function cancelCiteNavigation() {
+  reader = { ...reader, citeFocus: null };
+  pdfReader.cancelLocate();
 }
 
 // 用户主动翻页后保存阅读位置（500ms 防抖）；不覆盖当前 tab。
 function savePdfPagePosition() {
-  if (!current || !pdfDocument) return;
+  if (!current || !pdfDocument || reader.pdfPage === pdfPage) return;
   reader = view.setPdfPage(reader, pdfPage);
   schedulePositionSave();
 }
@@ -2741,6 +2769,7 @@ async function attachPdf(file) {
   }
   await papers.attachPdf(current, file);
   await refreshPdfAttachment(current);
+  destroyPdfViewer();
   updatePdfSidebar();
   await initPdfViewer();
   toast('PDF 已关联，可与精读结果对照查看');
@@ -4054,6 +4083,7 @@ function bindEvents() {
   };
   $('#map-page-body').onclick = onProtocolContentClick;
   $('#section-page-body').onclick = onProtocolContentClick;
+  $('#chat-log').addEventListener('click', onProtocolContentClick);
   bindPaneResizer($('#tree-resizer'), 'tree');
   bindPaneResizer($('#pdf-resizer'), 'pdf');
   $('#btn-pdf-attach').onclick = () => $('#pdf-attach-input').click();

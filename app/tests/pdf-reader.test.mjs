@@ -24,7 +24,12 @@ function readerFixture() {
       this.children = nodes.flatMap(node => node.fragment ? node.children : [node]);
       for (const child of this.children) child.parent = this;
     },
-    appendChild(node) { this.replaceChildren(node); },
+    appendChild(node) {
+      if (node.fragment) this.children.push(...node.children);
+      else this.children.push(node);
+      for (const child of this.children) child.parent = this;
+    },
+    remove() { this.parent.children = this.parent.children.filter(node => node !== this); },
     get offsetHeight() { return Number.parseInt(this.style.height, 10) || 0; },
     get offsetWidth() { return Number.parseInt(this.style.width, 10) || 0; },
     getBoundingClientRect() {
@@ -46,7 +51,7 @@ function readerFixture() {
   };
   globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
   globalThis.cancelAnimationFrame = () => {};
-  const scroll = { scrollTop: 0, scrollLeft: 0, clientLeft: 0, clientTop: 0, clientWidth: 620, clientHeight: 650, getBoundingClientRect: () => ({ top: 0, left: 0 }), addEventListener(name, listener) { this.onScroll = listener; } };
+  const scroll = { scrollTop: 0, scrollLeft: 0, clientLeft: 0, clientTop: 0, clientWidth: 620, clientHeight: 650, getBoundingClientRect: () => ({ top: 0, left: 0 }), addEventListener(name, listener) { if (name === 'scroll') this.onScroll = listener; } };
   const pages = makeElement();
   const errors = [];
   const seen = [];
@@ -68,6 +73,110 @@ function readerFixture() {
   }
   return { reader, scroll, pages, seen, errors, doc, flush };
 }
+
+test('evidence overlay uses trusted geometry, survives zoom and redraw, and page-only navigation clears it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture();
+  const doc = f.doc(12);
+  const getPage = doc.getPage;
+  doc.getPage = async number => ({ ...await getPage(number), getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale, rotation: 0 }) });
+  await f.reader.open(doc, 2, 1);
+  await f.flush();
+  assert.equal(await f.reader.locate({ page: 2, bbox: [100, 200, 400, 100] }), true);
+  const slot = f.pages.children[1];
+  assert.equal(slot.children.length, 2);
+  assert.equal(slot.children[1].style.top, '100px');
+  f.reader.resize(2);
+  assert.equal(slot.children[1].style.top, '200px');
+  t.mock.timers.tick(120);
+  await f.flush();
+  assert.equal(slot.children.length, 2);
+  await f.reader.locate({ page: 2 });
+  assert.equal(slot.children.length, 1);
+  f.reader.clear();
+});
+
+test('late evidence lookup cannot move or highlight a newer page navigation', async () => {
+  const f = readerFixture();
+  const doc = f.doc(12);
+  await f.reader.open(doc, 2, 1);
+  await f.flush();
+  const getPage = doc.getPage;
+  let complete;
+  doc.getPage = () => new Promise(resolve => { complete = resolve; });
+  const pending = f.reader.locate({ page: 2, bbox: [100, 200, 400, 100] });
+  f.reader.jump(3);
+  complete({ ...await getPage(2), getViewport: () => ({ width: 600, height: 800, rotation: 0 }) });
+  assert.equal(await pending, null);
+  assert.equal(f.scroll.scrollTop, 2 * 812);
+  f.reader.clear();
+});
+
+test('cold evidence pages and recycled pages publish their highlights with the completed canvas', async () => {
+  const f = readerFixture();
+  const doc = f.doc(12);
+  const getPage = doc.getPage;
+  doc.getPage = async number => ({ ...await getPage(number), getViewport: () => ({ width: 600, height: 800, rotation: 0 }) });
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  await f.reader.locate({ page: 8, bbox: [100, 200, 400, 100] });
+  await f.flush();
+  assert.equal(f.pages.children[7].children[1]?.className, 'pdf-evidence-highlight');
+  f.scroll.scrollTop = 0;
+  f.scroll.onScroll();
+  await f.flush();
+  assert.equal(f.pages.children[7].children.length, 0);
+  f.scroll.scrollTop = 7 * 812;
+  f.scroll.onScroll();
+  await f.flush();
+  assert.equal(f.pages.children[7].children[1]?.className, 'pdf-evidence-highlight');
+  f.reader.clear();
+});
+
+test('user scrolling and paper replacement cancel pending evidence without pulling the reader back', async () => {
+  const f = readerFixture();
+  const doc = f.doc(12);
+  const getPage = doc.getPage;
+  let complete;
+  doc.getPage = async number => ({ ...await getPage(number),
+    getViewport: () => ({ width: 600, height: 800, rotation: 0 }),
+    getTextContent: () => new Promise(resolve => { complete = resolve; }),
+  });
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  const pending = f.reader.locate({ page: 2, text: 'unique evidence text' });
+  await f.flush();
+  f.scroll.scrollTop = 7 * 812;
+  f.scroll.onScroll();
+  complete({ items: [] });
+  assert.equal(await pending, null);
+  assert.equal(f.scroll.scrollTop, 7 * 812);
+  const replaced = f.reader.locate({ page: 2, text: 'unique evidence text' });
+  await f.flush();
+  await f.reader.open(f.doc(3), 3, 1);
+  complete({ items: [] });
+  assert.equal(await replaced, null);
+  assert.equal(f.scroll.scrollTop, 2 * 812);
+  f.reader.clear();
+});
+
+test('internal anchor restoration during layout does not cancel its own pending evidence', async () => {
+  const f = readerFixture();
+  const doc = f.doc(12);
+  const getPage = doc.getPage;
+  let complete;
+  doc.getPage = async number => ({ ...await getPage(number), getTextContent: () => new Promise(resolve => { complete = resolve; }) });
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  const pending = f.reader.locate({ page: 2, text: 'unique evidence text' });
+  await f.flush();
+  f.scroll.clientHeight = 600;
+  f.reader.reflow();
+  f.scroll.onScroll();
+  complete({ items: [] });
+  assert.equal(await pending, true);
+  f.reader.clear();
+});
 
 test('zoom preserves the page content beneath the pointer in both axes', async () => {
   const f = readerFixture();

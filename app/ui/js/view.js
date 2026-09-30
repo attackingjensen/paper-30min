@@ -5,6 +5,7 @@
 // 消费方：本模块测试 + 阅读视图壳（main.js）。
 
 import { l2Sections, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
+import { evidenceTarget } from './pdf-evidence.js';
 
 export const APP_VIEWS = ['library', 'tasks', 'reader'];
 export const READER_TABS = ['map', 'source', 'chat', 'recall'];
@@ -302,55 +303,19 @@ export function applyPosition(state, position = {}, { validPartIds = [] } = {}) 
   return patch(next, { tab: 'map', sectionId: null });
 }
 
-function sectionIds(mapped) {
-  return (mapped?.sections ?? []).map(section => section.id);
-}
-
-function resolveSecId(mapped, secId, currentSecId) {
-  if (!secId) return currentSecId || null;
-  const ids = sectionIds(mapped);
-  if (ids.includes(secId)) return secId;
-  const prefix = ids.filter(id => id.startsWith(`${secId}_`));
-  return prefix.length === 1 ? prefix[0] : secId;
-}
-
-function assetOwnerSecId(mapped, assetId) {
-  const entries = [...(mapped?.figures ?? []), ...(mapped?.tables ?? [])];
-  return entries.find(entry => entry.id === assetId)?.section ?? null;
-}
-
 export function routeCite(state, ref, { mapped = null, currentSecId = null } = {}) {
   const pointer = ref && typeof ref === 'object' && !ref.kind && ref.raw
     ? parseRefs(ref.raw)[0]
     : ref;
   if (!pointer?.kind) return state;
 
-  if (pointer.kind === 'page') {
+  const target = evidenceTarget(pointer, mapped, currentSecId);
+  if (target) {
     return patch(state, {
       pdfOpen: true,
       pdfCollapsed: false,
-      pdfPage: pointer.page,
-      citeFocus: { type: 'page', page: pointer.page },
-    });
-  }
-
-  if (pointer.kind === 'figure' || pointer.kind === 'table') {
-    if (!state.hasMap) return state;
-    const secId = assetOwnerSecId(mapped, pointer.assetId);
-    const partId = secId ? (partIdForSection(mapped, secId) ?? secId) : null;
-    return patch(state, {
-      tab: 'map',
-      sectionId: partId,
-      citeFocus: { type: 'asset', assetId: pointer.assetId },
-    });
-  }
-
-  if (pointer.kind === 'blocks') {
-    const secId = resolveSecId(mapped, pointer.secId, currentSecId);
-    return patch(state, {
-      tab: 'source',
-      sourceSectionId: secId,
-      citeFocus: { type: 'blocks', secId, start: pointer.start, end: pointer.end },
+      pdfPage: target.page,
+      citeFocus: { type: 'pdf', target },
     });
   }
 

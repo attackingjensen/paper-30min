@@ -384,7 +384,6 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .task-live { color: var(--accent); }
 .fig-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
 .fig-box { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #eef0f4; }
-.fig-box.is-locate { outline: 2px solid var(--accent); }
 .fig-box img { display: block; width: 100%; max-height: 180px; object-fit: contain; background: #eef0f4; }
 .fig-cap { padding: 8px; font-size: 12px; color: var(--muted); background: var(--card); }
 .sec-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 16px; }
@@ -557,6 +556,8 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .pdf-pages { position: relative; display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: max-content; }
 .pdf-page { flex: none; position: relative; background: #fff; box-shadow: 0 2px 10px rgba(20, 24, 40, .18); }
 .pdf-page canvas { display: block; }
+.pdf-evidence-highlight { position: absolute; pointer-events: none; background: rgba(255, 208, 64, .25); outline: 2px solid #b38b16; }
+.pdf-evidence-status { flex: none; padding: 6px 10px; color: var(--muted); background: var(--card); font-size: 12px; overflow-wrap: anywhere; }
 .pdf-loading { padding: 42px 12px; color: var(--muted); font-size: 13px; }
 .pdf-render-error { padding: 8px 12px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--danger); font-size: 13px; }
 .pdf-render-error[hidden] { display: none; }

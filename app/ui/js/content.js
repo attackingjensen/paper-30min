@@ -262,7 +262,6 @@ export function sectionPageModel({
   paper = null,
   runningPartIds = [],
   runningDetail = null,
-  citeFocus = null,
   prerenderReady = true,
   runState = null,
 } = {}) {
@@ -291,7 +290,6 @@ export function sectionPageModel({
     legacyAnalysis: (!grey && legacyText)
       ? { text: analysis.text, updatedAt: analysis.updatedAt ?? null }
       : null,
-    focusAssetId: citeFocus?.type === 'asset' ? citeFocus.assetId : null,
     readSourceLabel: COPY.readSource,
     markLabel: paper?.readMarks?.[partId] != null ? COPY.marked : COPY.mark,
     pagesLabel: section ? `p${section.pageStart}–p${section.pageEnd}` : '',
@@ -313,24 +311,6 @@ export function citeSegments(text) {
   }
   if (cursor < source.length) parts.push({ type: 'text', text: source.slice(cursor) });
   return parts;
-}
-
-function escapeAttr(value) {
-  return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-}
-
-export function linkifyCiteHtml(html) {
-  const refs = parseRefs(html);
-  if (!refs.length) return String(html ?? '');
-  let out = String(html ?? '');
-  const seen = new Set();
-  for (const pointer of refs) {
-    if (seen.has(pointer.raw)) continue;
-    seen.add(pointer.raw);
-    const chip = `<button type="button" class="cite-chip" data-cite="${escapeAttr(pointer.raw)}">${pointer.raw}</button>`;
-    out = out.split(pointer.raw).join(chip);
-  }
-  return out;
 }
 
 /** 回想卡片 AI 草稿的协议产物材料：L1 + 全部 L2 + 已深挖结果。 */
