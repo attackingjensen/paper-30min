@@ -30,25 +30,32 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
   let frame = 0;
   let currentPage = 1;
   let stableAnchor = null;
+  let zoomTimer = null;
+  const paintedPages = new Set();
   const failedPages = new Set();
   const positions = {
     get length() { return slots.length; },
     at(index) { return slots[index].offsetTop + slots[index].offsetHeight; },
   };
 
-  function release(index) {
+  function release(index, keepPreview = false) {
     tasks.get(index)?.task?.cancel();
     tasks.delete(index);
     failedPages.delete(index);
     const slot = slots[index];
-    if (slot) slot.replaceChildren();
+    if (slot && !keepPreview) {
+      slot.replaceChildren();
+      paintedPages.delete(index);
+    }
   }
 
   function clear() {
     epoch++;
+    clearTimeout(zoomTimer);
+    zoomTimer = null;
     cancelAnimationFrame(frame);
     frame = 0;
-    for (const index of tasks.keys()) release(index);
+    for (const index of new Set([...tasks.keys(), ...paintedPages])) release(index);
     tasks = new Map();
     failedPages.clear();
     slots = [];
@@ -78,9 +85,8 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.ceil(viewport.width * ratio);
       canvas.height = Math.ceil(viewport.height * ratio);
-      canvas.style.width = `${Math.ceil(viewport.width)}px`;
-      canvas.style.height = `${Math.ceil(viewport.height)}px`;
-      slot.replaceChildren(canvas);
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
       const task = page.render({
         canvasContext: canvas.getContext('2d', { alpha: false }),
         viewport,
@@ -88,13 +94,16 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
       });
       entry.task = task;
       await task.promise;
-      if (generation === epoch) schedule();
+      // Publish only a complete frame; canceled or obsolete renders stay offscreen.
+      if (generation !== epoch || tasks.get(index) !== entry) return;
+      slot.replaceChildren(canvas);
+      paintedPages.add(index);
+      schedule();
     } catch (error) {
       if (generation !== epoch || tasks.get(index) !== entry) return;
       tasks.delete(index);
       if (error?.name !== 'RenderingCancelledException') {
         failedPages.add(index);
-        slots[index].replaceChildren();
         onError(error);
       }
     }
@@ -105,9 +114,9 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
     if (!document || !slots.length || !scroll.clientHeight) return;
     reflow();
     const wanted = new Set(pageWindow(positions, scroll.scrollTop, scroll.clientHeight));
-    for (const index of tasks.keys()) if (!wanted.has(index)) release(index);
+    for (const index of new Set([...tasks.keys(), ...paintedPages])) if (!wanted.has(index)) release(index);
     for (const index of wanted) {
-      if (!tasks.has(index) && !failedPages.has(index)) {
+      if (!zoomTimer && !tasks.has(index) && !failedPages.has(index)) {
         const entry = { task: null };
         tasks.set(index, entry);
         void render(index, epoch, entry);
@@ -202,8 +211,14 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
     scale = nextScale;
     if (!slots.length) return;
     epoch++;
-    for (const index of tasks.keys()) release(index);
+    for (const index of tasks.keys()) release(index, true);
     tasks = new Map();
+    failedPages.clear();
+    clearTimeout(zoomTimer);
+    zoomTimer = setTimeout(() => {
+      zoomTimer = null;
+      schedule();
+    }, 120);
     for (const slot of slots) {
       slot.style.width = `${Math.ceil(Number(slot.dataset.baseWidth) * scale)}px`;
       slot.style.height = `${Math.ceil(Number(slot.dataset.baseHeight) * scale)}px`;

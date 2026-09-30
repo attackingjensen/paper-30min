@@ -128,6 +128,134 @@ test('unchanged zoom keeps existing canvases and pending renders', async () => {
   f.reader.clear();
 });
 
+test('zoom shows an immediate scaled preview and swaps only a completed canvas', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture();
+  const doc = f.doc(12);
+  await f.reader.open(doc, 8, 1);
+  await f.flush();
+  const slot = f.pages.children[7];
+  const preview = slot.children[0];
+  const getPage = doc.getPage;
+  const completions = [];
+  doc.getPage = async number => {
+    const page = await getPage(number);
+    page.render = () => ({ promise: new Promise(resolve => completions.push(resolve)), cancel() {} });
+    return page;
+  };
+  f.reader.resize(1.5);
+  assert.equal(slot.style.width, '900px');
+  assert.equal(slot.children[0], preview);
+  assert.equal(preview.style.width, '100%');
+  await f.flush();
+  assert.equal(completions.length, 0);
+  t.mock.timers.tick(120);
+  await f.flush();
+  assert.ok(completions.length > 0);
+  assert.equal(slot.children[0], preview);
+  completions.forEach(resolve => resolve());
+  await f.flush();
+  assert.notEqual(slot.children[0], preview);
+  f.reader.clear();
+});
+
+test('continuous zoom coalesces renders and rejects an obsolete completed frame', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture();
+  const doc = f.doc(4);
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  const preview = f.pages.children[0].children[0];
+  const getPage = doc.getPage;
+  const renders = [];
+  doc.getPage = async number => {
+    const page = await getPage(number);
+    page.render = ({ viewport }) => ({ promise: new Promise(resolve => renders.push({ resolve, width: viewport.width })), cancel() {} });
+    return page;
+  };
+  f.reader.resize(1.2);
+  await f.flush();
+  t.mock.timers.tick(60);
+  f.reader.resize(1.4);
+  await f.flush();
+  t.mock.timers.tick(60);
+  assert.equal(renders.length, 0);
+  t.mock.timers.tick(60);
+  await f.flush();
+  assert.ok(renders.length > 0);
+  assert.ok(renders.every(render => render.width === 840));
+  f.reader.resize(1.6);
+  renders.forEach(render => render.resolve());
+  await f.flush();
+  assert.equal(f.pages.children[0].children[0], preview);
+  f.reader.clear();
+  t.mock.timers.tick(120);
+  await f.flush();
+  assert.equal(f.pages.children.length, 0);
+});
+
+test('initial rendering never exposes an unfinished opaque canvas', async () => {
+  const f = readerFixture();
+  const doc = f.doc(2);
+  const getPage = doc.getPage;
+  const completions = [];
+  doc.getPage = async number => {
+    const page = await getPage(number);
+    page.render = () => ({ promise: new Promise(resolve => completions.push(resolve)), cancel() {} });
+    return page;
+  };
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  assert.equal(f.pages.children[0].children.length, 0);
+  completions.forEach(resolve => resolve());
+  await f.flush();
+  assert.equal(f.pages.children[0].children.length, 1);
+  f.reader.clear();
+});
+
+test('failed zoom repaint retains the preview and retry can replace it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture();
+  const doc = f.doc(4);
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  const preview = f.pages.children[0].children[0];
+  const getPage = doc.getPage;
+  let fail = true;
+  doc.getPage = async number => {
+    const page = await getPage(number);
+    page.render = () => ({ promise: fail ? Promise.reject(new Error('repaint failed')) : Promise.resolve(), cancel() {} });
+    return page;
+  };
+  f.reader.resize(1.5);
+  t.mock.timers.tick(120);
+  await f.flush();
+  assert.equal(f.pages.children[0].children[0], preview);
+  assert.ok(f.errors.some(error => error.message === 'repaint failed'));
+  fail = false;
+  f.reader.retry();
+  await f.flush();
+  assert.notEqual(f.pages.children[0].children[0], preview);
+  f.reader.clear();
+});
+
+test('scrolling during the zoom delay releases offscreen previews', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture();
+  await f.reader.open(f.doc(1000), 1, 1);
+  await f.flush();
+  f.reader.resize(1.5);
+  f.scroll.scrollTop = 500 * 1212;
+  f.scroll.onScroll();
+  await f.flush();
+  assert.equal(f.pages.children[0].children.length, 0);
+  t.mock.timers.tick(120);
+  await f.flush();
+  assert.equal(f.seen.at(-1), 501);
+  assert.ok(f.pages.children.filter(slot => slot.children.length).length <= 4);
+  f.reader.clear();
+});
+
 test('scrolling a long PDF releases offscreen canvases and updates the page', async () => {
   const fixture = readerFixture();
   await fixture.reader.open(fixture.doc(1000), 1, 1);
