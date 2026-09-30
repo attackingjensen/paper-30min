@@ -19,6 +19,24 @@
 
 来源：旧领域词汇表与阅读协议决策（ADR 0006，Git 历史 35324e7）、[当前协议实现](app/src-tauri/src/protocol.rs)。阅读契约的历史规格见 [#48](https://github.com/attackingjensen/paper-30min/issues/48)、[#51](https://github.com/attackingjensen/paper-30min/issues/51)、[#52](https://github.com/attackingjensen/paper-30min/issues/52)、[#55](https://github.com/attackingjensen/paper-30min/issues/55)、[#56](https://github.com/attackingjensen/paper-30min/issues/56) 及 [#74](https://github.com/attackingjensen/paper-30min/issues/74) 修订；旧术语中“建图须备齐页图”的表述已被性能调整替代。
 
+## 解析方式
+
+以下概念表达已确认的扩展方向，不代表当前客户端已全部实现。
+
+### 云端解析
+
+用户主动选择将论文或页面图像发送到所配置的解析服务，取得可用于精读的结构化内容和出处信息；与建图、深挖所用的模型服务分开配置。
+
+解析结果及必要视觉资源保存到 Windows 本地书库，云端不是论文内容权威来源；切换默认方式不自动重解析存量论文。
+
+### 本地基础解析
+
+处理带文本层普通论文所需的本地解析能力，提供布局、章节、图表取证和基础表格解析，不要求扫描页 OCR 或高精表格的扩展模型先行安装。
+
+### 可选解析能力
+
+本地基础解析之外由用户按需安装的解析能力，例如扫描页 OCR 和高精表格解析；能力分别满足兼容性与完整性要求后才视为就绪。
+
 ## 阅读积累
 
 | 概念 | 含义与区别 |

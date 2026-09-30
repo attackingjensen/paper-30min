@@ -1,6 +1,6 @@
 ---
 name: Paper30Min
-last_updated: 2026-09-23
+last_updated: 2026-09-30
 ---
 
 # Paper30Min Strategy
@@ -28,7 +28,7 @@ Paper30Min 定位为专属论文精读 agent harness：以论文实际结构、�
 ## Boundaries
 
 - 围绕单篇论文精读展开；新增能力应服务于读懂论文，保持功能不冗杂，不泛化为通用 agent 工作台。依据：[#35](https://github.com/attackingjensen/paper-30min/issues/35)。
-- Windows 本地书库是论文内容权威来源，核心阅读不以托管账户或云同步为前提；模型请求发送到用户配置的端点。依据：本地优先决策（ADR 0001，Git 历史 35324e7）。
+- Windows 本地书库是论文内容权威来源，核心阅读不以托管账户或云同步为前提；模型请求发送到用户配置的端点。已确认扩展为可选云端解析：用户主动选择上传论文、自行配置解析凭据并承担费用，结果与必要视觉资源保存本机；本地解析仍可选择。依据：本地优先决策（ADR 0001，Git 历史 35324e7）与[可选解析需求](docs/plans/2026-09-30-1512-feat-parser-options-plan.md)。
 - 用户手动决定已读完，不由生成结果推断；阅读进度、阅读位置和活动历史分别表达不同事实。依据：数据模型决策（ADR 0007，Git 历史 35324e7）。
 - Android 首版是阅读伴侣，不复制 Windows 的导入、生成和完整书库管理；移动服务不接收模型 API Key、不提供模型代理或公开注册。该方向尚未实现。依据：[#25](https://github.com/attackingjensen/paper-30min/issues/25)、[#26](https://github.com/attackingjensen/paper-30min/issues/26)。
 
