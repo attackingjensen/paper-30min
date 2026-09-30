@@ -235,6 +235,7 @@ pub(crate) struct ChatCompletion {
 impl ChatCompletion {
     pub(crate) fn to_chat_result(&self) -> Value {
         let mut map = Map::new();
+        map.insert("text".into(), json!(self.text));
         map.insert("ttftMs".into(), json!(self.ttft_ms));
         map.insert("elapsedMs".into(), json!(self.elapsed_ms));
         if let Some(ms) = self.reasoning_ms {

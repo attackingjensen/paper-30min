@@ -23,6 +23,7 @@
   `net.fetch-text@1`（网页文本抓取）、`files.download@1`（整文件下载落附件）、`demo.*@1`（演示）。
   模型与网络失败按统一策略自动重试（retry_waiting → 退避 → 重试，共 3 次）；
   流式 chat 一旦已产出内容块即不再自动重试，避免重复内容。
+- `model.chat@1` 成功终态的 `result.text` 保留完整正文，用于补齐事件订阅建立前漏收的 chunk；流式预览仍由 chunk 驱动。
 - 与接口规格措辞的对应：`invoke` → `bridge_invoke`，`start` → `bridge_start`，
   `subscribe(taskId)` → 监听 `task:{taskId}` 事件，`getTask(taskId)` → `tasks.get@1`。
 - 每个响应包含 `schemaVersion`；错误统一为 `{ code, message, retryable, details }`。
@@ -46,6 +47,20 @@ npm run smoke          # 不开窗口的桥接冒烟检查（debug 构建，退�
 ```
 
 发布构建不带控制台；`--bridge-smoke` 请用 debug 构建运行。
+
+### PDF 原生窗口验收
+
+Windows 上安装项目 npm 依赖，以及 Python `pypdf`、`Pillow` 后运行：
+
+```powershell
+npm run test:pdf-webview
+```
+
+此命令用专用 Tauri 测试宿主运行真实 WebView2、Rust 桥、SQLite 和附件存储，页面使用未修改的 `ui/`，模型请求发往临时本机 SSE 服务。使用独立应用标识并先核对原生书库目录；不读取正常书库或模型凭据。测试程序从临时目录启动，避免迁移开发目录旁的旧解析组件。窗口尺寸调整权限只存在于测试配置，正式客户端权限不变。不要与物理窗口走查同时运行，窗口失焦会按真实取消规则中断拖动。
+
+运行记录和截图保存在仓库根 `tmp/pdf-webview-<时间戳>/`；独立测试书库路径记录于 `report.json`，保留供失败排查。测试退出会关闭自己的窗口与本机服务，并恢复普通配置的库构建。正常 `node --test` 不启动此窗口。夹具包含真实双栏论文、由 10 篇论文合并的 150 页 PDF、混合页尺寸、位图扫描页和图形公式。
+
+CDP 合成鼠标、滚轮及 DOM Range 证明原生交互链路，不能代替物理鼠标、触控板或真实图像模型质量验收。旧 schema 迁移仍由 Rust 契约测试覆盖；窗口里的旧页码 DTO 恢复单独检查。该命令也不证明安装版升级和签名更新路径。
 
 ## Windows 更新与发版核对
 

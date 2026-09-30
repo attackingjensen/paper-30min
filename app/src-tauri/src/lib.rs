@@ -268,6 +268,24 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                window.with_webview(|webview| {
+                    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings5;
+                    use windows_core::Interface;
+                    // Wry couples pinch input to browser hotkeys; PDF zoom owns its wheel events.
+                    let enable_pinch = || -> windows_core::Result<()> {
+                        unsafe {
+                            let settings = webview.controller().CoreWebView2()?.Settings()?;
+                            settings.cast::<ICoreWebView2Settings5>()?.SetIsPinchZoomEnabled(true)?;
+                        }
+                        Ok(())
+                    };
+                    if let Err(error) = enable_pinch() {
+                        eprintln!("[pdf] enable trackpad pinch input failed: {error}");
+                    }
+                })?;
+            }
             let root = app.path().app_data_dir()?;
             let component_root = component::component_root(&app.path().app_local_data_dir()?);
             pdfparse::set_component_root(component_root.clone());

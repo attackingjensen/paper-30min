@@ -4237,9 +4237,13 @@ function bindEvents() {
     const wrap = event.currentTarget;
     const box = wrap.getBoundingClientRect();
     const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? wrap.clientHeight : 1);
-    changePdfZoom(Math.exp(-Math.max(-100, Math.min(100, delta)) * 0.002), {
+    changePdfZoom(Math.exp(Math.max(-0.2, Math.min(0.2, -delta * 0.004))), {
       x: event.clientX - box.left - wrap.clientLeft, y: event.clientY - box.top - wrap.clientTop,
     });
+  }, { passive: false });
+  // Native pinch input is enabled, but only the PDF reader owns zoom gestures.
+  document.addEventListener('wheel', event => {
+    if (event.ctrlKey) event.preventDefault();
   }, { passive: false });
   $('#pdf-fab').onclick = expandPdfPane;
   $('#tree-fab').onclick = () => commitReader(view.expandTree(reader), { restore: true });

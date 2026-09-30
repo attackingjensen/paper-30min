@@ -67,6 +67,7 @@ fn chat_streams_deltas_in_order_to_normalized_endpoint() {
     let snapshot = registry.get(&task_id).unwrap();
     assert!(snapshot.error.is_none());
     let result = snapshot.result.expect("model.chat 成功应带 usage/时延 result");
+    assert_eq!(result["text"], json!("精读桥接"), "终态补齐订阅前漏收的正文");
     assert!(result["ttftMs"].as_u64().is_some(), "应有 ttftMs");
     assert!(result["elapsedMs"].as_u64().is_some(), "应有 elapsedMs");
     assert!(result.get("usage").is_none(), "mock 未返回 usage 时字段缺省");

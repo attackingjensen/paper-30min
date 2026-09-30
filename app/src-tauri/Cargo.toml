@@ -26,6 +26,10 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 tokio = { version = "1", features = ["macros", "time"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.38.2"
+windows-core = "=0.61.2"
+
 [dev-dependencies]
 tempfile = "3"
 flate2 = "1"
