@@ -27,6 +27,9 @@ export function createBridge(tauri) {
     updateInfo: () => invoke('updater_info'),
     checkUpdate: () => invoke('updater_check'),
     installUpdate: (version) => invoke('updater_install', { version }),
+    confirmUpdate: async (message) => (await invoke('plugin:dialog|message', {
+      title: 'Paper30Min', message, kind: 'warning', buttons: 'OkCancel',
+    })) === 'Ok',
     openExternal: (destination) => invoke('open_external', { destination }),
     componentStatus: () => invoke('component_status'),
     installComponent: (source = null) => invoke('component_install', { source }),

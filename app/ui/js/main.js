@@ -3253,7 +3253,7 @@ function refreshSettingsDerived() {
 function renderUpdaterState() {
   $('#update-current-version').textContent = updaterState.currentVersion || '…';
   $('#update-status').textContent = updateStatusText(updaterState);
-  $('#btn-check-update').disabled = ['checking', 'downloading', 'installing'].includes(updaterState.status);
+  $('#btn-check-update').disabled = ['checking', 'preparing', 'downloading', 'installing'].includes(updaterState.status);
   const install = $('#btn-install-update');
   install.hidden = !['available', 'install-error'].includes(updaterState.status);
   install.textContent = updaterState.status === 'install-error' ? '重试安装' : '安装更新';
@@ -3355,15 +3355,16 @@ async function checkForUpdate() {
 
 async function installAvailableUpdate() {
   const version = updaterState.version;
-  if (!version || !confirm(`安装 Paper30Min ${version}？应用会退出并重新启动。`)) return;
+  if (!version) return;
   try {
+    if (!await bridge.confirmUpdate(`安装 Paper30Min ${version}？应用会退出并重新启动。`)) return;
     const active = activeTasks((await bridge.invoke('tasks.list@1', { activeOnly: true })).tasks ?? []);
     if (active.length) {
-      if (!confirm(`有 ${active.length} 个任务正在运行。取消任务并等待结束后安装更新？`)) return;
+      if (!await bridge.confirmUpdate(`有 ${active.length} 个任务正在运行。取消任务并等待结束后安装更新？`)) return;
       await Promise.all(active.map(task => bridge.invoke('tasks.cancel@1', { taskId: task.taskId })));
       await waitForActiveTasks(bridge);
     }
-    updaterState = updateState(updaterState, { type: 'installing' });
+    updaterState = updateState(updaterState, { type: 'preparing' });
     renderUpdaterState();
     await bridge.installUpdate(version);
     updaterState = updateState(updaterState, { type: 'installed' });

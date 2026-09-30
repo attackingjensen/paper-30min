@@ -299,6 +299,25 @@ test('更新器桥接通过专用 Rust 命令与进度事件', async () => {
   assert.ok(tauri.listeners.has('app:update-progress'));
 });
 
+test('更新确认等待原生 OkCancel 结果，只有 Ok 才准许安装', async () => {
+  let finish;
+  const calls = [];
+  const tauri = { core: { invoke: (cmd, args) => {
+    calls.push({ cmd, args });
+    return new Promise(resolve => { finish = resolve; });
+  } }, event: { listen() {} } };
+  const bridge = createBridge(tauri);
+  const decision = bridge.confirmUpdate('安装 9.9.9？');
+  assert.deepEqual(calls[0], { cmd: 'plugin:dialog|message', args: {
+    title: 'Paper30Min', message: '安装 9.9.9？', kind: 'warning', buttons: 'OkCancel',
+  } });
+  finish('Cancel');
+  assert.equal(await decision, false);
+  const accepted = bridge.confirmUpdate('继续？');
+  finish('Ok');
+  assert.equal(await accepted, true);
+});
+
 test('解析组件桥接覆盖状态、下载、本地安装、迁移、取消与卸载', async () => {
   const tauri = createTauriStub();
   const bridge = createBridge(tauri);
