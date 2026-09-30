@@ -6,7 +6,8 @@ export function createBridge(tauri) {
 
   return {
     // invoke(command, input)：短时、幂等或事务性操作。
-    invoke: (command, input = {}) => invoke('bridge_invoke', { command, input }),
+    invoke: (command, input = {}) => command === 'pdfmap.getSourceRegions@1'
+      ? invoke('pdfmap_source_regions', { input }) : invoke('bridge_invoke', { command, input }),
 
     // start(taskKind, input)：长任务，返回 { schemaVersion, taskId }。
     start: (kind, input = {}) => invoke('bridge_start', { kind, input }),

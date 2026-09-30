@@ -16,8 +16,30 @@ export function evidenceTarget(pointer, mapped, currentSecId = null) {
   const blocks = section.blocks.filter(block => block.id >= pointer.start && block.id <= pointer.end);
   if (blocks.length !== pointer.end - pointer.start + 1 || !validPage(blocks[0]?.page)) return null;
   const page = blocks[0].page;
-  if (blocks.some(block => block.page !== page || (block.pageEnd && block.pageEnd !== page) || block.assetId)) return { page };
-  return { page, text: blocks.map(block => block.text || '').join('\n') };
+  if (blocks.some(block => !validPage(block.page) || block.assetId)) return { page };
+  if (blocks.every(block => Array.isArray(block.sourceRegions) && block.sourceRegions.length)) {
+    const sourceRegions = blocks.flatMap(block => block.sourceRegions);
+    if (sourceRegions.every(region => validPage(region.page)) && sourceRegions[0].page === page) return { page, sourceRegions };
+    return { page };
+  }
+  const last = blocks.at(-1);
+  const next = section.blocks.find(block => block.id === pointer.end + 1);
+  // Old block DTOs store only the first page; neighboring metadata bounds a search, not a highlight.
+  let pageEnd = last.pageEnd ?? next?.page ?? section.pageEnd ?? last.page;
+  // A section-final paragraph may continue even when section metadata only records its first page.
+  if (!last.pageEnd && pageEnd === last.page && validPage(last.page + 1) && mapped?.pageCount) pageEnd++;
+  if (!validPage(pageEnd) || pageEnd < page || blocks.some(block => block.page < page || block.page > pageEnd)) return { page };
+  const target = { page, ...(pageEnd > page ? { pageEnd } : {}), text: blocks.map(block => block.text || '').join('\n') };
+  if (blocks.some(block => block.page !== page)) {
+    const segments = [];
+    for (const block of blocks) {
+      if (segments.at(-1)?.page === block.page) segments.at(-1).text += `\n${block.text || ''}`;
+      else segments.push({ page: block.page, text: block.text || '' });
+    }
+    if (segments.some((segment, index) => index && segment.page < segments[index - 1].page)) return { page };
+    target.segments = segments.map((segment, index) => ({ ...segment, pageEnd: segments[index + 1]?.page ?? pageEnd }));
+  }
+  return target;
 }
 
 function inside(rect, viewport) {
@@ -35,10 +57,44 @@ export function evidenceRects(target, viewport, content = null) {
     const rect = target.bbox.map(value => value / 2);
     return inside(rect, viewport) ? [rect] : [];
   }
+  return evidenceRangeRects({ page: 1, text: target.text }, [{ page: 1, viewport, content }])[0]?.rects ?? [];
+}
+
+export function evidenceRangeRects(target, pages) {
+  if (target.sourceRegions) {
+    const regions = new Map();
+    for (const region of target.sourceRegions) {
+      const viewport = pages.find(info => info.page === region.page)?.viewport;
+      if (!viewport || viewport.rotation !== 0 || !Array.isArray(region.pageSize) || region.pageSize.length !== 2
+        || !region.pageSize.every(value => Number.isFinite(value) && value > 0)
+        || Math.abs(viewport.width - region.pageSize[0]) > 0.05 || Math.abs(viewport.height - region.pageSize[1]) > 0.05
+        || !Array.isArray(region.bbox) || region.bbox.length !== 4) return [];
+      const rect = region.bbox.map(value => value / 2);
+      if (!inside(rect, viewport)) return [];
+      if (!regions.has(region.page)) regions.set(region.page, []);
+      regions.get(region.page).push(rect);
+    }
+    return [...regions].map(([page, rects]) => ({ page, rects }));
+  }
+  if (target.segments) {
+    const regions = new Map();
+    for (const segment of target.segments) {
+      const matches = evidenceRangeRects(segment, pages.filter(info => info.page >= segment.page && info.page <= segment.pageEnd));
+      if (!matches.length) return [];
+      for (const { page, rects } of matches) {
+        if (!regions.has(page)) regions.set(page, []);
+        const previous = regions.get(page);
+        if (rects.some(rect => previous.some(other => rect.every((value, index) => value === other[index])))) return [];
+        previous.push(...rects);
+      }
+    }
+    return [...regions].map(([page, rects]) => ({ page, rects }));
+  }
   const needle = normalize(target.text);
   if (needle.length < 12) return [];
-  const items = (content?.items ?? []).filter(item => typeof item.str === 'string' && normalize(item.str));
-  const strings = items.map(item => normalize(item.str));
+  const items = pages.flatMap(info => (info.content?.items ?? [])
+    .filter(item => typeof item.str === 'string' && normalize(item.str)).map(item => ({ item, info })));
+  const strings = items.map(({ item }) => normalize(item.str));
   const text = strings.join('');
   const start = text.indexOf(needle);
   if (start < 0 || text.indexOf(needle, start + 1) !== -1) return [];
@@ -53,8 +109,11 @@ export function evidenceRects(target, viewport, content = null) {
     }
     offset = end;
   }
-  const rects = [];
-  for (const item of selected) {
+  if (selected[0]?.info.page !== target.page) return [];
+  const regions = new Map();
+  for (const { item, info } of selected) {
+    const { viewport, content } = info;
+    if (viewport.rotation !== 0) return [];
     const t = item.transform;
     const v = viewport.transform;
     if (!t || !v || t.length !== 6 || v.length !== 6 || !t.every(Number.isFinite) || !v.every(Number.isFinite)
@@ -66,7 +125,8 @@ export function evidenceRects(target, viewport, content = null) {
       || font.ascent <= 0 || font.descent > 0 || font.ascent - font.descent > 2) return [];
     const rect = [x, y - font.ascent * item.height, item.width, (font.ascent - font.descent) * item.height];
     if (!inside(rect, viewport)) return [];
-    rects.push(rect);
+    if (!regions.has(info.page)) regions.set(info.page, []);
+    regions.get(info.page).push(rect);
   }
-  return rects;
+  return [...regions].map(([page, rects]) => ({ page, rects }));
 }

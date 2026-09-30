@@ -55,7 +55,8 @@ function readerFixture() {
   const pages = makeElement();
   const errors = [];
   const seen = [];
-  const reader = createPdfReader({ scroll, pages, loading: makeElement(), onPageChange: page => seen.push(page), onError: error => errors.push(error) });
+  const evidenceStates = [];
+  const reader = createPdfReader({ scroll, pages, loading: makeElement(), onPageChange: page => seen.push(page), onError: error => errors.push(error), onEvidence: state => evidenceStates.push(state) });
   const doc = count => ({
     numPages: count,
     async getPage() {
@@ -71,7 +72,7 @@ function readerFixture() {
       for (const callback of frames.splice(0)) callback();
     }
   }
-  return { reader, scroll, pages, seen, errors, doc, flush };
+  return { reader, scroll, pages, seen, errors, evidenceStates, doc, flush };
 }
 
 test('evidence overlay uses trusted geometry, survives zoom and redraw, and page-only navigation clears it', async t => {
@@ -96,6 +97,61 @@ test('evidence overlay uses trusted geometry, survives zoom and redraw, and page
   f.reader.clear();
 });
 
+test('source coordinates highlight separate columns across pages without reading text', async () => {
+  const f = readerFixture();
+  const doc = f.doc(2);
+  const getPage = doc.getPage;
+  doc.getPage = async number => ({ ...await getPage(number),
+    getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale, rotation: 0 }),
+    getTextContent: () => { throw new Error('Source mapping should not read text'); },
+  });
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  await f.reader.locate({ page: 1, sourceRegions: [
+    { page: 1, bbox: [40, 1400, 500, 80], pageSize: [600, 800] },
+    { page: 1, bbox: [640, 100, 500, 120], pageSize: [600, 800] },
+    { page: 2, bbox: [40, 100, 500, 120], pageSize: [600, 800] },
+  ] });
+  await f.flush();
+  assert.equal(f.evidenceStates.at(-1), '已定位出处');
+  assert.equal(f.pages.children[0].children.filter(node => node.className === 'pdf-evidence-highlight').length, 2);
+  assert.equal(f.pages.children[1].children.filter(node => node.className === 'pdf-evidence-highlight').length, 1);
+  f.reader.clear();
+});
+
+test('cross-page evidence is published together and survives recycling and zoom', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture();
+  const doc = f.doc(12);
+  const getPage = doc.getPage;
+  doc.getPage = async number => ({ ...await getPage(number),
+    getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale, rotation: 0, transform: [scale, 0, 0, -scale, 0, 800 * scale] }),
+    getTextContent: async () => ({ styles: { font: { ascent: 1, descent: 0 } }, items: [{
+      str: number === 2 ? 'Unique evidence' : 'continued on next page',
+      width: 120, height: 12, transform: [12, 0, 0, 12, 20, 700], dir: 'ltr', fontName: 'font',
+    }] }),
+  });
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  assert.equal(await f.reader.locate({ page: 2, pageEnd: 3, text: 'Unique evidence continued on next page' }), true);
+  await f.flush();
+  for (const index of [1, 2]) assert.equal(f.pages.children[index].children[1]?.className, 'pdf-evidence-highlight');
+  f.reader.resize(2);
+  for (const index of [1, 2]) assert.equal(f.pages.children[index].children[1]?.style.top, '176px');
+  t.mock.timers.tick(120);
+  await f.flush();
+  f.scroll.scrollTop = 8 * 1612;
+  f.scroll.onScroll();
+  await f.flush();
+  f.scroll.scrollTop = 1612;
+  f.scroll.onScroll();
+  await f.flush();
+  for (const index of [1, 2]) assert.equal(f.pages.children[index].children[1]?.className, 'pdf-evidence-highlight');
+  await f.reader.locate({ page: 2 });
+  for (const index of [1, 2]) assert.equal(f.pages.children[index].children.length, 1);
+  f.reader.clear();
+});
+
 test('late evidence lookup cannot move or highlight a newer page navigation', async () => {
   const f = readerFixture();
   const doc = f.doc(12);
@@ -109,6 +165,79 @@ test('late evidence lookup cannot move or highlight a newer page navigation', as
   complete({ ...await getPage(2), getViewport: () => ({ width: 600, height: 800, rotation: 0 }) });
   assert.equal(await pending, null);
   assert.equal(f.scroll.scrollTop, 2 * 812);
+  f.reader.clear();
+});
+
+test('canceling a second-page lookup never publishes partial highlights or reads further pages', async () => {
+  const f = readerFixture();
+  const doc = f.doc(12);
+  const getPage = doc.getPage;
+  const read = [];
+  let complete;
+  doc.getPage = async number => ({ ...await getPage(number),
+    getViewport: () => ({ width: 600, height: 800, rotation: 0, transform: [1, 0, 0, -1, 0, 800] }),
+    getTextContent() {
+      read.push(number);
+      return number === 3 ? new Promise(resolve => { complete = resolve; }) : Promise.resolve({
+        styles: { font: { ascent: 1, descent: 0 } }, items: [{ str: 'Unique evidence', width: 120, height: 12,
+          transform: [12, 0, 0, 12, 20, 700], dir: 'ltr', fontName: 'font' }],
+      });
+    },
+  });
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  const pending = f.reader.locate({ page: 2, pageEnd: 8, text: 'Unique evidence continued on next page', segments: [
+    { page: 2, pageEnd: 2, text: 'Unique evidence' },
+    { page: 3, pageEnd: 8, text: 'continued on next page' },
+  ] });
+  await f.flush();
+  assert.deepEqual(read, [2, 3]);
+  assert.equal(f.pages.children.flatMap(slot => slot.children).filter(node => node.className === 'pdf-evidence-highlight').length, 0);
+  assert.equal(f.evidenceStates.at(-1), '正在定位出处…');
+  f.reader.jump(7);
+  complete({ items: [] });
+  assert.equal(await pending, null);
+  assert.deepEqual(read, [2, 3]);
+  assert.equal(f.scroll.scrollTop, 6 * 812);
+  assert.equal(f.evidenceStates.includes('已定位出处'), false);
+  assert.equal(f.pages.children.flatMap(slot => slot.children).filter(node => node.className === 'pdf-evidence-highlight').length, 0);
+  f.reader.clear();
+});
+
+test('an imprecise section bound reads at most eight pages and falls back without highlights', async () => {
+  const f = readerFixture();
+  const doc = f.doc(100);
+  const getPage = doc.getPage;
+  const read = [];
+  doc.getPage = async number => ({ ...await getPage(number), getTextContent: async () => {
+    read.push(number);
+    return { items: [] };
+  } });
+  await f.reader.open(doc, 1, 1);
+  assert.equal(await f.reader.locate({ page: 2, pageEnd: 100, text: 'Not present in this document' }), true);
+  assert.deepEqual(read, [2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.equal(f.pages.children.flatMap(slot => slot.children).filter(node => node.className === 'pdf-evidence-highlight').length, 0);
+  f.reader.clear();
+});
+
+test('duplicate text on a later candidate page must not be accepted as unique', async () => {
+  const f = readerFixture();
+  const doc = f.doc(3);
+  const getPage = doc.getPage;
+  const read = [];
+  doc.getPage = async number => ({ ...await getPage(number),
+    getViewport: () => ({ width: 600, height: 800, rotation: 0, transform: [1, 0, 0, -1, 0, 800] }),
+    getTextContent: async () => {
+      read.push(number);
+      return { styles: { font: { ascent: 1, descent: 0 } }, items: [{ str: 'Duplicated evidence passage',
+        width: 120, height: 12, transform: [12, 0, 0, 12, 20, 700], dir: 'ltr', fontName: 'font' }] };
+    },
+  });
+  await f.reader.open(doc, 1, 1);
+  await f.flush();
+  assert.equal(await f.reader.locate({ page: 1, pageEnd: 2, text: 'Duplicated evidence passage' }), true);
+  assert.deepEqual(read, [1, 2]);
+  assert.equal(f.pages.children.flatMap(slot => slot.children).filter(node => node.className === 'pdf-evidence-highlight').length, 0);
   f.reader.clear();
 });
 

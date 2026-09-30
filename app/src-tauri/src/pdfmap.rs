@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// 映射输出契约版本（形状变更时递增）。
-pub const PDFMAP_SCHEMA_VERSION: u32 = 1;
+pub const PDFMAP_SCHEMA_VERSION: u32 = 2;
 
 /// pdf.js 视口缩放：块坐标 = PDF pt × 2（144dpi 页图逐像素一致）。
 const VIEWPORT_SCALE: f64 = 2.0;
@@ -94,6 +94,8 @@ pub struct Block {
     pub page: u32,
     /// 首页 bbox 顶边的 pdf.js 视口 y（scale=2）。
     pub y: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_regions: Vec<SourceRegion>,
     /// 图/表/公式块的页内 bbox [x, y, w, h]（pdf.js 视口坐标，供裁切）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bbox: Option<[f64; 4]>,
@@ -109,6 +111,16 @@ pub struct Block {
     /// 公式 LaTeX（仅 enrichment 开启时存在；以裁切图为准）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latex: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRegion {
+    pub page: u32,
+    pub bbox: [f64; 4],
+    pub page_size: [f64; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charspan: Option<[u64; 2]>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -503,6 +515,41 @@ fn prov_first(node: &Value) -> Option<(u32, [f64; 4])> {
     let get = |k: &str| bbox.get(k).and_then(Value::as_f64);
     let (l, t, r, b) = (get("l")?, get("t")?, get("r")?, get("b")?);
     Some((page, [l, b, r, t]))
+}
+
+fn source_regions(node: &Value, collections: &Collections) -> Vec<SourceRegion> {
+    let parse = || -> Option<Vec<SourceRegion>> {
+        let mut regions = Vec::new();
+        for prov in node.get("prov")?.as_array()? {
+            let page = u32::try_from(prov.get("page_no")?.as_u64()?).ok()?;
+            let &(width, height) = collections.pages.get(&page)?;
+            if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 { return None; }
+            let bbox = prov.get("bbox")?;
+            let get = |key| bbox.get(key).and_then(Value::as_f64);
+            let (l, t, r, b) = (get("l")?, get("t")?, get("r")?, get("b")?);
+            let (top, bottom) = match bbox.get("coord_origin").and_then(Value::as_str)? {
+                "BOTTOMLEFT" => (height - t, height - b),
+                "TOPLEFT" => (t, b),
+                _ => return None,
+            };
+            if ![l, top, r, bottom].iter().all(|v| v.is_finite())
+                || l < 0.0 || top < 0.0 || r <= l || bottom <= top || r > width || bottom > height { return None; }
+            let charspan = match prov.get("charspan") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    let span = value.as_array()?;
+                    if span.len() != 2 { return None; }
+                    let pair = [span[0].as_u64()?, span[1].as_u64()?];
+                    if pair[1] < pair[0] { return None; }
+                    Some(pair)
+                }
+            };
+            let round = |v: f64| (v * 200.0).round() / 100.0;
+            regions.push(SourceRegion { page, bbox: [round(l), round(top), round(r - l), round(bottom - top)], page_size: [width, height], charspan });
+        }
+        Some(regions)
+    };
+    parse().unwrap_or_default()
 }
 
 fn value_text(node: &Value) -> String {
@@ -1149,6 +1196,11 @@ fn make_block(
         text: String::new(),
         page,
         y,
+        source_regions: match item.source {
+            StreamSource::Text(index) => collections.texts.get(index),
+            StreamSource::Table(index) => collections.tables.get(index),
+            StreamSource::Picture(index) => collections.pictures.get(index),
+        }.map(|node| source_regions(node, collections)).unwrap_or_default(),
         bbox: None,
         level: None,
         asset_id: None,
@@ -2218,6 +2270,43 @@ mod tests {
         ]);
         let paper = map_docling_document(&doc).expect("映射成功");
         assert_eq!(paper.sections[0].blocks[0].page, 1, "跨页块记首页");
+        let block = serde_json::to_value(&paper.sections[0].blocks[0]).unwrap();
+        assert_eq!(block["sourceRegions"], json!([
+            { "page": 1, "bbox": [144.0, 160.0, 936.0, 24.0], "pageSize": [612.0, 792.0], "charspan": [0, 10] },
+            { "page": 2, "bbox": [144.0, 1384.0, 936.0, 24.0], "pageSize": [612.0, 792.0], "charspan": [10, 20] },
+        ]));
+    }
+
+    #[test]
+    fn source_regions_keep_separate_columns_and_handle_top_left_coordinates() {
+        let mut item = text_item("text", "Text interrupted by an image and continued in another column.", 1, "body");
+        item["prov"] = json!([
+            { "page_no": 1, "bbox": { "l": 72.0, "t": 680.0, "r": 280.0, "b": 720.0, "coord_origin": "TOPLEFT" }, "charspan": [0, 30] },
+            { "page_no": 1, "bbox": { "l": 320.0, "t": 80.0, "r": 540.0, "b": 120.0, "coord_origin": "TOPLEFT" }, "charspan": [31, 61] },
+        ]);
+        let doc = make_doc(vec![
+            text_item("section_header", "Paper Title", 1, "body"),
+            text_item("section_header", "Abstract", 1, "body"), item,
+        ]);
+        let paper = map_docling_document(&doc).unwrap();
+        let block = serde_json::to_value(&paper.sections[0].blocks[0]).unwrap();
+        assert_eq!(block["sourceRegions"][0]["bbox"], json!([144.0, 1360.0, 416.0, 80.0]));
+        assert_eq!(block["sourceRegions"][1]["bbox"], json!([640.0, 160.0, 440.0, 80.0]));
+    }
+
+    #[test]
+    fn invalid_source_region_does_not_leave_a_partial_mapping() {
+        let mut item = text_item("text", "A complete paragraph with invalid second provenance.", 1, "body");
+        item["prov"].as_array_mut().unwrap().push(json!({
+            "page_no": 2, "bbox": { "l": -2.0, "t": 100.0, "r": 540.0, "b": 88.0, "coord_origin": "BOTTOMLEFT" },
+        }));
+        let doc = make_doc(vec![
+            text_item("section_header", "Paper Title", 1, "body"),
+            text_item("section_header", "Abstract", 1, "body"), item,
+        ]);
+        let paper = map_docling_document(&doc).unwrap();
+        let block = serde_json::to_value(&paper.sections[0].blocks[0]).unwrap();
+        assert!(block.get("sourceRegions").is_none());
     }
 
     #[test]

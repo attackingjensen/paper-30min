@@ -2139,7 +2139,7 @@ async function translateCurrentText() {
 }
 
 // ---------------- 问答视图 ----------------
-async function loadBlockModel(paper) {
+async function loadBlockModel(paper, { recoverSource = true } = {}) {
   let attachment;
   try {
     const meta = await bridge.invoke('files.getAttachment@1', {
@@ -2165,7 +2165,20 @@ async function loadBlockModel(paper) {
     length: attachment.size,
   });
   try {
-    return JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
+    const mapped = JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
+    // Source geometry is usable only after the native side verifies both attachments.
+    for (const section of mapped.sections || []) for (const block of section.blocks || []) delete block.sourceRegions;
+    if (!recoverSource) return mapped;
+    try {
+      const evidence = await bridge.invoke('pdfmap.getSourceRegions@1', { paperId: paper.id, blockModelSha256: attachment.sha256 });
+      if (evidence?.blockModelSha256 === attachment.sha256 && evidence.pdfSha256 === paper.pdfAttachment?.sha256) {
+        for (const entry of evidence.blocks || []) {
+          const block = mapped.sections?.find(section => section.id === entry.secId)?.blocks?.find(block => block.id === entry.blockId);
+          if (block) block.sourceRegions = entry.sourceRegions;
+        }
+      }
+    } catch { /* Legacy papers retain the text lookup fallback. */ }
+    return mapped;
   } catch (err) {
     const error = new Error('块模型无法解析，请重新建图后再提问。');
     error.code = 'invalid_blockmodel';
@@ -2197,7 +2210,7 @@ async function loadCropDataUrls(paper, cropAssetIds) {
 }
 
 async function assembleCurrentQa(paper, question, binding) {
-  const mapped = await loadBlockModel(paper);
+  const mapped = await loadBlockModel(paper, { recoverSource: false });
   const history = (paper.chat || []).slice(0, -1);
   const input = {
     title: paper.title,
@@ -2769,6 +2782,7 @@ async function attachPdf(file) {
   }
   await papers.attachPdf(current, file);
   await refreshPdfAttachment(current);
+  await refreshMapped(current);
   destroyPdfViewer();
   updatePdfSidebar();
   await initPdfViewer();

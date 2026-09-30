@@ -63,6 +63,12 @@ function createTauriStub() {
   };
 }
 
+test('PDF provenance uses the dedicated asynchronous native entry', async () => {
+  const tauri = createTauriStub();
+  await createBridge(tauri).invoke('pdfmap.getSourceRegions@1', { paperId: 'p', blockModelSha256: 'sha' });
+  assert.deepEqual(tauri.calls, [{ cmd: 'pdfmap_source_regions', args: { input: { paperId: 'p', blockModelSha256: 'sha' } } }]);
+});
+
 test('invoke 命令经统一入口带版本化命令名与输入', async () => {
   const tauri = createTauriStub();
   const bridge = createBridge(tauri);

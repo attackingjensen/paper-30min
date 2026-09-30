@@ -41,6 +41,7 @@ pub fn available_commands() -> &'static [&'static str] {
         "settings.putProtocol@1",
         "settings.putUi@1",
         "pdfparse.status@1",
+        "pdfmap.getSourceRegions@1",
         "skills.list@1",
         "exports.write@1",
         // dialog.*@1 的分发在 lib.rs 拦截（打开系统对话框需要窗口句柄），
@@ -59,6 +60,11 @@ pub fn invoke(
     input: &Value,
 ) -> Result<Value, BridgeError> {
     match command {
+        "pdfmap.getSourceRegions@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let hash = required_string(command, input, "blockModelSha256")?;
+            crate::pdfmap_evidence::get_source_regions(library, paper_id, hash)
+        }
         "app.info@1" => Ok(json!({
             "schemaVersion": BRIDGE_SCHEMA_VERSION,
             "app": {

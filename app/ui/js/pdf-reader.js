@@ -1,4 +1,4 @@
-import { evidenceRects } from './pdf-evidence.js';
+import { evidenceRects, evidenceRangeRects } from './pdf-evidence.js';
 
 // Page indices are zero-based inside the renderer; the toolbar uses one-based page numbers.
 export function pageAtOffset(bottoms, offset) {
@@ -239,7 +239,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
       slot.style.width = `${Math.ceil(Number(slot.dataset.baseWidth) * scale)}px`;
       slot.style.height = `${Math.ceil(Number(slot.dataset.baseHeight) * scale)}px`;
     }
-    if (evidence) paintEvidence(evidence.page - 1);
+    if (evidence) for (const page of evidence.keys()) paintEvidence(page - 1);
     restoreAnchor(anchor);
   }
 
@@ -270,9 +270,9 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
     evidenceRevision++;
     pendingEvidence = null;
     if (evidence) {
-      const index = evidence.page - 1;
+      const indices = [...evidence.keys()].map(page => page - 1);
       evidence = null;
-      paintEvidence(index);
+      for (const index of indices) paintEvidence(index);
     }
     onEvidence('');
   }
@@ -281,8 +281,8 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
     const slot = slots[index];
     if (!slot) return;
     for (const node of [...slot.children]) if (node.className === 'pdf-evidence-highlight') node.remove();
-    if (!evidence || evidence.page !== index + 1 || !paintedPages.has(index)) return;
-    for (const [x, y, width, height] of evidence.rects) {
+    if (!evidence?.has(index + 1) || !paintedPages.has(index)) return;
+    for (const [x, y, width, height] of evidence.get(index + 1)) {
       const node = window.document.createElement('div');
       node.className = 'pdf-evidence-highlight';
       node.style.left = `${x * scale}px`;
@@ -294,28 +294,45 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
   }
 
   async function locate(target) {
-    if (!document || !slots.length || target.page < 1 || target.page > document.numPages) return false;
+    if (!document || !slots.length || !Number.isInteger(target.page) || target.page < 1 || target.page > document.numPages) return false;
     jump(target.page);
     const revision = evidenceRevision;
     const doc = document;
     pendingEvidence = { top: scroll.scrollTop, left: scroll.scrollLeft };
     onEvidence('正在定位出处…');
     try {
-      const page = await doc.getPage(target.page);
-      const viewport = page.getViewport({ scale: 1 });
-      const content = target.text ? await page.getTextContent() : null;
-      // null means a newer navigation superseded this lookup, not an invalid page.
-      if (revision !== evidenceRevision || document !== doc) return null;
+      const infos = [];
+      // Bound old, imprecise metadata so a click cannot scan an entire long section.
+      const end = target.text && Number.isInteger(target.pageEnd)
+        ? Math.min(target.pageEnd, doc.numPages, target.page + 7) : target.page;
+      const pageNumbers = target.sourceRegions
+        ? [...new Set(target.sourceRegions.map(region => region.page))] : Array.from({ length: end - target.page + 1 }, (_, index) => target.page + index);
+      if (pageNumbers.some(number => !Number.isInteger(number) || number < 1 || number > doc.numPages)) throw new Error('Invalid source page');
+      for (const number of pageNumbers) {
+        const page = await doc.getPage(number);
+        if (revision !== evidenceRevision || document !== doc) return null;
+        const viewport = page.getViewport({ scale: 1 });
+        const content = target.text ? await page.getTextContent() : null;
+        // null means a newer navigation superseded this lookup, not an invalid page.
+        if (revision !== evidenceRevision || document !== doc) return null;
+        infos.push({ page: number, viewport, content });
+      }
+      const regions = target.text || target.sourceRegions ? evidenceRangeRects(target, infos) : [];
+      if (!target.text && !target.sourceRegions) {
+        const rects = evidenceRects(target, infos[0].viewport);
+        if (rects.length) regions.push({ page: target.page, rects });
+      }
       pendingEvidence = null;
-      const rects = evidenceRects(target, viewport, content);
-      evidence = { page: target.page, rects };
-      paintEvidence(target.page - 1);
-      if (rects.length) {
-        const [x, y, width, height] = rects[0];
-        restoreAnchor({ index: target.page - 1, x: (x + width / 2) / viewport.width,
+      evidence = new Map(regions.map(({ page, rects }) => [page, rects]));
+      for (const page of evidence.keys()) paintEvidence(page - 1);
+      if (regions.length) {
+        const first = regions[0];
+        const viewport = infos.find(info => info.page === first.page).viewport;
+        const [x, y, width, height] = first.rects[0];
+        restoreAnchor({ index: first.page - 1, x: (x + width / 2) / viewport.width,
           y: (y + height / 2) / viewport.height, viewX: 0.5, viewY: 0.35 });
       }
-      onEvidence(rects.length ? '已定位出处' : '仅页级定位');
+      onEvidence(regions.length ? '已定位出处' : '仅页级定位');
       return true;
     } catch {
       if (revision !== evidenceRevision || document !== doc) return null;
