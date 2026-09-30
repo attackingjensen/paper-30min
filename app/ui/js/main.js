@@ -15,6 +15,7 @@ import { showStartup } from './startup.js';
 import { updateState, updateStatusText } from './updater.js';
 import * as view from './view.js';
 import { createLatestResource, createSerialWriter } from './reader-resources.js';
+import { createPdfReader } from './pdf-reader.js';
 import { translateForPaper } from './translation.js';
 import {
   COPY,
@@ -99,12 +100,26 @@ let composerQuoteExpanded = false;
 let translateAborter = null;
 let recallAborter = null;
 let pdfDocument = null;
-let pdfRenderTask = null;
 const pdfResource = createLatestResource();
-let pdfRenderVersion = 0;
 let pdfPage = 1;
 let pdfScale = 1;
+let pdfZoomRevision = 0;
 let pdfSidebarOpen = true;
+const pdfReader = createPdfReader({
+  scroll: $('#pdf-canvas-wrap'),
+  pages: $('#pdf-pages'),
+  loading: $('#pdf-loading'),
+  onPageChange(page) {
+    pdfPage = page;
+    updatePdfPageControls();
+    savePdfPagePosition();
+  },
+  onError(error) {
+    console.error('PDF 页面渲染失败：', error);
+    $('#pdf-render-error').hidden = false;
+    $('#pdf-render-error-message').textContent = `PDF 页面渲染失败：${error.message || error}`;
+  },
+});
 let libraryQuery = '';
 let categoryFilter = '';
 let ratingFilter = 0;
@@ -557,6 +572,7 @@ async function openPaper(p) {
   sourceTab = 'abstract';
   pdfPage = 1;
   pdfScale = 1;
+  pdfZoomRevision++;
   $('#paste-area').value = '';
   $('#reader-title').textContent = p.title;
   setWindowTitle(`${p.title} · Paper30Min`);
@@ -1110,7 +1126,6 @@ function renderMapTab() {
 
 function drillSection(sectionId) {
   commitReader(view.openSection(reader, sectionId, { mapped: currentMapped, legacy: isLegacyMap() }));
-  if (pdfSidebarOpen && pdfDocument && Number.isFinite(pdfPage)) renderPdfPage();
 }
 
 function backToMap() {
@@ -2573,16 +2588,12 @@ function renderPdfTasks() {
 
 function destroyPdfViewer() {
   pdfResource.invalidate();
-  pdfRenderVersion += 1;
-  pdfRenderTask?.cancel();
-  pdfRenderTask = null;
+  pdfReader.clear();
   if (pdfDocument) {
     try { pdfDocument.destroy(); } catch { /* 忽略清理错误 */ }
   }
   pdfDocument = null;
-  const canvas = $('#pdf-canvas');
-  canvas.width = 0;
-  canvas.height = 0;
+  $('#pdf-render-error').hidden = true;
 }
 
 async function initPdfViewer() {
@@ -2618,6 +2629,7 @@ async function initPdfViewer() {
     );
     if (!installed) return;
     const document = pdfDocument;
+    const zoomRevisionAtLoad = pdfZoomRevision;
     if (current?.id !== paper.id) {
       if (pdfDocument === document) destroyPdfViewer();
       return;
@@ -2631,7 +2643,9 @@ async function initPdfViewer() {
     if (pdfDocument !== document || current?.id !== paper.id) return;
     await new Promise(resolve => requestAnimationFrame(resolve));
     if (pdfDocument !== document || current?.id !== paper.id) return;
-    await fitPdfPage();
+    if (pdfZoomRevision === zoomRevisionAtLoad) await fitPdfPage();
+    if (pdfDocument !== document || current?.id !== paper.id) return;
+    await pdfReader.open(document, pdfPage, pdfScale);
   } catch (err) {
     console.error(err);
     if (current?.id !== paper.id) return;
@@ -2640,44 +2654,19 @@ async function initPdfViewer() {
   }
 }
 
-async function renderPdfPage() {
-  if (!pdfDocument || !pdfSidebarOpen) return;
-  const document = pdfDocument;
-  const version = ++pdfRenderVersion;
+function updatePdfPageControls() {
+  if (!pdfDocument) return;
   pdfPage = Math.min(Math.max(Math.round(pdfPage), 1), pdfDocument.numPages);
   $('#pdf-page-input').value = pdfPage;
   $('#btn-pdf-prev').disabled = pdfPage <= 1;
   $('#btn-pdf-next').disabled = pdfPage >= pdfDocument.numPages;
   $('#pdf-zoom-label').textContent = `${Math.round(pdfScale * 100)}%`;
+}
 
-  pdfRenderTask?.cancel();
-  const page = await document.getPage(pdfPage);
-  if (version !== pdfRenderVersion || pdfDocument !== document || !pdfSidebarOpen) return;
-  const viewport = page.getViewport({ scale: pdfScale });
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  const canvas = $('#pdf-canvas');
-  const context = canvas.getContext('2d', { alpha: false });
-  canvas.width = Math.floor(viewport.width * ratio);
-  canvas.height = Math.floor(viewport.height * ratio);
-  canvas.style.width = `${Math.floor(viewport.width)}px`;
-  canvas.style.height = `${Math.floor(viewport.height)}px`;
-  $('#pdf-loading').hidden = true;
-  const task = page.render({
-    canvasContext: context,
-    viewport,
-    transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
-  });
-  pdfRenderTask = task;
-  try {
-    await task.promise;
-  } catch (err) {
-    if (err?.name !== 'RenderingCancelledException') throw err;
-  } finally {
-    if (pdfRenderTask === task) pdfRenderTask = null;
-  }
-  if (version === pdfRenderVersion && pdfDocument === document) {
-    $('#pdf-canvas-wrap').scrollTo({ top: 0, left: 0 });
-  }
+function renderPdfPage() {
+  if (!pdfDocument || !pdfSidebarOpen) return;
+  updatePdfPageControls();
+  pdfReader.jump(pdfPage);
 }
 
 // 用户主动翻页后保存阅读位置（500ms 防抖）；不覆盖当前 tab。
@@ -2691,25 +2680,28 @@ async function fitPdfPage() {
   if (!pdfDocument || !pdfSidebarOpen) return;
   const document = pdfDocument;
   const targetPage = pdfPage;
-  const page = await document.getPage(targetPage);
-  if (pdfDocument !== document || pdfPage !== targetPage || !pdfSidebarOpen) return;
+  const revision = ++pdfZoomRevision;
+  const page = await document.getPage(1);
+  if (pdfDocument !== document || pdfPage !== targetPage || !pdfSidebarOpen || revision !== pdfZoomRevision) return;
   const base = page.getViewport({ scale: 1 });
   const available = Math.max($('#pdf-canvas-wrap').clientWidth - 20, 280);
   pdfScale = Math.min(Math.max(available / base.width, 0.5), 2.25);
-  await renderPdfPage();
+  updatePdfPageControls();
+  pdfReader.resize(pdfScale);
 }
 
 function changePdfPage(delta) {
   if (!pdfDocument) return;
   pdfPage = Math.min(Math.max(pdfPage + delta, 1), pdfDocument.numPages);
   renderPdfPage();
-  savePdfPagePosition();
 }
 
 function changePdfZoom(factor) {
   if (!pdfDocument) return;
+  pdfZoomRevision++;
   pdfScale = Math.min(Math.max(pdfScale * factor, 0.4), 3);
-  renderPdfPage();
+  updatePdfPageControls();
+  pdfReader.resize(pdfScale);
 }
 
 // put 会把瞬时 pdfBlob 上传为附件并清空句柄；随后从附件清单补回 pdfAttachment。
@@ -4049,7 +4041,10 @@ function bindEvents() {
     if (!pdfDocument) return;
     pdfPage = Math.min(Math.max(parseInt(e.target.value, 10) || 1, 1), pdfDocument.numPages);
     renderPdfPage();
-    savePdfPagePosition();
+  };
+  $('#btn-pdf-retry').onclick = () => {
+    $('#pdf-render-error').hidden = true;
+    pdfReader.retry();
   };
   $('#btn-pdf-zoom-out').onclick = () => changePdfZoom(0.85);
   $('#btn-pdf-zoom-in').onclick = () => changePdfZoom(1.18);

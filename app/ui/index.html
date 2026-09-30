@@ -250,7 +250,11 @@
       </div>
       <div class="pdf-canvas-wrap" id="pdf-canvas-wrap">
         <div id="pdf-loading" class="pdf-loading">正在载入 PDF…</div>
-        <canvas id="pdf-canvas"></canvas>
+        <div id="pdf-render-error" class="pdf-render-error" hidden>
+          <span id="pdf-render-error-message"></span>
+          <button id="btn-pdf-retry" class="btn small" type="button">重试</button>
+        </div>
+        <div id="pdf-pages" class="pdf-pages" aria-label="PDF 页面"></div>
       </div>
     </div>
   </aside>

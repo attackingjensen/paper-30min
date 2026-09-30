@@ -1,10 +1,10 @@
 # 当前状态
 
 - 所在分支：`codex/v1.3.0`，从本地 `main` 的 `be4dedf` 创建；后续任务按版本约定从最新 `main` 建新分支，不再使用历史 `steven123397/dev`。
-- 核对基点：`be4dedf`。
-- 工作范围：[PDF 证据阅读 Plan](plans/2026-09-29-2254-feat-pdf-evidence-reading-plan.md)与[#97 更新停流 Plan](plans/2026-09-29-2300-fix-updater-stall-timeouts-plan.md)已完成规划，尚未实施。v2 其余方向见[构想总表](ideation/2026-09-24-paper30min-v2-revision.md)。
+- 核对基点：`128da50`。
+- 工作范围：[PDF 证据阅读 Plan](plans/2026-09-29-2254-feat-pdf-evidence-reading-plan.md)的 U1 连续页阅读底座已实现；U2-U5 尚未实施。[#97 更新停流 Plan](plans/2026-09-29-2300-fix-updater-stall-timeouts-plan.md)尚未实施。v2 其余方向见[构想总表](ideation/2026-09-24-paper30min-v2-revision.md)。
 - 已具备能力：[v1.2.0 正式版](https://github.com/attackingjensen/paper-30min/releases/tag/v1.2.0)已发布，应用内更新器与解析组件按需安装已实现。代码品质修复及发布前审查已交付；用户确认窗口审核已做，旧审查记录停在更早阶段，不作为当前前置阻断。
-- 验证：本轮只做文档与代码静态核对，未运行产品测试或新的 Windows 窗口走查。v1.2.0 的本机测试、签名及远端附件证据见[正式版说明](releases/v1.2.0.md)。
+- 验证：U1 的 `app/` 下 `node --test` 239 项通过、根目录语法检查通过；Windows WebView2 开发版走查 12 页和 13 页旧论文的连续滚动、页码输入、缩放、回滚重绘及切论文。长论文性能、混合页尺寸和扫描版 PDF 的真实窗口路径未验证，留待 U5。v1.2.0 的本机测试、签名及远端附件证据见[正式版说明](releases/v1.2.0.md)。
 
 ## 阻断与已知缺口
 
@@ -12,6 +12,6 @@ GitHub CI 因账户问题未运行。v1.2.0 默认/自选路径升级、真实�
 
 ## 下一步
 
-- PDF Plan 从 U1 连续页阅读底座开始，依次处理双模式、出处定位和跨页选区；按单元验证真实 WebView2 行为。
+- PDF Plan 下一单元为 U2 双模式与阅读锚点；随后处理出处定位、跨页选区和 U5 窗口集成。
 - #97 Plan 可独立从 U1 下载与安装边界核实开始，再实现两类期限；不得给整个安装过程套统一总时长。
 - 安装版验证矩阵按正式版说明另行补齐，未运行项目不记为通过。每个交付提交前按实际结果更新本文件。
