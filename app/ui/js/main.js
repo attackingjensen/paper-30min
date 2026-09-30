@@ -2478,6 +2478,12 @@ function hasPdf(paper = current) {
 function updatePdfSidebar() {
   const workspace = $('#reader-workspace');
   workspace.classList.toggle('pdf-closed', !pdfSidebarOpen);
+  const full = pdfSidebarOpen && reader.pdfMode === 'full';
+  workspace.classList.toggle('pdf-full', full);
+  const modeButton = $('#btn-pdf-mode');
+  modeButton.setAttribute('aria-pressed', String(full));
+  modeButton.title = full ? '返回对照阅读' : '全页阅读';
+  modeButton.setAttribute('aria-label', modeButton.title);
   applyPdfPaneWidth();
   $('#pdf-sidebar').hidden = !pdfSidebarOpen;
   $('#btn-pdf-toggle').setAttribute('aria-expanded', String(pdfSidebarOpen));
@@ -2490,7 +2496,7 @@ function updatePdfSidebar() {
 
 function applyPdfPaneWidth() {
   const workspace = $('#reader-workspace');
-  if (!pdfSidebarOpen) {
+  if (!pdfSidebarOpen || reader.pdfMode === 'full' || window.innerWidth <= 900) {
     workspace.style.removeProperty('grid-template-columns');
     return;
   }
@@ -2527,8 +2533,10 @@ function onPaneDragMove(event) {
     reader = view.resizeTreeByClientX(reader, event.clientX, paneDrag.treeLeft);
     applyTreeWidth();
   } else {
+    const anchor = pdfReader.captureAnchor();
     reader = view.setPdfWidth(reader, paneDrag.pdfRight - event.clientX, window.innerWidth);
     applyPdfPaneWidth();
+    pdfReader.restoreAnchor(anchor);
   }
 }
 
@@ -2549,7 +2557,7 @@ function bindPaneResizer(handle, side) {
 function togglePdfSidebar(force) {
   commitReader(view.togglePdf(reader, force), { restore: true });
   if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
-  if (pdfSidebarOpen && pdfDocument) requestAnimationFrame(() => fitPdfPage());
+  if (pdfSidebarOpen && pdfDocument) pdfReader.schedule();
 }
 
 function collapsePdfPane() {
@@ -2559,7 +2567,14 @@ function collapsePdfPane() {
 function expandPdfPane() {
   commitReader(view.expandPdf(reader), { restore: true });
   if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
-  if (pdfSidebarOpen && pdfDocument) requestAnimationFrame(() => fitPdfPage());
+  if (pdfSidebarOpen && pdfDocument) pdfReader.schedule();
+}
+
+function togglePdfMode() {
+  const anchor = pdfReader.captureAnchor();
+  pdfZoomRevision++;
+  commitReader(view.setPdfMode(reader, reader.pdfMode === 'full' ? 'side' : 'full'));
+  pdfReader.restoreAnchor(anchor);
 }
 
 // PDF 栏的论文级任务上下文：会话 Map 里按 input.paperId 过滤出本论文的下载任务。
@@ -2681,7 +2696,7 @@ async function fitPdfPage() {
   const document = pdfDocument;
   const targetPage = pdfPage;
   const revision = ++pdfZoomRevision;
-  const page = await document.getPage(1);
+  const page = await document.getPage(targetPage);
   if (pdfDocument !== document || pdfPage !== targetPage || !pdfSidebarOpen || revision !== pdfZoomRevision) return;
   const base = page.getViewport({ scale: 1 });
   const available = Math.max($('#pdf-canvas-wrap').clientWidth - 20, 280);
@@ -2696,12 +2711,12 @@ function changePdfPage(delta) {
   renderPdfPage();
 }
 
-function changePdfZoom(factor) {
+function changePdfZoom(factor, point) {
   if (!pdfDocument) return;
   pdfZoomRevision++;
   pdfScale = Math.min(Math.max(pdfScale * factor, 0.4), 3);
   updatePdfPageControls();
-  pdfReader.resize(pdfScale);
+  pdfReader.resize(pdfScale, point);
 }
 
 // put 会把瞬时 pdfBlob 上传为附件并清空句柄；随后从附件清单补回 pdfAttachment。
@@ -4006,6 +4021,17 @@ function bindEvents() {
   };
   $('#btn-pdf-toggle').onclick = () => togglePdfSidebar();
   $('#btn-pdf-close').onclick = collapsePdfPane;
+  $('#btn-pdf-mode').onclick = togglePdfMode;
+  $('#pdf-canvas-wrap').addEventListener('wheel', event => {
+    if (!event.ctrlKey || !pdfDocument) return;
+    event.preventDefault();
+    const wrap = event.currentTarget;
+    const box = wrap.getBoundingClientRect();
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? wrap.clientHeight : 1);
+    changePdfZoom(Math.exp(-Math.max(-100, Math.min(100, delta)) * 0.002), {
+      x: event.clientX - box.left - wrap.clientLeft, y: event.clientY - box.top - wrap.clientTop,
+    });
+  }, { passive: false });
   $('#pdf-fab').onclick = expandPdfPane;
   $('#tree-fab').onclick = () => commitReader(view.expandTree(reader), { restore: true });
   $('#btn-tree-fold').onclick = () => commitReader(view.collapseTree(reader), { restore: true });
@@ -4205,7 +4231,7 @@ function bindEvents() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (pdfSidebarOpen) applyPdfPaneWidth();
-      if (pdfSidebarOpen && pdfDocument) fitPdfPage();
+      pdfReader.reflow();
     }, 180);
   });
 

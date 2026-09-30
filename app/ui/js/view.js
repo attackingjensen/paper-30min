@@ -37,6 +37,7 @@ export function initialState(overrides = {}) {
     pdfCollapsed: false,
     pdfWidth: null,
     pdfPage: null,
+    pdfMode: 'side',
     translateCompare: false,
     citeFocus: null,
     ...overrides,
@@ -114,6 +115,11 @@ export function setSourceSection(state, sourceSectionId) {
 
 export function setPdfPage(state, pdfPage) {
   return patch(state, { pdfPage: Number.isFinite(pdfPage) ? pdfPage : null });
+}
+
+export function setPdfMode(state, mode) {
+  if (!['side', 'full'].includes(mode)) return state;
+  return patch(state, { pdfMode: mode, pdfOpen: true, pdfCollapsed: false });
 }
 
 /** 节起始页：接受精读部分 id 或原文章节 id。 */

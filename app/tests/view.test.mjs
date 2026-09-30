@@ -42,6 +42,7 @@ import {
   setHasMap,
   setMapping,
   setPdfPage,
+  setPdfMode,
   setPdfWidth,
   setTreeWidth,
   shouldCancelTasks,
@@ -53,6 +54,19 @@ import {
   treeItemStatus,
   treeItems,
 } from '../ui/js/view.js';
+
+test('PDF modes preserve paper context, pane width and legacy page-only positions', () => {
+  const original = applyPosition(openPaper(initialState(), { hasMap: true }), { view: 'pdf', pdfPage: 8 });
+  const side = setPdfWidth(original, 500, 1280);
+  const full = setPdfMode(side, 'full');
+  assert.equal(full.pdfPage, 8);
+  assert.equal(full.pdfWidth, 500);
+  assert.equal(full.tab, side.tab);
+  assert.equal(full.sectionId, side.sectionId);
+  assert.deepEqual(setPdfMode(full, 'side'), side);
+  assert.equal(setPdfMode(full, 'invalid'), full);
+  assert.equal(openPaper(full).pdfMode, 'side');
+});
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const mapped = JSON.parse(

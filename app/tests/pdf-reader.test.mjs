@@ -26,6 +26,10 @@ function readerFixture() {
     },
     appendChild(node) { this.replaceChildren(node); },
     get offsetHeight() { return Number.parseInt(this.style.height, 10) || 0; },
+    get offsetWidth() { return Number.parseInt(this.style.width, 10) || 0; },
+    getBoundingClientRect() {
+      return { top: this.offsetTop - scroll.scrollTop, left: Math.max(0, (scroll.clientWidth - this.offsetWidth) / 2) - scroll.scrollLeft, width: this.offsetWidth, height: this.offsetHeight };
+    },
     get offsetTop() {
       if (!this.parent) return 0;
       const index = this.parent.children.indexOf(this);
@@ -42,7 +46,7 @@ function readerFixture() {
   };
   globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
   globalThis.cancelAnimationFrame = () => {};
-  const scroll = { scrollTop: 0, clientHeight: 650, addEventListener(name, listener) { this.onScroll = listener; } };
+  const scroll = { scrollTop: 0, scrollLeft: 0, clientLeft: 0, clientTop: 0, clientWidth: 620, clientHeight: 650, getBoundingClientRect: () => ({ top: 0, left: 0 }), addEventListener(name, listener) { this.onScroll = listener; } };
   const pages = makeElement();
   const errors = [];
   const seen = [];
@@ -64,6 +68,65 @@ function readerFixture() {
   }
   return { reader, scroll, pages, seen, errors, doc, flush };
 }
+
+test('zoom preserves the page content beneath the pointer in both axes', async () => {
+  const f = readerFixture();
+  await f.reader.open(f.doc(12), 8, 1);
+  await f.flush();
+  f.scroll.scrollTop += 200;
+  f.reader.resize(2, { x: 200, y: 100 });
+  assert.equal(f.scroll.scrollTop, 7 * 1612 + 500);
+  assert.equal(f.scroll.scrollLeft, 180);
+  await f.flush();
+  assert.equal(f.seen.length, 0);
+  f.reader.clear();
+});
+
+test('mode layout changes preserve a middle-page anchor through a round trip', async () => {
+  const f = readerFixture();
+  await f.reader.open(f.doc(12), 8, 1);
+  await f.flush();
+  f.scroll.scrollTop += 200;
+  const anchor = f.reader.captureAnchor();
+  f.scroll.clientWidth = 1200;
+  f.scroll.clientHeight = 800;
+  f.reader.restoreAnchor(anchor);
+  assert.equal(f.scroll.scrollTop, 7 * 812 + 125);
+  const returning = f.reader.captureAnchor();
+  f.scroll.clientWidth = 620;
+  f.scroll.clientHeight = 650;
+  f.reader.restoreAnchor(returning);
+  assert.equal(f.scroll.scrollTop, 7 * 812 + 200);
+  f.reader.clear();
+});
+
+test('window reflow restores the center saved before the container changed size', async () => {
+  const f = readerFixture();
+  f.scroll.clientWidth = 1200;
+  await f.reader.open(f.doc(12), 8, 1.5);
+  await f.flush();
+  f.scroll.scrollTop += 200;
+  f.scroll.onScroll();
+  await f.flush();
+  f.scroll.clientWidth = 620;
+  f.scroll.clientHeight = 500;
+  f.reader.reflow();
+  assert.equal(f.scroll.scrollLeft, 140);
+  assert.equal(f.scroll.scrollTop, 7 * 1212 + 275);
+  f.reader.clear();
+});
+
+test('unchanged zoom keeps existing canvases and pending renders', async () => {
+  const f = readerFixture();
+  await f.reader.open(f.doc(12), 8, 3);
+  await f.flush();
+  const canvas = f.pages.children[7].children[0];
+  const top = f.scroll.scrollTop;
+  f.reader.resize(3, { x: 200, y: 100 });
+  assert.equal(f.pages.children[7].children[0], canvas);
+  assert.equal(f.scroll.scrollTop, top);
+  f.reader.clear();
+});
 
 test('scrolling a long PDF releases offscreen canvases and updates the page', async () => {
   const fixture = readerFixture();

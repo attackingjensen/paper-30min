@@ -29,6 +29,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
   let scale = 1;
   let frame = 0;
   let currentPage = 1;
+  let stableAnchor = null;
   const failedPages = new Set();
   const positions = {
     get length() { return slots.length; },
@@ -54,6 +55,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
     pages.replaceChildren();
     document = null;
     currentPage = 1;
+    stableAnchor = null;
     scroll.scrollTop = 0;
   }
 
@@ -101,6 +103,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
   function update() {
     frame = 0;
     if (!document || !slots.length || !scroll.clientHeight) return;
+    reflow();
     const wanted = new Set(pageWindow(positions, scroll.scrollTop, scroll.clientHeight));
     for (const index of tasks.keys()) if (!wanted.has(index)) release(index);
     for (const index of wanted) {
@@ -115,6 +118,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
       currentPage = page;
       onPageChange(page);
     }
+    rememberAnchor();
   }
 
   function schedule() {
@@ -153,13 +157,48 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
     const changed = nextPage !== currentPage;
     currentPage = nextPage;
     if (slots.length) scroll.scrollTop = slots[currentPage - 1].offsetTop;
+    rememberAnchor();
     if (changed) onPageChange(currentPage);
     schedule();
   }
 
-  function resize(nextScale) {
-    if (!document) return;
-    const page = currentPage;
+  function captureAnchor(point = {}) {
+    if (!slots.length || !scroll.clientHeight) return null;
+    const x = point.x ?? scroll.clientWidth / 2;
+    const y = point.y ?? scroll.clientHeight / 2;
+    const viewport = scroll.getBoundingClientRect();
+    const index = pageAtOffset(positions, viewport.top + scroll.clientTop + y - pages.getBoundingClientRect().top);
+    const box = slots[index].getBoundingClientRect();
+    return { index, x: (viewport.left + scroll.clientLeft + x - box.left) / box.width,
+      y: (viewport.top + scroll.clientTop + y - box.top) / box.height,
+      viewX: x / scroll.clientWidth, viewY: y / scroll.clientHeight };
+  }
+
+  function restoreAnchor(anchor) {
+    if (!anchor || !slots[anchor.index]) { schedule(); return; }
+    const box = slots[anchor.index].getBoundingClientRect();
+    const viewport = scroll.getBoundingClientRect();
+    scroll.scrollTop += box.top + anchor.y * box.height - viewport.top - scroll.clientTop - anchor.viewY * scroll.clientHeight;
+    scroll.scrollLeft += box.left + anchor.x * box.width - viewport.left - scroll.clientLeft - anchor.viewX * scroll.clientWidth;
+    rememberAnchor();
+    schedule();
+  }
+
+  function rememberAnchor() {
+    const anchor = captureAnchor();
+    if (anchor) stableAnchor = { anchor, width: scroll.clientWidth, height: scroll.clientHeight };
+  }
+
+  function reflow() {
+    if (!scroll.clientWidth || !scroll.clientHeight) return;
+    if (stableAnchor && (stableAnchor.width !== scroll.clientWidth || stableAnchor.height !== scroll.clientHeight)) {
+      restoreAnchor(stableAnchor.anchor);
+    }
+  }
+
+  function resize(nextScale, point) {
+    if (!document || nextScale === scale) return;
+    const anchor = captureAnchor(point);
     scale = nextScale;
     if (!slots.length) return;
     epoch++;
@@ -169,7 +208,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
       slot.style.width = `${Math.ceil(Number(slot.dataset.baseWidth) * scale)}px`;
       slot.style.height = `${Math.ceil(Number(slot.dataset.baseHeight) * scale)}px`;
     }
-    jump(page);
+    restoreAnchor(anchor);
   }
 
   function retry() {
@@ -179,5 +218,5 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError 
   }
 
   scroll.addEventListener('scroll', schedule, { passive: true });
-  return { clear, open, jump, resize, retry, schedule };
+  return { clear, open, jump, resize, retry, schedule, captureAnchor, restoreAnchor, reflow };
 }

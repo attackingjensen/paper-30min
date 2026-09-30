@@ -168,8 +168,8 @@ U1 建立连续阅读状态与可见页调度；U2 完成双模式和缩放位�
 - **Goal:** 右侧可调宽对照和全页阅读共享同一阅读位置。
 - **Requirements:** R2, R3, R10；F2；AE4。
 - **Dependencies:** U1。
-- **Files:** `app/ui/js/main.js`, `app/ui/js/view.js`, `app/ui/index.html`, `app/ui/style.css`, `app/tests/view.test.mjs`。
-- **Approach:** 按 KTD1、KTD5 统一模式、缩放和页内锚点；保留当前可调宽控制，按既有位置 DTO 兼容旧页码。处理容器宽度变化和窗口 resize 的重排。
+- **Files:** `app/ui/js/main.js`, `app/ui/js/view.js`, `app/ui/js/pdf-reader.js`, `app/ui/index.html`, `app/ui/style.css`, `app/tests/view.test.mjs`, `app/tests/pdf-reader.test.mjs`。沿用 U1 的阅读器模块承接锚点计算与回归测试。
+- **Approach:** 按 KTD1、KTD5 统一模式、缩放和页内锚点；保留当前可调宽控制，按既有位置 DTO 兼容旧页码。处理容器宽度变化和窗口 resize 的重排。U2 的页内锚点与模式保留在会话中，持久化继续使用既有页码 DTO；模式切换和拖宽保留当前缩放，适配宽度由现有按钮明确触发。
 - **Test scenarios:** Covers AE4. 页中段切全页再切回保持目标内容；Ctrl+滚轮缩放保持指针附近内容；普通滚轮连续翻页；旧页码记录打开后落在可信页。
 - **Verification:** 模式、缩放、拖宽均不回到文档开头，页码与实际可见页一致。
 
