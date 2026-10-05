@@ -5,7 +5,7 @@
 - `plans/`：需求和实施设计在同一计划中推进；现存 CE 计划属于历史或待复核材料。
 - `solutions/`：`nk-compound` 按准入条件沉淀可复用经验，既有条目继续按适用条件检索。
 - `reviews/`：仅保留仍服务于当前交付的审查记录；v1.2.0 的已消费记录由 Git 历史保存，未完成的安装版验证见[正式版说明](releases/v1.2.0.md)。
-- `releases/`：发布说明与安装版验收范围；当前见 [v1.2.0 正式版](releases/v1.2.0.md)，解析组件说明见 [v1.2.0-beta.1](releases/v1.2.0-beta.1.md)。
+- `releases/`：发布说明与安装版验收范围；当前见 [v1.3.0](releases/v1.3.0.md)，解析组件说明见 [v1.2.0-beta.1](releases/v1.2.0-beta.1.md)。
 - 其他产物目录由相应技能按需创建；不预建完整目录树或空白模板。
 
 项目介绍见 [README](../README.md)，当前进度见 [current.md](current.md)，产品定位与方向见 [STRATEGY.md](../STRATEGY.md)，业务概念与既有取舍见 [CONCEPTS.md](../CONCEPTS.md)，运行和测试见 [客户端 README](../app/README.md)。工作上下文来自当前任务、相关计划、代码、测试和必要的 Issue；`current.md` 只保留简短的项目进度，提交前按实际变化更新。
@@ -23,4 +23,4 @@
 - 侧车发版与升级核对：[模型权重再分发许可核实](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/background/2026-09-10-docling-sidecar/model-license-review.md)、[打包体积与速度复核](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/background/2026-09-10-docling-sidecar/packaging-measurements.md)。
 - 性能对照：[v1.0.0 与 #74 优化后的 #85 走查](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/draft/2026-09-19-issue85-walkthrough.md)。
 
-`.compound-engineering/config.yaml` 与 `config.example.yaml` 是旧 CE 配置及示例，不控制 NexusKit。现行开发入口和知识检索约定见 [AGENTS.md](../AGENTS.md)。
+旧 CE 配置及示例已按用户要求删除。现行开发入口和知识检索约定见 [AGENTS.md](../AGENTS.md)。
