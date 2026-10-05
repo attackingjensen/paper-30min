@@ -26,3 +26,22 @@ test('下载进度与失败重试保留目标版本', () => {
   assert.equal(failed.version, '1.2.1');
   assert.equal(updateState(failed, { type: 'installing' }).status, 'installing');
 });
+
+test('安装前检查与下载验签完成后的安装分属不同状态', () => {
+  const available = updateState(null, { type: 'available', version: '9.9.9', notes: 'fixture' });
+  const preparing = updateState(available, { type: 'preparing' });
+  assert.equal(preparing.status, 'preparing');
+  assert.equal(updateStatusText(preparing), '正在检查安装更新…');
+  const downloaded = updateState(preparing, { type: 'downloaded' });
+  assert.equal(updateStatusText(downloaded), '下载完成，正在安装…');
+});
+
+test('检查与下载停流错误显示具体阶段并保留重试版本', () => {
+  const available = updateState(null, { type: 'available', version: '9.9.9' });
+  for (const error of ['检查更新超时，请重试。', '下载更新停流超时，请检查网络后重试。']) {
+    const failed = updateState(available, { type: 'install-error', error });
+    assert.equal(failed.version, '9.9.9');
+    assert.equal(updateStatusText(failed), `更新失败：${error}`);
+    assert.equal(updateState(failed, { type: 'preparing' }).error, '');
+  }
+});

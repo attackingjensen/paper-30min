@@ -1,0 +1,42 @@
+---
+title: Windows 签名发布的证据分层
+date: 2026-09-24
+category: workflow-issues
+module: windows_release
+problem_type: workflow_issue
+component: development_workflow
+severity: high
+applies_when:
+  - "发布 Windows 主程序安装包及更新清单"
+  - "将已经审查的 Beta 版本提升为正式版"
+tags:
+  - signed-release
+  - release-verification
+  - windows-updater
+  - evidence-levels
+---
+
+# Windows 签名发布的证据分层
+
+## Context
+
+v1.2.0 首轮发布审查在已有测试和安装器试构建之后确认了四项 P1，其中发布校验曾接受与安装包字节不匹配的非空签名。审查、修复和复审完成后才重新构建发布包。后来 Beta.2 升正式版时主程序运行时代码不变，仅将版本元数据改为正式版，仍需重新构建、签名并生成稳定通道的更新清单。[首轮审查](https://github.com/attackingjensen/paper-30min/blob/894f51a/docs/reviews/2026-09-24-v1.2-pre-release.md)、[正式版差异审查](https://github.com/attackingjensen/paper-30min/blob/894f51a/docs/reviews/2026-09-24-v1.2-final-metadata.md)保留了当时的证据。
+
+## Guidance
+
+按实际证据分别记录四个结论：
+
+1. **源码可交付**：审查本次要发布的差异；修复发现后复审受影响部分。最终发布包应在代码审查收敛后构建。为验证安装脚本而做的早期试构建，只证明当时的构建步骤能运行。
+2. **本地产物一致**：从最终版本源重新构建并签名。核对主程序版本、安装包文件名、安装包实际字节与 `.sig`、更新清单中的版本和 URL；组件版本可以独立，但组件 ZIP 必须与主程序内置的可信清单一致。`.sig` 是安装包的更新器签名，`latest.json` 携带它，自身没有单独签名。[发布工具](../../../tools/release_manifest.mjs)执行字节验签及清单核对，具体命令见[客户端发版说明](../../../app/README.md)。
+3. **远端附件一致**：上传后从 GitHub 下载回安装包、`.sig` 和清单，重新验签并比较哈希；检查稳定版端点实际返回目标版本。上传成功和附件名称正确，尚不足以证明下载到的字节正确。
+4. **安装行为可用**：真实 Windows 安装版的原地升级、应用内更新、组件安装与卸载、旧书库保留须分别走查。JavaScript 单测、桥接 smoke 和清单验签都不能替代这些操作。未运行的项目逐项写成未验证。
+
+## Why This Matters
+
+每层检查覆盖不同故障。发布工具能识别旧签名或错误文件名，却无法证明 NSIS 升级会保留旧侧车和书库。真实窗口试用能发现模型等待和界面问题，却不能证明远端更新清单与安装包签名匹配。v1.2.0 在用户确认当前验收范围后发布，未完成的安装版走查仍保留在[正式版说明](../../releases/v1.2.0.md)和[当前状态](../../current.md)，不记为通过。
+
+## When to Apply
+
+- 新版本更改了 Tauri、NSIS、更新器或组件交付方式时，四层都要重新评估。
+- 已审查的 Beta 只改版本号升正式版时，可针对新增差异审查；版本、安装包和签名仍须重新生成。
+- 发布门槛因实际验收范围变化而调整时，明确写下未验证的项目和这次决定，不把一次放行解释成永久降低门槛。

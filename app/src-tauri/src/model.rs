@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::BridgeError;
 use crate::library::Library;
+use crate::settings::{proxy_mode, ProxyMode};
 use crate::tasks::{run_with_retry_while, Progress, RunContext};
 
 /// 部分中转站按 UA/TLS 指纹拦截非浏览器客户端，因此使用浏览器 UA。
@@ -117,8 +118,10 @@ fn collapse_slashes(value: &str) -> String {
 
 /// 构造带浏览器 UA 的阻塞客户端；连接超时 20s，总超时由调用方按任务给出。
 /// 供 net.rs 等非模型路径使用；模型调用走 [`shared_http_client`] 以便跨轮复用连接。
-pub(crate) fn http_client(total_timeout: Duration) -> Result<Client, BridgeError> {
-    Client::builder()
+pub(crate) fn http_client(total_timeout: Duration, mode: ProxyMode) -> Result<Client, BridgeError> {
+    let builder = Client::builder();
+    let builder = if mode == ProxyMode::Direct { builder.no_proxy() } else { builder };
+    builder
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(total_timeout)
         .user_agent(BROWSER_UA)
@@ -127,18 +130,23 @@ pub(crate) fn http_client(total_timeout: Duration) -> Result<Client, BridgeError
 }
 
 /// 进程级共享客户端：无总超时（按请求设置 600/15/20 s），跨协议轮与 chat/test 复用连接。
-pub(crate) fn shared_http_client() -> Result<&'static Client, BridgeError> {
-    static CLIENT: OnceLock<Client> = OnceLock::new();
-    if let Some(client) = CLIENT.get() {
+pub(crate) fn shared_http_client(mode: ProxyMode) -> Result<&'static Client, BridgeError> {
+    // Separate pools let saved mode changes take effect on the next request.
+    static SYSTEM: OnceLock<Client> = OnceLock::new();
+    static DIRECT: OnceLock<Client> = OnceLock::new();
+    let cache = if mode == ProxyMode::Direct { &DIRECT } else { &SYSTEM };
+    if let Some(client) = cache.get() {
         return Ok(client);
     }
-    let client = Client::builder()
+    let builder = Client::builder();
+    let builder = if mode == ProxyMode::Direct { builder.no_proxy() } else { builder };
+    let client = builder
         .connect_timeout(CONNECT_TIMEOUT)
         .pool_max_idle_per_host(4)
         .user_agent(BROWSER_UA)
         .build()
         .map_err(|err| BridgeError::internal(format!("HTTP 客户端初始化失败: {err}")))?;
-    Ok(CLIENT.get_or_init(|| client))
+    Ok(cache.get_or_init(|| client))
 }
 
 /// 一轮 chat 的 usage；端点不返回的字段保持缺省。
@@ -235,6 +243,7 @@ pub(crate) struct ChatCompletion {
 impl ChatCompletion {
     pub(crate) fn to_chat_result(&self) -> Value {
         let mut map = Map::new();
+        map.insert("text".into(), json!(self.text));
         map.insert("ttftMs".into(), json!(self.ttft_ms));
         map.insert("elapsedMs".into(), json!(self.elapsed_ms));
         if let Some(ms) = self.reasoning_ms {
@@ -435,6 +444,7 @@ pub(crate) fn validate_stage_extra_body(value: &Value) -> Result<Value, BridgeEr
 
 /// POST chat/completions：共享客户端 + 按请求超时；SSE 抽增量与 usage（含 `choices: []`）。
 pub(crate) fn chat_completions<D, C, T>(
+    mode: ProxyMode,
     api_key: &str,
     endpoint: &str,
     body: &Value,
@@ -449,7 +459,7 @@ where
     T: FnMut(u64, u64) -> Result<(), BridgeError> + Send,
 {
     let started = Instant::now();
-    let client = shared_http_client()?;
+    let client = shared_http_client(mode)?;
     let response = client
         .post(endpoint)
         .timeout(timeout)
@@ -730,7 +740,9 @@ where
         .to_string();
     let cache_key = (config.base_url.clone(), model);
     let body = apply_cached_caps(&cache_key, body);
+    let mode = proxy_mode(&ctx.library)?;
     let first = chat_completions(
+        mode,
         &config.api_key,
         endpoint,
         &body,
@@ -769,6 +781,7 @@ where
         ctx.push_warning(format!("param_renamed:{from}:{to}"));
     }
     match chat_completions(
+        proxy_mode(&ctx.library)?,
         &config.api_key,
         endpoint,
         &adjusted,
@@ -1302,7 +1315,7 @@ pub(crate) fn run_test(ctx: &RunContext) {
 /// 第一段：GET {endpoint}/models（总超时 15s）。成功时返回给用户的消息。
 fn test_models(ctx: &RunContext, config: &ModelConfig, endpoint: &str) -> Result<String, BridgeError> {
     ctx.cancel_checkpoint()?;
-    let client = shared_http_client()?;
+    let client = shared_http_client(proxy_mode(&ctx.library)?)?;
     let response = client
         .get(endpoint)
         .timeout(TEST_MODELS_TIMEOUT)
@@ -1355,7 +1368,7 @@ fn test_models(ctx: &RunContext, config: &ModelConfig, endpoint: &str) -> Result
 /// 第二段退路：POST chat/completions 最小请求（max_tokens=1，总超时 20s）。
 fn test_chat(ctx: &RunContext, config: &ModelConfig, endpoint: &str) -> Result<(), BridgeError> {
     ctx.cancel_checkpoint()?;
-    let client = shared_http_client()?;
+    let client = shared_http_client(proxy_mode(&ctx.library)?)?;
     let body = json!({
         "model": config.model,
         "messages": [{ "role": "user", "content": "ping" }],

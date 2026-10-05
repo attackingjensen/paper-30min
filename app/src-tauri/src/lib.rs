@@ -11,6 +11,7 @@ pub mod model;
 pub mod net;
 pub mod pdfassets;
 pub mod pdfmap;
+pub mod pdfmap_evidence;
 pub mod pdfparse;
 pub mod pdfpool;
 pub mod protocol;
@@ -91,6 +92,15 @@ fn bridge_invoke(
     bridge::invoke(&state.registry, &state.library, &command, &input)
 }
 
+#[tauri::command]
+async fn pdfmap_source_regions(state: State<'_, AppState>, input: Value) -> Result<Value, BridgeError> {
+    let registry = state.registry.clone();
+    let library = state.library.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        bridge::invoke(&registry, &library, "pdfmap.getSourceRegions@1", &input)
+    }).await.map_err(|err| BridgeError::internal(format!("来源恢复失败: {err}")))?
+}
+
 /// 打开单选文件对话框（阻塞式）；取消返回 path: null。
 /// 需要窗口句柄，由 Tauri 命令层拦截，不进 bridge::invoke 纯函数分发。
 fn dialog_pick_file(window: &WebviewWindow, input: &Value) -> Result<Value, BridgeError> {
@@ -160,8 +170,8 @@ fn updater_info(app: AppHandle) -> Value {
 }
 
 #[tauri::command]
-async fn updater_check(app: AppHandle) -> Result<Value, BridgeError> {
-    updater::check(&app).await
+async fn updater_check(app: AppHandle, state: State<'_, AppState>) -> Result<Value, BridgeError> {
+    updater::check(&app, settings::proxy_mode(&state.library)?).await
 }
 
 #[tauri::command]
@@ -258,6 +268,24 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                window.with_webview(|webview| {
+                    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings5;
+                    use windows_core::Interface;
+                    // Wry couples pinch input to browser hotkeys; PDF zoom owns its wheel events.
+                    let enable_pinch = || -> windows_core::Result<()> {
+                        unsafe {
+                            let settings = webview.controller().CoreWebView2()?.Settings()?;
+                            settings.cast::<ICoreWebView2Settings5>()?.SetIsPinchZoomEnabled(true)?;
+                        }
+                        Ok(())
+                    };
+                    if let Err(error) = enable_pinch() {
+                        eprintln!("[pdf] enable trackpad pinch input failed: {error}");
+                    }
+                })?;
+            }
             let root = app.path().app_data_dir()?;
             let component_root = component::component_root(&app.path().app_local_data_dir()?);
             pdfparse::set_component_root(component_root.clone());
@@ -302,6 +330,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bridge_invoke,
+            pdfmap_source_regions,
             bridge_start,
             updater_info,
             updater_check,

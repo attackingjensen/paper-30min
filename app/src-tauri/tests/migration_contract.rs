@@ -678,3 +678,62 @@ fn app_info_lists_migration_commands() {
         );
     }
 }
+
+fn screenshot_paper() -> Value {
+    let mut paper = sample_browser_paper("screenshot", "Screenshot history");
+    paper["chat"] = json!([{ "role": "user", "content": "Explain image", "bindingKind": "pdf",
+        "pdfSelection": { "kind": "area", "text": "", "regions": [{ "page": 1,
+            "bbox": [0, 0, 100, 100], "pageSize": [612, 792] }],
+            "images": [{ "page": 1, "attachmentId": "pdf-selection-test" }] } }]);
+    paper["selectionAttachments"] = json!([{ "id": "pdf-selection-test", "name": "selection.webp",
+        "contentType": "image/webp", "contentBase64": "aW1hZ2U=" }]);
+    paper
+}
+
+#[test]
+fn screenshot_migration_restores_referenced_bytes_and_history() {
+    let (registry, library, dir) = common::env();
+    let path = write_export(dir.path(), "screenshots.json", &envelope(vec![screenshot_paper()]));
+    let report = inspect(&registry, &library, &path);
+    let result = commit(&registry, &library, report["token"].as_str().unwrap());
+    assert_eq!(result["attachments"], json!(2));
+    let image = invoke(&registry, &library, "files.readRange@1", json!({
+        "paperId": "screenshot", "attachmentId": "pdf-selection-test", "offset": 0, "length": 5 }));
+    assert_eq!(image["contentBase64"], json!("aW1hZ2U="));
+    let paper = invoke(&registry, &library, "library.getPaper@1", json!({ "paperId": "screenshot" }));
+    assert_eq!(paper["paper"]["chat"][0]["pdfSelection"]["images"][0]["attachmentId"], json!("pdf-selection-test"));
+}
+
+#[test]
+fn screenshot_migration_rejects_missing_corrupt_or_duplicate_images() {
+    for invalid in [Value::Null, json!([{ "id": "pdf-selection-test", "contentBase64": "invalid!" }]),
+        json!([{ "id": "pdf-selection-test", "contentBase64": "" }]),
+        json!([{ "id": "pdf-selection-test", "contentBase64": "aW1hZ2U=" },
+            { "id": "pdf-selection-test", "contentBase64": "aW1hZ2U=" }])] {
+        let (registry, library, dir) = common::env();
+        let mut paper = screenshot_paper();
+        paper["selectionAttachments"] = invalid;
+        let path = write_export(dir.path(), "invalid.json", &envelope(vec![paper]));
+        let report = inspect(&registry, &library, &path);
+        assert_eq!(report["conflicts"]["invalid"], json!(1));
+        let result = commit(&registry, &library, report["token"].as_str().unwrap());
+        assert_eq!(result["added"], json!(0));
+    }
+}
+
+#[test]
+fn screenshot_write_failure_rolls_back_paper_and_prior_pdf() {
+    let (registry, library, dir) = common::env();
+    let path = write_export(dir.path(), "screenshots.json", &envelope(vec![screenshot_paper()]));
+    let report = inspect(&registry, &library, &path);
+    let folder = dir.path().join("attachments").join("screenshot");
+    fs::create_dir_all(folder.join("pdf-selection-test.part")).unwrap();
+    commit_err(&registry, &library, report["token"].as_str().unwrap());
+    assert!(!folder.join("pdf").exists());
+    let papers = invoke(&registry, &library, "library.listPapers@1", json!({}));
+    assert!(papers["papers"].as_array().unwrap().is_empty());
+    fs::remove_dir(folder.join("pdf-selection-test.part")).unwrap();
+    let retry = commit(&registry, &library, report["token"].as_str().unwrap());
+    assert_eq!(retry["added"], json!(1));
+    assert_eq!(retry["attachments"], json!(2));
+}

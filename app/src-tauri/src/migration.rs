@@ -90,7 +90,7 @@ enum PreparedPaper {
     },
     Ready {
         paper: PaperDto,
-        attachment: Option<PendingAttachment>,
+        attachments: Vec<PendingAttachment>,
     },
 }
 
@@ -529,6 +529,7 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
                 fragment_text: convert_optional_text(item.get("fragmentText")),
                 cite: convert_cite(item.get("cite")),
                 asset_ids: convert_asset_ids(item.get("assetIds")),
+                pdf_selection: item.get("pdfSelection").filter(|value| value.is_object()).cloned(),
             };
             // 清洗而非拒绝整篇：缺必备字段的绑定降为 none，旧导出无绑定列也走这条。
             if message.binding_kind == "section" && message.sec_id.is_none() {
@@ -537,11 +538,13 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
             if message.binding_kind == "fragment" && message.fragment_text.is_none() {
                 message.binding_kind = "none".to_string();
             }
+            if message.binding_kind == "pdf" && message.pdf_selection.is_none() { message.binding_kind = "none".to_string(); }
             if message.binding_kind == "none" {
                 message.sec_id = None;
                 message.fragment_text = None;
                 message.cite = None;
                 message.asset_ids.clear();
+                message.pdf_selection = None;
             }
             Some(message)
         })
@@ -854,7 +857,41 @@ fn convert_paper(raw: &Value) -> PreparedPaper {
             message: error.message,
         };
     }
-    PreparedPaper::Ready { paper, attachment }
+    let mut attachments: Vec<_> = attachment.into_iter().collect();
+    match convert_selection_attachments(raw, &paper) {
+        Ok(images) => attachments.extend(images),
+        Err(message) => return PreparedPaper::Invalid { paper_id: Some(paper.id), message },
+    }
+    PreparedPaper::Ready { paper, attachments }
+}
+
+fn convert_selection_attachments(raw: &Value, paper: &PaperDto) -> Result<Vec<PendingAttachment>, String> {
+    let mut seen = HashSet::new();
+    let mut attachments = Vec::new();
+    for message in &paper.chat {
+        let images = message.pdf_selection.as_ref().and_then(|selection| selection.get("images"))
+            .and_then(Value::as_array);
+        for image in images.into_iter().flatten() {
+            let id = image["attachmentId"].as_str().unwrap_or_default();
+            if !seen.insert(id) { continue; }
+            require_safe_segment(&paper.id, "paperId").map_err(|error| error.message)?;
+            let candidates: Vec<_> = raw.get("selectionAttachments").and_then(Value::as_array)
+                .into_iter().flatten().filter(|item| item["id"].as_str() == Some(id)).collect();
+            if candidates.len() != 1 { return Err(format!("选区截图缺失或重复: {id}")); }
+            let item = candidates[0];
+            let encoded = item["contentBase64"].as_str().ok_or_else(|| format!("选区截图缺少内容: {id}"))?;
+            let bytes = BASE64.decode(encoded.trim()).map_err(|_| format!("选区截图不是有效的 Base64: {id}"))?;
+            if bytes.is_empty() { return Err(format!("选区截图为空: {id}")); }
+            let content_type = item["contentType"].as_str().unwrap_or("image/webp");
+            if !matches!(content_type, "image/webp" | "image/png" | "image/jpeg") {
+                return Err(format!("选区截图类型无效: {id}"));
+            }
+            attachments.push(PendingAttachment { id: id.to_string(),
+                name: item["name"].as_str().unwrap_or(id).to_string(),
+                content_type: content_type.to_string(), bytes });
+        }
+    }
+    Ok(attachments)
 }
 
 fn prepare_papers(payload: &Value) -> Vec<PreparedPaper> {
@@ -992,11 +1029,11 @@ impl Library {
         for paper in prepared {
             match paper {
                 PreparedPaper::Invalid { .. } => skipped += 1,
-                PreparedPaper::Ready { paper, attachment } => {
+                PreparedPaper::Ready { paper, attachments } => {
                     if existing.contains(&paper.id) {
                         skipped += 1;
                     } else {
-                        to_add.push((paper, attachment));
+                        to_add.push((paper, attachments));
                     }
                 }
             }
@@ -1010,9 +1047,9 @@ impl Library {
             let tx = conn.transaction().map_err(|err| {
                 BridgeError::internal(format!("书库数据库错误: {err}"))
             })?;
-            for (paper, attachment) in &to_add {
+            for (paper, pending_attachments) in &to_add {
                 upsert_paper(&tx, paper)?;
-                if let Some(pending) = attachment {
+                for pending in pending_attachments {
                     let dest = attachment_path(self.root(), &paper.id, &pending.id)?;
                     write_atomic(&dest, &pending.bytes)?;
                     written.push(dest);

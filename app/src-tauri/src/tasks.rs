@@ -622,6 +622,10 @@ pub struct TaskRegistry {
 }
 
 impl TaskRegistry {
+    pub(crate) fn proxy_mode(&self) -> Result<crate::settings::ProxyMode, BridgeError> {
+        crate::settings::proxy_mode(&self.library)
+    }
+
     pub fn new(library: Arc<Library>) -> Arc<Self> {
         Arc::new(Self {
             entries: Mutex::new(HashMap::new()),

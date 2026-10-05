@@ -226,6 +226,7 @@
     <div class="pdf-resizer" id="pdf-resizer" role="separator" aria-orientation="vertical" aria-label="调节 PDF 对照栏宽度" title="拖拽调节 PDF 对照栏宽度"></div>
     <div class="pdf-sidebar-head">
       <strong>PDF 原文</strong>
+      <button class="pdf-icon-btn" id="btn-pdf-mode" type="button" title="全页阅读" aria-label="全页阅读" aria-pressed="false">⛶</button>
       <button class="pdf-icon-btn" id="btn-pdf-close" type="button" title="收起 PDF 对照栏" aria-label="收起 PDF 对照栏">×</button>
     </div>
     <div id="pdf-tasks" class="pdf-tasks" hidden></div>
@@ -242,15 +243,25 @@
           <span id="pdf-page-count">/ 1</span>
         </label>
         <button class="pdf-icon-btn" id="btn-pdf-next" type="button" title="下一页" aria-label="下一页">›</button>
+        <div class="pdf-tools" role="group" aria-label="PDF 工具">
+          <button class="pdf-icon-btn" id="pdf-tool-text" type="button" title="选择文字" aria-label="选择文字" aria-pressed="true"><img src="vendor/icons/text-cursor.svg" alt=""></button>
+          <button class="pdf-icon-btn" id="pdf-tool-area" type="button" title="框选区域" aria-label="框选区域" aria-pressed="false"><img src="vendor/icons/square-dashed-mouse-pointer.svg" alt=""></button>
+          <button class="pdf-icon-btn" id="pdf-tool-hand" type="button" title="抓手平移" aria-label="抓手平移" aria-pressed="false"><img src="vendor/icons/hand.svg" alt=""></button>
+        </div>
         <span class="spacer"></span>
         <button class="pdf-icon-btn" id="btn-pdf-zoom-out" type="button" title="缩小" aria-label="缩小">−</button>
         <span id="pdf-zoom-label" class="pdf-zoom-label">100%</span>
         <button class="pdf-icon-btn" id="btn-pdf-zoom-in" type="button" title="放大" aria-label="放大">＋</button>
         <button class="pdf-icon-btn" id="btn-pdf-fit" type="button" title="适配宽度" aria-label="适配宽度">⇹</button>
       </div>
-      <div class="pdf-canvas-wrap" id="pdf-canvas-wrap">
+      <div id="pdf-evidence-status" class="pdf-evidence-status" role="status" hidden></div>
+      <div class="pdf-canvas-wrap" id="pdf-canvas-wrap" tabindex="0">
         <div id="pdf-loading" class="pdf-loading">正在载入 PDF…</div>
-        <canvas id="pdf-canvas"></canvas>
+        <div id="pdf-render-error" class="pdf-render-error" hidden>
+          <span id="pdf-render-error-message"></span>
+          <button id="btn-pdf-retry" class="btn small" type="button">重试</button>
+        </div>
+        <div id="pdf-pages" class="pdf-pages" aria-label="PDF 页面"></div>
       </div>
     </div>
   </aside>
@@ -258,6 +269,18 @@
   <button class="pane-fab left" id="tree-fab" type="button" hidden title="展开节树">»</button>
   <button class="pane-fab right" id="pdf-fab" type="button" hidden title="展开 PDF 对照">«</button>
 </main>
+<div id="pdf-selection-popup" class="pdf-selection-popup" hidden>
+  <div class="pdf-selection-actions">
+    <select id="pdf-selection-language" aria-label="翻译语言"><option value="zh">中文</option><option value="en">English</option></select>
+    <button id="pdf-selection-translate" class="btn small primary" type="button">翻译</button>
+    <button id="pdf-selection-ask" class="btn small" type="button">提问</button>
+    <button id="pdf-selection-stop" class="btn small danger" type="button" hidden>停止</button>
+    <button id="pdf-selection-close" class="btn ghost pdf-icon-btn" type="button" title="关闭选区" aria-label="关闭选区">×</button>
+  </div>
+  <div id="pdf-selection-preview" class="pdf-selection-preview"></div>
+  <div id="pdf-selection-status" role="status" class="muted"></div>
+  <div id="pdf-selection-result" class="md pdf-selection-result" hidden></div>
+</div>
 
 <!-- ============ arXiv 导入弹窗 ============ -->
 <div class="modal-mask" id="modal-arxiv" hidden>
@@ -426,16 +449,15 @@
     </div>
   </section>
   <section id="settings-proxy" role="tabpanel" aria-labelledby="settings-tab-proxy" hidden>
-    <div class="settings-section-title">更新网络</div>
+    <div class="settings-section-title">网络连接</div>
     <div class="proxy-modes" role="radiogroup" aria-label="代理模式">
-      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="system" checked><span>系统代理</span><small>当前使用</small></label>
-      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="manual"><span>手动代理</span><small>预览</small></label>
+      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="system" checked><span>自动代理</span></label>
+      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="direct"><span>直连</span></label>
     </div>
-    <div class="proxy-manual" id="proxy-manual" hidden>
-      <label>代理地址<input id="proxy-url" type="text" inputmode="url" placeholder="http://127.0.0.1:7890"></label>
-      <div class="proxy-actions"><button class="btn small" type="button" disabled title="尚未接入本机代理检测">检测本机代理</button></div>
-      <p class="muted" role="status">手动代理尚未接入网络请求，当前仍使用系统代理。</p>
+    <div class="proxy-actions">
+      <button class="btn primary" id="btn-save-network-settings" type="button">保存</button>
     </div>
+    <p class="muted" id="network-settings-status" role="status" aria-live="polite"></p>
   </section>
   <section id="settings-skills" role="tabpanel" aria-labelledby="settings-tab-skills" hidden>
     <div class="settings-section-title">精读提示词</div>

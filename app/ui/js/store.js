@@ -8,7 +8,7 @@
 // - translations 记录侧键为 `sectionId:language`，DTO 拆成独立字段；
 // - readMarks 记录侧是 partId → 毫秒映射，DTO 是 [{partId, markedAt}] 数组；activityDays
 //   两侧同形 [{day, kind}]（day 为 YYYY-MM-DD 日历日，不做时区转换）；
-// - chat 两侧同为 [{role, content, createdAt, bindingKind, secId, fragmentText, cite, assetIds}]：
+// - chat 两侧同为 [{role, content, createdAt, bindingKind, secId, fragmentText, cite, assetIds, pdfSelection?}]：
 //   缺 bindingKind 回填 none；cite 是块区间出处对象或 null；assetIds 为附图 id 列表；
 //   合法性（kind 三值、@节需 secId、片段需原文、assistant 恒 none）由 Rust normalize 兜底；
 // - products 两侧同为 [{kind, partId, body, updatedAt}] 数组：body 是自由 JSON 值
@@ -173,8 +173,9 @@ function mapChatMessage(message, createdAt) {
     fragmentText: typeof message?.fragmentText === 'string' && message.fragmentText
       ? message.fragmentText
       : null,
-    cite: mapCite(message?.cite),
-    assetIds,
+      cite: mapCite(message?.cite),
+      assetIds,
+      ...(message?.pdfSelection ? { pdfSelection: structuredClone(message.pdfSelection) } : {}),
   };
 }
 
@@ -451,6 +452,20 @@ export function createTauriStore(bridge) {
     },
 
     get,
+
+    selectionAttachments: {
+      async read(paperId, id) {
+        const { attachment } = await bridge.invoke('files.getAttachment@1', { paperId, attachmentId: id });
+        const { contentBase64 } = await bridge.invoke('files.readRange@1', { paperId, attachmentId: id, offset: 0, length: attachment.size });
+        return { id, name: attachment.name, contentType: attachment.contentType, contentBase64 };
+      },
+      async write(paperId, attachment) {
+        await bridge.invoke('files.putAttachment@1', { paperId, attachment });
+      },
+      async cleanup(paperId, attachmentIds) {
+        await bridge.invoke('files.cleanupPdfSelections@1', { paperId, attachmentIds });
+      },
+    },
 
     async put(paper) {
       // PDF 字节不随记录持久化：pdfBlob 是运行时字段，不进 DTO。

@@ -16,6 +16,84 @@ function memoryStore() {
   };
 }
 
+test('selection screenshot exports restore bytes into an empty library and failed imports roll back', async () => {
+  const source = memoryStore();
+  const image = { id: 'pdf-selection-a', name: 'a.webp', contentType: 'image/webp', contentBase64: 'aGVsbG8=' };
+  source.records.set('p', { id: 'p', title: 'P', chat: [{ role: 'user', content: 'figure',
+    pdfSelection: { kind: 'area', images: [{ page: 1, attachmentId: image.id }] } }] });
+  source.selectionAttachments = { read: async () => image };
+  papers.init(source);
+  const payload = papers.parseLibraryFile(await papers.exportLibrary());
+  const target = memoryStore(), attachments = new Map();
+  target.selectionAttachments = { write: async (paperId, value) => {
+    assert.equal(target.records.get(paperId).chat.length, 0);
+    attachments.set(value.id, value);
+  } };
+  papers.init(target);
+  assert.deepEqual(await papers.importLibrary(payload), { added: 1, skipped: 0 });
+  assert.equal(attachments.get(image.id).contentBase64, image.contentBase64);
+  assert.equal(target.records.get('p').chat[0].pdfSelection.images[0].attachmentId, image.id);
+  const broken = memoryStore();
+  broken.selectionAttachments = { write: async () => { throw new Error('disk full'); } };
+  papers.init(broken);
+  await assert.rejects(papers.importLibrary(payload), /disk full/);
+  assert.equal(broken.records.has('p'), false);
+  const partial = memoryStore();
+  partial.put = async value => { partial.records.set(value.id, value); throw new Error('PDF upload failed'); };
+  papers.init(partial);
+  await assert.rejects(papers.importLibrary(payload), /PDF upload failed/);
+  assert.equal(partial.records.has('p'), false);
+  const native = memoryStore();
+  let pdfUploads = 0;
+  native.put = async value => {
+    native.records.set(value.id, structuredClone(value));
+    if (value.pdfBlob instanceof Blob) { pdfUploads++; value.pdfBlob = null; }
+  };
+  native.selectionAttachments = { write: async () => {} };
+  papers.init(native);
+  await papers.importLibrary({ papers: [{ ...payload.papers[0], pdfBlob: { base64: 'cGRm', type: 'application/pdf' } }] });
+  assert.equal(pdfUploads, 1);
+});
+
+test('chat eviction cleans only unreferenced screenshot IDs and failed saves retain prior history', async () => {
+  const adapter = memoryStore(), removed = [];
+  adapter.selectionAttachments = { cleanup: async (paperId, ids) => removed.push(...ids) };
+  papers.init(adapter);
+  const paper = { id: 'p', chat: Array.from({ length: 40 }, (_, index) => ({ role: 'user', content: String(index),
+    ...(index < 2 ? { pdfSelection: { images: [{ attachmentId: 'pdf-selection-shared' }] } } : {}) })) };
+  await papers.appendChatMessage(paper, { role: 'user', content: '41' });
+  assert.deepEqual(removed, []);
+  await papers.appendChatMessage(paper, { role: 'user', content: '42' });
+  assert.deepEqual(removed, ['pdf-selection-shared']);
+  const before = paper.chat;
+  adapter.put = async () => { throw new Error('save failed'); };
+  await assert.rejects(papers.appendChatMessage(paper, { content: 'lost' }), /save failed/);
+  assert.equal(paper.chat, before);
+});
+
+test('overlapping chat writes preserve both messages and a failed write does not block its successor', async () => {
+  const adapter = memoryStore();
+  let finish;
+  const writes = [];
+  adapter.put = async value => {
+    writes.push(value.chat.map(message => message.content));
+    if (writes.length === 1) await new Promise(resolve => { finish = resolve; });
+    if (value.chat.at(-1).content === 'failed') throw new Error('disk full');
+  };
+  papers.init(adapter);
+  const paper = { id: 'p', chat: [] };
+  const first = papers.appendChatMessage(paper, { content: 'first' });
+  const second = papers.appendChatMessage(paper, { content: 'second' });
+  await Promise.resolve();
+  assert.deepEqual(writes, [['first']]);
+  finish(); await Promise.all([first, second]);
+  assert.deepEqual(paper.chat.map(message => message.content), ['first', 'second']);
+  const failed = papers.appendChatMessage(paper, { content: 'failed' });
+  const next = papers.appendChatMessage(paper, { content: 'next' });
+  await assert.rejects(failed, /disk full/); await next;
+  assert.deepEqual(paper.chat.map(message => message.content), ['first', 'second', 'next']);
+});
+
 function resplitFixture() {
   return {
     id: 'p1',
