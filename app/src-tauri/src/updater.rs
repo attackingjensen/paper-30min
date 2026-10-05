@@ -17,8 +17,8 @@ pub fn info(app: &AppHandle) -> Value {
     json!({ "version": app.package_info().version.to_string() })
 }
 
-pub async fn check(app: &AppHandle) -> Result<Value, BridgeError> {
-    let updater = app.updater().map_err(check_error)?;
+pub async fn check(app: &AppHandle, mode: crate::settings::ProxyMode) -> Result<Value, BridgeError> {
+    let updater = configured_updater(app, mode).map_err(check_error)?;
     let update = check_update(&updater, CHECK_TIMEOUT).await?;
     Ok(match update {
         Some(update) => json!({
@@ -36,7 +36,7 @@ pub async fn install(
     registry: &TaskRegistry,
     expected_version: &str,
 ) -> Result<(), BridgeError> {
-    let updater = app.updater().map_err(install_error)?;
+    let updater = configured_updater(app, registry.proxy_mode()?).map_err(install_error)?;
     install_from_updater(
         &updater,
         gate,
@@ -58,6 +58,12 @@ async fn check_update(updater: &Updater, timeout: Duration) -> Result<Option<Upd
         .map_err(check_error)
 }
 
+fn configured_updater(app: &AppHandle, mode: crate::settings::ProxyMode) -> tauri_plugin_updater::Result<Updater> {
+    let builder = app.updater_builder();
+    let builder = if mode == crate::settings::ProxyMode::Direct { builder.no_proxy() } else { builder };
+    builder.build()
+}
+
 async fn install_from_updater(
     updater: &Updater,
     gate: &Arc<AdmissionGate>,
@@ -68,7 +74,7 @@ async fn install_from_updater(
     installer: impl FnOnce(&Update, Vec<u8>) -> tauri_plugin_updater::Result<()>,
 ) -> Result<(), BridgeError> {
     let _claim = gate.admit_update(registry)?;
-    let update = check_update(updater, deadlines.0)
+    let mut update = check_update(updater, deadlines.0)
         .await?
         .ok_or_else(|| BridgeError::new("update_unavailable", "当前没有可安装的更新。", false))?;
     if update.version != expected_version {
@@ -78,6 +84,7 @@ async fn install_from_updater(
             true,
         ));
     }
+    update.no_proxy = registry.proxy_mode()? == crate::settings::ProxyMode::Direct;
     let mut downloaded = 0_u64;
     let activity = DownloadActivity::new();
     let download = update.download(

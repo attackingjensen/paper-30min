@@ -4,6 +4,12 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+fn fixture_registry(directory: &tempfile::TempDir) -> Arc<TaskRegistry> {
+    let library = Arc::new(Library::open(directory.path()).unwrap());
+    crate::settings::put_network(&library, &json!({ "settings": { "proxyMode": "direct" } })).unwrap();
+    TaskRegistry::new(library)
+}
+
 fn stalled_updater() -> (tauri::App<tauri::test::MockRuntime>, Updater) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/latest.json", listener.local_addr().unwrap());
@@ -235,7 +241,7 @@ impl Drop for DownloadFixture {
 async fn assert_download_failure(mode: DownloadMode, expected: &str) {
     let fixture = DownloadFixture::new(mode);
     let directory = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new(Arc::new(Library::open(directory.path()).unwrap()));
+    let registry = fixture_registry(&directory);
     let gate = AdmissionGate::new();
     let mut events = Vec::new();
     let result = tokio::time::timeout(
@@ -310,7 +316,7 @@ async fn invalid_signature_never_announces_installation_or_installs() {
 async fn changed_version_does_not_download() {
     let fixture = DownloadFixture::new(DownloadMode::ChangedVersion);
     let directory = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new(Arc::new(Library::open(directory.path()).unwrap()));
+    let registry = fixture_registry(&directory);
     let gate = AdmissionGate::new();
     let error = install_from_updater(
         &fixture.updater,
@@ -336,7 +342,7 @@ async fn no_update_releases_admission() {
         .unwrap()
         .is_none());
     let directory = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new(Arc::new(Library::open(directory.path()).unwrap()));
+    let registry = fixture_registry(&directory);
     let gate = AdmissionGate::new();
     let error = install_from_updater(
         &fixture.updater,
@@ -357,7 +363,7 @@ async fn no_update_releases_admission() {
 async fn progressing_download_verifies_then_installs_without_install_deadline() {
     let fixture = DownloadFixture::new(DownloadMode::Slow);
     let directory = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new(Arc::new(Library::open(directory.path()).unwrap()));
+    let registry = fixture_registry(&directory);
     let gate = AdmissionGate::new();
     let mut events = Vec::new();
     let mut installed = false;
@@ -419,7 +425,7 @@ async fn zero_byte_notifications_cannot_extend_idle_deadline() {
 async fn signed_version_mismatch_does_not_install() {
     let fixture = DownloadFixture::new(DownloadMode::ChangedVersion);
     let directory = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new(Arc::new(Library::open(directory.path()).unwrap()));
+    let registry = fixture_registry(&directory);
     let gate = AdmissionGate::new();
     let mut finished = false;
     let error = install_from_updater(
@@ -444,7 +450,7 @@ async fn signed_version_mismatch_does_not_install() {
 async fn installer_error_preserves_admission_until_it_returns() {
     let fixture = DownloadFixture::new(DownloadMode::Complete);
     let directory = tempfile::tempdir().unwrap();
-    let registry = TaskRegistry::new(Arc::new(Library::open(directory.path()).unwrap()));
+    let registry = fixture_registry(&directory);
     let gate = AdmissionGate::new();
     let error = install_from_updater(
         &fixture.updater,

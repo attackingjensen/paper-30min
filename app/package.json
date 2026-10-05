@@ -10,7 +10,8 @@
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "smoke": "cargo run --manifest-path src-tauri/Cargo.toml -- --bridge-smoke",
     "test:pdf-webview": "node tests/integration/pdf-webview.mjs",
-    "test:updater-webview": "node tests/integration/updater-webview.mjs"
+    "test:updater-webview": "node tests/integration/updater-webview.mjs",
+    "test:network-webview": "node tests/integration/network-webview.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

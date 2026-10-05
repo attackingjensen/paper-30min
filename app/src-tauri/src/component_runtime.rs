@@ -188,6 +188,7 @@ impl ComponentRuntime {
                     "正在下载解析组件",
                 );
                 download_archive(
+                    registry.proxy_mode()?,
                     DOWNLOAD_URL,
                     &mut output,
                     manifest.archive_bytes,
@@ -367,6 +368,7 @@ fn verify_total_bytes(done: u64, total: u64) -> Result<(), BridgeError> {
 /// 会在慢速网络上误杀 885 MB 的正常下载；按读超时只掐断连续无字节的停流。
 /// 读取期间也轮询 `checkpoint`，使停流时的取消无需等待按读超时。
 pub fn download_archive(
+    mode: crate::settings::ProxyMode,
     url: &str,
     output: &mut File,
     total: u64,
@@ -375,7 +377,9 @@ pub fn download_archive(
     checkpoint: &(dyn Fn() -> io::Result<()> + Sync),
     progress: &(dyn Fn(u64) + Sync),
 ) -> Result<(), BridgeError> {
-    let client = reqwest::Client::builder()
+    let builder = reqwest::Client::builder();
+    let builder = if mode == crate::settings::ProxyMode::Direct { builder.no_proxy() } else { builder };
+    let client = builder
         .connect_timeout(connect_timeout)
         .read_timeout(read_timeout)
         .build()

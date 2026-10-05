@@ -449,16 +449,15 @@
     </div>
   </section>
   <section id="settings-proxy" role="tabpanel" aria-labelledby="settings-tab-proxy" hidden>
-    <div class="settings-section-title">更新网络</div>
+    <div class="settings-section-title">网络连接</div>
     <div class="proxy-modes" role="radiogroup" aria-label="代理模式">
-      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="system" checked><span>系统代理</span><small>当前使用</small></label>
-      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="manual"><span>手动代理</span><small>预览</small></label>
+      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="system" checked><span>自动代理</span></label>
+      <label class="proxy-mode"><input type="radio" name="proxy-mode" value="direct"><span>直连</span></label>
     </div>
-    <div class="proxy-manual" id="proxy-manual" hidden>
-      <label>代理地址<input id="proxy-url" type="text" inputmode="url" placeholder="http://127.0.0.1:7890"></label>
-      <div class="proxy-actions"><button class="btn small" type="button" disabled title="尚未接入本机代理检测">检测本机代理</button></div>
-      <p class="muted" role="status">手动代理尚未接入网络请求，当前仍使用系统代理。</p>
+    <div class="proxy-actions">
+      <button class="btn primary" id="btn-save-network-settings" type="button">保存</button>
     </div>
+    <p class="muted" id="network-settings-status" role="status" aria-live="polite"></p>
   </section>
   <section id="settings-skills" role="tabpanel" aria-labelledby="settings-tab-skills" hidden>
     <div class="settings-section-title">精读提示词</div>

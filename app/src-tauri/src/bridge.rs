@@ -41,6 +41,7 @@ pub fn available_commands() -> &'static [&'static str] {
         "settings.putPdfparse@1",
         "settings.putProtocol@1",
         "settings.putUi@1",
+        "settings.putNetwork@1",
         "pdfparse.status@1",
         "pdfmap.getSourceRegions@1",
         "skills.list@1",
@@ -234,6 +235,7 @@ pub fn invoke(
         "settings.putPdfparse@1" => crate::settings::put_pdfparse(library, input),
         "settings.putProtocol@1" => crate::settings::put_protocol(library, input),
         "settings.putUi@1" => crate::settings::put_ui(library, input),
+        "settings.putNetwork@1" => crate::settings::put_network(library, input),
         "pdfparse.status@1" => {
             let mut sidecar = crate::pdfparse::status(library);
             // 常驻侧车状态（#84）：未启动 / 预热中 / 就绪 / 已释放 / 已停用。

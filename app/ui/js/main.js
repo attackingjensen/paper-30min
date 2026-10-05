@@ -3442,15 +3442,21 @@ async function openSettingsModal(tab = 'about') {
   let concurrency = 3;
   let warmStart = true;
   let idleMinutes = 10;
+  $('#btn-save-network-settings').disabled = true;
+  $('#network-settings-status').textContent = '';
   try {
     const all = await bridge.invoke('settings.get@1');
+    $$('input[name="proxy-mode"]').forEach(el => {
+      el.checked = el.value === (all?.network?.proxyMode === 'direct' ? 'direct' : 'system');
+    });
+    $('#btn-save-network-settings').disabled = false;
     if (all?.pdfparse?.tableMode === 'accurate') tableMode = 'accurate';
     const n = Number(all?.protocol?.concurrency);
     if (Number.isFinite(n)) concurrency = n;
     if (typeof all?.pdfparse?.warmStart === 'boolean') warmStart = all.pdfparse.warmStart;
     const m = Number(all?.pdfparse?.idleShutdownMinutes);
     if (Number.isFinite(m) && m >= 1 && m <= 240) idleMinutes = m;
-  } catch (_) { /* 读失败时保持缺省 */ }
+  } catch (_) { $('#network-settings-status').textContent = '网络设置读取失败，请重新打开设置。'; }
   $$('input[name="set-table-mode"]').forEach(el => {
     el.checked = el.value === tableMode;
   });
@@ -4113,9 +4119,22 @@ function bindEvents() {
       selectSettingsTab(tabs[next].dataset.settingsTab);
     };
   });
-  $$('input[name="proxy-mode"]').forEach(input => {
-    input.onchange = () => { $('#proxy-manual').hidden = input.value !== 'manual'; };
-  });
+  $('#btn-save-network-settings').onclick = async () => {
+    const button = $('#btn-save-network-settings');
+    const controls = $$('input[name="proxy-mode"]');
+    const proxyMode = controls.find(input => input.checked)?.value;
+    button.disabled = true;
+    controls.forEach(input => { input.disabled = true; });
+    try {
+      await bridge.invoke('settings.putNetwork@1', { settings: { proxyMode } });
+      $('#network-settings-status').textContent = '网络设置已保存';
+    } catch (err) {
+      $('#network-settings-status').textContent = '网络设置保存失败：' + errorText(err);
+    } finally {
+      button.disabled = false;
+      controls.forEach(input => { input.disabled = false; });
+    }
+  };
   $$('[data-external]').forEach(button => {
     button.onclick = () => bridge.openExternal(button.dataset.external)
       .catch(err => toast(`打开链接失败：${errorText(err)}`, true));

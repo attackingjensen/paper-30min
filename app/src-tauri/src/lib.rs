@@ -170,8 +170,8 @@ fn updater_info(app: AppHandle) -> Value {
 }
 
 #[tauri::command]
-async fn updater_check(app: AppHandle) -> Result<Value, BridgeError> {
-    updater::check(&app).await
+async fn updater_check(app: AppHandle, state: State<'_, AppState>) -> Result<Value, BridgeError> {
+    updater::check(&app, settings::proxy_mode(&state.library)?).await
 }
 
 #[tauri::command]
