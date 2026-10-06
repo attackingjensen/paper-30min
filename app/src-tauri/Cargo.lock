@@ -2913,6 +2913,7 @@ dependencies = [
  "base64 0.22.1",
  "flate2",
  "lopdf",
+ "png 0.18.1",
  "reqwest 0.12.28",
  "rusqlite",
  "scraper",

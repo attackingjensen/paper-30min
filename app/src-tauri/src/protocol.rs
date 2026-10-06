@@ -327,6 +327,40 @@ impl SkillSet {
 // 块模型访问：加载、节/部分映射、文本层渲染
 // ============================================================================
 
+fn load_cloud_visual_assets(
+    library: &Library,
+    snapshot: &ParseBatchSnapshot,
+    mapped: &MappedPaper,
+) -> Result<Option<crate::cloudassets::VisualAssets>, BridgeError> {
+    if snapshot.manifest.provider != "baidu" {
+        return Ok(None);
+    }
+    crate::cloudassets::read_visual_assets(library, snapshot, mapped).map(Some)
+}
+
+fn section_cloud_assets<'a>(
+    visual: &'a crate::cloudassets::VisualAssets,
+    sec_id: &str,
+    key_assets: &[String],
+) -> Vec<&'a crate::cloudassets::VisualAsset> {
+    let mut selected: Vec<_> = visual
+        .assets
+        .iter()
+        .filter(|asset| asset.sec_id == sec_id || key_assets.contains(&asset.id))
+        .collect();
+    selected.sort_by_key(|asset| {
+        (
+            asset
+                .resources
+                .first()
+                .map(|resource| resource.page)
+                .unwrap_or(0),
+            asset.block_id,
+        )
+    });
+    selected
+}
+
 fn load_block_model(
     library: &Library,
     snapshot: &ParseBatchSnapshot,
@@ -995,6 +1029,13 @@ fn exec_get_figure(
     args: &Map<String, Value>,
 ) -> ToolOutcome {
     let fig_id = args.get("fig_id").and_then(Value::as_str).unwrap_or("");
+    match load_cloud_visual_assets(library, snapshot, mapped) {
+        Ok(Some(visual)) => return exec_get_cloud_figure(library, snapshot, &visual, fig_id),
+        Err(error) => {
+            return tool_error_observation(TOOL_GET_FIGURE, "asset_missing", error.message)
+        }
+        Ok(None) => {}
+    }
     let entry = mapped
         .figures
         .iter()
@@ -1049,6 +1090,36 @@ fn exec_get_figure(
     }
 }
 
+fn exec_get_cloud_figure(
+    library: &Library,
+    snapshot: &ParseBatchSnapshot,
+    visual: &crate::cloudassets::VisualAssets,
+    fig_id: &str,
+) -> ToolOutcome {
+    let Some(asset) = visual.assets.iter().find(|asset| asset.id == fig_id) else {
+        return tool_error_observation(
+            TOOL_GET_FIGURE,
+            "unknown_figure",
+            format!("视觉资产不存在: {fig_id}"),
+        );
+    };
+    let mut images = Vec::new();
+    for resource in &asset.resources {
+        let Some(bytes) = read_attachment_bytes(library, snapshot, &resource.attachment_id) else {
+            return tool_error_observation(
+                TOOL_GET_FIGURE,
+                "asset_missing",
+                format!("证据附件缺失: {}", resource.attachment_id),
+            );
+        };
+        images.push(bytes);
+    }
+    ToolOutcome {
+        observation: json!({"tool": TOOL_GET_FIGURE, "ok": true, "result": asset}),
+        images,
+    }
+}
+
 fn exec_get_page_image(
     library: &Library,
     snapshot: &ParseBatchSnapshot,
@@ -1085,13 +1156,25 @@ fn execute_tool(
     library: &Library,
     snapshot: &ParseBatchSnapshot,
     mapped: &MappedPaper,
+    visual: Option<&crate::cloudassets::VisualAssets>,
     name: &str,
     args: &Map<String, Value>,
 ) -> ToolOutcome {
     match name {
         TOOL_READ_SECTION => exec_read_section(mapped, args),
         TOOL_SEARCH_PAPER => exec_search_paper(mapped, args),
-        TOOL_GET_FIGURE => exec_get_figure(library, snapshot, mapped, args),
+        TOOL_GET_FIGURE => {
+            if let Some(visual) = visual {
+                exec_get_cloud_figure(
+                    library,
+                    snapshot,
+                    visual,
+                    args.get("fig_id").and_then(Value::as_str).unwrap_or(""),
+                )
+            } else {
+                exec_get_figure(library, snapshot, mapped, args)
+            }
+        }
         TOOL_GET_PAGE_IMAGE => exec_get_page_image(library, snapshot, mapped, args),
         _ => unreachable!("工具名已校验"),
     }
@@ -1421,17 +1504,22 @@ fn error_observation(code: &str, message: impl Into<String>) -> Value {
 }
 
 /// 用户消息：无图像用纯文本形态，有图像用多模态分段形态（文本段在前，
-/// webp data URL，OpenAI 兼容）。配方首条与工具观察共用此构造函数。
+/// PNG / WebP data URL，OpenAI 兼容）。配方首条与工具观察共用此构造函数。
 fn user_message(text: String, images: Vec<Vec<u8>>) -> Value {
     if images.is_empty() {
         return json!({ "role": "user", "content": text });
     }
     let mut parts = vec![json!({ "type": "text", "text": text })];
     for bytes in images {
+        let content_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            "image/png"
+        } else {
+            "image/webp"
+        };
         let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
         parts.push(json!({
             "type": "image_url",
-            "image_url": { "url": format!("data:image/webp;base64,{encoded}") },
+            "image_url": { "url": format!("data:{content_type};base64,{encoded}") },
         }));
     }
     json!({ "role": "user", "content": parts })
@@ -1687,6 +1775,7 @@ struct ProtocolEnv {
     paper: PaperDto,
     snapshot: ParseBatchSnapshot,
     mapped: MappedPaper,
+    visual: Option<crate::cloudassets::VisualAssets>,
     source_fingerprint: String,
     skills: SkillSet,
     config: model::ModelConfig,
@@ -1761,6 +1850,7 @@ fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError
         paper,
         snapshot,
         mapped,
+        visual: None,
         source_fingerprint,
         skills,
         config,
@@ -1781,14 +1871,17 @@ pub(crate) fn run_build_map(ctx: &RunContext, paper_id: &str, overwrite_confirme
     finish_run(ctx, build_map_main(ctx, paper_id, overwrite_confirmed));
 }
 
-/// 深挖开工前齐备检查：全部页图 + 图表清单全部裁切图（#74 B1 / #76：从建图迁来）。
+/// 深挖齐备检查：云端按可信来源验证完整视觉清单，本地沿用页图与图表裁切检查。
 /// 缺失即 preflight_missing，details 列出缺失附件。
 fn preflight_visual_assets(
     ctx: &RunContext,
     snapshot: &ParseBatchSnapshot,
     mapped: &MappedPaper,
-) -> Result<(), BridgeError> {
+) -> Result<Option<crate::cloudassets::VisualAssets>, BridgeError> {
     ctx.library.verify_parse_batch(snapshot)?;
+    if let Some(visual) = load_cloud_visual_assets(&ctx.library, snapshot, mapped)? {
+        return Ok(Some(visual));
+    }
     let mut missing: Vec<String> = Vec::new();
     for page in 1..=mapped.page_count {
         let asset_id = pdfassets::page_attachment_id(page);
@@ -1803,7 +1896,7 @@ fn preflight_visual_assets(
         }
     }
     if missing.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     Err(BridgeError::new(
         "preflight_missing",
@@ -2667,6 +2760,7 @@ fn dive_section(
     // 配方预附本节图表（#81）：帽内候选附裁切图，帽外与缺附件条目列在清单里。
     let candidates = section_asset_candidates(&env.mapped, section, &key_assets);
     let (planned, overflow) = plan_attached_assets(&candidates);
+    let cloud_visual = env.visual.as_ref();
     // 当前节页图 ±1 页随消息附图；附件缺失跳过并记 warning（文本层是忠实性构造保证，
     // 页图是补充通道）。
     let mut images: Vec<Vec<u8>> = Vec::new();
@@ -2684,12 +2778,19 @@ fn dive_section(
         ) {
             images.push(bytes);
             page_images += 1;
+        } else if cloud_visual.is_some() {
+            return Err(BridgeError::new(
+                "preflight_missing",
+                format!("页图证据不可用: {asset_id}"),
+                false,
+            )
+            .into());
         }
     }
     // 预附裁切图在页图之后；缺附件跳过并记 warning（get_figure 会如实报 asset_missing）。
     let mut attached_entries: Vec<&AssetEntry> = Vec::new();
     let mut other_ids: Vec<String> = overflow.iter().map(|entry| entry.id.clone()).collect();
-    for entry in &planned {
+    for entry in planned.iter().filter(|_| cloud_visual.is_none()) {
         let crop_asset_id = pdfassets::crop_attachment_id(&entry.id);
         match read_attachment_or_warn(
             &ctx.library,
@@ -2705,6 +2806,46 @@ fn dive_section(
             None => other_ids.push(entry.id.clone()),
         }
     }
+    let attached_assets = if let Some(visual) = &cloud_visual {
+        let selected = section_cloud_assets(visual, &section.id, &key_assets);
+        let mut lines = Vec::new();
+        let mut seen: HashSet<String> = (first..=last).map(pdfassets::page_attachment_id).collect();
+        for asset in selected {
+            for resource in &asset.resources {
+                if seen.insert(resource.attachment_id.clone()) {
+                    let bytes =
+                        read_attachment_bytes(&ctx.library, &env.snapshot, &resource.attachment_id)
+                            .ok_or_else(|| {
+                                BridgeError::new(
+                                    "preflight_missing",
+                                    format!("证据附件缺失: {}", resource.attachment_id),
+                                    false,
+                                )
+                            })?;
+                    images.push(bytes);
+                }
+            }
+            lines.push(format!(
+                "- {}（{}，L{}）：{}",
+                asset.id,
+                asset.sec_id,
+                asset.block_id,
+                asset
+                    .resources
+                    .iter()
+                    .map(|resource| format!("p{} {}", resource.page, resource.evidence))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            ));
+        }
+        if lines.is_empty() {
+            "（无）".to_string()
+        } else {
+            lines.join("\n")
+        }
+    } else {
+        render_attached_assets(&attached_entries, &other_ids)
+    };
     let prompt = env.skills.compose(
         STAGE_DEEP_DIVE,
         &[
@@ -2716,17 +2857,18 @@ fn dive_section(
             ("sectionType", section_type.as_str()),
             ("sectionText", section_text.as_str()),
             ("sectionPages", section_pages.as_str()),
-            (
-                "attachedAssets",
-                render_attached_assets(&attached_entries, &other_ids).as_str(),
-            ),
+            ("attachedAssets", attached_assets.as_str()),
         ],
         &section_type,
     )?;
     // 硬顶估算：文本 + 页图（1902/张）+ 预附裁切图（1024/张，#81）。
     let estimated = estimate_text_tokens(&prompt)
-        + page_images * PAGE_IMAGE_TOKEN_BUDGET
-        + attached_entries.len() as u64 * CROP_IMAGE_TOKEN_BUDGET;
+        + if cloud_visual.is_some() {
+            images.len() as u64 * PAGE_IMAGE_TOKEN_BUDGET
+        } else {
+            page_images * PAGE_IMAGE_TOKEN_BUDGET
+                + attached_entries.len() as u64 * CROP_IMAGE_TOKEN_BUDGET
+        };
     check_hard_top(estimated, "深挖初始配方").map_err(Halt::Failed)?;
 
     let mut messages = vec![user_message(prompt.clone(), images)];
@@ -2858,6 +3000,7 @@ fn dive_section(
                         &ctx.library,
                         &env.snapshot,
                         &env.mapped,
+                        env.visual.as_ref(),
                         &call.name,
                         &call.args,
                     );
@@ -2932,11 +3075,11 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
     if ctx.cancel_checkpoint().is_err() {
         return Err(Halt::Cancelled);
     }
-    let env = load_env(ctx, paper_id)?;
+    let mut env = load_env(ctx, paper_id)?;
     if product_body(&env.paper, "map", "").is_none() {
         return Err(Halt::Failed(map_required_error()));
     }
-    preflight_visual_assets(ctx, &env.snapshot, &env.mapped)?;
+    env.visual = preflight_visual_assets(ctx, &env.snapshot, &env.mapped)?;
     // partIds 校验与节映射：校验域是块模型内容节映射域（abstract + part-N，#87），
     // 不查记录 parts——UI 导入的 pdf.js 预切分与块模型不一致时，记录 parts 会误伤合法目标。
     // 未知部分 / 缺薄摘要都在开工前拒绝（错误即指令）。
@@ -3233,6 +3376,170 @@ fn synthesize_main(
 mod tests {
     use super::*;
     use crate::pdfmap::{AssetEntry, Block, BlockKind, ReferenceEntry, Subsection};
+
+    fn visual_fixture() -> crate::cloudassets::VisualAssets {
+        let resource = |id: &str, page: u32, evidence: &str| {
+            json!({
+                "attachmentId":id,"page":page,"evidence":evidence,"bbox":null,
+                "pageSize":[100.0,100.0],"width":200,"height":200
+            })
+        };
+        serde_json::from_value(json!({
+            "schemaVersion":1,"batchId":"visual-test","pdfSha256":"a".repeat(64),
+            "blockModelSha256":"b".repeat(64),
+            "pages":[resource("pageimg-0001",1,"page"),resource("pageimg-0002",2,"page")],
+            "assets":[
+                {"id":"fig_1","secId":"sec_method","blockId":1,"kind":"figure",
+                    "resources":[resource("crop-fig_1-r1",1,"region"),resource("crop-fig_1-r2",2,"region")]},
+                {"id":"tbl_1","secId":"sec_method","blockId":2,"kind":"table",
+                    "resources":[resource("pageimg-0001",1,"page"),resource("pageimg-0002",2,"page")]},
+                {"id":"formula-sec_method-b3","secId":"sec_method","blockId":3,"kind":"formula",
+                    "resources":[resource("crop-formula-r1",2,"region")]},
+                {"id":"visual-unnumbered","secId":"sec_method","blockId":4,"kind":"figure",
+                    "resources":[resource("pageimg-0002",2,"page")]}]
+        })).unwrap()
+    }
+
+    fn sealed_visual_reads(
+        missing: Option<&str>,
+    ) -> (tempfile::TempDir, Library, ParseBatchSnapshot) {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open(dir.path()).unwrap();
+        library
+            .put_paper(
+                serde_json::from_value(json!({
+                    "id":"visual-test-paper","title":"Visual","pdfName":"test.pdf",
+                    "addedAt":"2026-10-06T00:00:00Z","updatedAt":"2026-10-06T00:00:00Z"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let pdf = b"test-original-pdf".to_vec();
+        library
+            .put_attachment_bytes(
+                "visual-test-paper",
+                "pdf",
+                "test.pdf",
+                "application/pdf",
+                &pdf,
+            )
+            .unwrap();
+        let mut resources = std::collections::BTreeMap::from([("pdf".to_string(), pdf.clone())]);
+        for id in [
+            "pageimg-0001",
+            "pageimg-0002",
+            "crop-fig_1-r1",
+            "crop-fig_1-r2",
+            "crop-formula-r1",
+        ] {
+            if missing != Some(id) {
+                resources.insert(id.to_string(), id.as_bytes().to_vec());
+            }
+        }
+        library
+            .write_parse_batch(
+                crate::parsebatch::ParseBatchManifest {
+                    schema_version: 1,
+                    paper_id: "visual-test-paper".into(),
+                    batch_id: "visual-test".into(),
+                    pdf_sha256: crate::files::sha256_hex(&pdf),
+                    provider: "docling".into(),
+                    model: "test".into(),
+                    options: json!({}),
+                    raw_sha256: "c".repeat(64),
+                    attachments: Default::default(),
+                },
+                resources,
+            )
+            .unwrap();
+        let snapshot = library
+            .pin_parse_batch("visual-test-paper", Some("visual-test"))
+            .unwrap();
+        (dir, library, snapshot)
+    }
+
+    #[test]
+    fn cloud_figure_reads_every_region_and_page_fallback_from_pinned_batch() {
+        let (_dir, library, snapshot) = sealed_visual_reads(None);
+        let visual = visual_fixture();
+        let regions = exec_get_cloud_figure(&library, &snapshot, &visual, "fig_1");
+        assert_eq!(regions.observation["ok"], true);
+        assert_eq!(
+            regions.images,
+            vec![b"crop-fig_1-r1".to_vec(), b"crop-fig_1-r2".to_vec()]
+        );
+        let pages = exec_get_cloud_figure(&library, &snapshot, &visual, "tbl_1");
+        assert_eq!(pages.observation["ok"], true);
+        assert_eq!(
+            pages.images,
+            vec![b"pageimg-0001".to_vec(), b"pageimg-0002".to_vec()]
+        );
+        assert_eq!(
+            pages.observation["result"]["resources"][1]["evidence"],
+            "page"
+        );
+        // A later candidate cannot replace the pinned originals.
+        library
+            .put_attachment_bytes(
+                "visual-test-paper",
+                "pageimg-0001",
+                "new.png",
+                "image/png",
+                b"different",
+            )
+            .unwrap();
+        assert_eq!(
+            exec_get_cloud_figure(&library, &snapshot, &visual, "tbl_1").images,
+            pages.images
+        );
+    }
+
+    #[test]
+    fn cloud_figure_missing_selected_resource_returns_no_partial_evidence() {
+        let (_dir, library, snapshot) = sealed_visual_reads(Some("crop-fig_1-r2"));
+        let outcome = exec_get_cloud_figure(&library, &snapshot, &visual_fixture(), "fig_1");
+        assert_eq!(outcome.observation["ok"], false);
+        assert!(outcome.images.is_empty());
+        assert!(outcome.observation.to_string().contains("crop-fig_1-r2"));
+    }
+
+    #[test]
+    fn cloud_section_collects_formula_originals_and_unnumbered_assets() {
+        let visual = visual_fixture();
+        let selected = section_cloud_assets(&visual, "sec_method", &["fig_1".into()]);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|asset| asset.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "fig_1",
+                "tbl_1",
+                "formula-sec_method-b3",
+                "visual-unnumbered"
+            ]
+        );
+        assert_eq!(selected[2].resources[0].attachment_id, "crop-formula-r1");
+    }
+
+    #[test]
+    fn cloud_png_and_legacy_webp_messages_preserve_image_mime() {
+        let message = user_message(
+            "evidence".into(),
+            vec![
+                b"\x89PNG\r\n\x1a\nencoded".to_vec(),
+                b"RIFFlegacyWEBP".to_vec(),
+            ],
+        );
+        assert!(message["content"][1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+        assert!(message["content"][2]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/webp;base64,"));
+    }
 
     #[test]
     fn pinned_protocol_model_and_images_cannot_mix_after_image_replacement() {

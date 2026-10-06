@@ -8,6 +8,36 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
+use std::path::PathBuf;
+
+enum BatchResource {
+    Bytes(Vec<u8>),
+    Path(PathBuf),
+}
+impl BatchResource {
+    fn read(&self, root: &std::path::Path) -> Result<Vec<u8>, BridgeError> {
+        match self {
+            Self::Bytes(bytes) => Ok(bytes.clone()),
+            Self::Path(path) => {
+                if !crate::pdfmap_evidence::safe_path(root, path) {
+                    return Err(stale());
+                }
+                let file = File::open(path).map_err(|_| stale())?;
+                if !file.metadata().map_err(|_| stale())?.is_file() {
+                    return Err(stale());
+                }
+                let mut bytes = Vec::new();
+                file.take(MAX_RESOURCE_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| stale())?;
+                if bytes.len() as u64 > MAX_RESOURCE_BYTES {
+                    return Err(BridgeError::invalid_input("Batch resource too large"));
+                }
+                Ok(bytes)
+            }
+        }
+    }
+}
 
 pub const PARSE_BATCH_SCHEMA_VERSION: u32 = 1;
 const MAX_RESOURCE_BYTES: u64 = 256 * 1024 * 1024;
@@ -113,11 +143,54 @@ impl Library {
     /// Writes only candidate attachments. A durable manifest seals their identity.
     pub fn write_parse_batch(
         &self,
-        mut manifest: ParseBatchManifest,
+        manifest: ParseBatchManifest,
         resources: BTreeMap<String, Vec<u8>>,
     ) -> Result<ParseBatchManifest, BridgeError> {
+        self.write_parse_batch_resources(
+            manifest,
+            resources
+                .into_iter()
+                .map(|(id, bytes)| (id, BatchResource::Bytes(bytes)))
+                .collect(),
+            &|| Ok(()),
+        )
+    }
+
+    /// Seal staged files one at a time; the immutable manifest is still written last.
+    pub fn write_parse_batch_paths(
+        &self,
+        manifest: ParseBatchManifest,
+        resources: BTreeMap<String, PathBuf>,
+    ) -> Result<ParseBatchManifest, BridgeError> {
+        self.write_parse_batch_paths_with_checkpoint(manifest, resources, || Ok(()))
+    }
+
+    pub(crate) fn write_parse_batch_paths_with_checkpoint(
+        &self,
+        manifest: ParseBatchManifest,
+        resources: BTreeMap<String, PathBuf>,
+        checkpoint: impl Fn() -> Result<(), BridgeError>,
+    ) -> Result<ParseBatchManifest, BridgeError> {
+        self.write_parse_batch_resources(
+            manifest,
+            resources
+                .into_iter()
+                .map(|(id, path)| (id, BatchResource::Path(path)))
+                .collect(),
+            &checkpoint,
+        )
+    }
+
+    fn write_parse_batch_resources(
+        &self,
+        mut manifest: ParseBatchManifest,
+        resources: BTreeMap<String, BatchResource>,
+        checkpoint: &dyn Fn() -> Result<(), BridgeError>,
+    ) -> Result<ParseBatchManifest, BridgeError> {
         validate(&manifest, false)?;
-        let total = resources.values().try_fold(0u64, |total, bytes| {
+        let total = resources.values().try_fold(0u64, |total, resource| {
+            checkpoint()?;
+            let bytes = resource.read(self.root())?;
             let size = bytes.len() as u64;
             if size > MAX_RESOURCE_BYTES {
                 return Err(BridgeError::invalid_input("批次附件超过大小限制"));
@@ -180,9 +253,11 @@ impl Library {
         }
         let declared = manifest.attachments.clone();
         manifest.attachments.clear();
-        for (logical, bytes) in &resources {
+        for (logical, resource) in &resources {
+            checkpoint()?;
+            let bytes = resource.read(self.root())?;
             require_safe_segment(logical, "logicalAttachmentId")?;
-            let sha = sha256_hex(bytes);
+            let sha = sha256_hex(&bytes);
             let resource_id = format!(
                 "parseasset-{}",
                 sha256_hex(format!("{}:{logical}:{sha}", manifest.batch_id).as_bytes())
@@ -215,8 +290,13 @@ impl Library {
         if encoded.len() as u64 > MAX_MANIFEST_BYTES {
             return Err(BridgeError::invalid_input("批次清单过大"));
         }
-        for (logical, bytes) in resources {
+        for (logical, staged) in resources {
+            checkpoint()?;
+            let bytes = staged.read(self.root())?;
             let resource = &manifest.attachments[&logical];
+            if sha256_hex(&bytes) != resource.sha256 || bytes.len() as u64 != resource.size {
+                return Err(stale());
+            }
             self.put_attachment_bytes(
                 &manifest.paper_id,
                 &resource.attachment_id,
@@ -225,6 +305,7 @@ impl Library {
                 &bytes,
             )?;
         }
+        checkpoint()?;
         self.put_attachment_bytes(
             &manifest.paper_id,
             &id,

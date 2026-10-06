@@ -72,8 +72,9 @@ test('PDF provenance uses the dedicated asynchronous native entry', async () => 
 test('batch hashing and resource reads use the asynchronous native entry', async () => {
   const tauri = createTauriStub();
   const input = { paperId: 'p' };
-  await createBridge(tauri).invoke('parsebatch.pin@1', input);
-  assert.deepEqual(tauri.calls, [{ cmd: 'parsebatch_read', args: { command: 'parsebatch.pin@1', input } }]);
+  const commands = ['parsebatch.pin@1', 'parsebatch.read@1', 'cloudassets.plan@1', 'cloudassets.put@1', 'cloudassets.manifest@1'];
+  for (const command of commands) await createBridge(tauri).invoke(command, input);
+  assert.deepEqual(tauri.calls, commands.map(command => ({ cmd: 'parsebatch_read', args: { command, input } })));
 });
 
 test('invoke 命令经统一入口带版本化命令名与输入', async () => {

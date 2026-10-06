@@ -9,6 +9,7 @@ import * as model from './model.js';
 import * as generation from './generation.js';
 import * as parser from './parser.js';
 import { cloudTaskInput, cloudJobView, validateParserChoice } from './cloud-parse.js';
+import { prepareCloudPdfAssets } from './cloud-pdf-assets.js';
 import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, renderStreamingTextInto, typesetMath } from './markdown.js';
 import { PROTOCOL_TASKS, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
@@ -137,11 +138,49 @@ async function startCloudParse(paperId, resubmitConfirmed = false, selectedJob =
     registerSessionTask(taskId, meta);
     const done = await trackTask(bridge, taskId, {});
     meta.status = done.status;
-    if (done.status === 'succeeded') toast(done.result?.candidateReady ? '正文与来源候选已保存；视觉资源与发布尚未完成' : '云端原始结果已保存');
+    if (done.status === 'succeeded') {
+      toast(done.result?.candidateReady ? '正文与来源候选已保存，正在准备视觉资源' : '云端原始结果已保存');
+      if (done.result?.candidateReady) void startCloudVisual(paperId, done.result.batchId);
+    }
     else if (done.status === 'cancelled') toast('客户端已停止；已受理的远端任务可能继续执行或计费');
     else toast(`云端解析未完成：${done.error?.message || '请查看任务中心'}`, true);
     return false;
   } catch (err) { toast(`云端解析未启动：${errorText(err)}`, true); return false; }
+}
+
+async function startCloudVisual(paperId, batchId) {
+  if (hasOpenPreflightTask(paperId, 'cloudassets.prepare@1')) return false;
+  const controller = new AbortController();
+  let taskId;
+  try {
+    const input = { paperId, batchId };
+    ({ taskId } = await bridge.start('cloudassets.prepare@1', input));
+    const meta = { kind: 'cloudassets.prepare@1', input, retry: () => startCloudVisual(paperId, batchId) };
+    registerSessionTask(taskId, meta);
+    const tracked = trackTask(bridge, taskId, { onEvent: event => {
+      if (['cancel_requested', 'cancelled', 'failed'].includes(event.status)) controller.abort();
+    } }).then(done => { if (done.status !== 'succeeded') controller.abort(); return done; }, err => {
+      controller.abort(); return { status: 'failed', error: err };
+    });
+    let renderError;
+    try { await prepareCloudPdfAssets(bridge, taskId, { signal: controller.signal }); }
+    catch (err) {
+      if (!controller.signal.aborted) renderError = err;
+      controller.abort();
+      await bridge.invoke('tasks.cancel@1', { taskId });
+    }
+    const done = await tracked;
+    meta.status = done.status;
+    if (renderError) toast(`视觉准备失败：${errorText(renderError)}`, true);
+    else if (done.status === 'succeeded') toast('视觉候选已保存；尚未发布替换');
+    else if (done.status === 'failed') toast(`视觉准备失败：${done.error?.message || '请查看任务中心'}`, true);
+    return done.status === 'succeeded';
+  } catch (err) {
+    controller.abort();
+    if (taskId) await bridge.invoke('tasks.cancel@1', { taskId }).catch(() => {});
+    toast(`视觉准备未完成：${errorText(err)}`, true);
+    return false;
+  }
 }
 let store = null; // createTauriStore(bridge)，启动序列中创建
 
@@ -1042,8 +1081,11 @@ function renderSectionPage() {
   if (model.figures.length) {
     const cards = model.figures.map(item => {
       const cap = `${escapeTemplate(item.caption)}${item.page ? ` (p${item.page})` : ''}`;
+      const images = item.resources
+        ? item.resources.map(resource => `<img alt="${escapeTemplate(item.caption)} (p${resource.page}${resource.evidence === 'page' ? ', 整页' : ''})" data-crop-id="${escapeTemplate(resource.attachmentId)}">`).join('')
+        : `<img alt="${escapeTemplate(item.caption)}" data-crop-id="${escapeTemplate(item.cropAssetId)}">`;
       return `<div class="fig-box" id="asset-${escapeTemplate(item.id)}">
-        <img alt="${escapeTemplate(item.caption)}" data-crop-id="${escapeTemplate(item.cropAssetId)}">
+        ${images}
         <div class="fig-cap">${cap} ${citeChipHtml(`(${item.id})`)}</div>
       </div>`;
     }).join('');
@@ -1082,7 +1124,7 @@ async function fillCropImages(root, paper) {
   const snapshot = current === paper ? currentMapped?.parseBatch : null;
   if (!snapshot) return;
   const crops = await loadCropDataUrls(paper, ids, snapshot);
-  if (current !== paper) return;
+  if (current !== paper || currentMapped?.parseBatch !== snapshot) return;
   for (const img of imgs) {
     const url = crops[img.dataset.cropId];
     if (url) img.src = url;
@@ -3887,6 +3929,7 @@ function renderTaskList(tasks) {
     };
     if (state.canResume) action('恢复查询 / 取回', () => startCloudParse(job.paperId, false, job));
     if (state.canMap) action(job.candidateStored ? '校验正文与来源' : '转换正文与来源', () => startCloudParse(job.paperId, false, job));
+    if (job.candidateStored) action(job.visualCandidateStored ? '校验视觉资源' : '准备视觉资源', () => startCloudVisual(job.paperId, job.batchId));
     if (state.needsResubmit) action('重新提交…', async () => {
       const warning = job.state === 'remote-failed'
         ? '上次远端解析已失败。重新上传会创建新任务，可能再次计费，是否继续？'

@@ -48,6 +48,9 @@ pub fn available_commands() -> &'static [&'static str] {
         "pdfmap.getSourceRegions@1",
         "parsebatch.pin@1",
         "parsebatch.read@1",
+        "cloudassets.plan@1",
+        "cloudassets.put@1",
+        "cloudassets.manifest@1",
         "skills.list@1",
         "exports.write@1",
         // dialog.*@1 的分发在 lib.rs 拦截（打开系统对话框需要窗口句柄），
@@ -66,6 +69,18 @@ pub fn invoke(
     input: &Value,
 ) -> Result<Value, BridgeError> {
     match command {
+        "cloudassets.plan@1" => crate::cloudassets::plan(registry, input),
+        "cloudassets.put@1" => crate::cloudassets::put(registry, library, input),
+        "cloudassets.manifest@1" => {
+            let snapshot =
+                parse_dto::<crate::parsebatch::ParseBatchSnapshot>(command, input, "snapshot")?;
+            let (_, bytes) = library.read_parse_batch_attachment(&snapshot, "blockmodel.json")?;
+            let mapped = serde_json::from_slice(&bytes)
+                .map_err(|_| BridgeError::invalid_input("Invalid visual model"))?;
+            Ok(
+                json!({"schemaVersion":1,"visualAssets":crate::cloudassets::read_visual_assets(library,&snapshot,&mapped)?}),
+            )
+        }
         "parsebatch.pin@1" => {
             let paper_id = required_string(command, input, "paperId")?;
             let batch = input

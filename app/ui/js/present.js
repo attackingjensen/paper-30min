@@ -53,6 +53,8 @@ const TASK_KIND_LABELS = {
   'files.download': '文件下载',
   'pdfparse.convert': '解析 PDF',
   'cloudparse.parse': '百度云端解析',
+  'cloudparse.map': '转换云端正文与来源',
+  'cloudassets.prepare': '准备云端视觉资源',
   'paper.build-map': '建图',
   'paper.deep-dive': '深挖',
   'paper.synthesize': '综合',

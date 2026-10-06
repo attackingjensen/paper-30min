@@ -30,6 +30,22 @@ test('model, provenance and later image reads retain the pinned batch', async ()
   assert.ok(calls.filter(([command]) => command === 'parsebatch.read@1').every(([, input]) => input.snapshot === snapshot));
   assert.equal(calls.find(([command]) => command === 'pdfmap.getSourceRegions@1')[1].batchId, 'old');
 });
+test('sealed cloud models load their native-validated visual manifest even without source recovery', async () => {
+  const snapshot = { manifest: { attachments: { 'visual-assets.json': {} } } };
+  const visualAssets = { assets: [{ id: 'f', resources: [{ attachmentId: 'crop-f-r1' }] }] };
+  const calls = [];
+  const bridge = { async invoke(command, input) {
+    calls.push(command);
+    if (command === 'parsebatch.read@1') return { contentBase64: Buffer.from('{"sections":[]}').toString('base64') };
+    assert.equal(command, 'cloudassets.manifest@1');
+    assert.equal(input.snapshot, snapshot);
+    return { visualAssets };
+  } };
+  const mapped = await loadBatchModel(bridge, 'p', { snapshot, recoverSource: false });
+  assert.equal(mapped.visualAssets, visualAssets);
+  assert.deepEqual(calls, ['parsebatch.read@1', 'cloudassets.manifest@1']);
+});
+
 test('unverified or different-batch source geometry never enters a mapped model', async () => {
   const bridge = { async invoke(command) {
     if (command === 'parsebatch.pin@1') return { snapshot: { manifest: { paperId: 'p', batchId: 'a', pdfSha256: 'pdf' } } };

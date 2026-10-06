@@ -232,6 +232,19 @@ test('片段提问：跨节块并集，多图多表覆盖即附', () => {
   assert.equal(imageUrls(lastUser(messages)).length, 2);
 });
 
+test('cloud fragment includes every region and deduplicates page fallback evidence', () => {
+  const cloud = structuredClone(mapped);
+  cloud.visualAssets = { assets: [
+    { secId: 'sec_2_introduction', blockId: 2, resources: [{ attachmentId: 'crop-fig_1-r1' }, { attachmentId: 'crop-fig_1-r2' }] },
+    { secId: 'sec_3_method', blockId: 1, resources: [{ attachmentId: 'pageimg-0002' }] },
+    { secId: 'sec_3_method', blockId: 2, resources: [{ attachmentId: 'pageimg-0002' }] },
+  ] };
+  const result = assemble({ mapped: cloud, binding: { bindingKind: 'fragment', fragmentText: 'selected', cite: {
+    startSecId: 'sec_2_introduction', startBlock: 2, endSecId: 'sec_3_method', endBlock: 2,
+  } } });
+  assert.deepEqual(result.cropAssetIds, ['crop-fig_1-r1', 'crop-fig_1-r2', 'pageimg-0002']);
+});
+
 test('片段提问：未覆盖图表占位则不附图', () => {
   const { cropAssetIds, messages } = assemble({
     question: '这句话什么意思？',

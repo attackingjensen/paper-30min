@@ -11,6 +11,9 @@ export async function loadBatchModel(bridge, paperId, { recoverSource = true, ba
   const mapped = JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
   for (const section of mapped.sections || []) for (const block of section.blocks || []) delete block.sourceRegions;
   mapped.parseBatch = snapshot;
+  if (manifest.attachments?.['visual-assets.json']) {
+    mapped.visualAssets = (await bridge.invoke('cloudassets.manifest@1', { snapshot })).visualAssets;
+  }
   if (recoverSource) {
     try {
       const evidence = await bridge.invoke('pdfmap.getSourceRegions@1', {

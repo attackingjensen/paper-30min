@@ -1,5 +1,6 @@
 pub mod admission;
 pub mod bridge;
+pub mod cloudassets;
 pub mod component;
 pub mod component_runtime;
 pub mod error;
@@ -107,7 +108,7 @@ async fn pdfmap_source_regions(state: State<'_, AppState>, input: Value) -> Resu
 
 #[tauri::command]
 async fn parsebatch_read(state: State<'_, AppState>, command: String, input: Value) -> Result<Value, BridgeError> {
-    if !matches!(command.as_str(), "parsebatch.pin@1" | "parsebatch.read@1") {
+    if !matches!(command.as_str(), "parsebatch.pin@1" | "parsebatch.read@1" | "cloudassets.plan@1" | "cloudassets.put@1" | "cloudassets.manifest@1") {
         return Err(BridgeError::unknown_command(&command));
     }
     let registry = state.registry.clone();

@@ -167,6 +167,11 @@ function knownAssetIds(mapped) {
 
 /** 覆盖块中的图/表占位 → 裁切图附件 id（清单内、覆盖即附、不设数量帽、阅读序去重）。 */
 function cropAssetIdsForBlocks(items, mapped) {
+  if (mapped?.visualAssets) {
+    return [...new Set(items.flatMap(({ section, block }) =>
+      mapped.visualAssets.assets.filter(asset => asset.secId === section.id && asset.blockId === block.id)
+        .flatMap(asset => asset.resources.map(resource => resource.attachmentId))))];
+  }
   const known = knownAssetIds(mapped);
   const ids = [];
   const seen = new Set();

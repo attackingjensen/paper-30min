@@ -246,8 +246,8 @@ U3 的下载完成仅表示原始结果取回，不标记正文、来源或视�
 
 - **Goal / Requirements:** 生成并保存云端结果需要的页图、公式/表格/图形裁切，支持离线查看；R7/R9/R15，AE1。
 - **Dependencies:** U4。
-- **Files:** `app/ui/js/pdf-reader.js`、`pdf-selection.js`、`main.js`，新增 `cloud-pdf-assets.js` 与 `.test.js`；`app/src-tauri/src/pdfassets.rs`、`bridge.rs`、`protocol.rs`，新增 `app/src-tauri/tests/cloudparse_assets.rs`。
-- **Approach:** KTD4，分页释放 canvas，资源以批次写入并校验；模型取证入口统一按能力/资产状态判断，不要求 `doclingJsonPath`。原图回看以本机 PDF 为依据，供应商可视化图不能冒充无标注原文。
+- **Files:** `app/ui/js/main.js`、`pdf-evidence.js`、`qa.js`、`content.js`，新增 `cloud-pdf-assets.js` 与单测；`app/src-tauri/src/bridge.rs`、`protocol.rs`、`parsebatch.rs`、`tasks.rs`，新增 `cloudassets.rs`、`tests/cloudparse_assets.rs` 与原生 WebView2 视觉集成脚本。
+- **Approach:** KTD4，PDF.js 逐页释放 canvas；`cloudassets.prepare@1` 持有同篇任务锁，`plan/put@1` 经异步桥传入逐张 PNG，Rust 验证完整解码、尺寸、身份和暂存摘要，恢复时跳过已核验资源。最长边不超过 1600 px，单张 8 MiB，整批 512 MiB；每区域独立资源，不可信几何使用完整原页。创建新 batchId 后重绑定来源并封存，`manifest@1` 为前端提供原生验证后的清单；协议任务预检后固定清单并按需读图，不要求 `doclingJsonPath`。原图回看以本机 PDF 为依据，供应商可视化图不能冒充无标注原文。当前指针发布仍由 U6 承接。
 - **Test scenarios:** 未装组件完成页图及可信区域裁切；旋转表格以完整页证据完成深挖、跨页/同组多框取到所有关联资源；纯文本/表格/公式深挖取得资源；断网重开可读；准备中取消/关闭窗口后恢复；大篇逐页释放内存；缺所选证据资源显示未齐备，不能继续视觉深挖。Covers AE1。
 - **Verification:** 无完整侧车环境的 Tauri 窗口实测、资产身份/尺寸检查与离线回看通过，保留建图早启动语义。
 

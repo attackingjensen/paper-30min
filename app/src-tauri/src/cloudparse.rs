@@ -77,17 +77,32 @@ fn save(library: &Library, r: &mut Record) -> Result<(), BridgeError> {
     file.sync_all().map_err(io_error)?;
     fs::rename(dir.join("run.json.part"), dir.join("run.json")).map_err(io_error)
 }
-fn lock_paper(library: &Library, paper: &str) -> Result<File, BridgeError> {
+pub(crate) fn lock_paper(library: &Library, paper: &str) -> Result<File, BridgeError> {
     files::require_safe_segment(paper, "paperId")?;
     let dir = library.root().join("operations/cloudparse").join(paper);
+    let mut probe = dir.as_path();
+    while !probe.exists() {
+        probe = probe
+            .parent()
+            .ok_or_else(|| error("cloud_io_error", "云端任务锁路径无效"))?;
+    }
+    if !crate::pdfmap_evidence::safe_path(library.root(), probe) {
+        return Err(error("cloud_io_error", "云端任务锁路径无效"));
+    }
     fs::create_dir_all(&dir).map_err(io_error)?;
+    let lock_path = dir.join("task.lock");
+    if !crate::pdfmap_evidence::safe_path(library.root(), &dir)
+        || (lock_path.exists() && !crate::pdfmap_evidence::safe_path(library.root(), &lock_path))
+    {
+        return Err(error("cloud_io_error", "云端任务锁路径无效"));
+    }
     // Keep the inode stable; the OS releases the lock on close or process exit.
     let file = File::options()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(dir.join("task.lock"))
+        .open(lock_path)
         .map_err(io_error)?;
     match file.try_lock() {
         Ok(()) => Ok(file),
@@ -162,9 +177,19 @@ pub(crate) fn status(library: &Library, input: &Value) -> Result<Value, BridgeEr
                 Err(err) if err.code == "not_found" => false,
                 Err(err) => return Err(err),
             };
+            let visual_id = format!(
+                "parsebatch-{}",
+                files::sha256_hex(crate::cloudassets::output_batch_id(&record.batch_id).as_bytes())
+            );
+            let visual_stored = match library.get_attachment(&record.paper_id, &visual_id) {
+                Ok(_) => true,
+                Err(err) if err.code == "not_found" => false,
+                Err(err) => return Err(err),
+            };
             let mut value = serde_json::to_value(record)
                 .map_err(|_| error("cloud_record_invalid", "任务记录无效"))?;
             value["candidateStored"] = json!(candidate_stored);
+            value["visualCandidateStored"] = json!(visual_stored);
             Ok(value)
         })
         .collect::<Result<Vec<_>, BridgeError>>()?;

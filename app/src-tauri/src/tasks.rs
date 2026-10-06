@@ -135,6 +135,7 @@ pub(crate) fn now_iso() -> String {
 enum TaskPlan {
     CloudParse(crate::cloudparse::CloudParsePlan),
     CloudMap(crate::cloudparse::CloudMapPlan),
+    CloudAssets(crate::cloudassets::CloudAssetsPlan),
     DemoStreamText {
         chunks: Vec<String>,
         chunk_delay_ms: u64,
@@ -195,6 +196,9 @@ const DEFAULT_STREAM_TEXT: &str = "Paper30Min Windows 正式客户端桥接演�
 这段文本按块流式发送，验证 start / subscribe / getTask 事件闭环。";
 
 fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, BridgeError> {
+    if kind == "cloudassets.prepare@1" {
+        return crate::cloudassets::prepare(library, input).map(TaskPlan::CloudAssets);
+    }
     if kind == "cloudparse.map@1" {
         return crate::cloudparse::prepare_map(library, input).map(TaskPlan::CloudMap);
     }
@@ -607,6 +611,7 @@ pub fn available_task_kinds() -> &'static [&'static str] {
         "files.download@1",
         "cloudparse.parse@1",
         "cloudparse.map@1",
+        "cloudassets.prepare@1",
         crate::pdfparse::TASK_CONVERT,
         crate::pdfparse::TASK_BOOTSTRAP,
         crate::pdfassets::TASK_PRERENDER,
@@ -667,6 +672,7 @@ impl TaskRegistry {
             paper_id: match &plan {
                 TaskPlan::CloudParse(plan) => Some(plan.paper_id.clone()),
                 TaskPlan::CloudMap(plan) => Some(plan.paper_id.clone()),
+                TaskPlan::CloudAssets(plan) => Some(plan.paper_id.clone()),
                 TaskPlan::PdfparseConvert { paper_id, .. } => paper_id.clone(),
                 TaskPlan::PdfassetsPrerender { paper_id, .. }
                 | TaskPlan::PaperBuildMap { paper_id, .. }
@@ -700,11 +706,13 @@ impl TaskRegistry {
             if entries.values().any(|active| {
                 !active.snapshot.status.is_terminal()
                     && active.paper_id.as_ref() == Some(paper_id)
-                    && (matches!(kind, "cloudparse.parse@1" | "cloudparse.map@1")
-                        || matches!(
-                            active.snapshot.kind.as_str(),
-                            "cloudparse.parse@1" | "cloudparse.map@1"
-                        ))
+                    && (matches!(
+                        kind,
+                        "cloudparse.parse@1" | "cloudparse.map@1" | "cloudassets.prepare@1"
+                    ) || matches!(
+                        active.snapshot.kind.as_str(),
+                        "cloudparse.parse@1" | "cloudparse.map@1" | "cloudassets.prepare@1"
+                    ))
             }) {
                 return Err(BridgeError::new(
                     "paper_busy",
@@ -1134,6 +1142,7 @@ fn run_task(
     match plan {
         TaskPlan::CloudParse(plan) => crate::cloudparse::run(&ctx, &plan),
         TaskPlan::CloudMap(plan) => crate::cloudparse::run_map(&ctx, &plan),
+        TaskPlan::CloudAssets(plan) => crate::cloudassets::run(&ctx, &plan),
         TaskPlan::DemoStreamText {
             chunks,
             chunk_delay_ms,

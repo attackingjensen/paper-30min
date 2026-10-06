@@ -245,6 +245,16 @@ function resolveSection(mapped, partId, legacy = false) {
 export function sectionFigures(mapped, partId, legacy = false) {
   const section = resolveSection(mapped, partId, legacy);
   if (!section) return [];
+  if (mapped.visualAssets) {
+    return mapped.visualAssets.assets.filter(asset => asset.secId === section.id).map(asset => {
+      const entry = [...(mapped.figures ?? []), ...(mapped.tables ?? [])].find(entry => entry.id === asset.id);
+      return {
+        id: asset.id, caption: entry?.caption || asset.id,
+        page: asset.resources[0]?.page,
+        resources: asset.resources,
+      };
+    });
+  }
   const entries = [...(mapped?.figures ?? []), ...(mapped?.tables ?? [])]
     .filter(entry => entry?.section === section.id);
   return entries.map(entry => ({
