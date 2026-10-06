@@ -201,6 +201,8 @@ U1 已完成。2026-10-06 用户提供 AI Studio 的 PaddleOCR-VL-1.6 异步 API
 
 ### Sources / Research
 
+- 用户随后要求同标准核查 Docling。现行 FAST、关闭公式增强的同组 49 页已由三个 `gpt-6-luna high` 子代理全页核对，确认三张表的列结构损坏、跨页错误合并、语义强调丢失、算法误分类与公式拆碎；93 个公式节点为空正文属于统一能力缺口，不作为 93 次 OCR 错误。见 [Docling 全量对照](../research/2026-10-06-docling-full-audit.md)。该基线并非零误差真值，百度有局部优势，Docling 也保留了百度误识的个别标签与条件。比较仅限当前配置；U2 的共同误差容忍与原图回看政策仍待决定，不据此直接启动 U3。
+
 - 本地实现：[组件清单](../../app/src-tauri/component-release.json)、[组件安装](../../app/src-tauri/src/component.rs)、[组件任务](../../app/src-tauri/src/component_runtime.rs)、[侧车门禁](../../app/src-tauri/src/pdfparse.rs)、[块模型映射](../../app/src-tauri/src/pdfmap.rs)、[侧车构建](../../tools/pdfparse-sidecar/build_sidecar.py)、[正式组件打包](../../tools/pdfparse-sidecar/package_component.py)和[侧车说明](../../tools/pdfparse-sidecar/README.md)。正式安装现行仅接受 bundled 整包；现有 download 构建变体不能直接当作新正式方案。
 - v1.3.0 复核依据：[来源恢复](../../app/src-tauri/src/pdfmap_evidence.rs)、[前端读取与准备入口](../../app/ui/js/main.js)、[视觉资源落库](../../app/src-tauri/src/pdfassets.rs)、[选区绑定](../../app/ui/js/pdf-selection.js)、[书库校验](../../app/src-tauri/src/library.rs)、[重新切分](../../app/ui/js/papers.js)、[网络任务](../../app/src-tauri/src/net.rs) 与 [更新实现](../../app/src-tauri/src/updater.rs)。复用 [来源与选区契约](../solutions/architecture-patterns/pdf-provenance-and-selection.md) 和 [v1.3.0 发布边界](../releases/v1.3.0.md)，本轮仅核对源码与文档，未运行产品测试、云端调用或组件基准。
 - 构想来源：[v2 构想](../ideation/2026-09-24-paper30min-v2-revision.md) 的「解析组件进一步瘦身」「替代解析后端」及试验门槛；整合 v1.3.0 后该文件已在本分支。
