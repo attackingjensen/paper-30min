@@ -34,6 +34,7 @@ use std::time::Instant;
 use crate::error::BridgeError;
 use crate::library::{ActivityDayDto, Library, PaperDto, PartDto, ProductDto};
 use crate::model;
+use crate::parsebatch::ParseBatchSnapshot;
 use crate::pdfassets;
 use crate::pdfmap::{AssetEntry, MappedPaper, Section, SectionRole};
 use crate::settings;
@@ -328,10 +329,10 @@ impl SkillSet {
 
 fn load_block_model(
     library: &Library,
-    paper_id: &str,
+    snapshot: &ParseBatchSnapshot,
 ) -> Result<(MappedPaper, String), BridgeError> {
-    let attachment = library
-        .get_attachment(paper_id, pdfassets::BLOCKMODEL_ATTACHMENT_ID)
+    let (_, bytes) = library
+        .read_parse_batch_attachment(snapshot, pdfassets::BLOCKMODEL_ATTACHMENT_ID)
         .map_err(|_| {
             BridgeError::new(
                 "preflight_missing",
@@ -341,12 +342,6 @@ fn load_block_model(
             )
             .with_details(json!({ "missing": [pdfassets::BLOCKMODEL_ATTACHMENT_ID] }))
         })?;
-    let (_, bytes) = library.read_range(
-        paper_id,
-        pdfassets::BLOCKMODEL_ATTACHMENT_ID,
-        0,
-        attachment.size as u64,
-    )?;
     let mapped = serde_json::from_slice::<MappedPaper>(&bytes).map_err(|err| {
         BridgeError::new(
             "block_model_invalid",
@@ -505,8 +500,8 @@ fn section_asset_candidates<'a>(
         .filter_map(|id| manifest.iter().find(|entry| entry.id == *id).copied())
         .collect();
     entries.sort_by(|a, b| {
-        (a.page, a.bbox[1])
-            .partial_cmp(&(b.page, b.bbox[1]))
+        (a.page, a.bbox.map(|bbox| bbox[1]).unwrap_or(0.0))
+            .partial_cmp(&(b.page, b.bbox.map(|bbox| bbox[1]).unwrap_or(0.0)))
             .expect("bbox 纵向坐标为有限值")
     });
     entries
@@ -831,12 +826,11 @@ fn tool_error_observation(name: &str, code: &str, message: impl Into<String>) ->
 /// 读取附件字节；缺失 = None（由调用方决定降级或错误观察）。
 fn read_attachment_bytes(
     library: &Library,
-    paper_id: &str,
+    snapshot: &ParseBatchSnapshot,
     attachment_id: &str,
 ) -> Option<Vec<u8>> {
-    let attachment = library.get_attachment(paper_id, attachment_id).ok()?;
     let (_, bytes) = library
-        .read_range(paper_id, attachment_id, 0, attachment.size as u64)
+        .read_parse_batch_attachment(snapshot, attachment_id)
         .ok()?;
     Some(bytes)
 }
@@ -845,12 +839,12 @@ fn read_attachment_bytes(
 /// （页图 / 预附裁切图共用：缺附件跳过，文本层是忠实性构造保证）。
 fn read_attachment_or_warn(
     library: &Library,
-    paper_id: &str,
+    snapshot: &ParseBatchSnapshot,
     asset_id: &str,
     warning_prefix: &str,
     warnings: &mut Vec<String>,
 ) -> Option<Vec<u8>> {
-    match read_attachment_bytes(library, paper_id, asset_id) {
+    match read_attachment_bytes(library, snapshot, asset_id) {
         Some(bytes) => Some(bytes),
         None => {
             warnings.push(format!("{warning_prefix}:{asset_id}"));
@@ -996,7 +990,7 @@ fn exec_search_paper(mapped: &MappedPaper, args: &Map<String, Value>) -> ToolOut
 
 fn exec_get_figure(
     library: &Library,
-    paper_id: &str,
+    snapshot: &ParseBatchSnapshot,
     mapped: &MappedPaper,
     args: &Map<String, Value>,
 ) -> ToolOutcome {
@@ -1017,7 +1011,7 @@ fn exec_get_figure(
         );
     };
     let crop_asset_id = pdfassets::crop_attachment_id(fig_id);
-    let Some(bytes) = read_attachment_bytes(library, paper_id, &crop_asset_id) else {
+    let Some(bytes) = read_attachment_bytes(library, snapshot, &crop_asset_id) else {
         return tool_error_observation(
             TOOL_GET_FIGURE,
             "asset_missing",
@@ -1057,7 +1051,7 @@ fn exec_get_figure(
 
 fn exec_get_page_image(
     library: &Library,
-    paper_id: &str,
+    snapshot: &ParseBatchSnapshot,
     mapped: &MappedPaper,
     args: &Map<String, Value>,
 ) -> ToolOutcome {
@@ -1070,7 +1064,7 @@ fn exec_get_page_image(
         );
     }
     let asset_id = pdfassets::page_attachment_id(page);
-    let Some(bytes) = read_attachment_bytes(library, paper_id, &asset_id) else {
+    let Some(bytes) = read_attachment_bytes(library, snapshot, &asset_id) else {
         return tool_error_observation(
             TOOL_GET_PAGE_IMAGE,
             "asset_missing",
@@ -1089,7 +1083,7 @@ fn exec_get_page_image(
 
 fn execute_tool(
     library: &Library,
-    paper_id: &str,
+    snapshot: &ParseBatchSnapshot,
     mapped: &MappedPaper,
     name: &str,
     args: &Map<String, Value>,
@@ -1097,8 +1091,8 @@ fn execute_tool(
     match name {
         TOOL_READ_SECTION => exec_read_section(mapped, args),
         TOOL_SEARCH_PAPER => exec_search_paper(mapped, args),
-        TOOL_GET_FIGURE => exec_get_figure(library, paper_id, mapped, args),
-        TOOL_GET_PAGE_IMAGE => exec_get_page_image(library, paper_id, mapped, args),
+        TOOL_GET_FIGURE => exec_get_figure(library, snapshot, mapped, args),
+        TOOL_GET_PAGE_IMAGE => exec_get_page_image(library, snapshot, mapped, args),
         _ => unreachable!("工具名已校验"),
     }
 }
@@ -1691,6 +1685,7 @@ fn validate_markdown_headers(text: &str, headers: &[&str]) -> Result<(), String>
 
 struct ProtocolEnv {
     paper: PaperDto,
+    snapshot: ParseBatchSnapshot,
     mapped: MappedPaper,
     source_fingerprint: String,
     skills: SkillSet,
@@ -1745,7 +1740,8 @@ fn check_hard_top(estimated: u64, stage: &str) -> Result<(), BridgeError> {
 
 fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError> {
     let paper = ctx.library.get_paper(paper_id)?;
-    let (mapped, source_fingerprint) = load_block_model(&ctx.library, paper_id)?;
+    let snapshot = ctx.library.pin_parse_batch(paper_id, None)?;
+    let (mapped, source_fingerprint) = load_block_model(&ctx.library, &snapshot)?;
     let skills = load_skills(&ctx.library)?;
     let config = model::load_model_config(&ctx.library)?.ok_or_else(model::model_not_configured)?;
     let endpoint = model::normalize_endpoint(&config.base_url, "/chat/completions")?;
@@ -1763,6 +1759,7 @@ fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError
     let extras = model::load_request_extras(&ctx.library);
     Ok(ProtocolEnv {
         paper,
+        snapshot,
         mapped,
         source_fingerprint,
         skills,
@@ -1788,19 +1785,20 @@ pub(crate) fn run_build_map(ctx: &RunContext, paper_id: &str, overwrite_confirme
 /// 缺失即 preflight_missing，details 列出缺失附件。
 fn preflight_visual_assets(
     ctx: &RunContext,
-    paper_id: &str,
+    snapshot: &ParseBatchSnapshot,
     mapped: &MappedPaper,
 ) -> Result<(), BridgeError> {
+    ctx.library.verify_parse_batch(snapshot)?;
     let mut missing: Vec<String> = Vec::new();
     for page in 1..=mapped.page_count {
         let asset_id = pdfassets::page_attachment_id(page);
-        if ctx.library.get_attachment(paper_id, &asset_id).is_err() {
+        if !snapshot.manifest.attachments.contains_key(&asset_id) {
             missing.push(asset_id);
         }
     }
     for entry in mapped.figures.iter().chain(mapped.tables.iter()) {
         let asset_id = pdfassets::crop_attachment_id(&entry.id);
-        if ctx.library.get_attachment(paper_id, &asset_id).is_err() {
+        if !snapshot.manifest.attachments.contains_key(&asset_id) {
             missing.push(asset_id);
         }
     }
@@ -2679,7 +2677,7 @@ fn dive_section(
         let asset_id = pdfassets::page_attachment_id(page);
         if let Some(bytes) = read_attachment_or_warn(
             &ctx.library,
-            &env.paper.id,
+            &env.snapshot,
             &asset_id,
             "page_image_missing",
             warnings,
@@ -2695,7 +2693,7 @@ fn dive_section(
         let crop_asset_id = pdfassets::crop_attachment_id(&entry.id);
         match read_attachment_or_warn(
             &ctx.library,
-            &env.paper.id,
+            &env.snapshot,
             &crop_asset_id,
             "crop_missing",
             warnings,
@@ -2858,7 +2856,7 @@ fn dive_section(
                     tool_calls += 1;
                     let outcome = execute_tool(
                         &ctx.library,
-                        &env.paper.id,
+                        &env.snapshot,
                         &env.mapped,
                         &call.name,
                         &call.args,
@@ -2938,7 +2936,7 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
     if product_body(&env.paper, "map", "").is_none() {
         return Err(Halt::Failed(map_required_error()));
     }
-    preflight_visual_assets(ctx, paper_id, &env.mapped)?;
+    preflight_visual_assets(ctx, &env.snapshot, &env.mapped)?;
     // partIds 校验与节映射：校验域是块模型内容节映射域（abstract + part-N，#87），
     // 不查记录 parts——UI 导入的 pdf.js 预切分与块模型不一致时，记录 parts 会误伤合法目标。
     // 未知部分 / 缺薄摘要都在开工前拒绝（错误即指令）。
@@ -3236,6 +3234,66 @@ mod tests {
     use super::*;
     use crate::pdfmap::{AssetEntry, Block, BlockKind, ReferenceEntry, Subsection};
 
+    #[test]
+    fn pinned_protocol_model_and_images_cannot_mix_after_image_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::open(dir.path()).unwrap();
+        let paper = serde_json::from_value(json!({
+            "id": "protocol-snapshot", "title": "Snapshot", "pdfName": "",
+            "addedAt": "2026-10-06T00:00:00Z", "updatedAt": "2026-10-06T00:00:00Z"
+        }))
+        .unwrap();
+        library.put_paper(paper).unwrap();
+        let original = sample_mapped();
+        let model_bytes = serde_json::to_vec(&original).unwrap();
+        let put = |id: &str, bytes: &[u8]| {
+            library
+                .put_attachment_bytes(
+                    "protocol-snapshot",
+                    id,
+                    id,
+                    "application/octet-stream",
+                    bytes,
+                )
+                .unwrap();
+        };
+        put(pdfassets::BLOCKMODEL_ATTACHMENT_ID, &model_bytes);
+        put("pageimg-0001", b"old-page-image");
+        put("crop-fig_1", b"old-figure-image");
+        let snapshot = library.pin_parse_batch("protocol-snapshot", None).unwrap();
+        let (loaded, digest) = load_block_model(&library, &snapshot).unwrap();
+        assert_eq!(loaded.title, original.title);
+        assert_eq!(digest, format!("{:x}", Sha256::digest(&model_bytes)));
+        assert_eq!(
+            read_attachment_bytes(&library, &snapshot, "pageimg-0001").unwrap(),
+            b"old-page-image"
+        );
+        assert_eq!(
+            read_attachment_bytes(&library, &snapshot, "crop-fig_1").unwrap(),
+            b"old-figure-image"
+        );
+
+        put("crop-fig_1", b"new-figure-image");
+        let mut warnings = Vec::new();
+        assert!(read_attachment_or_warn(
+            &library,
+            &snapshot,
+            "crop-fig_1",
+            "crop_unavailable",
+            &mut warnings
+        )
+        .is_none());
+        assert_eq!(warnings, vec!["crop_unavailable:crop-fig_1"]);
+        assert!(read_attachment_bytes(&library, &snapshot, "pageimg-0001").is_none());
+        assert!(load_block_model(&library, &snapshot).is_err());
+        let next_reading = library.pin_parse_batch("protocol-snapshot", None).unwrap();
+        assert_ne!(snapshot.manifest.batch_id, next_reading.manifest.batch_id);
+        assert_eq!(
+            read_attachment_bytes(&library, &next_reading, "crop-fig_1").unwrap(),
+            b"new-figure-image"
+        );
+    }
+
     fn block(id: u32, page: u32, text: &str) -> Block {
         Block {
             id,
@@ -3335,7 +3393,7 @@ mod tests {
                 number: "1".to_string(),
                 caption: Some("架构图".to_string()),
                 page: 2,
-                bbox: [0.0, 0.0, 100.0, 100.0],
+                bbox: Some([0.0, 0.0, 100.0, 100.0]),
                 section: Some("sec_2_introduction".to_string()),
                 references: vec![crate::pdfmap::Citation {
                     sec_id: "sec_2_introduction".to_string(),
@@ -3348,7 +3406,7 @@ mod tests {
                 number: "1".to_string(),
                 caption: Some("结果表".to_string()),
                 page: 3,
-                bbox: [0.0, 0.0, 100.0, 100.0],
+                bbox: Some([0.0, 0.0, 100.0, 100.0]),
                 section: Some("sec_3_method".to_string()),
                 references: Vec::new(),
             }],
@@ -3723,7 +3781,7 @@ a",
                 .to_string(),
             caption: Some(format!("{id} 图注")),
             page,
-            bbox: [0.0, y, 100.0, y + 50.0],
+            bbox: Some([0.0, y, 100.0, y + 50.0]),
             section: section.map(str::to_string),
             references: Vec::new(),
         }

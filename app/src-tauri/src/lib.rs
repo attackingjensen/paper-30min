@@ -11,6 +11,9 @@ pub mod model;
 pub mod net;
 pub mod pdfassets;
 pub mod pdfmap;
+pub mod pdf_identity;
+pub mod parsebatch;
+pub mod cloudparse_map;
 pub mod pdfmap_evidence;
 pub mod pdfparse;
 pub mod cloudparse;
@@ -100,6 +103,17 @@ async fn pdfmap_source_regions(state: State<'_, AppState>, input: Value) -> Resu
     tauri::async_runtime::spawn_blocking(move || {
         bridge::invoke(&registry, &library, "pdfmap.getSourceRegions@1", &input)
     }).await.map_err(|err| BridgeError::internal(format!("来源恢复失败: {err}")))?
+}
+
+#[tauri::command]
+async fn parsebatch_read(state: State<'_, AppState>, command: String, input: Value) -> Result<Value, BridgeError> {
+    if !matches!(command.as_str(), "parsebatch.pin@1" | "parsebatch.read@1") {
+        return Err(BridgeError::unknown_command(&command));
+    }
+    let registry = state.registry.clone();
+    let library = state.library.clone();
+    tauri::async_runtime::spawn_blocking(move || bridge::invoke(&registry, &library, &command, &input))
+        .await.map_err(|err| BridgeError::internal(format!("批次读取失败: {err}")))?
 }
 
 /// 打开单选文件对话框（阻塞式）；取消返回 path: null。
@@ -332,6 +346,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bridge_invoke,
             pdfmap_source_regions,
+            parsebatch_read,
             bridge_start,
             updater_info,
             updater_check,

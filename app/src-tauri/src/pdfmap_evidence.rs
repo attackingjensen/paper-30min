@@ -9,6 +9,127 @@ const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CACHE_CANDIDATES: usize = 256;
 const SOURCE_ATTACHMENT: &str = "docling-source.json";
 
+pub(crate) fn get_batch_source_regions(
+    library: &Library,
+    paper_id: &str,
+    batch_id: &str,
+    expected_model_sha256: &str,
+) -> Result<Value, BridgeError> {
+    let snapshot = library.pin_parse_batch(paper_id, Some(batch_id))?;
+    if snapshot.manifest.provider == "docling" {
+        library.verify_parse_batch(&snapshot)?;
+        let mut result = get_source_regions(library, paper_id, expected_model_sha256)?;
+        library.verify_parse_batch(&snapshot)?;
+        result["batchId"] = json!(batch_id);
+        return Ok(result);
+    }
+    let (meta, model_bytes) = library.read_parse_batch_attachment(&snapshot, "blockmodel.json")?;
+    if meta.sha256 != expected_model_sha256 {
+        return Err(model_changed());
+    }
+    let saved: MappedPaper = serde_json::from_slice(&model_bytes)
+        .map_err(|_| BridgeError::invalid_input("Invalid block model"))?;
+    let (_, source_bytes) = library.read_parse_batch_attachment(&snapshot, "cloud-source.json")?;
+    let source: Value = serde_json::from_slice(&source_bytes)
+        .map_err(|_| BridgeError::invalid_input("Invalid cloud provenance"))?;
+    let manifest = &snapshot.manifest;
+    if source["schemaVersion"] != 1
+        || source["provider"] != manifest.provider
+        || source["model"] != manifest.model
+        || source["options"] != manifest.options
+        || source["paperId"] != paper_id
+        || source["batchId"] != batch_id
+        || source["pdfSha256"] != manifest.pdf_sha256
+        || source["rawSha256"] != manifest.raw_sha256
+        || source["blockModelSha256"] != meta.sha256
+        || source["projectionSha256"] != crate::cloudparse_map::projection_sha256(&saved)?
+    {
+        return Err(BridgeError::new(
+            "source_identity_mismatch",
+            "云端来源与解析批次不匹配",
+            false,
+        ));
+    }
+    let (_, pdf_bytes) = library.read_parse_batch_attachment(&snapshot, "pdf")?;
+    let identity = crate::pdf_identity::read_pdf_identity_bytes(&pdf_bytes)?;
+    if identity.sha256 != manifest.pdf_sha256 || identity.pages.len() != saved.page_count as usize {
+        return Err(BridgeError::new(
+            "source_identity_mismatch",
+            "云端来源与原 PDF 不匹配",
+            false,
+        ));
+    }
+    let entries = source["blocks"]
+        .as_array()
+        .ok_or_else(|| BridgeError::invalid_input("Cloud source blocks are missing"))?;
+    let mut seen = std::collections::HashSet::new();
+    let mut blocks = Vec::new();
+    for entry in entries {
+        let sec = entry["secId"]
+            .as_str()
+            .ok_or_else(|| BridgeError::invalid_input("Invalid source section"))?;
+        let id = entry["blockId"]
+            .as_u64()
+            .ok_or_else(|| BridgeError::invalid_input("Invalid source block"))?;
+        if !seen.insert((sec, id)) {
+            return Err(BridgeError::invalid_input("Duplicate source block"));
+        }
+        let block = saved
+            .sections
+            .iter()
+            .find(|s| s.id == sec)
+            .and_then(|s| s.blocks.iter().find(|b| b.id as u64 == id))
+            .ok_or_else(|| BridgeError::invalid_input("Unknown source block"))?;
+        let regions: Vec<crate::pdfmap::SourceRegion> =
+            serde_json::from_value(entry["sourceRegions"].clone())
+                .map_err(|_| BridgeError::invalid_input("Invalid source geometry"))?;
+        if regions != block.source_regions {
+            return Err(BridgeError::invalid_input(
+                "Source geometry differs from model",
+            ));
+        }
+        for region in &regions {
+            let page = identity
+                .pages
+                .get(
+                    region
+                        .page
+                        .checked_sub(1)
+                        .ok_or_else(|| BridgeError::invalid_input("Invalid source page"))?
+                        as usize,
+                )
+                .ok_or_else(|| BridgeError::invalid_input("Invalid source page"))?;
+            let [x, y, w, h] = region.bbox;
+            if !page.trusted_geometry
+                || region.charspan.is_some()
+                || region.page_size != [page.width, page.height]
+                || !region.bbox.iter().all(|v| v.is_finite())
+                || x < 0.0
+                || y < 0.0
+                || w <= 0.0
+                || h <= 0.0
+                || x + w > page.width * 2.0 + 0.01
+                || y + h > page.height * 2.0 + 0.01
+            {
+                return Err(BridgeError::invalid_input(
+                    "Uncalibrated cloud source geometry",
+                ));
+            }
+        }
+        blocks
+            .push(json!({"secId":sec,"blockId":id,"sourceRegions":regions,"pages":entry["pages"]}));
+    }
+    if seen.len() != saved.sections.iter().map(|s| s.blocks.len()).sum::<usize>() {
+        return Err(BridgeError::invalid_input(
+            "Cloud source model coverage mismatch",
+        ));
+    }
+    library.verify_parse_batch(&snapshot)?;
+    Ok(
+        json!({"schemaVersion":1,"batchId":batch_id,"pdfSha256":manifest.pdf_sha256,"blockModelSha256":meta.sha256,"blocks":blocks}),
+    )
+}
+
 pub(crate) fn get_source_regions(
     library: &Library,
     paper_id: &str,
@@ -197,7 +318,7 @@ fn read_safe(root: &Path, path: &Path) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= MAX_DOCUMENT_BYTES).then_some(bytes)
 }
 
-fn safe_path(root: &Path, path: &Path) -> bool {
+pub(crate) fn safe_path(root: &Path, path: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return false;
     };

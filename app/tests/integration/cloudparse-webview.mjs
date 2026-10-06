@@ -5,6 +5,7 @@ import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { chromium } from 'playwright';
 
 assert.equal(process.platform, 'win32', 'Windows WebView2 required');
@@ -163,7 +164,8 @@ try {
     assert.equal(await page.locator('[data-parser-provider="local"]').getAttribute('aria-pressed'), 'false');
     await page.locator('#modal-settings [data-close]').click();
   });
-  await check('PDF, sample and arXiv ask before parsing and cancel leaves library empty', async () => {
+  await check('PDF, sample and arXiv ask before parsing and cancel preserves library', async () => {
+    const existing = (await bridge('library.listPapers@1')).papers;
     const triggers = [
       () => page.locator('#file-input').setInputFiles(path.join(app, 'ui/samples/sample_paper.pdf')),
       () => page.locator('#btn-sample').click(),
@@ -181,7 +183,7 @@ try {
       await page.waitForFunction(() => document.querySelector('#parser-choice-error').textContent.includes('确认上传'));
       await page.locator('#parser-choice-provider').selectOption('local');
       await page.locator('#parser-choice-cancel').click();
-      assert.deepEqual((await bridge('library.listPapers@1')).papers, []);
+      assert.deepEqual((await bridge('library.listPapers@1')).papers, existing);
     }
     await page.keyboard.press('Escape');
   });
@@ -370,6 +372,65 @@ try {
     assert.deepEqual(call, { kind: 'cloudparse.parse@1', input: {
       paperId: 'recovery-paper', action: 'submit', uploadConfirmed: true, batchId: 'cloud-fixture', resubmitConfirmed: true,
     } });
+  });
+  await check('offline cloud candidate restores native provenance and overlays the original PDF', async () => {
+    const paperId = 'u4-native', batchId = 'u4-batch';
+    const pdf = await readFile(path.join(app, 'src-tauri/tests/fixtures/regression/corpus/1412.6980.pdf'));
+    const raw = await readFile(path.join(app, 'src-tauri/tests/fixtures/aistudio/1412.6980.jsonl'));
+    const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+    await bridge('library.putPaper@1', { paper: { id: paperId, title: 'U4 native fixture' } });
+    await bridge('files.putAttachment@1', { paperId, attachment: { id: 'pdf', name: 'adam.pdf', contentType: 'application/pdf', contentBase64: pdf.toString('base64') } });
+    const jobDir = path.join(library.dataRoot, 'operations/cloudparse', paperId, batchId);
+    await mkdir(jobDir, { recursive: true });
+    await writeFile(path.join(jobDir, 'result.jsonl'), raw);
+    await writeFile(path.join(jobDir, 'run.json'), JSON.stringify({ schemaVersion: 1, paperId, batchId, provider: 'baidu', model: 'PaddleOCR-VL-1.6',
+      options: { useDocOrientationClassify: false, useDocUnwarping: false, useChartRecognition: false }, pdfSha256: digest(pdf),
+      state: 'downloaded', jobId: 'offline-fixture', rawSha256: digest(raw), failureCode: null, updatedAt: new Date().toISOString(), resultReady: false }));
+    const started = await native('bridge_start', { kind: 'cloudparse.map@1', input: { paperId, batchId } });
+    const deadline = Date.now() + 30000;
+    let task;
+    do {
+      task = (await bridge('tasks.get@1', { taskId: started.taskId })).task;
+      if (['succeeded', 'failed', 'cancelled'].includes(task.status)) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } while (Date.now() < deadline);
+    assert.equal(task.status, 'succeeded', JSON.stringify(task.error));
+    await assert.rejects(bridge('files.getAttachment@1', { paperId, attachmentId: 'blockmodel.json' }));
+    const proof = await page.evaluate(async ({ paperId, batchId }) => {
+      const { loadBatchModel, readBatchAttachment, evidenceTarget, evidenceRangeRects } = await import('/js/pdf-evidence.js');
+      const { createBridge } = await import('/bridge.js');
+      const realBridge = createBridge(window.__TAURI__);
+      const mapped = await loadBatchModel(realBridge, paperId, { batchId });
+      const section = mapped.sections.find(section => section.blocks.some(block => block.sourceRegions?.length && !block.assetId));
+      const block = section.blocks.find(block => block.sourceRegions?.length && !block.assetId);
+      const target = evidenceTarget({ kind: 'blocks', secId: section.id, start: block.id, end: block.id }, mapped);
+      const pdf = await readBatchAttachment(realBridge, mapped.parseBatch, 'pdf');
+      const doc = await window.pdfjsLib.getDocument({ data: Uint8Array.from(atob(pdf.contentBase64), char => char.charCodeAt(0)) }).promise;
+      const original = await doc.getPage(target.page), viewport = original.getViewport({ scale: 1 });
+      const regions = evidenceRangeRects(target, [{ page: target.page, viewport }]);
+      if (!regions.length) throw new Error('No verified source overlay');
+      const canvas = document.createElement('canvas'); canvas.id = 'u4-original-proof';
+      canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+      canvas.style.cssText = 'position:fixed;inset:0;max-width:100vw;max-height:100vh;width:auto;height:auto;z-index:99999;background:white;';
+      document.body.appendChild(canvas);
+      const context = canvas.getContext('2d');
+      await original.render({ canvasContext: context, viewport }).promise;
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let ink = 0; for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 180 && pixels[i + 1] < 180 && pixels[i + 2] < 180) ink++;
+      context.strokeStyle = '#1682e8'; context.lineWidth = 1.5;
+      for (const rect of regions[0].rects) context.strokeRect(...rect);
+      await doc.destroy();
+      return { page: target.page, rects: regions[0].rects, ink, batchId: mapped.parseBatch.manifest.batchId };
+    }, { paperId, batchId });
+    assert.equal(proof.batchId, batchId); assert.ok(proof.ink > 1000);
+    report.cloudOverlay = proof;
+    const session = await browser.contexts()[0].newCDPSession(page);
+    for (const width of [1280, 430]) {
+      await session.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      await page.screenshot({ path: path.join(output, `cloud-source-${width}.png`) });
+    }
+    await session.send('Emulation.clearDeviceMetricsOverride');
+    await page.locator('#u4-original-proof').evaluate(node => node.remove());
   });
   assert.deepEqual(report.errors, []);
   report.result = 'passed';

@@ -46,6 +46,8 @@ pub fn available_commands() -> &'static [&'static str] {
         "cloudparse.status@1",
         "pdfparse.status@1",
         "pdfmap.getSourceRegions@1",
+        "parsebatch.pin@1",
+        "parsebatch.read@1",
         "skills.list@1",
         "exports.write@1",
         // dialog.*@1 的分发在 lib.rs 拦截（打开系统对话框需要窗口句柄），
@@ -64,10 +66,37 @@ pub fn invoke(
     input: &Value,
 ) -> Result<Value, BridgeError> {
     match command {
+        "parsebatch.pin@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let batch = input
+                .get("batchId")
+                .map(|v| {
+                    v.as_str()
+                        .ok_or_else(|| BridgeError::invalid_input("batchId must be a string"))
+                })
+                .transpose()?;
+            Ok(json!({"schemaVersion":1,"snapshot":library.pin_parse_batch(paper_id,batch)?}))
+        }
+        "parsebatch.read@1" => {
+            let snapshot =
+                parse_dto::<crate::parsebatch::ParseBatchSnapshot>(command, input, "snapshot")?;
+            let id = required_string(command, input, "attachmentId")?;
+            let (attachment, bytes) = library.read_parse_batch_attachment(&snapshot, id)?;
+            Ok(
+                json!({"schemaVersion":1,"attachment":attachment,"contentBase64":base64::Engine::encode(&base64::engine::general_purpose::STANDARD,bytes)}),
+            )
+        }
         "pdfmap.getSourceRegions@1" => {
             let paper_id = required_string(command, input, "paperId")?;
             let hash = required_string(command, input, "blockModelSha256")?;
-            crate::pdfmap_evidence::get_source_regions(library, paper_id, hash)
+            if let Some(batch) = input.get("batchId") {
+                let batch = batch
+                    .as_str()
+                    .ok_or_else(|| BridgeError::invalid_input("batchId must be a string"))?;
+                crate::pdfmap_evidence::get_batch_source_regions(library, paper_id, batch, hash)
+            } else {
+                crate::pdfmap_evidence::get_source_regions(library, paper_id, hash)
+            }
         }
         "app.info@1" => Ok(json!({
             "schemaVersion": BRIDGE_SCHEMA_VERSION,

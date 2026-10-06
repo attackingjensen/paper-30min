@@ -128,7 +128,7 @@ fn fixture_1706_attention_full_structure() {
         .contains("The Transformer - model architecture"));
     assert_eq!(fig1.page, 3);
     assert!(
-        fig1.bbox[2] > 0.0 && fig1.bbox[3] > 0.0,
+        fig1.bbox.is_some_and(|bbox| bbox[2] > 0.0 && bbox[3] > 0.0),
         "bbox 应有正宽高: {:?}",
         fig1.bbox
     );

@@ -27,6 +27,12 @@ test('raw download is explicitly pending integration and cancellation warns abou
   assert.equal(cloudJobView({ state: 'cancelled', jobId: 'j' }).canResume, true);
 });
 
+test('stored candidate keeps an on-demand verification action without claiming readiness', () => {
+  const view = cloudJobView({ state: 'downloaded', candidateStored: true });
+  assert.match(view.text, /待校验/);
+  assert.equal(view.canMap, true);
+});
+
 test('remote failure offers a confirmed new submission, while interruptions resume the old job', () => {
   const failed = { jobId: 'failed-job', batchId: 'failed-batch', state: 'remote-failed' };
   assert.equal(cloudJobView(failed).needsResubmit, true);

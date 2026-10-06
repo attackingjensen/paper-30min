@@ -155,11 +155,11 @@ pub fn build_render_job(mapped: &MappedPaper) -> RenderJob {
         .figures
         .iter()
         .chain(mapped.tables.iter())
-        .map(|entry| RenderJobCrop {
+        .filter_map(|entry| Some(RenderJobCrop {
             id: entry.id.clone(),
             page: entry.page,
-            bbox: entry.bbox,
-        })
+            bbox: entry.bbox?,
+        }))
         .collect();
     // 公式块不进图表清单（无图注编号），裁切 ID 从地址空间派生：
     // fml-{sec_id}-b{块号}（frontmatter 区用 fml-frontmatter-b{块号}）。
@@ -674,7 +674,7 @@ mod tests {
             number: id[4..].to_string(),
             caption: None,
             page,
-            bbox: [200.0, 384.0, 800.0, 400.0],
+            bbox: Some([200.0, 384.0, 800.0, 400.0]),
             section: None,
             references: Vec::new(),
         }

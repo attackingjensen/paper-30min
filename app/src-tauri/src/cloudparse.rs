@@ -150,9 +150,191 @@ pub(crate) fn status(library: &Library, input: &Value) -> Result<Value, BridgeEr
     if input.get("paperId").is_some_and(|v| !v.is_string()) {
         return Err(BridgeError::invalid_input("paperId 必须是字符串"));
     }
+    let jobs = records(library, input.get("paperId").and_then(Value::as_str))?
+        .into_iter()
+        .map(|record| {
+            let id = format!(
+                "parsebatch-{}",
+                files::sha256_hex(record.batch_id.as_bytes())
+            );
+            let candidate_stored = match library.get_attachment(&record.paper_id, &id) {
+                Ok(_) => true,
+                Err(err) if err.code == "not_found" => false,
+                Err(err) => return Err(err),
+            };
+            let mut value = serde_json::to_value(record)
+                .map_err(|_| error("cloud_record_invalid", "任务记录无效"))?;
+            value["candidateStored"] = json!(candidate_stored);
+            Ok(value)
+        })
+        .collect::<Result<Vec<_>, BridgeError>>()?;
+    Ok(json!({"schemaVersion":1,"jobs":jobs}))
+}
+
+#[derive(Debug)]
+pub(crate) struct CloudMapPlan {
+    pub(crate) paper_id: String,
+    batch_id: String,
+}
+
+pub(crate) fn prepare_map(library: &Library, input: &Value) -> Result<CloudMapPlan, BridgeError> {
+    let paper = input["paperId"]
+        .as_str()
+        .ok_or_else(|| BridgeError::invalid_input("需要 paperId"))?;
+    let batch = input["batchId"]
+        .as_str()
+        .ok_or_else(|| BridgeError::invalid_input("需要 batchId"))?;
+    let record = records(library, Some(paper))?
+        .into_iter()
+        .find(|r| r.batch_id == batch)
+        .ok_or_else(|| BridgeError::invalid_input("云端批次不存在"))?;
+    if record.state != "downloaded" || record.raw_sha256.is_none() {
+        return Err(BridgeError::invalid_input("原始结果尚未取回"));
+    }
+    Ok(CloudMapPlan {
+        paper_id: paper.into(),
+        batch_id: batch.into(),
+    })
+}
+
+fn map_candidate(ctx: &RunContext, plan: &CloudMapPlan) -> Result<Value, BridgeError> {
+    use crate::{
+        cloudparse_map::{map_aistudio_jsonl, MappingContext},
+        parsebatch::{ParseBatchAttachment, ParseBatchManifest},
+    };
+    use std::collections::BTreeMap;
+    let _lock = lock_paper(&ctx.library, &plan.paper_id)?;
+    ctx.cancel_checkpoint()?;
+    let record = records(&ctx.library, Some(&plan.paper_id))?
+        .into_iter()
+        .find(|r| r.batch_id == plan.batch_id)
+        .ok_or_else(|| BridgeError::invalid_input("云端批次不存在"))?;
+    if record.state != "downloaded" {
+        return Err(BridgeError::invalid_input("原始结果尚未取回"));
+    }
+    match ctx
+        .library
+        .pin_parse_batch(&plan.paper_id, Some(&plan.batch_id))
+    {
+        Ok(snapshot) => {
+            if snapshot.manifest.pdf_sha256 != record.pdf_sha256
+                || Some(snapshot.manifest.raw_sha256) != record.raw_sha256
+            {
+                return Err(error("source_identity_mismatch", "已存候选与任务不匹配"));
+            }
+            return Ok(
+                json!({"paperId":plan.paper_id,"batchId":plan.batch_id,"candidateReady":true,"resultReady":false}),
+            );
+        }
+        Err(err) if err.code == "not_found" => {}
+        Err(err) => return Err(err),
+    }
+    let raw_path = record_dir(&ctx.library, &record)?.join("result.jsonl");
+    if !crate::pdfmap_evidence::safe_path(ctx.library.root(), &raw_path) {
+        return Err(error("cloud_invalid_result", "原始结果路径无效"));
+    }
+    let file = File::open(raw_path).map_err(io_error)?;
+    if file.metadata().map_err(io_error)?.len() > MAX_RESULT {
+        return Err(error("too_large", "云端结果超过上限"));
+    }
+    let mut raw = Vec::new();
+    file.take(MAX_RESULT + 1)
+        .read_to_end(&mut raw)
+        .map_err(io_error)?;
+    if raw.len() as u64 > MAX_RESULT || Some(files::sha256_hex(&raw)) != record.raw_sha256 {
+        return Err(error("integrity_failed", "原始结果摘要不符"));
+    }
+    ctx.cancel_checkpoint()?;
+    let meta = ctx.library.get_attachment(&plan.paper_id, "pdf")?;
+    if meta.size < 0 || meta.size as u64 > MAX_PDF {
+        return Err(error("too_large", "PDF 超过云端解析上限"));
+    }
+    let path = files::attachment_path(ctx.library.root(), &plan.paper_id, "pdf")?;
+    if !crate::pdfmap_evidence::safe_path(ctx.library.root(), &path) {
+        return Err(error("invalid_pdf", "PDF 路径无效"));
+    }
+    let mut file = File::open(path).map_err(io_error)?;
+    let (size, sha) = digest(&mut file, MAX_PDF)?;
+    if size != meta.size as u64 || sha != record.pdf_sha256 || sha != meta.sha256 {
+        return Err(error("integrity_failed", "PDF 身份已变化"));
+    }
+    let mut pdf = Vec::new();
+    file.take(MAX_PDF + 1)
+        .read_to_end(&mut pdf)
+        .map_err(io_error)?;
+    let identity = crate::pdf_identity::read_pdf_identity_bytes(&pdf)?;
+    ctx.emit_detail(
+        "cloudparse-phase",
+        json!({"phase":"mapping","batchId":plan.batch_id}),
+    );
+    let converted = map_aistudio_jsonl(
+        &raw,
+        &identity,
+        &MappingContext {
+            paper_id: plan.paper_id.clone(),
+            batch_id: plan.batch_id.clone(),
+            pdf_sha256: record.pdf_sha256.clone(),
+            raw_sha256: record.raw_sha256.clone().unwrap(),
+            model: record.model.clone(),
+            options: record.options.clone(),
+        },
+    )?;
+    ctx.cancel_checkpoint()?;
+    let mut resources: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    resources.insert(
+        "blockmodel.json".into(),
+        serde_json::to_vec(&converted.mapped)
+            .map_err(|_| io_error(std::io::Error::other("model")))?,
+    );
+    resources.insert(
+        "cloud-source.json".into(),
+        serde_json::to_vec(&converted.source)
+            .map_err(|_| io_error(std::io::Error::other("source")))?,
+    );
+    resources.insert("pdf".into(), pdf);
+    let attachments = resources
+        .iter()
+        .map(|(id, bytes)| {
+            (
+                id.clone(),
+                ParseBatchAttachment {
+                    attachment_id: id.clone(),
+                    sha256: files::sha256_hex(bytes),
+                    size: bytes.len() as u64,
+                    content_type: if id == "pdf" {
+                        "application/pdf"
+                    } else {
+                        "application/json"
+                    }
+                    .into(),
+                },
+            )
+        })
+        .collect();
+    let manifest = ParseBatchManifest {
+        schema_version: 1,
+        paper_id: plan.paper_id.clone(),
+        batch_id: plan.batch_id.clone(),
+        pdf_sha256: identity.sha256,
+        provider: "baidu".into(),
+        model: record.model,
+        options: record.options,
+        raw_sha256: record.raw_sha256.unwrap(),
+        attachments,
+    };
+    ctx.library.write_parse_batch(manifest, resources)?;
+    ctx.cancel_checkpoint()?;
     Ok(
-        json!({"schemaVersion":1,"jobs":records(library,input.get("paperId").and_then(Value::as_str))?}),
+        json!({"paperId":plan.paper_id,"batchId":plan.batch_id,"candidateReady":true,"resultReady":false}),
     )
+}
+
+pub(crate) fn run_map(ctx: &RunContext, plan: &CloudMapPlan) {
+    match map_candidate(ctx, plan) {
+        Ok(value) => ctx.succeed(Some(value)),
+        Err(e) if e.code == crate::tasks::CANCEL_SENTINEL => ctx.cancel_now(),
+        Err(e) => ctx.fail(e),
+    }
 }
 fn digest(file: &mut File, limit: u64) -> Result<(u64, String), BridgeError> {
     if file.metadata().map_err(io_error)?.len() > limit {
@@ -627,7 +809,11 @@ pub(crate) fn run(ctx: &RunContext, plan: &CloudParsePlan) {
             if ctx.cancel_checkpoint().is_err() {
                 ctx.cancel_now();
             } else {
-                ctx.succeed(Some(result));
+                let map = CloudMapPlan {
+                    paper_id: plan.paper_id.clone(),
+                    batch_id: result["job"]["batchId"].as_str().unwrap_or("").into(),
+                };
+                run_map(ctx, &map);
             }
         }
         Err(e) if e.code == crate::tasks::CANCEL_SENTINEL => ctx.cancel_now(),
@@ -761,7 +947,9 @@ mod tests {
         first.on_submit = Some(Box::new(move || {
             let mut second = Fake::success();
             assert_eq!(
-                execute_now(&other, &competing, &mut second).unwrap_err().code,
+                execute_now(&other, &competing, &mut second)
+                    .unwrap_err()
+                    .code,
                 "paper_busy"
             );
             assert_eq!(second.submissions, 0);
@@ -804,7 +992,11 @@ mod tests {
         let plan = submit_plan(&ctx);
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
-            .args(["--exact", "cloudparse::tests::paper_lock_process_helper", "--ignored"])
+            .args([
+                "--exact",
+                "cloudparse::tests::paper_lock_process_helper",
+                "--ignored",
+            ])
             .env("PAPER30MIN_CLOUD_LOCK_TEST_ROOT", dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -816,8 +1008,14 @@ mod tests {
         let mut child = ChildGuard(command.spawn().unwrap());
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !dir.path().join("lock-held").exists() {
-            assert!(child.0.try_wait().unwrap().is_none(), "lock helper exited early");
-            assert!(std::time::Instant::now() < deadline, "lock helper timed out");
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "lock helper exited early"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock helper timed out"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         let mut transport = Fake::success();
@@ -831,7 +1029,10 @@ mod tests {
         child.0.wait().unwrap();
         execute_now(&ctx, &plan, &mut transport).unwrap();
         assert_eq!(transport.submissions, 1);
-        assert!(dir.path().join("operations/cloudparse/p/task.lock").is_file());
+        assert!(dir
+            .path()
+            .join("operations/cloudparse/p/task.lock")
+            .is_file());
     }
 
     #[test]

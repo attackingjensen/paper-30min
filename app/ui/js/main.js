@@ -17,6 +17,7 @@ import { updateState, updateStatusText } from './updater.js';
 import * as view from './view.js';
 import { createLatestResource, createSerialWriter } from './reader-resources.js';
 import { createPdfReader } from './pdf-reader.js';
+import { loadBatchModel, readBatchAttachment } from './pdf-evidence.js';
 import { createPdfSelection, selectionBinding, selectionImages } from './pdf-selection.js';
 import { translateForPaper } from './translation.js';
 import {
@@ -125,17 +126,18 @@ async function latestCloudJob(paperId) {
 }
 
 async function startCloudParse(paperId, resubmitConfirmed = false, selectedJob = null) {
-  if (hasOpenPreflightTask(paperId, 'cloudparse.parse@1')) return false;
+  if (hasOpenPreflightTask(paperId, 'cloudparse.parse@1') || hasOpenPreflightTask(paperId, 'cloudparse.map@1')) return false;
   try {
     const job = selectedJob || await latestCloudJob(paperId);
-    if (job?.state === 'downloaded') { toast(cloudJobView(job).text); return false; }
-    const input = cloudTaskInput(paperId, job, resubmitConfirmed);
-    const { taskId } = await bridge.start('cloudparse.parse@1', input);
-    const meta = { kind: 'cloudparse.parse@1', input, retry: () => startCloudParse(paperId, false, job) };
+    const mapping = job?.state === 'downloaded';
+    const input = mapping ? { paperId, batchId: job.batchId } : cloudTaskInput(paperId, job, resubmitConfirmed);
+    const kind = mapping ? 'cloudparse.map@1' : 'cloudparse.parse@1';
+    const { taskId } = await bridge.start(kind, input);
+    const meta = { kind, input, retry: () => startCloudParse(paperId, false, job) };
     registerSessionTask(taskId, meta);
     const done = await trackTask(bridge, taskId, {});
     meta.status = done.status;
-    if (done.status === 'succeeded') toast('云端原始结果已保存；正文、来源与视觉资源尚未就绪');
+    if (done.status === 'succeeded') toast(done.result?.candidateReady ? '正文与来源候选已保存；视觉资源与发布尚未完成' : '云端原始结果已保存');
     else if (done.status === 'cancelled') toast('客户端已停止；已受理的远端任务可能继续执行或计费');
     else toast(`云端解析未完成：${done.error?.message || '请查看任务中心'}`, true);
     return false;
@@ -1077,7 +1079,9 @@ async function fillCropImages(root, paper) {
   const imgs = [...root.querySelectorAll('img[data-crop-id]')];
   if (!imgs.length) return;
   const ids = [...new Set(imgs.map(img => img.dataset.cropId))];
-  const crops = await loadCropDataUrls(paper, ids);
+  const snapshot = current === paper ? currentMapped?.parseBatch : null;
+  if (!snapshot) return;
+  const crops = await loadCropDataUrls(paper, ids, snapshot);
   if (current !== paper) return;
   for (const img of imgs) {
     const url = crops[img.dataset.cropId];
@@ -2255,67 +2259,31 @@ async function translateCurrentText() {
 }
 
 // ---------------- 问答视图 ----------------
-async function loadBlockModel(paper, { recoverSource = true } = {}) {
-  let attachment;
+async function loadBlockModel(paper, { recoverSource = true, snapshot } = {}) {
   try {
-    const meta = await bridge.invoke('files.getAttachment@1', {
-      paperId: paper.id,
-      attachmentId: BLOCKMODEL_ATTACHMENT_ID,
-    });
-    attachment = meta?.attachment;
+    return await loadBatchModel(bridge, paper.id, { recoverSource, snapshot });
   } catch (err) {
-    const error = new Error('未建图：提问须先完成建图。阅读地图与块模型就位后才能装配上下文。');
-    error.code = 'map_required';
-    error.cause = err;
-    throw error;
-  }
-  if (!attachment) {
-    const error = new Error('未建图：提问须先完成建图。阅读地图与块模型就位后才能装配上下文。');
-    error.code = 'map_required';
-    throw error;
-  }
-  const range = await bridge.invoke('files.readRange@1', {
-    paperId: paper.id,
-    attachmentId: BLOCKMODEL_ATTACHMENT_ID,
-    offset: 0,
-    length: attachment.size,
-  });
-  try {
-    const mapped = JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
-    // Source geometry is usable only after the native side verifies both attachments.
-    for (const section of mapped.sections || []) for (const block of section.blocks || []) delete block.sourceRegions;
-    if (!recoverSource) return mapped;
-    try {
-      const evidence = await bridge.invoke('pdfmap.getSourceRegions@1', { paperId: paper.id, blockModelSha256: attachment.sha256 });
-      if (evidence?.blockModelSha256 === attachment.sha256 && evidence.pdfSha256 === paper.pdfAttachment?.sha256) {
-        for (const entry of evidence.blocks || []) {
-          const block = mapped.sections?.find(section => section.id === entry.secId)?.blocks?.find(block => block.id === entry.blockId);
-          if (block) block.sourceRegions = entry.sourceRegions;
-        }
-      }
-    } catch { /* Legacy papers retain the text lookup fallback. */ }
-    return mapped;
-  } catch (err) {
-    const error = new Error('块模型无法解析，请重新建图后再提问。');
-    error.code = 'invalid_blockmodel';
+    const missing = err.code === 'not_found';
+    const error = new Error(missing ? '未建图：提问须先完成建图。阅读地图与块模型就位后才能装配上下文。' : '块模型无法读取，请重新打开论文后再提问。');
+    error.code = missing ? 'map_required' : (err.code || 'invalid_blockmodel');
     error.cause = err;
     throw error;
   }
 }
 
-async function loadCropDataUrls(paper, cropAssetIds) {
+async function loadCropDataUrls(paper, cropAssetIds, snapshot = null) {
   const crops = {};
   for (const id of cropAssetIds) {
     try {
-      const meta = await bridge.invoke('files.getAttachment@1', { paperId: paper.id, attachmentId: id });
-      const attachment = meta?.attachment;
-      if (!attachment) continue;
-      const range = await bridge.invoke('files.readRange@1', {
-        paperId: paper.id,
-        attachmentId: id,
-        offset: 0,
-        length: attachment.size,
-      });
+      let range;
+      if (snapshot) range = await readBatchAttachment(bridge, snapshot, id);
+      else {
+        const meta = await bridge.invoke('files.getAttachment@1', { paperId: paper.id, attachmentId: id });
+        const attachment = meta?.attachment;
+        if (!attachment) continue;
+        range = await bridge.invoke('files.readRange@1', { paperId: paper.id, attachmentId: id, offset: 0, length: attachment.size });
+      }
+      const attachment = range.attachment;
       const mime = attachment.contentType || 'image/webp';
       crops[id] = `data:${mime};base64,${range.contentBase64}`;
     } catch (err) {
@@ -2326,7 +2294,7 @@ async function loadCropDataUrls(paper, cropAssetIds) {
 }
 
 async function assembleCurrentQa(paper, question, binding) {
-  const mapped = await loadBlockModel(paper, { recoverSource: false });
+  const mapped = await loadBlockModel(paper, { recoverSource: false, snapshot: current === paper ? currentMapped?.parseBatch : undefined });
   const hydrate = async message => {
     if (!message.pdfSelection?.images?.length) return message;
     const images = await Promise.all(message.pdfSelection.images.map(async image => {
@@ -2348,7 +2316,7 @@ async function assembleCurrentQa(paper, question, binding) {
   input.binding = await hydrate(binding);
   const assembled = assembleQaContext(input);
   if (!assembled.cropAssetIds.length) return assembled.messages;
-  const crops = await loadCropDataUrls(paper, assembled.cropAssetIds);
+  const crops = await loadCropDataUrls(paper, assembled.cropAssetIds, mapped.parseBatch);
   const missing = assembled.cropAssetIds.filter(id => !crops[id]);
   if (missing.length) {
     const error = new Error(`片段覆盖的裁切图缺失：${missing.join('、')}。请先完成建图预渲染。`);
@@ -3918,6 +3886,7 @@ function renderTaskList(tasks) {
       row.appendChild(button);
     };
     if (state.canResume) action('恢复查询 / 取回', () => startCloudParse(job.paperId, false, job));
+    if (state.canMap) action(job.candidateStored ? '校验正文与来源' : '转换正文与来源', () => startCloudParse(job.paperId, false, job));
     if (state.needsResubmit) action('重新提交…', async () => {
       const warning = job.state === 'remote-failed'
         ? '上次远端解析已失败。重新上传会创建新任务，可能再次计费，是否继续？'

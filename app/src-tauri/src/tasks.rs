@@ -134,6 +134,7 @@ pub(crate) fn now_iso() -> String {
 #[derive(Debug)]
 enum TaskPlan {
     CloudParse(crate::cloudparse::CloudParsePlan),
+    CloudMap(crate::cloudparse::CloudMapPlan),
     DemoStreamText {
         chunks: Vec<String>,
         chunk_delay_ms: u64,
@@ -194,6 +195,9 @@ const DEFAULT_STREAM_TEXT: &str = "Paper30Min Windows 正式客户端桥接演�
 这段文本按块流式发送，验证 start / subscribe / getTask 事件闭环。";
 
 fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, BridgeError> {
+    if kind == "cloudparse.map@1" {
+        return crate::cloudparse::prepare_map(library, input).map(TaskPlan::CloudMap);
+    }
     if kind == "cloudparse.parse@1" {
         return crate::cloudparse::prepare(library, input).map(TaskPlan::CloudParse);
     }
@@ -602,6 +606,7 @@ pub fn available_task_kinds() -> &'static [&'static str] {
         "net.fetch-text@1",
         "files.download@1",
         "cloudparse.parse@1",
+        "cloudparse.map@1",
         crate::pdfparse::TASK_CONVERT,
         crate::pdfparse::TASK_BOOTSTRAP,
         crate::pdfassets::TASK_PRERENDER,
@@ -661,6 +666,7 @@ impl TaskRegistry {
         let entry = TaskEntry {
             paper_id: match &plan {
                 TaskPlan::CloudParse(plan) => Some(plan.paper_id.clone()),
+                TaskPlan::CloudMap(plan) => Some(plan.paper_id.clone()),
                 TaskPlan::PdfparseConvert { paper_id, .. } => paper_id.clone(),
                 TaskPlan::PdfassetsPrerender { paper_id, .. }
                 | TaskPlan::PaperBuildMap { paper_id, .. }
@@ -684,7 +690,8 @@ impl TaskRegistry {
             cancel: Arc::new(AtomicBool::new(false)),
             sink: Arc::clone(&sink),
         };
-        let mut entries = self.entries
+        let mut entries = self
+            .entries
             .lock()
             .map_err(|_| BridgeError::internal("任务注册表锁定失败"))?;
         // Preserve local convert/prerender parallelism, but keep cloud candidate writes
@@ -693,9 +700,17 @@ impl TaskRegistry {
             if entries.values().any(|active| {
                 !active.snapshot.status.is_terminal()
                     && active.paper_id.as_ref() == Some(paper_id)
-                    && (kind == "cloudparse.parse@1" || active.snapshot.kind == "cloudparse.parse@1")
+                    && (matches!(kind, "cloudparse.parse@1" | "cloudparse.map@1")
+                        || matches!(
+                            active.snapshot.kind.as_str(),
+                            "cloudparse.parse@1" | "cloudparse.map@1"
+                        ))
             }) {
-                return Err(BridgeError::new("paper_busy", "本篇论文的解析或阅读任务正在运行，请等待完成或取消。", true));
+                return Err(BridgeError::new(
+                    "paper_busy",
+                    "本篇论文的解析或阅读任务正在运行，请等待完成或取消。",
+                    true,
+                ));
             }
         }
         entries.insert(task_id.clone(), entry);
@@ -1118,6 +1133,7 @@ fn run_task(
     );
     match plan {
         TaskPlan::CloudParse(plan) => crate::cloudparse::run(&ctx, &plan),
+        TaskPlan::CloudMap(plan) => crate::cloudparse::run_map(&ctx, &plan),
         TaskPlan::DemoStreamText {
             chunks,
             chunk_delay_ms,
@@ -1149,7 +1165,14 @@ fn run_task(
             max_tokens,
             stream,
             stage,
-        } => crate::model::run_chat(&ctx, &messages, temperature, max_tokens, stream, stage.as_deref()),
+        } => crate::model::run_chat(
+            &ctx,
+            &messages,
+            temperature,
+            max_tokens,
+            stream,
+            stage.as_deref(),
+        ),
         TaskPlan::ModelTest => crate::model::run_test(&ctx),
         TaskPlan::NetFetchText { url, max_bytes } => {
             crate::net::run_fetch_text(&ctx, &url, max_bytes)
