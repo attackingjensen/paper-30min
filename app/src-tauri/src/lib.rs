@@ -13,6 +13,7 @@ pub mod pdfassets;
 pub mod pdfmap;
 pub mod pdfmap_evidence;
 pub mod pdfparse;
+pub mod cloudparse;
 pub mod pdfpool;
 pub mod protocol;
 pub mod settings;

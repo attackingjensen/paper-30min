@@ -17,6 +17,17 @@ const FETCH_TEXT_TIMEOUT: Duration = Duration::from_secs(300);
 /// 下载请求总超时。
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Sensitive cloud requests and signed resource downloads must never follow redirects.
+pub(crate) fn no_redirect_client(library: &Library, timeout: Duration) -> Result<reqwest::blocking::Client, BridgeError> {
+    let builder = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(30)).timeout(timeout);
+    let builder = if crate::settings::proxy_mode(library)? == crate::settings::ProxyMode::Direct {
+        builder.no_proxy()
+    } else { builder };
+    builder.build().map_err(|_| BridgeError::new("cloud_network_error", "无法创建云端网络客户端", false))
+}
+
 /// url 必须是 http/https；其他 scheme 视为输入错误（invalid_input 语义，不重试）。
 fn require_http_url(url: &str) -> Result<(), BridgeError> {
     let lower = url.trim().to_ascii_lowercase();

@@ -44,6 +44,32 @@ fn network_mode_defaults_persists_and_rejects_invalid_values() {
 }
 
 #[test]
+fn cloudparse_default_persistence_and_credential_consent() {
+    let (registry, library, dir) = common::env();
+    assert_eq!(invoke(&registry, &library, "settings.get@1", json!({}))["cloudparse"],
+        json!({ "defaultProvider": null, "accessToken": "", "uploadConfirmed": false }));
+    let saved = invoke(&registry, &library, "settings.putCloudparse@1", json!({ "settings": {
+        "defaultProvider": "baidu", "accessToken": " test-secret ", "uploadConfirmed": true, "unknown": 1
+    } }));
+    assert_eq!(saved["settings"], json!({ "defaultProvider": "baidu", "accessToken": "test-secret", "uploadConfirmed": true }));
+    let reopened = Library::open(dir.path()).unwrap();
+    assert_eq!(invoke(&registry, &reopened, "settings.get@1", json!({}))["cloudparse"], saved["settings"]);
+    let changed = invoke(&registry, &library, "settings.putCloudparse@1", json!({ "settings": { "accessToken": "new-secret" } }));
+    assert_eq!(changed["settings"]["uploadConfirmed"], false);
+    let confirmed = invoke(&registry, &library, "settings.putCloudparse@1", json!({ "settings": { "uploadConfirmed": true } }));
+    assert_eq!(confirmed["settings"]["uploadConfirmed"], true);
+    let local = invoke(&registry, &library, "settings.putCloudparse@1", json!({ "settings": { "defaultProvider": "local" } }));
+    assert_eq!(local["settings"]["uploadConfirmed"], true);
+    let cleared = invoke(&registry, &library, "settings.putCloudparse@1", json!({ "settings": { "accessToken": "", "uploadConfirmed": true } }));
+    assert_eq!(cleared["settings"]["uploadConfirmed"], false);
+    for settings in [json!({"defaultProvider":"other"}), json!({"defaultProvider":false}),
+        json!({"accessToken":null}), json!({"uploadConfirmed":"yes"})] {
+        assert_eq!(invoke_err(&registry, &library, "settings.putCloudparse@1", json!({"settings":settings})).code, "invalid_input");
+    }
+    assert_eq!(invoke(&registry, &library, "settings.get@1", json!({}))["cloudparse"], cleared["settings"]);
+}
+
+#[test]
 fn ui_prefs_default_and_roundtrip() {
     let (registry, library, _dir) = common::env();
     let result = invoke(&registry, &library, "settings.get@1", json!({}));
@@ -205,6 +231,9 @@ fn put_skills_overrides_requires_object_and_round_trips() {
 #[test]
 fn settings_do_not_leak_into_paper_dto() {
     let (registry, library, _dir) = common::env();
+    invoke(&registry, &library, "settings.putCloudparse@1", json!({ "settings": {
+        "accessToken": "cloud-secret-local-only", "uploadConfirmed": true
+    } }));
     invoke(
         &registry,
         &library,
@@ -230,6 +259,8 @@ fn settings_do_not_leak_into_paper_dto() {
     assert!(paper.get("apiKey").is_none(), "论文 DTO 不应包含 apiKey");
     let serialized = serde_json::to_string(paper).unwrap();
     assert!(!serialized.contains("sk-secret"), "论文 DTO 序列化不应含 API Key 值");
+    assert!(!serialized.contains("cloud-secret-local-only"));
+    assert!(paper.get("accessToken").is_none());
 }
 
 #[test]

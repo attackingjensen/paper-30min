@@ -52,6 +52,7 @@ const TASK_KIND_LABELS = {
   'net.fetch-text': '网页抓取',
   'files.download': '文件下载',
   'pdfparse.convert': '解析 PDF',
+  'cloudparse.parse': '百度云端解析',
   'paper.build-map': '建图',
   'paper.deep-dive': '深挖',
   'paper.synthesize': '综合',

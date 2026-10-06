@@ -133,6 +133,7 @@ pub(crate) fn now_iso() -> String {
 /// 不复制论文领域规则；领域任务类型在后续实施票接入。
 #[derive(Debug)]
 enum TaskPlan {
+    CloudParse(crate::cloudparse::CloudParsePlan),
     DemoStreamText {
         chunks: Vec<String>,
         chunk_delay_ms: u64,
@@ -193,6 +194,9 @@ const DEFAULT_STREAM_TEXT: &str = "Paper30Min Windows 正式客户端桥接演�
 这段文本按块流式发送，验证 start / subscribe / getTask 事件闭环。";
 
 fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, BridgeError> {
+    if kind == "cloudparse.parse@1" {
+        return crate::cloudparse::prepare(library, input).map(TaskPlan::CloudParse);
+    }
     match kind {
         "demo.stream-text@1" => {
             let text = input
@@ -597,6 +601,7 @@ pub fn available_task_kinds() -> &'static [&'static str] {
         "model.test@1",
         "net.fetch-text@1",
         "files.download@1",
+        "cloudparse.parse@1",
         crate::pdfparse::TASK_CONVERT,
         crate::pdfparse::TASK_BOOTSTRAP,
         crate::pdfassets::TASK_PRERENDER,
@@ -608,6 +613,7 @@ pub fn available_task_kinds() -> &'static [&'static str] {
 
 struct TaskEntry {
     snapshot: TaskSnapshot,
+    paper_id: Option<String>,
     cancel: Arc<AtomicBool>,
     sink: Arc<dyn EventSink>,
 }
@@ -653,6 +659,15 @@ impl TaskRegistry {
         );
         let now = now_iso();
         let entry = TaskEntry {
+            paper_id: match &plan {
+                TaskPlan::CloudParse(plan) => Some(plan.paper_id.clone()),
+                TaskPlan::PdfparseConvert { paper_id, .. } => paper_id.clone(),
+                TaskPlan::PdfassetsPrerender { paper_id, .. }
+                | TaskPlan::PaperBuildMap { paper_id, .. }
+                | TaskPlan::PaperDeepDive { paper_id, .. }
+                | TaskPlan::PaperSynthesize { paper_id, .. } => Some(paper_id.clone()),
+                _ => None,
+            },
             snapshot: TaskSnapshot {
                 schema_version: TASK_SCHEMA_VERSION,
                 task_id: task_id.clone(),
@@ -669,10 +684,22 @@ impl TaskRegistry {
             cancel: Arc::new(AtomicBool::new(false)),
             sink: Arc::clone(&sink),
         };
-        self.entries
+        let mut entries = self.entries
             .lock()
-            .map_err(|_| BridgeError::internal("任务注册表锁定失败"))?
-            .insert(task_id.clone(), entry);
+            .map_err(|_| BridgeError::internal("任务注册表锁定失败"))?;
+        // Preserve local convert/prerender parallelism, but keep cloud candidate writes
+        // exclusive with operations that read or replace this paper's parse results.
+        if let Some(paper_id) = &entry.paper_id {
+            if entries.values().any(|active| {
+                !active.snapshot.status.is_terminal()
+                    && active.paper_id.as_ref() == Some(paper_id)
+                    && (kind == "cloudparse.parse@1" || active.snapshot.kind == "cloudparse.parse@1")
+            }) {
+                return Err(BridgeError::new("paper_busy", "本篇论文的解析或阅读任务正在运行，请等待完成或取消。", true));
+            }
+        }
+        entries.insert(task_id.clone(), entry);
+        drop(entries);
         let registry = Arc::clone(self);
         let runner_id = task_id.clone();
         let library = Arc::clone(&self.library);
@@ -1090,6 +1117,7 @@ fn run_task(
         library,
     );
     match plan {
+        TaskPlan::CloudParse(plan) => crate::cloudparse::run(&ctx, &plan),
         TaskPlan::DemoStreamText {
             chunks,
             chunk_delay_ms,

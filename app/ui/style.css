@@ -728,10 +728,15 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .settings-actions { padding-top: 14px; border-top: 1px solid var(--border); }
 .service-card { border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px 18px; margin: 8px 0 14px; background: var(--card); }
 .service-card h4 { margin: 0 0 14px; font-size: 15px; }
-.service-entry { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 66px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text); text-align: left; font: inherit; }
-button.service-entry { cursor: pointer; }
-button.service-entry:hover { border-color: var(--accent); background: #f8faff; }
-button.service-entry:focus-visible, .settings-detail-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.service-entry { display: flex; align-items: center; gap: 12px; width: 100%; height: 76px; box-sizing: border-box; padding: 10px 14px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text); text-align: left; font: inherit; }
+.parser-service-entry { padding-left: 0; gap: 0; }
+.parser-service-entry:has([aria-pressed="true"]) { border-left-color: #2563eb; box-shadow: inset 1px 0 #2563eb; }
+.parser-service-entry:has(.service-entry-select:hover:not(:disabled)) { background: #fafbfc; }
+.service-entry-select { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; height: 100%; padding: 0 14px; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.service-entry-select:disabled { cursor: wait; }
+.service-entry-arrow { display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--muted); font-size: 24px; line-height: 1; cursor: pointer; }
+.service-entry-arrow:hover { color: var(--accent); border-color: var(--accent); }
+.service-entry-select:focus-visible, .service-entry-arrow:focus-visible, .settings-detail-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .service-entry + .service-entry { margin-top: 8px; }
 .service-entry-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .service-entry-copy strong { font-size: 14px; font-weight: 600; }
@@ -794,8 +799,14 @@ button.service-entry:focus-visible, .settings-detail-close:focus-visible { outli
   .settings-detail-head { padding: 14px 18px 10px; }
   .settings-detail-scroll { padding: 12px 18px 18px; }
   .service-card { padding: 14px; }
-  .service-entry { flex-wrap: wrap; }
+  .service-entry-select { flex-wrap: wrap; align-content: center; gap: 4px; }
+  .service-entry-select .service-entry-status { width: 100%; }
 }
+
+#modal-parser-choice .modal { width: min(520px, calc(100vw - 32px)); box-sizing: border-box; }
+#modal-parser-choice select { width: 100%; min-width: 0; }
+#modal-parser-choice .modal-actions { flex-wrap: wrap; }
+#modal-parser-choice p, .task-row p { overflow-wrap: anywhere; }
 
 /* 整理弹窗 */
 .organize-modal { width: 560px; }

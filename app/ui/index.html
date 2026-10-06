@@ -300,6 +300,15 @@
 </div>
 
 <!-- ============ 设置弹窗 ============ -->
+<div class="modal-mask" id="modal-parser-choice" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="parser-choice-title">
+    <h3 id="parser-choice-title">解析方式</h3>
+    <label>本篇论文<select id="parser-choice-provider"><option value="">请选择</option><option value="local">本地组件</option><option value="baidu">百度 AI Studio</option></select></label>
+    <p id="parser-choice-notice" class="muted">选择百度将上传论文或页面图像，可能产生服务费用。已受理的任务可能在客户端取消后继续执行或计费。</p>
+    <p id="parser-choice-error" role="alert"></p>
+    <div class="modal-actions"><button id="parser-choice-settings" class="btn" type="button">解析设置</button><span class="spacer"></span><button id="parser-choice-cancel" class="btn" type="button">取消</button><button id="parser-choice-confirm" class="btn primary" type="button">确认</button></div>
+  </div>
+</div>
 <div class="modal-mask" id="modal-settings" hidden>
   <div class="modal settings-modal" role="dialog" aria-modal="true" aria-label="设置">
     <nav class="settings-nav" role="tablist" aria-label="设置分类">
@@ -318,20 +327,27 @@
   <section id="settings-service" role="tabpanel" aria-labelledby="settings-tab-service" hidden>
     <div class="service-card">
       <h4>LLM 模型</h4>
-      <button class="service-entry" id="open-llm-settings" type="button" aria-label="配置 LLM 模型">
+      <div class="service-entry">
         <span class="service-entry-copy"><strong id="service-llm-name">尚未配置</strong><small id="service-llm-meta">添加模型服务</small></span>
         <span class="service-entry-status" id="service-llm-status">待配置</span>
-      </button>
+        <button class="service-entry-arrow" id="open-llm-settings" type="button" aria-label="配置 LLM 模型" title="配置 LLM 模型">&rsaquo;</button>
+      </div>
     </div>
     <div class="service-card">
       <h4>解析模型</h4>
-      <button class="service-entry" id="open-parser-settings" type="button" aria-label="配置本地解析组件">
-        <span class="service-entry-copy"><strong>本地解析组件</strong></span>
-        <span class="service-entry-status" id="service-parser-meta">正在读取状态…</span>
-      </button>
-      <div class="service-entry service-entry-disabled" aria-disabled="true">
-        <span class="service-entry-copy"><strong>云端解析</strong><small>API 接入服务未开发，敬请期待</small></span>
-        <span class="service-entry-status">未开放</span>
+      <div class="service-entry parser-service-entry">
+        <button class="service-entry-select" data-parser-provider="local" type="button" aria-pressed="false" disabled>
+          <span class="service-entry-copy"><strong>本地解析组件</strong></span>
+          <span class="service-entry-status" id="service-parser-meta">正在读取状态…</span>
+        </button>
+        <button class="service-entry-arrow" id="open-parser-settings" type="button" aria-label="配置本地解析组件" title="配置本地解析组件">&rsaquo;</button>
+      </div>
+      <div class="service-entry parser-service-entry">
+        <button class="service-entry-select" data-parser-provider="baidu" type="button" aria-pressed="false" disabled>
+          <span class="service-entry-copy"><strong>云端解析</strong><small>百度 AI Studio · PaddleOCR-VL</small></span>
+          <span class="service-entry-status" id="service-cloud-status">待配置</span>
+        </button>
+        <button class="service-entry-arrow" id="open-cloud-settings" type="button" aria-label="配置云端解析" title="配置云端解析">&rsaquo;</button>
       </div>
     </div>
     <div class="settings-detail-layer" id="settings-detail-layer" hidden>
@@ -417,7 +433,7 @@
           <span id="component-state" class="muted" role="status">正在读取状态…</span>
         </div>
         <p id="component-size" class="muted"></p>
-        <p class="muted">不安装时仍可查看 PDF 和已有阅读内容；新 PDF 的结构化解析与页图生成需要此组件。</p>
+        <p class="muted">本地解析与页图生成需要此组件；百度云端任务使用独立服务配置。</p>
         <progress id="component-progress" max="100" hidden></progress>
         <p id="component-detail" class="muted" role="status"></p>
         <div class="component-actions">
@@ -442,6 +458,17 @@
     <div class="modal-actions settings-actions">
       <span class="spacer"></span>
       <button class="btn primary" id="btn-save-parser-settings" type="button">保存</button>
+    </div>
+          </div>
+          <div id="settings-detail-cloud" hidden>
+    <div class="settings-block">
+      <label>百度 Access Token<input id="set-cloud-token" type="password" autocomplete="off" spellcheck="false"></label>
+      <label class="radio"><input id="set-cloud-consent" type="checkbox">我确认所选论文或页面图像将上传至百度 AI Studio，可能产生服务费用，由我承担。</label>
+      <p class="muted">Token 仅保存于本机设置。取消只能停止客户端后续操作，已受理的远端任务可能继续执行或计费。</p>
+    </div>
+    <div class="modal-actions settings-actions">
+      <span class="spacer"></span>
+      <button class="btn primary" id="btn-save-cloud-settings" type="button">保存</button>
     </div>
           </div>
         </div>

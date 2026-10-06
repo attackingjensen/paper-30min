@@ -679,6 +679,20 @@ fn app_info_lists_migration_commands() {
     }
 }
 
+#[test]
+fn migration_never_imports_cloud_credentials_or_upload_consent() {
+    let (registry, library, dir) = common::env();
+    let mut payload = envelope(vec![sample_browser_paper("cloud-migrated", "旧论文")]);
+    payload["settings"]["cloudparse"] = json!({ "defaultProvider": "baidu", "accessToken": "incoming-cloud-secret", "uploadConfirmed": true });
+    let path = write_export(dir.path(), "cloud-migration.json", &payload);
+    let token = inspect(&registry, &library, &path)["token"].as_str().unwrap().to_string();
+    invoke(&registry, &library, "migration.commit@1", json!({ "token": token }));
+    let all = invoke(&registry, &library, "settings.get@1", json!({}));
+    assert_eq!(all["cloudparse"], json!({ "defaultProvider": null, "accessToken": "", "uploadConfirmed": false }));
+    let papers = invoke(&registry, &library, "library.listPapers@1", json!({}));
+    assert!(!papers.to_string().contains("incoming-cloud-secret"));
+}
+
 fn screenshot_paper() -> Value {
     let mut paper = sample_browser_paper("screenshot", "Screenshot history");
     paper["chat"] = json!([{ "role": "user", "content": "Explain image", "bindingKind": "pdf",

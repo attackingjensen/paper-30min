@@ -8,6 +8,7 @@ import * as papers from './papers.js';
 import * as model from './model.js';
 import * as generation from './generation.js';
 import * as parser from './parser.js';
+import { cloudTaskInput, cloudJobView, validateParserChoice } from './cloud-parse.js';
 import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, renderStreamingTextInto, typesetMath } from './markdown.js';
 import { PROTOCOL_TASKS, parseRefs, partIdForSection, sectionForPart } from './protocol.js';
@@ -68,6 +69,62 @@ import {
 const bridge = createBridge(window.__TAURI__);
 let updaterState = updateState();
 let componentState = { ready: false, phase: 'idle', error: '' };
+const paperParserChoices = new Map();
+let cloudJobs = [];
+let parserChoicePending = null;
+
+async function chooseParser() {
+  if (parserChoicePending) return null;
+  let settings;
+  try { settings = (await bridge.invoke('settings.get@1'))?.cloudparse || {}; }
+  catch (err) { toast(`解析设置读取失败：${errorText(err)}`, true); return null; }
+  $('#parser-choice-provider').value = settings.defaultProvider || '';
+  $('#parser-choice-error').textContent = '';
+  $('#modal-parser-choice').hidden = false;
+  $('#parser-choice-provider').focus();
+  return new Promise(resolve => {
+    parserChoicePending = resolve;
+    $('#parser-choice-confirm').onclick = async () => {
+      try {
+        const latest = (await bridge.invoke('settings.get@1'))?.cloudparse || {};
+        const provider = $('#parser-choice-provider').value;
+        const valid = validateParserChoice(provider, latest);
+        if (!valid.ok) { $('#parser-choice-error').textContent = valid.message; return; }
+        finishParserChoice(provider);
+      } catch (err) { $('#parser-choice-error').textContent = errorText(err); }
+    };
+  });
+}
+
+function finishParserChoice(choice = null) {
+  $('#modal-parser-choice').hidden = true;
+  const resolve = parserChoicePending;
+  parserChoicePending = null;
+  resolve?.(choice);
+}
+
+async function latestCloudJob(paperId) {
+  const result = await bridge.invoke('cloudparse.status@1', { paperId });
+  return result?.jobs?.[0] || null;
+}
+
+async function startCloudParse(paperId, resubmitConfirmed = false, selectedJob = null) {
+  if (hasOpenPreflightTask(paperId, 'cloudparse.parse@1')) return false;
+  try {
+    const job = selectedJob || await latestCloudJob(paperId);
+    if (job?.state === 'downloaded') { toast(cloudJobView(job).text); return false; }
+    const input = cloudTaskInput(paperId, job, resubmitConfirmed);
+    const { taskId } = await bridge.start('cloudparse.parse@1', input);
+    const meta = { kind: 'cloudparse.parse@1', input, retry: () => startCloudParse(paperId, false, job) };
+    registerSessionTask(taskId, meta);
+    const done = await trackTask(bridge, taskId, {});
+    meta.status = done.status;
+    if (done.status === 'succeeded') toast('云端原始结果已保存；正文、来源与视觉资源尚未就绪');
+    else if (done.status === 'cancelled') toast('客户端已停止；已受理的远端任务可能继续执行或计费');
+    else toast(`云端解析未完成：${done.error?.message || '请查看任务中心'}`, true);
+    return false;
+  } catch (err) { toast(`云端解析未启动：${errorText(err)}`, true); return false; }
+}
 let store = null; // createTauriStore(bridge)，启动序列中创建
 
 const $ = sel => document.querySelector(sel);
@@ -1253,6 +1310,17 @@ async function ensureBlockModel(paperId) {
   const ids = await paperAttachmentIds(paperId);
   if (ids.has(BLOCKMODEL_ATTACHMENT_ID)) return { ok: true, doclingJsonPath: null };
   if (!ids.has('pdf')) return { ok: false };
+  const cloudJob = await latestCloudJob(paperId);
+  if ((cloudJob && paperParserChoices.get(paperId) !== 'local') || paperParserChoices.get(paperId) === 'baidu') {
+    toast(cloudJob ? cloudJobView(cloudJob).text : '百度云端结果尚未就绪，请查看任务中心');
+    return { ok: false };
+  }
+  if (!paperParserChoices.has(paperId)) {
+    const provider = await chooseParser();
+    if (!provider) return { ok: false };
+    paperParserChoices.set(paperId, provider);
+    if (provider === 'baidu') { void startCloudParse(paperId); return { ok: false }; }
+  }
   if (hasOpenPreflightTask(paperId, 'pdfparse.convert@1')) return { ok: false };
   if (!await ensureParserReady()) return { ok: false };
   try {
@@ -1353,7 +1421,11 @@ async function trackPrerender(paperId, prerenderId, scope = 'all') {
 }
 
 /** 导入后：页图与解析并行；解析完成后补渲染图表裁切图。 */
-async function queueImportPreflight(paperId) {
+async function queueImportPreflight(paperId, provider = paperParserChoices.get(paperId)) {
+  if (!provider) provider = await chooseParser();
+  if (!provider) return false;
+  paperParserChoices.set(paperId, provider);
+  if (provider === 'baidu') return startCloudParse(paperId);
   if (!await ensureParserReady()) return false;
   void ensurePrerender(paperId, { scope: 'pages' });
   const ready = await ensureBlockModel(paperId);
@@ -2971,20 +3043,24 @@ async function seedGuidePaper() {
 
 // ---------------- 导入 ----------------
 async function importPdfFile(file) {
+  const provider = await chooseParser();
+  if (!provider) return;
   const btn = $('#btn-import');
   btn.disabled = true;
   btn.textContent = '解析中…';
   try {
-    const parsed = await parser.parsePdfFile(file);
+    const parsed = provider === 'local' ? await parser.parsePdfFile(file)
+      : { title: file.name.replace(/\.pdf$/i, ''), numPages: 0, sections: {}, sectionPages: {}, parts: [], fullText: '' };
     const paper = await papers.createPdfPaper(parsed, file);
+    paperParserChoices.set(paper.id, provider);
     await refreshLibrary();
     // createPdfPaper 返回的记录 pdfBlob 已被 put 清空，用刷新后的书库副本打开（带 pdfAttachment）。
     const opened = library.find(item => item.id === paper.id) || paper;
     openPaper(opened);
     const found = papers.readingParts(opened).filter(s => opened.sections?.[s.id]?.trim()).length;
-    toast(`导入成功，自动识别出 ${found} 个精读部分`);
+    toast(provider === 'local' ? `导入成功，自动识别出 ${found} 个精读部分` : 'PDF 已保存，正在准备百度云端任务');
     // 后台排队解析+预渲染（#73）：建图前置产物提前备好，不阻塞打开论文。
-    void queueImportPreflight(paper.id);
+    void queueImportPreflight(paper.id, provider);
   } catch (err) {
     console.error(err);
     toast('PDF 解析失败：' + err.message, true);
@@ -2995,18 +3071,23 @@ async function importPdfFile(file) {
 }
 
 async function importSamplePaper() {
+  const provider = await chooseParser();
+  if (!provider) return;
   try {
     const res = await fetch('samples/sample_paper.pdf');
     if (!res.ok) throw new Error('未找到示例文件');
     const bytes = await res.arrayBuffer();
-    const parsed = await parser.parsePdfBytes(bytes, 'sample_paper.pdf');
+    const parsed = provider === 'local' ? await parser.parsePdfBytes(bytes, 'sample_paper.pdf')
+      : { title: '示例论文', numPages: 0, sections: {}, sectionPages: {}, parts: [], fullText: '' };
     const file = new File([bytes], 'sample_paper.pdf', { type: 'application/pdf' });
     const paper = await papers.createPdfPaper(parsed, file);
+    paperParserChoices.set(paper.id, provider);
     await refreshLibrary();
     const opened = library.find(item => item.id === paper.id) || paper;
     openPaper(opened);
     const found = papers.readingParts(opened).filter(s => opened.sections?.[s.id]?.trim()).length;
-    toast(`示例论文已打开，自动识别出 ${found} 个精读部分`);
+    toast(provider === 'local' ? `示例论文已打开，自动识别出 ${found} 个精读部分` : '示例 PDF 已保存，正在准备百度云端任务');
+    void queueImportPreflight(paper.id, provider);
   } catch (err) {
     toast('示例论文不可用：' + err.message, true);
   }
@@ -3020,17 +3101,21 @@ async function importArxiv() {
     status.textContent = '请输入有效的 arXiv 编号或链接';
     return;
   }
+  const provider = await chooseParser();
+  if (!provider) return;
   btn.disabled = true;
   status.textContent = '正在读取结构化 HTML…';
   try {
-    const parsed = await parser.fetchArxiv(id);
+    const parsed = provider === 'local' ? await parser.fetchArxiv(id)
+      : { title: `arXiv ${id}`, sourceType: 'arxiv', sections: {}, parts: [], fullText: '' };
     const paper = await papers.createArxivPaper(parsed, id, null);
+    paperParserChoices.set(paper.id, provider);
     $('#modal-arxiv').hidden = true;
     await refreshLibrary();
     const opened = library.find(item => item.id === paper.id) || paper;
     openPaper(opened);
     const found = papers.readingParts(opened).filter(s => opened.sections?.[s.id]?.trim()).length;
-    toast(`arXiv HTML 导入成功，识别出 ${found} 个精读部分`);
+    toast(provider === 'local' ? `arXiv HTML 导入成功，识别出 ${found} 个精读部分` : '正在下载原 PDF，随后启动百度云端任务');
     // PDF 尽力而为：失败只提示可稍后关联，不阻塞阅读。
     parser.downloadArxivPdf(id, paper.id)
       .then(async () => {
@@ -3041,7 +3126,7 @@ async function importArxiv() {
           await initPdfViewer();
         }
         toast('arXiv PDF 已下载并关联');
-        void queueImportPreflight(paper.id);
+        void queueImportPreflight(paper.id, provider);
       })
       .catch(err => {
         toast(`PDF 下载未完成（${err.message}），可稍后在 PDF 栏手动关联`, true);
@@ -3397,11 +3482,12 @@ function selectSettingsTab(tab) {
 let activeServiceDetail = null;
 
 function openServiceDetail(detail) {
-  if (!['llm', 'parser'].includes(detail)) return;
+  if (!['llm', 'parser', 'cloud'].includes(detail)) return;
   activeServiceDetail = detail;
-  $('#settings-detail-title').textContent = detail === 'llm' ? 'LLM 模型' : '解析模型';
+  $('#settings-detail-title').textContent = { llm: 'LLM 模型', parser: '本地解析组件', cloud: '云端解析 · 百度 AI Studio' }[detail];
   $('#settings-detail-llm').hidden = detail !== 'llm';
   $('#settings-detail-parser').hidden = detail !== 'parser';
+  $('#settings-detail-cloud').hidden = detail !== 'cloud';
   $('#settings-detail-layer').hidden = false;
   $('.settings-detail-scroll').scrollTop = 0;
   $('#close-service-detail').focus();
@@ -3410,7 +3496,7 @@ function openServiceDetail(detail) {
 function closeServiceDetail(restoreFocus = true) {
   $('#settings-detail-layer').hidden = true;
   if (restoreFocus && activeServiceDetail) {
-    $(`#open-${activeServiceDetail === 'llm' ? 'llm' : 'parser'}-settings`).focus();
+    $(`#open-${activeServiceDetail}-settings`).focus();
   }
   activeServiceDetail = null;
 }
@@ -3420,6 +3506,13 @@ function refreshServiceSummary() {
   $('#service-llm-name').textContent = settings.model || '尚未配置';
   $('#service-llm-meta').textContent = settings.baseUrl || '添加模型服务';
   $('#service-llm-status').textContent = model.settingsReady() ? '已配置' : '待配置';
+}
+
+function showParserSelection(provider, disabled = false) {
+  $$('[data-parser-provider]').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.parserProvider === provider));
+    button.disabled = disabled;
+  });
 }
 
 async function openSettingsModal(tab = 'about') {
@@ -3443,9 +3536,20 @@ async function openSettingsModal(tab = 'about') {
   let warmStart = true;
   let idleMinutes = 10;
   $('#btn-save-network-settings').disabled = true;
+  $('#btn-save-parser-settings').disabled = true;
+  $('#btn-save-cloud-settings').disabled = true;
+  showParserSelection(null, true);
+  $('#set-cloud-token').value = '';
+  $('#set-cloud-consent').checked = false;
   $('#network-settings-status').textContent = '';
   try {
     const all = await bridge.invoke('settings.get@1');
+    showParserSelection(all?.cloudparse?.defaultProvider);
+    $('#set-cloud-token').value = all?.cloudparse?.accessToken || '';
+    $('#set-cloud-consent').checked = all?.cloudparse?.uploadConfirmed === true;
+    $('#service-cloud-status').textContent = all?.cloudparse?.accessToken && all?.cloudparse?.uploadConfirmed ? '已配置' : '待配置';
+    $('#btn-save-cloud-settings').disabled = false;
+    $('#btn-save-parser-settings').disabled = false;
     $$('input[name="proxy-mode"]').forEach(el => {
       el.checked = el.value === (all?.network?.proxyMode === 'direct' ? 'direct' : 'system');
     });
@@ -3550,6 +3654,16 @@ async function saveParserSettings() {
   });
   closeServiceDetail();
   toast('解析设置已保存');
+}
+
+async function saveCloudSettings() {
+  await bridge.invoke('settings.putCloudparse@1', { settings: {
+    accessToken: $('#set-cloud-token').value.trim(),
+    uploadConfirmed: $('#set-cloud-consent').checked,
+  } });
+  $('#service-cloud-status').textContent = $('#set-cloud-token').value.trim() && $('#set-cloud-consent').checked ? '已配置' : '待配置';
+  closeServiceDetail();
+  toast('云端解析设置已保存');
 }
 
 function renderSkillList() {
@@ -3727,6 +3841,7 @@ let tasksPollTimer = null;
 async function pollTasks() {
   try {
     const result = await bridge.invoke('tasks.list@1', {});
+    cloudJobs = (await bridge.invoke('cloudparse.status@1', {}))?.jobs || [];
     const tasks = (result?.tasks || [])
       .slice()
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
@@ -3764,7 +3879,33 @@ function appendTraceItems(list, items) {
 function renderTaskList(tasks) {
   const wrap = $('#task-list');
   wrap.innerHTML = '';
-  $('#tasks-empty').hidden = tasks.length > 0;
+  $('#tasks-empty').hidden = tasks.length > 0 || cloudJobs.length > 0;
+  for (const job of cloudJobs) {
+    const row = document.createElement('div');
+    row.className = 'task-row';
+    const state = cloudJobView(job);
+    const text = document.createElement('p');
+    const paper = library.find(item => item.id === job.paperId);
+    text.textContent = `百度云端 · ${paper?.title || job.paperId} · ${state.text}${state.failure ? ` · ${state.failure}` : ''}`;
+    row.appendChild(text);
+    const action = (label, run) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'btn small'; button.textContent = label;
+      button.onclick = async () => { button.disabled = true; try { await run(); } finally { void pollTasks(); } };
+      row.appendChild(button);
+    };
+    if (state.canResume) action('恢复查询 / 取回', () => startCloudParse(job.paperId, false, job));
+    if (state.needsResubmit) action('重新提交…', async () => {
+      if (await bridge.confirmUpdate('上次提交是否受理未知。重新上传可能重复执行并计费，是否继续？')) {
+        await startCloudParse(job.paperId, true, job);
+      }
+    });
+    action('改用本地', async () => {
+      paperParserChoices.set(job.paperId, 'local');
+      await queueImportPreflight(job.paperId, 'local');
+    });
+    $('#task-list').appendChild(row);
+  }
   for (const task of tasks) {
     const row = document.createElement('div');
     row.className = 'task-row';
@@ -4102,6 +4243,16 @@ function bindEvents() {
   $('#btn-settings').onclick = () => openSettingsModal();
   $('#open-llm-settings').onclick = () => openServiceDetail('llm');
   $('#open-parser-settings').onclick = () => openServiceDetail('parser');
+  $('#open-cloud-settings').onclick = () => openServiceDetail('cloud');
+  $('#parser-choice-cancel').onclick = () => finishParserChoice();
+  $('#modal-parser-choice').addEventListener('click', event => {
+    if (event.target === $('#modal-parser-choice')) finishParserChoice();
+  });
+  $('#parser-choice-settings').onclick = async () => {
+    await openSettingsModal('service');
+    openServiceDetail('cloud');
+  };
+  $('#set-cloud-token').oninput = () => { $('#set-cloud-consent').checked = false; };
   $('#close-service-detail').onclick = () => closeServiceDetail();
   $('#settings-detail-layer').onclick = event => {
     if (event.target === $('#settings-detail-layer')) closeServiceDetail();
@@ -4205,6 +4356,22 @@ function bindEvents() {
   $('#btn-save-parser-settings').onclick = async () => {
     try { await saveParserSettings(); } catch (err) { toast('解析设置保存失败：' + errorText(err), true); }
   };
+  $('#btn-save-cloud-settings').onclick = async () => {
+    try { await saveCloudSettings(); } catch (err) { toast('云端解析设置保存失败：' + errorText(err), true); }
+  };
+  $$('[data-parser-provider]').forEach(button => { button.onclick = async () => {
+    const previous = $('[data-parser-provider][aria-pressed="true"]')?.dataset.parserProvider;
+    const provider = button.dataset.parserProvider;
+    if (provider === previous) return;
+    showParserSelection(provider, true);
+    try {
+      await bridge.invoke('settings.putCloudparse@1', { settings: { defaultProvider: provider } });
+      showParserSelection(provider);
+    } catch (err) {
+      showParserSelection(previous);
+      toast('解析方式保存失败：' + errorText(err), true);
+    }
+  }; });
   $('#btn-test-api').onclick = async () => {
     const r = $('#api-test-result');
     r.textContent = '测试中…';
@@ -4437,6 +4604,13 @@ function bindEvents() {
     mask.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { mask.hidden = true; });
   }
   document.addEventListener('keydown', e => {
+    if (e.key === 'Tab' && !$('#modal-parser-choice').hidden && $('#modal-settings').hidden) {
+      const controls = [...$('#modal-parser-choice').querySelectorAll('button, select')].filter(el => !el.disabled);
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
     if (e.key === 'Tab' && !$('#settings-detail-layer').hidden) {
       const focusable = [...$('#settings-detail-layer').querySelectorAll('button, input, select, textarea, summary')]
         .filter(element => !element.disabled && element.getClientRects().length);
@@ -4455,6 +4629,7 @@ function bindEvents() {
         closeServiceDetail();
         return;
       }
+      if (!$('#modal-parser-choice').hidden && $('#modal-settings').hidden) finishParserChoice();
       for (const id of ['modal-arxiv', 'modal-settings', 'modal-organize', 'modal-migrate', 'modal-close']) {
         $(`#${id}`).hidden = true;
       }
