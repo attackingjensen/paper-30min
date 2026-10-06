@@ -45,7 +45,7 @@ pub(crate) fn run_fetch_text(ctx: &RunContext, url: &str, max_bytes: u64) {
 
 fn fetch_text_once(ctx: &RunContext, url: &str, max_bytes: u64) -> Result<String, BridgeError> {
     ctx.cancel_checkpoint()?;
-    let client = http_client(FETCH_TEXT_TIMEOUT)?;
+    let client = http_client(FETCH_TEXT_TIMEOUT, crate::settings::proxy_mode(&ctx.library)?)?;
     let mut response = client
         .get(url)
         .header("Accept", "application/json, text/event-stream, text/plain, */*")
@@ -141,7 +141,7 @@ fn download_once(
     dest: &Path,
 ) -> Result<(u64, String), BridgeError> {
     ctx.cancel_checkpoint()?;
-    let client = http_client(DOWNLOAD_TIMEOUT)?;
+    let client = http_client(DOWNLOAD_TIMEOUT, crate::settings::proxy_mode(&ctx.library)?)?;
     let mut response = client
         .get(url)
         .header("Accept", "*/*")

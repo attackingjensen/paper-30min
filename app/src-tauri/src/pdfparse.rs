@@ -724,6 +724,11 @@ fn persist_convert_block_model(
         )
     })?;
     let dto = crate::pdfassets::persist_block_model(&ctx.library, paper_id, &mapped)?;
+    let source = std::fs::read(docling_path)
+        .map_err(|err| BridgeError::internal(format!("读取解析来源失败: {err}")))?;
+    ctx.library.put_attachment_bytes(
+        paper_id, "docling-source.json", "docling-source.json", "application/json", &source,
+    )?;
     if let Value::Object(map) = payload {
         map.insert("blockModelAssetId".to_string(), json!(dto.id));
         map.insert("mappingWarnings".to_string(), json!(mapped.warnings));

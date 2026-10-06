@@ -15,12 +15,13 @@ import { showStartup } from './startup.js';
 import { updateState, updateStatusText } from './updater.js';
 import * as view from './view.js';
 import { createLatestResource, createSerialWriter } from './reader-resources.js';
+import { createPdfReader } from './pdf-reader.js';
+import { createPdfSelection, selectionBinding, selectionImages } from './pdf-selection.js';
 import { translateForPaper } from './translation.js';
 import {
   COPY,
   citeSegments,
   landingModel,
-  linkifyCiteHtml,
   mapPageModel,
   runningDeepDivePartIds,
   sectionPageModel,
@@ -33,6 +34,7 @@ import {
 } from './skills.js';
 import {
   QA_GATE_MESSAGE,
+  CHAT_HISTORY_WINDOW,
   BLOCKMODEL_ATTACHMENT_ID,
   applyMention,
   assembleQaContext,
@@ -99,12 +101,50 @@ let composerQuoteExpanded = false;
 let translateAborter = null;
 let recallAborter = null;
 let pdfDocument = null;
-let pdfRenderTask = null;
+let pdfOpening = null;
 const pdfResource = createLatestResource();
-let pdfRenderVersion = 0;
 let pdfPage = 1;
 let pdfScale = 1;
+let pdfZoomRevision = 0;
 let pdfSidebarOpen = true;
+let pdfSelection = null;
+let selectedPdf = null;
+let selectionAborter = null;
+let selectionRevision = 0;
+const pdfReader = createPdfReader({
+  scroll: $('#pdf-canvas-wrap'),
+  pages: $('#pdf-pages'),
+  loading: $('#pdf-loading'),
+  renderTextLayer: options => window.pdfjsLib.renderTextLayer(options),
+  getPinnedPages: () => pdfSelection?.pinnedPages() || [],
+  onInvalidate: () => pdfSelection?.clear(),
+  onPaint: () => pdfSelection?.repaint(),
+  onEvidence(message) {
+    $('#pdf-evidence-status').textContent = message;
+    $('#pdf-evidence-status').hidden = !message;
+  },
+  onPageChange(page) {
+    pdfPage = page;
+    updatePdfPageControls();
+    savePdfPagePosition();
+  },
+  onError(error) {
+    console.error('PDF 页面渲染失败：', error);
+    $('#pdf-render-error').hidden = false;
+    $('#pdf-render-error-message').textContent = `PDF 页面渲染失败：${error.message || error}`;
+  },
+});
+pdfSelection = createPdfSelection({ scroll: $('#pdf-canvas-wrap'), pages: $('#pdf-pages'),
+  onSelection: showPdfSelection,
+  onClear() {
+    selectionRevision++;
+    selectionAborter?.abort();
+    selectionAborter = null;
+    selectedPdf = null;
+    $('#pdf-selection-popup').hidden = true;
+  },
+});
+pdfSelection.setTool('text');
 let libraryQuery = '';
 let categoryFilter = '';
 let ratingFilter = 0;
@@ -257,6 +297,7 @@ function setWindowTitle(title) {
 }
 
 function showView(name) {
+  if (name !== 'reader') pdfSelection.clear();
   if (current && name !== 'reader') void flushPositionSave(current);
   commitReader(view.switchAppView(reader, name), { restore: true });
   // 窗口标题：书库/任务中心显示产品名；阅读页显示「论文标题 · Paper30Min」（打磨批改名条款）。
@@ -557,6 +598,7 @@ async function openPaper(p) {
   sourceTab = 'abstract';
   pdfPage = 1;
   pdfScale = 1;
+  pdfZoomRevision++;
   $('#paste-area').value = '';
   $('#reader-title').textContent = p.title;
   setWindowTitle(`${p.title} · Paper30Min`);
@@ -763,9 +805,28 @@ function refsHtml(refs) {
 }
 
 function renderCitedMarkdownInto(element, text) {
-  element.classList.remove('streaming-text');
-  element.innerHTML = linkifyCiteHtml(renderMarkdown(text));
-  typesetMath(element);
+  renderMarkdownInto(element, text);
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (node.parentElement.closest('a, button, code, pre, mjx-container')) continue;
+    const segments = citeSegments(node.textContent);
+    if (!segments.some(segment => segment.type === 'ref')) continue;
+    const fragment = document.createDocumentFragment();
+    for (const segment of segments) {
+      if (segment.type === 'text') fragment.append(document.createTextNode(segment.text));
+      else {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'cite-chip';
+        button.dataset.cite = segment.raw;
+        button.textContent = segment.raw;
+        fragment.append(button);
+      }
+    }
+    node.replaceWith(fragment);
+  }
 }
 
 function renderLanding(surface) {
@@ -858,7 +919,6 @@ function renderSectionPage() {
     paper: current,
     runningPartIds: runningDeepDivePartIds(sessionTaskList(), current.id),
     runningDetail: diveRunningDetail(current.id, reader.sectionId),
-    citeFocus: reader.citeFocus,
     prerenderReady: prerenderAssetsReady(currentMapped, currentAttachmentIds),
     runState: diveLiveState(current.id, reader.sectionId),
   });
@@ -906,9 +966,8 @@ function renderSectionPage() {
   let figs = '';
   if (model.figures.length) {
     const cards = model.figures.map(item => {
-      const focus = model.focusAssetId === item.id ? ' is-locate' : '';
       const cap = `${escapeTemplate(item.caption)}${item.page ? ` (p${item.page})` : ''}`;
-      return `<div class="fig-box${focus}" id="asset-${escapeTemplate(item.id)}">
+      return `<div class="fig-box" id="asset-${escapeTemplate(item.id)}">
         <img alt="${escapeTemplate(item.caption)}" data-crop-id="${escapeTemplate(item.cropAssetId)}">
         <div class="fig-cap">${cap} ${citeChipHtml(`(${item.id})`)}</div>
       </div>`;
@@ -938,10 +997,7 @@ function renderSectionPage() {
   }
   const legacyBody = body.querySelector('.legacy-body');
   if (legacyBody) renderCitedMarkdownInto(legacyBody, model.legacyAnalysis.text);
-  fillCropImages(body, paper).then(() => {
-    if (current !== paper) return;
-    focusAsset(model.focusAssetId);
-  });
+  void fillCropImages(body, paper);
 }
 
 async function fillCropImages(root, paper) {
@@ -957,14 +1013,6 @@ async function fillCropImages(root, paper) {
   }
 }
 
-function focusAsset(assetId) {
-  if (!assetId) return;
-  const el = document.getElementById(`asset-${assetId}`);
-  if (!el) return;
-  el.classList.add('is-locate');
-  el.scrollIntoView({ block: 'center' });
-}
-
 function currentSecIdForCite() {
   if (!reader.sectionId) return null;
   return sectionForPart(currentMapped, reader.sectionId, isLegacyMap())?.id
@@ -972,35 +1020,32 @@ function currentSecIdForCite() {
     || null;
 }
 
-function applyCite(raw) {
+async function applyCite(raw, currentSecId = currentSecIdForCite()) {
   const pointer = typeof raw === 'string' ? parseRefs(raw)[0] : raw;
   if (!pointer) return;
-  const next = view.routeCite(reader, pointer, { mapped: currentMapped, currentSecId: currentSecIdForCite() });
-  commitReader(next);
+  const next = view.routeCite(reader, pointer, { mapped: currentMapped, currentSecId });
+  if (next === reader) { toast('出处缺少可信页码，无法定位 PDF', true); return; }
+  if (!hasPdf()) { toast('这篇论文没有 PDF 附件，请先关联 PDF', true); return; }
+  const paper = current;
+  reader = next;
+  syncReaderLocals();
+  updatePdfSidebar();
+  updatePaneFabs();
+  schedulePositionSave();
   const focus = next.citeFocus;
-  if (focus?.type === 'blocks') {
-    renderSource();
-    highlightLocate({
-      cite: {
-        startSecId: focus.secId,
-        startBlock: focus.start,
-        endSecId: focus.secId,
-        endBlock: focus.end,
-      },
-    });
-  } else if (focus?.type === 'asset') {
-    focusAsset(focus.assetId);
-  } else if (focus?.type === 'page') {
-    if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
-    else if (pdfDocument) renderPdfPage();
-  }
+  if (!pdfDocument || pdfOpening) await initPdfViewer();
+  if (current !== paper || reader.citeFocus !== focus || !pdfDocument || !pdfSidebarOpen) return;
+  const result = await pdfReader.locate(focus.target);
+  if (current !== paper || reader.citeFocus !== focus) return;
+  if (result === false) toast('出处页码不在 PDF 范围内', true);
 }
 
 function onProtocolContentClick(event) {
   const cite = event.target.closest('[data-cite]');
   if (cite) {
     event.preventDefault();
-    applyCite(cite.dataset.cite);
+    const owner = cite.closest('[data-cite-section]');
+    void applyCite(cite.dataset.cite, owner ? owner.dataset.citeSection || null : currentSecIdForCite());
     return;
   }
   const btn = event.target.closest('[data-action]');
@@ -1110,7 +1155,6 @@ function renderMapTab() {
 
 function drillSection(sectionId) {
   commitReader(view.openSection(reader, sectionId, { mapped: currentMapped, legacy: isLegacyMap() }));
-  if (pdfSidebarOpen && pdfDocument && Number.isFinite(pdfPage)) renderPdfPage();
 }
 
 function backToMap() {
@@ -1826,6 +1870,11 @@ function startFragmentAsk(hits) {
 
 function locateBinding(locate) {
   if (!locate) return;
+  if (locate.type === 'pdf') {
+    const page = locate.selection?.regions?.[0]?.page;
+    if (page) void applyCite(`(p${page})`);
+    return;
+  }
   if (!currentMapped) {
     toast('无法定位：块模型未加载', true);
     return;
@@ -2117,7 +2166,7 @@ async function translateCurrentText() {
 }
 
 // ---------------- 问答视图 ----------------
-async function loadBlockModel(paper) {
+async function loadBlockModel(paper, { recoverSource = true } = {}) {
   let attachment;
   try {
     const meta = await bridge.invoke('files.getAttachment@1', {
@@ -2143,7 +2192,20 @@ async function loadBlockModel(paper) {
     length: attachment.size,
   });
   try {
-    return JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
+    const mapped = JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
+    // Source geometry is usable only after the native side verifies both attachments.
+    for (const section of mapped.sections || []) for (const block of section.blocks || []) delete block.sourceRegions;
+    if (!recoverSource) return mapped;
+    try {
+      const evidence = await bridge.invoke('pdfmap.getSourceRegions@1', { paperId: paper.id, blockModelSha256: attachment.sha256 });
+      if (evidence?.blockModelSha256 === attachment.sha256 && evidence.pdfSha256 === paper.pdfAttachment?.sha256) {
+        for (const entry of evidence.blocks || []) {
+          const block = mapped.sections?.find(section => section.id === entry.secId)?.blocks?.find(block => block.id === entry.blockId);
+          if (block) block.sourceRegions = entry.sourceRegions;
+        }
+      }
+    } catch { /* Legacy papers retain the text lookup fallback. */ }
+    return mapped;
   } catch (err) {
     const error = new Error('块模型无法解析，请重新建图后再提问。');
     error.code = 'invalid_blockmodel';
@@ -2175,8 +2237,17 @@ async function loadCropDataUrls(paper, cropAssetIds) {
 }
 
 async function assembleCurrentQa(paper, question, binding) {
-  const mapped = await loadBlockModel(paper);
-  const history = (paper.chat || []).slice(0, -1);
+  const mapped = await loadBlockModel(paper, { recoverSource: false });
+  const hydrate = async message => {
+    if (!message.pdfSelection?.images?.length) return message;
+    const images = await Promise.all(message.pdfSelection.images.map(async image => {
+      const crops = await loadCropDataUrls(paper, [image.attachmentId]);
+      if (!crops[image.attachmentId]) throw new Error('问答选区截图缺失，请重新框选。');
+      return { ...image, dataUrl: crops[image.attachmentId] };
+    }));
+    return { ...message, pdfSelection: { ...message.pdfSelection, images } };
+  };
+  const history = await Promise.all((paper.chat || []).slice(0, -1).slice(-CHAT_HISTORY_WINDOW).map(hydrate));
   const input = {
     title: paper.title,
     mapped,
@@ -2185,6 +2256,7 @@ async function assembleCurrentQa(paper, question, binding) {
     question,
     binding,
   };
+  input.binding = await hydrate(binding);
   const assembled = assembleQaContext(input);
   if (!assembled.cropAssetIds.length) return assembled.messages;
   const crops = await loadCropDataUrls(paper, assembled.cropAssetIds);
@@ -2258,6 +2330,16 @@ function renderBindingView(view, { composer = false, messageIndex = -1 } = {}) {
   body.append(first, cite);
   if (!composer) body.onclick = () => locateBinding(view.locate);
   quote.append(body);
+  for (const image of view.images || []) {
+    const img = document.createElement('img');
+    img.className = 'chat-pdf-image'; img.alt = 'PDF 选区截图';
+    if (image.dataUrl) img.src = image.dataUrl;
+    else if (image.attachmentId && current) {
+      const paper = current;
+      void loadCropDataUrls(paper, [image.attachmentId]).then(crops => { if (current === paper) img.src = crops[image.attachmentId] || ''; });
+    }
+    quote.append(img);
+  }
   const clearBinding = clearComposerBinding;
   if (composer) {
     const clear = document.createElement('button');
@@ -2303,7 +2385,9 @@ function appendChatBubble(message, extraClass = '', messageIndex = -1) {
     text.textContent = message.content;
     div.appendChild(text);
   } else {
-    renderMarkdownInto(div, message.content);
+    renderCitedMarkdownInto(div, message.content);
+    const prior = current.chat?.slice(0, messageIndex).findLast(item => item.role === 'user');
+    div.dataset.citeSection = prior?.secId || prior?.cite?.startSecId || '';
   }
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
@@ -2394,7 +2478,9 @@ function chooseMention(section) {
   input.setSelectionRange(applied.cursor, applied.cursor);
 }
 
+let chatSaving = false;
 async function sendChat() {
+  if (chatSaving) return;
   hideMentionMenu();
   const input = $('#chat-input');
   const q = input.value.trim();
@@ -2404,15 +2490,42 @@ async function sendChat() {
     return;
   }
   const paper = current;
-  const userMsg = composerMessage(q, chatComposer);
-  input.value = '';
-  chatComposer = emptyBinding();
+  const snapshot = chatComposer;
+  const created = [];
+  chatSaving = true;
+  let userMsg;
+  try {
+    if (snapshot.pdfSelection?.images?.some(image => image.dataUrl)) {
+      const images = [];
+      for (const image of snapshot.pdfSelection.images) {
+        const id = `pdf-selection-${crypto.randomUUID()}`;
+        await bridge.invoke('files.putAttachment@1', { paperId: paper.id, attachment: {
+          id, name: `${id}.webp`, contentType: 'image/webp', contentBase64: image.dataUrl.split(',')[1],
+        } });
+        created.push(id);
+        images.push({ page: image.page, attachmentId: id });
+      }
+      if (current !== paper || chatComposer !== snapshot) return;
+      userMsg = composerMessage(q, { ...snapshot, pdfSelection: { ...snapshot.pdfSelection, images } });
+    }
+    userMsg ||= composerMessage(q, snapshot);
+    await papers.appendChatMessage(paper, userMsg);
+  } catch (err) {
+    toast(`问题保存失败：${err.message}`, true);
+    return;
+  } finally {
+    if (created.length) await store.selectionAttachments.cleanup(paper.id, created).catch(err => console.warn('选区附件清理失败', err));
+    chatSaving = false;
+  }
+  if (current !== paper) return;
+  if (input.value.trim() === q) input.value = '';
+  if (chatComposer === snapshot) chatComposer = emptyBinding();
   composerQuoteExpanded = false;
   hideMentionMenu();
   renderChatComposer();
-  await papers.appendChatMessage(paper, userMsg);
   appendChatBubble(userMsg, '', (paper.chat || []).length - 1);
   const bubble = appendChatBubble({ role: 'assistant', content: '…' });
+  bubble.dataset.citeSection = userMsg.secId || userMsg.cite?.startSecId || '';
 
   const askOnce = async () => {
     chatAborter = new AbortController();
@@ -2437,7 +2550,7 @@ async function sendChat() {
         },
         retry: () => { void askOnce(); },
       });
-      renderMarkdownInto(bubble, text || '（无回复）');
+      renderCitedMarkdownInto(bubble, text || '（无回复）');
       await papers.appendChatMessage(paper, { role: 'assistant', content: text, bindingKind: 'none' });
     } catch (err) {
       bubble.classList.add('err');
@@ -2456,6 +2569,84 @@ async function sendChat() {
 }
 
 // ---------------- PDF 对照阅读 ----------------
+function showPdfSelection(selection) {
+  selectionAborter?.abort();
+  selectionAborter = null;
+  selectionRevision++;
+  selectedPdf = selection;
+  const popup = $('#pdf-selection-popup');
+  $('#pdf-selection-preview').textContent = selection.text || `PDF 区域 · ${[...new Set(selection.regions.map(region => `p${region.page}`))].join('、')}`;
+  $('#pdf-selection-status').textContent = '';
+  $('#pdf-selection-result').hidden = true;
+  $('#pdf-selection-stop').hidden = true;
+  $('#pdf-selection-translate').disabled = false;
+  $('#pdf-selection-ask').disabled = !qaReady();
+  if (!qaReady()) $('#pdf-selection-status').textContent = QA_GATE_MESSAGE;
+  popup.hidden = false;
+  const last = selection.regions.at(-1);
+  const slot = $('#pdf-pages').querySelector(`[data-page="${last.page}"]`);
+  const box = slot?.getBoundingClientRect();
+  const x = box ? box.left + last.bbox[0] / (last.pageSize[0] * 2) * box.width : 20;
+  const y = box ? box.top + (last.bbox[1] + last.bbox[3]) / (last.pageSize[1] * 2) * box.height + 8 : 20;
+  popup.style.left = `${Math.max(12, Math.min(x, window.innerWidth - popup.offsetWidth - 12))}px`;
+  popup.style.top = `${Math.max(12, Math.min(y, window.innerHeight - popup.offsetHeight - 12))}px`;
+  pdfReader.schedule();
+}
+
+async function translatePdfSelection() {
+  if (!selectedPdf || !pdfDocument || !current) return;
+  const selection = selectedPdf, doc = pdfDocument, paper = current;
+  selectionAborter?.abort();
+  const controller = new AbortController();
+  selectionAborter = controller;
+  const revision = ++selectionRevision;
+  const active = () => revision === selectionRevision && !controller.signal.aborted && selectedPdf === selection && pdfDocument === doc && current === paper;
+  const result = $('#pdf-selection-result');
+  result.hidden = false; result.textContent = '';
+  $('#pdf-selection-status').textContent = '翻译中…';
+  $('#pdf-selection-stop').hidden = false;
+  $('#pdf-selection-translate').disabled = true;
+  try {
+    const images = selection.kind === 'area' ? await selectionImages(doc, selection) : [];
+    if (!active()) return;
+    const content = images.length ? [{ type: 'text', text: '翻译截图中可辨认的文字。' },
+      ...images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } }))] : selection.text;
+    const language = $('#pdf-selection-language').value === 'en' ? 'English' : '简体中文';
+    const text = await model.chat([{ role: 'system', content: `你是学术翻译引擎。将用户选中的内容翻译为${language}。保留公式、术语和段落结构，只输出译文。图像中文字无法辨认时如实说明，禁止猜测。` },
+      { role: 'user', content }], { stream: true, stage: 'translate', signal: controller.signal,
+      onDelta: full => { if (active()) renderStreamingTextInto(result, full); } });
+    if (!active()) return;
+    if (!text?.trim()) throw new Error('模型未返回译文');
+    renderMarkdownInto(result, text);
+    $('#pdf-selection-status').textContent = '';
+  } catch (err) {
+    if (revision === selectionRevision && selectedPdf === selection) $('#pdf-selection-status').textContent = err.name === 'AbortError' ? '已停止' : `翻译失败：${err.message}`;
+  } finally {
+    if (revision === selectionRevision) { $('#pdf-selection-stop').hidden = true; $('#pdf-selection-translate').disabled = false; }
+    if (selectionAborter === controller) selectionAborter = null;
+  }
+}
+
+async function askPdfSelection() {
+  if (!selectedPdf || !qaReady() || !pdfDocument) return;
+  const selection = selectedPdf, doc = pdfDocument, paper = current;
+  const revision = selectionRevision;
+  $('#pdf-selection-ask').disabled = true;
+  $('#pdf-selection-status').textContent = '准备选区…';
+  try {
+    const images = selection.kind === 'area' ? await selectionImages(doc, selection) : [];
+    if (revision !== selectionRevision || selectedPdf !== selection || current !== paper || pdfDocument !== doc) return;
+    chatComposer = selectionBinding({ ...selection, ...(images.length ? { images } : {}) }, currentMapped);
+    composerQuoteExpanded = false;
+    switchTab('chat');
+    renderChatComposer();
+    $('#pdf-selection-status').textContent = '';
+    $('#chat-input').focus();
+  } catch (err) {
+    if (revision === selectionRevision) $('#pdf-selection-status').textContent = `选区准备失败：${err.message}`;
+  } finally { if (revision === selectionRevision) $('#pdf-selection-ask').disabled = false; }
+}
+
 function hasPdf(paper = current) {
   return store.pdf.has(paper);
 }
@@ -2463,6 +2654,12 @@ function hasPdf(paper = current) {
 function updatePdfSidebar() {
   const workspace = $('#reader-workspace');
   workspace.classList.toggle('pdf-closed', !pdfSidebarOpen);
+  const full = pdfSidebarOpen && reader.pdfMode === 'full';
+  workspace.classList.toggle('pdf-full', full);
+  const modeButton = $('#btn-pdf-mode');
+  modeButton.setAttribute('aria-pressed', String(full));
+  modeButton.title = full ? '返回对照阅读' : '全页阅读';
+  modeButton.setAttribute('aria-label', modeButton.title);
   applyPdfPaneWidth();
   $('#pdf-sidebar').hidden = !pdfSidebarOpen;
   $('#btn-pdf-toggle').setAttribute('aria-expanded', String(pdfSidebarOpen));
@@ -2475,7 +2672,7 @@ function updatePdfSidebar() {
 
 function applyPdfPaneWidth() {
   const workspace = $('#reader-workspace');
-  if (!pdfSidebarOpen) {
+  if (!pdfSidebarOpen || reader.pdfMode === 'full' || window.innerWidth <= 900) {
     workspace.style.removeProperty('grid-template-columns');
     return;
   }
@@ -2512,8 +2709,10 @@ function onPaneDragMove(event) {
     reader = view.resizeTreeByClientX(reader, event.clientX, paneDrag.treeLeft);
     applyTreeWidth();
   } else {
+    const anchor = pdfReader.captureAnchor();
     reader = view.setPdfWidth(reader, paneDrag.pdfRight - event.clientX, window.innerWidth);
     applyPdfPaneWidth();
+    pdfReader.restoreAnchor(anchor);
   }
 }
 
@@ -2533,18 +2732,29 @@ function bindPaneResizer(handle, side) {
 
 function togglePdfSidebar(force) {
   commitReader(view.togglePdf(reader, force), { restore: true });
+  if (!pdfSidebarOpen) { cancelCiteNavigation(); pdfSelection.clear(); }
   if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
-  if (pdfSidebarOpen && pdfDocument) requestAnimationFrame(() => fitPdfPage());
+  if (pdfSidebarOpen && pdfDocument) pdfReader.schedule();
 }
 
 function collapsePdfPane() {
+  pdfSelection.clear();
+  cancelCiteNavigation();
   commitReader(view.collapsePdf(reader), { restore: true });
 }
 
 function expandPdfPane() {
   commitReader(view.expandPdf(reader), { restore: true });
   if (pdfSidebarOpen && hasPdf() && !pdfDocument) initPdfViewer();
-  if (pdfSidebarOpen && pdfDocument) requestAnimationFrame(() => fitPdfPage());
+  if (pdfSidebarOpen && pdfDocument) pdfReader.schedule();
+}
+
+function togglePdfMode() {
+  pdfSelection.clear();
+  const anchor = pdfReader.captureAnchor();
+  pdfZoomRevision++;
+  commitReader(view.setPdfMode(reader, reader.pdfMode === 'full' ? 'side' : 'full'));
+  pdfReader.restoreAnchor(anchor);
 }
 
 // PDF 栏的论文级任务上下文：会话 Map 里按 input.paperId 过滤出本论文的下载任务。
@@ -2572,20 +2782,25 @@ function renderPdfTasks() {
 }
 
 function destroyPdfViewer() {
+  pdfOpening = null;
   pdfResource.invalidate();
-  pdfRenderVersion += 1;
-  pdfRenderTask?.cancel();
-  pdfRenderTask = null;
+  pdfReader.clear();
   if (pdfDocument) {
     try { pdfDocument.destroy(); } catch { /* 忽略清理错误 */ }
   }
   pdfDocument = null;
-  const canvas = $('#pdf-canvas');
-  canvas.width = 0;
-  canvas.height = 0;
+  $('#pdf-render-error').hidden = true;
 }
 
 async function initPdfViewer() {
+  if (pdfOpening?.paper === current) return pdfOpening.promise;
+  const pending = { paper: current };
+  pending.promise = loadPdfViewer().finally(() => { if (pdfOpening === pending) pdfOpening = null; });
+  pdfOpening = pending;
+  return pending.promise;
+}
+
+async function loadPdfViewer() {
   destroyPdfViewer();
   updatePdfSidebar();
   if (!current || !hasPdf()) return;
@@ -2618,6 +2833,7 @@ async function initPdfViewer() {
     );
     if (!installed) return;
     const document = pdfDocument;
+    const zoomRevisionAtLoad = pdfZoomRevision;
     if (current?.id !== paper.id) {
       if (pdfDocument === document) destroyPdfViewer();
       return;
@@ -2631,7 +2847,9 @@ async function initPdfViewer() {
     if (pdfDocument !== document || current?.id !== paper.id) return;
     await new Promise(resolve => requestAnimationFrame(resolve));
     if (pdfDocument !== document || current?.id !== paper.id) return;
-    await fitPdfPage();
+    if (pdfZoomRevision === zoomRevisionAtLoad) await fitPdfPage();
+    if (pdfDocument !== document || current?.id !== paper.id) return;
+    await pdfReader.open(document, pdfPage, pdfScale);
   } catch (err) {
     console.error(err);
     if (current?.id !== paper.id) return;
@@ -2640,49 +2858,31 @@ async function initPdfViewer() {
   }
 }
 
-async function renderPdfPage() {
-  if (!pdfDocument || !pdfSidebarOpen) return;
-  const document = pdfDocument;
-  const version = ++pdfRenderVersion;
+function updatePdfPageControls() {
+  if (!pdfDocument) return;
   pdfPage = Math.min(Math.max(Math.round(pdfPage), 1), pdfDocument.numPages);
   $('#pdf-page-input').value = pdfPage;
   $('#btn-pdf-prev').disabled = pdfPage <= 1;
   $('#btn-pdf-next').disabled = pdfPage >= pdfDocument.numPages;
   $('#pdf-zoom-label').textContent = `${Math.round(pdfScale * 100)}%`;
+}
 
-  pdfRenderTask?.cancel();
-  const page = await document.getPage(pdfPage);
-  if (version !== pdfRenderVersion || pdfDocument !== document || !pdfSidebarOpen) return;
-  const viewport = page.getViewport({ scale: pdfScale });
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  const canvas = $('#pdf-canvas');
-  const context = canvas.getContext('2d', { alpha: false });
-  canvas.width = Math.floor(viewport.width * ratio);
-  canvas.height = Math.floor(viewport.height * ratio);
-  canvas.style.width = `${Math.floor(viewport.width)}px`;
-  canvas.style.height = `${Math.floor(viewport.height)}px`;
-  $('#pdf-loading').hidden = true;
-  const task = page.render({
-    canvasContext: context,
-    viewport,
-    transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
-  });
-  pdfRenderTask = task;
-  try {
-    await task.promise;
-  } catch (err) {
-    if (err?.name !== 'RenderingCancelledException') throw err;
-  } finally {
-    if (pdfRenderTask === task) pdfRenderTask = null;
-  }
-  if (version === pdfRenderVersion && pdfDocument === document) {
-    $('#pdf-canvas-wrap').scrollTo({ top: 0, left: 0 });
-  }
+function renderPdfPage() {
+  cancelCiteNavigation();
+  if (!pdfDocument || !pdfSidebarOpen) return;
+  updatePdfPageControls();
+  savePdfPagePosition();
+  pdfReader.jump(pdfPage);
+}
+
+function cancelCiteNavigation() {
+  reader = { ...reader, citeFocus: null };
+  pdfReader.cancelLocate();
 }
 
 // 用户主动翻页后保存阅读位置（500ms 防抖）；不覆盖当前 tab。
 function savePdfPagePosition() {
-  if (!current || !pdfDocument) return;
+  if (!current || !pdfDocument || reader.pdfPage === pdfPage) return;
   reader = view.setPdfPage(reader, pdfPage);
   schedulePositionSave();
 }
@@ -2691,25 +2891,28 @@ async function fitPdfPage() {
   if (!pdfDocument || !pdfSidebarOpen) return;
   const document = pdfDocument;
   const targetPage = pdfPage;
+  const revision = ++pdfZoomRevision;
   const page = await document.getPage(targetPage);
-  if (pdfDocument !== document || pdfPage !== targetPage || !pdfSidebarOpen) return;
+  if (pdfDocument !== document || pdfPage !== targetPage || !pdfSidebarOpen || revision !== pdfZoomRevision) return;
   const base = page.getViewport({ scale: 1 });
   const available = Math.max($('#pdf-canvas-wrap').clientWidth - 20, 280);
   pdfScale = Math.min(Math.max(available / base.width, 0.5), 2.25);
-  await renderPdfPage();
+  updatePdfPageControls();
+  pdfReader.resize(pdfScale);
 }
 
 function changePdfPage(delta) {
   if (!pdfDocument) return;
   pdfPage = Math.min(Math.max(pdfPage + delta, 1), pdfDocument.numPages);
   renderPdfPage();
-  savePdfPagePosition();
 }
 
-function changePdfZoom(factor) {
+function changePdfZoom(factor, point) {
   if (!pdfDocument) return;
+  pdfZoomRevision++;
   pdfScale = Math.min(Math.max(pdfScale * factor, 0.4), 3);
-  renderPdfPage();
+  updatePdfPageControls();
+  pdfReader.resize(pdfScale, point);
 }
 
 // put 会把瞬时 pdfBlob 上传为附件并清空句柄；随后从附件清单补回 pdfAttachment。
@@ -2734,6 +2937,8 @@ async function attachPdf(file) {
   }
   await papers.attachPdf(current, file);
   await refreshPdfAttachment(current);
+  await refreshMapped(current);
+  destroyPdfViewer();
   updatePdfSidebar();
   await initPdfViewer();
   toast('PDF 已关联，可与精读结果对照查看');
@@ -3048,7 +3253,7 @@ function refreshSettingsDerived() {
 function renderUpdaterState() {
   $('#update-current-version').textContent = updaterState.currentVersion || '…';
   $('#update-status').textContent = updateStatusText(updaterState);
-  $('#btn-check-update').disabled = ['checking', 'downloading', 'installing'].includes(updaterState.status);
+  $('#btn-check-update').disabled = ['checking', 'preparing', 'downloading', 'installing'].includes(updaterState.status);
   const install = $('#btn-install-update');
   install.hidden = !['available', 'install-error'].includes(updaterState.status);
   install.textContent = updaterState.status === 'install-error' ? '重试安装' : '安装更新';
@@ -3150,15 +3355,16 @@ async function checkForUpdate() {
 
 async function installAvailableUpdate() {
   const version = updaterState.version;
-  if (!version || !confirm(`安装 Paper30Min ${version}？应用会退出并重新启动。`)) return;
+  if (!version) return;
   try {
+    if (!await bridge.confirmUpdate(`安装 Paper30Min ${version}？应用会退出并重新启动。`)) return;
     const active = activeTasks((await bridge.invoke('tasks.list@1', { activeOnly: true })).tasks ?? []);
     if (active.length) {
-      if (!confirm(`有 ${active.length} 个任务正在运行。取消任务并等待结束后安装更新？`)) return;
+      if (!await bridge.confirmUpdate(`有 ${active.length} 个任务正在运行。取消任务并等待结束后安装更新？`)) return;
       await Promise.all(active.map(task => bridge.invoke('tasks.cancel@1', { taskId: task.taskId })));
       await waitForActiveTasks(bridge);
     }
-    updaterState = updateState(updaterState, { type: 'installing' });
+    updaterState = updateState(updaterState, { type: 'preparing' });
     renderUpdaterState();
     await bridge.installUpdate(version);
     updaterState = updateState(updaterState, { type: 'installed' });
@@ -3236,15 +3442,21 @@ async function openSettingsModal(tab = 'about') {
   let concurrency = 3;
   let warmStart = true;
   let idleMinutes = 10;
+  $('#btn-save-network-settings').disabled = true;
+  $('#network-settings-status').textContent = '';
   try {
     const all = await bridge.invoke('settings.get@1');
+    $$('input[name="proxy-mode"]').forEach(el => {
+      el.checked = el.value === (all?.network?.proxyMode === 'direct' ? 'direct' : 'system');
+    });
+    $('#btn-save-network-settings').disabled = false;
     if (all?.pdfparse?.tableMode === 'accurate') tableMode = 'accurate';
     const n = Number(all?.protocol?.concurrency);
     if (Number.isFinite(n)) concurrency = n;
     if (typeof all?.pdfparse?.warmStart === 'boolean') warmStart = all.pdfparse.warmStart;
     const m = Number(all?.pdfparse?.idleShutdownMinutes);
     if (Number.isFinite(m) && m >= 1 && m <= 240) idleMinutes = m;
-  } catch (_) { /* 读失败时保持缺省 */ }
+  } catch (_) { $('#network-settings-status').textContent = '网络设置读取失败，请重新打开设置。'; }
   $$('input[name="set-table-mode"]').forEach(el => {
     el.checked = el.value === tableMode;
   });
@@ -3907,9 +4119,22 @@ function bindEvents() {
       selectSettingsTab(tabs[next].dataset.settingsTab);
     };
   });
-  $$('input[name="proxy-mode"]').forEach(input => {
-    input.onchange = () => { $('#proxy-manual').hidden = input.value !== 'manual'; };
-  });
+  $('#btn-save-network-settings').onclick = async () => {
+    const button = $('#btn-save-network-settings');
+    const controls = $$('input[name="proxy-mode"]');
+    const proxyMode = controls.find(input => input.checked)?.value;
+    button.disabled = true;
+    controls.forEach(input => { input.disabled = true; });
+    try {
+      await bridge.invoke('settings.putNetwork@1', { settings: { proxyMode } });
+      $('#network-settings-status').textContent = '网络设置已保存';
+    } catch (err) {
+      $('#network-settings-status').textContent = '网络设置保存失败：' + errorText(err);
+    } finally {
+      button.disabled = false;
+      controls.forEach(input => { input.disabled = false; });
+    }
+  };
   $$('[data-external]').forEach(button => {
     button.onclick = () => bridge.openExternal(button.dataset.external)
       .catch(err => toast(`打开链接失败：${errorText(err)}`, true));
@@ -4014,6 +4239,32 @@ function bindEvents() {
   };
   $('#btn-pdf-toggle').onclick = () => togglePdfSidebar();
   $('#btn-pdf-close').onclick = collapsePdfPane;
+  for (const tool of ['text', 'area', 'hand']) $('#pdf-tool-' + tool).onclick = () => {
+    pdfSelection.setTool(tool);
+    for (const value of ['text', 'area', 'hand']) $('#pdf-tool-' + value).setAttribute('aria-pressed', String(value === tool));
+  };
+  $('#pdf-selection-translate').onclick = translatePdfSelection;
+  $('#pdf-selection-ask').onclick = askPdfSelection;
+  $('#pdf-selection-stop').onclick = () => selectionAborter?.abort();
+  $('#pdf-selection-close').onclick = () => pdfSelection.clear();
+  $('#pdf-selection-language').onchange = () => { selectionAborter?.abort(); };
+  $('#pdf-selection-popup').addEventListener('mousedown', event => { if (event.target.closest('button')) event.preventDefault(); });
+  window.addEventListener('resize', () => pdfSelection.clear());
+  $('#btn-pdf-mode').onclick = togglePdfMode;
+  $('#pdf-canvas-wrap').addEventListener('wheel', event => {
+    if (!event.ctrlKey || !pdfDocument) return;
+    event.preventDefault();
+    const wrap = event.currentTarget;
+    const box = wrap.getBoundingClientRect();
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? wrap.clientHeight : 1);
+    changePdfZoom(Math.exp(Math.max(-0.2, Math.min(0.2, -delta * 0.004))), {
+      x: event.clientX - box.left - wrap.clientLeft, y: event.clientY - box.top - wrap.clientTop,
+    });
+  }, { passive: false });
+  // Native pinch input is enabled, but only the PDF reader owns zoom gestures.
+  document.addEventListener('wheel', event => {
+    if (event.ctrlKey) event.preventDefault();
+  }, { passive: false });
   $('#pdf-fab').onclick = expandPdfPane;
   $('#tree-fab').onclick = () => commitReader(view.expandTree(reader), { restore: true });
   $('#btn-tree-fold').onclick = () => commitReader(view.collapseTree(reader), { restore: true });
@@ -4036,6 +4287,7 @@ function bindEvents() {
   };
   $('#map-page-body').onclick = onProtocolContentClick;
   $('#section-page-body').onclick = onProtocolContentClick;
+  $('#chat-log').addEventListener('click', onProtocolContentClick);
   bindPaneResizer($('#tree-resizer'), 'tree');
   bindPaneResizer($('#pdf-resizer'), 'pdf');
   $('#btn-pdf-attach').onclick = () => $('#pdf-attach-input').click();
@@ -4049,7 +4301,10 @@ function bindEvents() {
     if (!pdfDocument) return;
     pdfPage = Math.min(Math.max(parseInt(e.target.value, 10) || 1, 1), pdfDocument.numPages);
     renderPdfPage();
-    savePdfPagePosition();
+  };
+  $('#btn-pdf-retry').onclick = () => {
+    $('#pdf-render-error').hidden = true;
+    pdfReader.retry();
   };
   $('#btn-pdf-zoom-out').onclick = () => changePdfZoom(0.85);
   $('#btn-pdf-zoom-in').onclick = () => changePdfZoom(1.18);
@@ -4210,7 +4465,7 @@ function bindEvents() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (pdfSidebarOpen) applyPdfPaneWidth();
-      if (pdfSidebarOpen && pdfDocument) fitPdfPage();
+      pdfReader.reflow();
     }, 180);
   });
 

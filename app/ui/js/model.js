@@ -189,7 +189,7 @@ export async function chat(messages, { stream = true, signal, onDelta, onEvent, 
     stream,
   };
   if (stage) input.stage = stage;
-  await runBridgeTask('model.chat@1', input, {
+  const { result } = await runBridgeTask('model.chat@1', input, {
     signal,
     retry,
     onChunk: chunk => {
@@ -198,6 +198,11 @@ export async function chat(messages, { stream = true, signal, onDelta, onEvent, 
     },
     onEvent,
   });
+  // Fast responses can emit chunks before the native event subscription is ready.
+  if (typeof result?.text === 'string' && result.text !== full) {
+    full = result.text;
+    onDelta?.(full);
+  }
   return full;
 }
 

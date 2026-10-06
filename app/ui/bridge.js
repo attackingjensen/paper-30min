@@ -6,7 +6,8 @@ export function createBridge(tauri) {
 
   return {
     // invoke(command, input)：短时、幂等或事务性操作。
-    invoke: (command, input = {}) => invoke('bridge_invoke', { command, input }),
+    invoke: (command, input = {}) => command === 'pdfmap.getSourceRegions@1'
+      ? invoke('pdfmap_source_regions', { input }) : invoke('bridge_invoke', { command, input }),
 
     // start(taskKind, input)：长任务，返回 { schemaVersion, taskId }。
     start: (kind, input = {}) => invoke('bridge_start', { kind, input }),
@@ -26,6 +27,9 @@ export function createBridge(tauri) {
     updateInfo: () => invoke('updater_info'),
     checkUpdate: () => invoke('updater_check'),
     installUpdate: (version) => invoke('updater_install', { version }),
+    confirmUpdate: async (message) => (await invoke('plugin:dialog|message', {
+      title: 'Paper30Min', message, kind: 'warning', buttons: 'OkCancel',
+    })) === 'Ok',
     openExternal: (destination) => invoke('open_external', { destination }),
     componentStatus: () => invoke('component_status'),
     installComponent: (source = null) => invoke('component_install', { source }),

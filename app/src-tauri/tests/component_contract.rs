@@ -29,6 +29,38 @@ fn ok_checkpoint() -> impl Fn() -> io::Result<()> + Sync {
     || Ok(())
 }
 
+#[test]
+fn component_download_obeys_proxy_mode_with_inherited_environment() {
+    const CHILD_FLAG: &str = "PAPER30MIN_COMPONENT_PROXY_TEST";
+    if std::env::var_os(CHILD_FLAG).is_none() {
+        let proxy = MockHttp::start(|_, _| MockResponse::bytes(200, "application/zip", b"proxy".to_vec()));
+        // A child process owns the proxy environment; parallel tests are unaffected.
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "component_download_obeys_proxy_mode_with_inherited_environment", "--nocapture"])
+            .env(CHILD_FLAG, "1");
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+            command.env(key, proxy.url(""));
+        }
+        command.env("NO_PROXY", "").env("no_proxy", "");
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert_eq!(proxy.requests().len(), 1, "only automatic mode uses the proxy");
+        return;
+    }
+    let origin = MockHttp::start(|_, _| MockResponse::bytes(200, "application/zip", b"direct".to_vec()));
+    let dir = tempfile::tempdir().unwrap();
+    for (mode, expected) in [(paper30min_lib::settings::ProxyMode::System, &b"proxy"[..]),
+        (paper30min_lib::settings::ProxyMode::Direct, &b"direct"[..])] {
+        let target = dir.path().join("download");
+        let mut file = File::create(&target).unwrap();
+        download_archive(mode, &origin.url("/component.zip"), &mut file, expected.len() as u64,
+            Duration::from_secs(2), Duration::from_secs(2), &ok_checkpoint(), &|_| {}).unwrap();
+        drop(file);
+        assert_eq!(fs::read(target).unwrap(), expected);
+    }
+    assert_eq!(origin.requests().len(), 1);
+}
+
 /// 慢速但持续出字节的下载必须完成：不存在整包期限误杀（#94 验收边界）。
 #[test]
 fn slow_stream_download_completes() {
@@ -45,6 +77,7 @@ fn slow_stream_download_completes() {
 
     let started = Instant::now();
     download_archive(
+        paper30min_lib::settings::ProxyMode::Direct,
         &server.url("/component.zip"),
         &mut output,
         body.len() as u64,
@@ -81,6 +114,7 @@ fn stalled_stream_times_out_within_read_timeout() {
 
     let started = Instant::now();
     let error = download_archive(
+        paper30min_lib::settings::ProxyMode::Direct,
         &server.url("/component.zip"),
         &mut output,
         885_407_140,
@@ -126,6 +160,7 @@ fn cancel_stops_download_promptly() {
 
     let started = Instant::now();
     let error = download_archive(
+        paper30min_lib::settings::ProxyMode::Direct,
         &server.url("/component.zip"),
         &mut output,
         body.len() as u64,
@@ -169,6 +204,7 @@ fn cancel_during_stalled_stream_does_not_wait_for_read_timeout() {
 
     let started = Instant::now();
     let error = download_archive(
+        paper30min_lib::settings::ProxyMode::Direct,
         &server.url("/component.zip"),
         &mut output,
         885_407_140,
@@ -198,6 +234,7 @@ fn truncated_download_is_rejected() {
     let mut output = File::create(&target).expect("创建暂存文件");
 
     let error = download_archive(
+        paper30min_lib::settings::ProxyMode::Direct,
         &server.url("/component.zip"),
         &mut output,
         885_407_140,
@@ -220,6 +257,7 @@ fn oversize_download_is_rejected() {
     let mut output = File::create(&target).expect("创建暂存文件");
 
     let error = download_archive(
+        paper30min_lib::settings::ProxyMode::Direct,
         &server.url("/component.zip"),
         &mut output,
         128,
@@ -242,6 +280,7 @@ fn http_error_status_is_rejected() {
     let mut output = File::create(&target).expect("创建暂存文件");
 
     let error = download_archive(
+        paper30min_lib::settings::ProxyMode::Direct,
         &server.url("/component.zip"),
         &mut output,
         885_407_140,
@@ -269,6 +308,7 @@ fn connect_failure_is_bounded() {
 
     let started = Instant::now();
     let error = download_archive(
+        paper30min_lib::settings::ProxyMode::Direct,
         &format!("http://127.0.0.1:{port}/component.zip"),
         &mut output,
         885_407_140,

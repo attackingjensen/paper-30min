@@ -166,6 +166,29 @@ test('chat：订阅前已终态时由 tasks.get@1 快照复核收尾（事件不
   assert.ok(bridge.calls.some(c => c.command === 'tasks.get@1' && c.input.taskId === 'task-1'));
 });
 
+test('chat recovers the complete response when chunks precede subscription', async () => {
+  const bridge = createFakeBridge();
+  initModel(bridge);
+  await initSettings();
+  bridge.snapshots.set('task-1', { status: 'succeeded', result: { text: 'Complete fast response' } });
+  const deltas = [];
+  assert.equal(await chat([{ role: 'user', content: 'translate' }], { onDelta: text => deltas.push(text) }), 'Complete fast response');
+  assert.deepEqual(deltas, ['Complete fast response']);
+});
+
+test('chat replaces partially received chunks with the canonical terminal response', async () => {
+  const bridge = createFakeBridge();
+  initModel(bridge);
+  await initSettings();
+  const deltas = [];
+  const promise = chat([], { onDelta: text => deltas.push(text) });
+  await tick();
+  bridge.emitLast({ event: 'chunk', chunk: 'tail' });
+  bridge.emitLast({ event: 'status', status: 'succeeded', result: { text: 'head tail' } });
+  assert.equal(await promise, 'head tail');
+  assert.deepEqual(deltas, ['tail', 'head tail']);
+});
+
 test('chat：failed 快照缺 error 字段时给出兜底错误', async () => {
   const bridge = createFakeBridge();
   initModel(bridge);

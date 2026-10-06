@@ -46,6 +46,29 @@ function assemble(overrides = {}) {
   });
 }
 
+test('PDF screenshot followups retain historical images and account for their token budget', () => {
+  const image = { page: 2, attachmentId: 'pdf-selection-test', dataUrl: 'data:image/webp;base64,aGVsbG8=' };
+  const history = [{ role: 'user', content: 'Explain this', bindingKind: 'pdf',
+    pdfSelection: { kind: 'area', regions: [{ page: 2 }], images: [image] } }];
+  const result = assemble({ history });
+  assert.equal(result.messages[1].content[1].image_url.url, image.dataUrl);
+  assert.ok(result.estimatedTokens >= PAGE_IMAGE_TOKEN_BUDGET);
+  assert.throws(() => assemble({ history, hardTop: PAGE_IMAGE_TOKEN_BUDGET }), err => err.code === 'input_too_large');
+  delete image.dataUrl;
+  assert.throws(() => assemble({ history }), err => err.code === 'invalid_binding');
+});
+
+test('PDF region questions use actual selected images without claiming exact block citations', () => {
+  const binding = { bindingKind: 'pdf', fragmentText: '', pdfSelection: { kind: 'area', regions: [{ page: 2 }],
+    images: [{ page: 2, dataUrl: 'data:image/webp;base64,aGVsbG8=' }], hits: [] } };
+  const result = assemble({ binding });
+  const user = result.messages.at(-1);
+  assert.equal(user.content[1].image_url.url, binding.pdfSelection.images[0].dataUrl);
+  assert.match(user.content[0].text, /p2/);
+  assert.doesNotMatch(systemText(result.messages), /整篇原文/);
+  assert.deepEqual(result.cropAssetIds, []);
+});
+
 function systemText(messages) {
   const system = messages.find(message => message.role === 'system');
   assert.ok(system, '装配结果须含 system 消息');

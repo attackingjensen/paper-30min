@@ -42,6 +42,7 @@ import {
   setHasMap,
   setMapping,
   setPdfPage,
+  setPdfMode,
   setPdfWidth,
   setTreeWidth,
   shouldCancelTasks,
@@ -53,6 +54,19 @@ import {
   treeItemStatus,
   treeItems,
 } from '../ui/js/view.js';
+
+test('PDF modes preserve paper context, pane width and legacy page-only positions', () => {
+  const original = applyPosition(openPaper(initialState(), { hasMap: true }), { view: 'pdf', pdfPage: 8 });
+  const side = setPdfWidth(original, 500, 1280);
+  const full = setPdfMode(side, 'full');
+  assert.equal(full.pdfPage, 8);
+  assert.equal(full.pdfWidth, 500);
+  assert.equal(full.tab, side.tab);
+  assert.equal(full.sectionId, side.sectionId);
+  assert.deepEqual(setPdfMode(full, 'side'), side);
+  assert.equal(setPdfMode(full, 'invalid'), full);
+  assert.equal(openPaper(full).pdfMode, 'side');
+});
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const mapped = JSON.parse(
@@ -283,32 +297,33 @@ test('进节页时 PDF 对照定位该节起始页；栏收起仍记页码，不
   assert.equal(noMap.pdfPage, null);
 });
 
-test('出处定位三分：文本块→原文 tab，图表→节页，页码→展开 PDF 对照', () => {
+test('出处统一展开 PDF 并保留产物上下文', () => {
   const block = parseRefs('(sec_3:L1-3)')[0];
   const fromMap = routeCite(reader(), block, { mapped });
-  assert.equal(fromMap.tab, 'source');
-  assert.equal(fromMap.sourceSectionId, 'sec_3_method');
-  assert.deepEqual(fromMap.citeFocus, { type: 'blocks', secId: 'sec_3_method', start: 1, end: 3 });
+  assert.equal(fromMap.tab, 'map');
+  assert.equal(fromMap.pdfPage, 2);
+  assert.equal(fromMap.citeFocus.type, 'pdf');
 
   const local = parseRefs('(L2)')[0];
   const fromSection = routeCite(openSection(reader(), 'part-1'), local, {
     mapped,
     currentSecId: 'sec_2_introduction',
   });
-  assert.equal(fromSection.tab, 'source');
-  assert.equal(fromSection.sourceSectionId, 'sec_2_introduction');
-  assert.equal(fromSection.citeFocus.start, 2);
+  assert.equal(fromSection.tab, 'map');
+  assert.equal(fromSection.sectionId, 'part-1');
+  assert.equal(fromSection.pdfPage, 2);
 
   const fig = parseRefs('(fig_1)')[0];
   const toFig = routeCite(switchTab(reader(), 'source'), fig, { mapped });
-  assert.equal(toFig.tab, 'map');
-  assert.equal(toFig.sectionId, partIdForSection(mapped, 'sec_2_introduction'));
-  assert.deepEqual(toFig.citeFocus, { type: 'asset', assetId: 'fig_1' });
+  assert.equal(toFig.tab, 'source');
+  assert.equal(toFig.sectionId, null);
+  assert.equal(toFig.pdfPage, 2);
+  assert.deepEqual(toFig.citeFocus.target.bbox, [100, 150, 400, 300]);
 
   const tbl = parseRefs('(tbl_1)')[0];
   const toTbl = routeCite(reader(), tbl, { mapped });
-  assert.equal(toTbl.sectionId, partIdForSection(mapped, 'sec_3_method'));
-  assert.equal(toTbl.citeFocus.assetId, 'tbl_1');
+  assert.equal(toTbl.sectionId, null);
+  assert.equal(toTbl.pdfPage, 3);
 
   const page = parseRefs('(p2)')[0];
   const collapsed = collapsePdf(togglePdf(reader(), false));
@@ -321,6 +336,8 @@ test('出处定位三分：文本块→原文 tab，图表→节页，页码→�
   const figNoMap = routeCite(unmapped, fig, { mapped });
   assert.equal(figNoMap.sectionId, null);
   assert.equal(figNoMap.tab, 'map');
+  assert.equal(figNoMap.pdfOpen, true);
+  assert.deepEqual(routeCite(reader(), parseRefs('(sec_missing:L1)')[0], { mapped }), reader());
 });
 
 test('阅读位置：新值域快照；旧 digest/translate/pdf 映射', () => {

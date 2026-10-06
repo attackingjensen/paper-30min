@@ -115,8 +115,8 @@ flowchart TB
 
 本 Plan 覆盖一个完整成果：用户可选择解析方式，两条路径都产出可用于精读的本地内容。云端适配与本地瘦身可分别验证，共享结果、任务和设置契约。
 
-- **依赖 v1.3.0 正式发布后复核：** 本分支从 `be4dedf` 开始，用户修订顺序为等待 v1.3.0 正式发布后再考虑 v1.4.0；PDF 与原文块映射、文字坐标可能改动侧车，须先对照已发布代码复核本 Plan，之后再决定实验、规划和实施安排。v1.4.0 不改变 v1.3.0 发布内容，仍在其后合入 main。
-- **共享出处语义：** v1.3.0 PDF 证据阅读成果合入后，须补做云端和本地结果的 PDF 回归；本分支不将该成果提前算作已实现。
+- **以 v1.3.0 正式版复核：** 本分支最初从 `be4dedf` 开始，暂停期间等待的 v1.3.0 已正式发布。2026-10-06 用户决定在主目录恢复 v1.4.0，本分支整合最新 `main`（`477331d`）。须先对照现行 PDF 与原文块映射、文字坐标及侧车实现复核本 Plan，再补全实验和实施安排。
+- **共享出处语义：** 本分支已包含 v1.3.0 PDF 证据阅读成果；后续仍须补做云端和本地解析结果的 PDF 回归，已有阅读验收不能代替新增解析路径验收。
 - **后续扩展：** 更多云端服务及替代本地后端另行决定，本 Plan 不承诺完整路线图。
 
 ### Outstanding Questions
@@ -133,6 +133,6 @@ flowchart TB
 ### Sources / Research
 
 - 本地实现：[组件清单](../../app/src-tauri/component-release.json)、[组件安装](../../app/src-tauri/src/component.rs)、[组件任务](../../app/src-tauri/src/component_runtime.rs)、[侧车门禁](../../app/src-tauri/src/pdfparse.rs)、[块模型映射](../../app/src-tauri/src/pdfmap.rs)、[侧车构建](../../tools/pdfparse-sidecar/build_sidecar.py)、[正式组件打包](../../tools/pdfparse-sidecar/package_component.py)和[侧车说明](../../tools/pdfparse-sidecar/README.md)。正式安装现行仅接受 bundled 整包；现有 download 构建变体不能直接当作新正式方案。
-- 构想来源：`git show 9705c64:docs/ideation/2026-09-24-paper30min-v2-revision.md` 的「解析组件进一步瘦身」「替代解析后端」及试验门槛。该文件在 v1.3.0 分支，当前分支不复制整份构想或冒称路径已在本地。
+- 构想来源：[v2 构想](../ideation/2026-09-24-paper30min-v2-revision.md) 的「解析组件进一步瘦身」「替代解析后端」及试验门槛；整合 v1.3.0 后该文件已在本分支。
 - 2026-09-30 核对的官方候选：百度[文档解析](https://ai.baidu.com/ai-doc/OCR/llxst5nn0)描述版面、阅读顺序和坐标；火山[智能文档解析](https://docs.volcengine.com/docs/Largemodelofimagegeneration/Callingmethod-2?lang=zh)描述逐页文本块、类别和坐标；阿里[文档智能大模型版](https://help.aliyun.com/zh/document-mind/developer-reference/document-parsing-large-model-version)描述本地文件上传、异步结果及版面坐标。均未在本轮实际调用。
 - 百炼[文档解析提交](https://help.aliyun.com/zh/model-studio/parse/parse-submit)支持请求坐标，但所示接口要求文件 URL；本地 PDF 的上传路径和账号条件仍须验证。[Qwen-OCR](https://help.aliyun.com/zh/model-studio/qwen-vl-ocr)描述专用文档与文字定位任务，是候选而非已选后端。

@@ -386,6 +386,15 @@ fn convert_with_paper_id_persists_block_model_attachment() {
         .expect("读块模型");
     let model: Value = serde_json::from_slice(&bytes).expect("块模型应为合法 JSON");
     assert!(model["pageCount"].as_u64().unwrap() >= 1, "块模型应有页数: {model}");
+    let source = library.verify_attachment("p-convert", "docling-source.json").expect("原始来源附件完整");
+    let (_, source_bytes) = library.read_range("p-convert", &source.id, 0, source.size as u64).unwrap();
+    let raw_path = Path::new(result["doclingJsonPath"].as_str().unwrap());
+    assert_eq!(source_bytes, std::fs::read(raw_path).unwrap());
+    std::fs::remove_file(raw_path).unwrap();
+    let evidence = bridge::invoke(&registry, &library, "pdfmap.getSourceRegions@1", &json!({
+        "paperId": "p-convert", "blockModelSha256": attachment.sha256,
+    })).expect("无任务缓存时仍可恢复来源");
+    assert!(!evidence["blocks"].as_array().unwrap().is_empty());
 }
 
 /// OCR 降级路径：无文本层页面触发 RapidOCR（torch 后端）并打降级标记。

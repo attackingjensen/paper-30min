@@ -1,6 +1,6 @@
 // 提问三形态上下文组装（#67 / 规格 #52 决策 4–8）与提问 UI 绑定纯函数（#68 / 决策 9–13）：
 // 组装缝输入 = 论文产物 + 会话历史 + 当轮绑定，输出 messages；UI 缝覆盖 @ 补全、
-// 单绑定互斥、选区扩块、气泡呈现与建图门禁。页图不进问答；图表裁切图是问答唯一图像通道。
+// 单绑定互斥、选区扩块、气泡呈现与建图门禁。PDF 框选按实际截图提问。
 //
 // 消费方：本模块测试 + 问答发送 / 绑定 UI 路径。
 
@@ -96,6 +96,10 @@ function bindingAnnotation(binding, mapped) {
   if (kind === 'fragment') {
     const text = typeof binding?.fragmentText === 'string' ? binding.fragmentText : '';
     return `[引用："${text}"]`;
+  }
+  if (kind === 'pdf') {
+    const pages = [...new Set((binding.pdfSelection?.regions || []).map(region => `p${region.page}`))].join(', ');
+    return `[PDF 选区 ${pages}${binding.fragmentText ? `："${binding.fragmentText}"` : '，以实际截图为准，未绑定精确文本块'}]`;
   }
   return null;
 }
@@ -357,6 +361,12 @@ export function userBindingView(message, mapped) {
       locate: { type: 'fragment', cite: message?.cite || null },
     };
   }
+  if (kind === 'pdf') {
+    return { kind: 'quote', firstLine: message.fragmentText || 'PDF 区域', fullText: message.fragmentText || '',
+      images: message.pdfSelection?.images || [],
+      cite: [...new Set(message.pdfSelection?.regions?.map(region => `(p${region.page})`) || [])].join(' '),
+      locate: { type: 'pdf', selection: message.pdfSelection } };
+  }
   return null;
 }
 
@@ -372,6 +382,7 @@ export function composerMessage(question, binding = emptyBinding(), now = Date.n
     fragmentText: kind === 'fragment' ? (binding.fragmentText ?? null) : null,
     cite: kind === 'none' ? null : (binding.cite ?? null),
     assetIds: Array.isArray(binding?.assetIds) ? [...binding.assetIds] : [],
+    ...(binding?.pdfSelection ? { pdfSelection: structuredClone(binding.pdfSelection), fragmentText: binding.fragmentText || '' } : {}),
   };
 }
 
@@ -398,6 +409,9 @@ function buildSystemContent({ title, mapped, products, kind, section, coveredTex
     lines.push('', '本节原文（完整，块号以 L 标注）：', '"""', renderSectionText(section), '"""');
   } else if (kind === 'fragment') {
     lines.push('', '选中片段覆盖的文本块：', '"""', coveredText, '"""');
+  } else if (kind === 'pdf') {
+    lines.push('', '用户选中了 PDF 中的文字或图像区域。以当轮提供的选中文字及截图为问题对象。',
+      '下面的块仅为附近上下文，不等于精确选区；无对应块时不要编造 L 引用。', '"""', coveredText, '"""');
   } else {
     lines.push('', '整篇原文（块序）：', '"""', renderPaperText(mapped?.sections ?? []), '"""');
   }
@@ -411,7 +425,12 @@ function replayHistory(history, mapped) {
     if (role === 'assistant') {
       return { role, content: String(message?.content ?? '') };
     }
-    return { role, content: annotateUserText(message?.content ?? '', message, mapped) };
+    const text = annotateUserText(message?.content ?? '', message, mapped);
+    const images = message.pdfSelection?.images || [];
+    if (!images.length) return { role, content: text };
+    if (images.some(image => !image.dataUrl)) throw qaError('invalid_binding', '历史选区截图缺失，请重新框选。');
+    return { role, content: [{ type: 'text', text },
+      ...images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } }))] };
   });
 }
 
@@ -496,6 +515,13 @@ export function assembleQaContext({
     const items = coveredBlockItems(mapped, binding?.cite);
     coveredText = renderCoveredBlocks(items);
     cropAssetIds = cropAssetIdsForBlocks(items, mapped);
+  } else if (kind === 'pdf') {
+    const hits = binding.pdfSelection?.hits || [];
+    coveredText = hits.map(hit => {
+      const block = sectionById(mapped, hit.secId)?.blocks?.find(block => block.id === hit.blockId);
+      return block ? `${hit.secId}:L${block.id} (p${block.page}) ${block.text}` : '';
+    }).filter(Boolean).join('\n');
+    if (binding.pdfSelection?.kind === 'area' && !binding.pdfSelection?.images?.length) throw qaError('invalid_binding', 'PDF 截图缺失，请重新框选。');
   }
 
   const system = {
@@ -511,6 +537,10 @@ export function assembleQaContext({
   };
   const replayed = replayHistory(history, mapped);
   const current = userMessage(annotateUserText(question, binding, mapped), cropAssetIds, crops);
+  if (kind === 'pdf' && binding.pdfSelection?.images?.length) {
+    current.content = [{ type: 'text', text: typeof current.content === 'string' ? current.content : annotateUserText(question, binding, mapped) },
+      ...binding.pdfSelection.images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } }))];
+  }
   const messages = [system, ...replayed, current];
   const estimatedTokens = estimateMessagesTokens(messages);
   if (estimatedTokens > hardTop) {

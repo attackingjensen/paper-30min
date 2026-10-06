@@ -122,7 +122,7 @@ fn first_launch_creates_versioned_database_and_partitions() {
     let (registry, library, dir) = common::env();
     let info = invoke(&registry, &library, "library.info@1", json!({}));
     assert_eq!(info["schemaVersion"], json!(1));
-    assert_eq!(info["databaseVersion"], json!(7));
+    assert_eq!(info["databaseVersion"], json!(8));
     let root = info["dataRoot"].as_str().expect("dataRoot");
     assert_eq!(root, dir.path().to_string_lossy().as_ref());
     let partitions = info["partitions"].as_array().expect("partitions");
@@ -154,7 +154,7 @@ fn existing_library_copy_opens_and_attachments_verify() {
         }
     }
     assert!(!summaries.is_empty(), "兼容性样本应包含论文");
-    assert_eq!(library.info().database_version, 7);
+    assert_eq!(library.info().database_version, 8);
 }
 
 #[test]

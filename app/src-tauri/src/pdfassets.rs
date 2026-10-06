@@ -748,6 +748,7 @@ mod tests {
             text: "[公式]".to_string(),
             page,
             y: 0.0,
+            source_regions: Vec::new(),
             bbox,
             level: None,
             asset_id: None,

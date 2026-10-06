@@ -27,6 +27,7 @@ pub fn available_commands() -> &'static [&'static str] {
         "library.putReadingPosition@1",
         "library.deleteReadingPosition@1",
         "files.putAttachment@1",
+        "files.cleanupPdfSelections@1",
         "files.listAttachments@1",
         "files.getAttachment@1",
         "files.readRange@1",
@@ -40,7 +41,9 @@ pub fn available_commands() -> &'static [&'static str] {
         "settings.putPdfparse@1",
         "settings.putProtocol@1",
         "settings.putUi@1",
+        "settings.putNetwork@1",
         "pdfparse.status@1",
+        "pdfmap.getSourceRegions@1",
         "skills.list@1",
         "exports.write@1",
         // dialog.*@1 的分发在 lib.rs 拦截（打开系统对话框需要窗口句柄），
@@ -59,6 +62,11 @@ pub fn invoke(
     input: &Value,
 ) -> Result<Value, BridgeError> {
     match command {
+        "pdfmap.getSourceRegions@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let hash = required_string(command, input, "blockModelSha256")?;
+            crate::pdfmap_evidence::get_source_regions(library, paper_id, hash)
+        }
         "app.info@1" => Ok(json!({
             "schemaVersion": BRIDGE_SCHEMA_VERSION,
             "app": {
@@ -161,6 +169,12 @@ pub fn invoke(
                 "attachment": library.put_attachment(paper_id, attachment)?,
             }))
         }
+        "files.cleanupPdfSelections@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let ids = parse_dto::<Vec<String>>(command, input, "attachmentIds")?;
+            library.cleanup_pdf_selections(paper_id, &ids)?;
+            Ok(json!({ "schemaVersion": 1 }))
+        }
         "files.listAttachments@1" => {
             let paper_id = required_string(command, input, "paperId")?;
             Ok(json!({
@@ -221,6 +235,7 @@ pub fn invoke(
         "settings.putPdfparse@1" => crate::settings::put_pdfparse(library, input),
         "settings.putProtocol@1" => crate::settings::put_protocol(library, input),
         "settings.putUi@1" => crate::settings::put_ui(library, input),
+        "settings.putNetwork@1" => crate::settings::put_network(library, input),
         "pdfparse.status@1" => {
             let mut sidecar = crate::pdfparse::status(library);
             // 常驻侧车状态（#84）：未启动 / 预热中 / 就绪 / 已释放 / 已停用。

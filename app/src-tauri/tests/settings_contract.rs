@@ -24,6 +24,26 @@ fn invoke_err(
 }
 
 #[test]
+fn network_mode_defaults_persists_and_rejects_invalid_values() {
+    let (registry, library, dir) = common::env();
+    assert_eq!(invoke(&registry, &library, "settings.get@1", json!({}))["network"],
+        json!({ "proxyMode": "system" }));
+    let saved = invoke(&registry, &library, "settings.putNetwork@1",
+        json!({ "settings": { "proxyMode": "direct", "unknown": true } }));
+    assert_eq!(saved["settings"], json!({ "proxyMode": "direct" }));
+    let reopened = Library::open(dir.path()).unwrap();
+    assert_eq!(invoke(&registry, &reopened, "settings.get@1", json!({}))["network"]["proxyMode"], json!("direct"));
+    for mode in [json!("manual"), json!(""), json!(null), json!(1)] {
+        let error = invoke_err(&registry, &library, "settings.putNetwork@1",
+            json!({ "settings": { "proxyMode": mode } }));
+        assert_eq!(error.code, "invalid_input");
+    }
+    assert_eq!(invoke(&registry, &library, "settings.get@1", json!({}))["network"]["proxyMode"], json!("direct"));
+    invoke(&registry, &library, "settings.putNetwork@1", json!({ "settings": { "proxyMode": "system" } }));
+    assert_eq!(invoke(&registry, &library, "settings.get@1", json!({}))["network"]["proxyMode"], json!("system"));
+}
+
+#[test]
 fn ui_prefs_default_and_roundtrip() {
     let (registry, library, _dir) = common::env();
     let result = invoke(&registry, &library, "settings.get@1", json!({}));

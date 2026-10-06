@@ -6,6 +6,8 @@
 //   （节树同域，覆盖存量 parts 未对齐的记录）；块模型无 abstract 节时摘要占位不计入
 //   进度。
 
+import { createSerialWriter } from './reader-resources.js';
+
 // ---------------- 存储缝 ----------------
 
 let store = null;
@@ -219,12 +221,29 @@ export async function removeRecallImage(paper, imageId) {
 }
 
 /** 追加一条问答消息，只保留最近 40 条；绑定字段随被淘汰的消息一并删除。 */
-export async function appendChatMessage(paper, message) {
-  paper.chat = paper.chat || [];
-  paper.chat.push(message);
-  if (paper.chat.length > 40) paper.chat = paper.chat.slice(-40);
-  paper.updatedAt = Date.now();
-  await store.put(paper);
+const chatWriters = new WeakMap();
+export function appendChatMessage(paper, message) {
+  if (!chatWriters.has(paper)) chatWriters.set(paper, createSerialWriter(value => saveChatMessage(paper, value)));
+  return chatWriters.get(paper)(message);
+}
+
+async function saveChatMessage(paper, message) {
+  const previous = paper.chat || [];
+  const next = [...previous, message].slice(-40);
+  const updatedAt = Date.now();
+  await store.put({ ...paper, chat: next, updatedAt });
+  paper.chat = next;
+  paper.updatedAt = updatedAt;
+  const retained = new Set(selectionAttachmentIds(next));
+  const removed = selectionAttachmentIds(previous).filter(id => !retained.has(id));
+  if (removed.length && store.selectionAttachments) {
+    await store.selectionAttachments.cleanup(paper.id, removed).catch(err => console.warn('选区附件清理失败', err));
+  }
+}
+
+function selectionAttachmentIds(chat) {
+  return [...new Set((chat || []).flatMap(message => message.pdfSelection?.images || [])
+    .map(image => image.attachmentId).filter(id => typeof id === 'string' && id.startsWith('pdf-selection-')))];
 }
 
 /** 评分、分类与标签写入。 */
@@ -391,6 +410,8 @@ async function serializePaper(paper) {
   copy.pdfBlob = base64
     ? { base64, type: paper.pdfBlob?.type || paper.pdfAttachment?.contentType || 'application/pdf' }
     : null;
+  const ids = selectionAttachmentIds(paper.chat);
+  if (ids.length) copy.selectionAttachments = await Promise.all(ids.map(id => store.selectionAttachments.read(paper.id, id)));
   return copy;
 }
 
@@ -451,7 +472,26 @@ export async function importLibrary(payload) {
     if (!raw || typeof raw.id !== 'string' || !raw.id) { skipped++; continue; }
     const existing = await store.get(raw.id);
     if (existing) { skipped++; continue; }
-    await store.put(deserializePaper(raw));
+    const paper = deserializePaper(raw);
+    delete paper.selectionAttachments;
+    const ids = selectionAttachmentIds(paper.chat);
+    const attachments = ids.map(id => {
+      const attachment = raw.selectionAttachments?.find(item => item.id === id);
+      if (!attachment || typeof attachment.contentBase64 !== 'string') throw new Error('导入文件缺少选区截图');
+      return attachment;
+    });
+    // Publish chat only after every referenced image has been restored.
+    const chat = paper.chat;
+    paper.chat = [];
+    try {
+      await store.put(paper);
+      for (const attachment of attachments) await store.selectionAttachments.write(paper.id, attachment);
+      paper.chat = chat;
+      await store.put(paper);
+    } catch (err) {
+      await store.delete(paper.id).catch(cleanupError => console.warn('导入记录清理失败', cleanupError));
+      throw err;
+    }
     added++;
   }
   return { added, skipped };

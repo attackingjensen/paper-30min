@@ -20,6 +20,38 @@ const PDFPARSE_KEY: &str = "pdfparse";
 const UI_KEY: &str = "ui";
 /// 协议编排设置（JSON 对象）：concurrency 为节薄摘要 / 批量深挖的有界并发上限（#79 / #83）。
 const PROTOCOL_KEY: &str = "protocol";
+const NETWORK_KEY: &str = "network";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyMode {
+    System,
+    Direct,
+}
+
+pub(crate) fn proxy_mode(library: &Library) -> Result<ProxyMode, BridgeError> {
+    let network = load_object(library, NETWORK_KEY, Map::new())?;
+    Ok(if network.get("proxyMode").and_then(Value::as_str) == Some("direct") {
+        ProxyMode::Direct
+    } else {
+        ProxyMode::System
+    })
+}
+
+pub fn put_network(library: &Library, input: &Value) -> Result<Value, BridgeError> {
+    let settings = input.get("settings").and_then(Value::as_object)
+        .ok_or_else(|| BridgeError::invalid_input("settings.putNetwork@1 需要对象参数 settings"))?;
+    let current = proxy_mode(library)?;
+    let mode = settings.get("proxyMode").map(|value| value.as_str());
+    let mode = match mode {
+        None => if current == ProxyMode::Direct { "direct" } else { "system" },
+        Some(Some("system")) => "system",
+        Some(Some("direct")) => "direct",
+        _ => return Err(BridgeError::invalid_input("proxyMode 必须是 system 或 direct")),
+    };
+    let saved = json!({ "proxyMode": mode });
+    library.put_setting(NETWORK_KEY, &saved.to_string())?;
+    Ok(json!({ "schemaVersion": BRIDGE_SCHEMA_VERSION, "settings": saved }))
+}
 
 pub(crate) const DEFAULT_PROTOCOL_CONCURRENCY: u64 = 3;
 pub(crate) const MIN_PROTOCOL_CONCURRENCY: u64 = 1;
@@ -188,6 +220,7 @@ pub fn get(library: &Library) -> Result<Value, BridgeError> {
         "pdfparse": Value::Object(load_pdfparse(library)?),
         "ui": Value::Object(load_ui(library)?),
         "protocol": Value::Object(load_protocol(library)?),
+        "network": { "proxyMode": if proxy_mode(library)? == ProxyMode::Direct { "direct" } else { "system" } },
     }))
 }
 

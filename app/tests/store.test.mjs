@@ -403,3 +403,19 @@ test('put/get：问答绑定字段往返（@节 / 片段 / 缺省 none）', asyn
     { ...fragment, createdAt: 1700000085000 },
   ]);
 });
+
+test('PDF selection metadata and attachment references round-trip through the native DTO', async () => {
+  let stored;
+  const bridge = createFakeBridge({
+    'library.putPaper@1': ({ paper }) => { stored = paper; return {}; },
+    'library.getPaper@1': () => ({ paper: stored }),
+    'files.listAttachments@1': () => ({ attachments: [] }),
+  });
+  const store = createTauriStore(bridge);
+  const selected = { kind: 'area', regions: [{ page: 2, bbox: [40, 100, 400, 200], pageSize: [600, 800] }],
+    images: [{ page: 2, attachmentId: 'pdf-selection-test' }], hits: [] };
+  await store.put({ ...sampleRecord(), chat: [{ role: 'user', content: 'Explain', bindingKind: 'pdf', pdfSelection: selected }] });
+  const loaded = await store.get('p1');
+  assert.equal(loaded.chat[0].bindingKind, 'pdf');
+  assert.deepEqual(loaded.chat[0].pdfSelection, selected);
+});

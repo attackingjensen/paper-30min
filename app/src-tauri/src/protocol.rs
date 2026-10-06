@@ -3243,6 +3243,7 @@ mod tests {
             text: text.to_string(),
             page,
             y: 0.0,
+            source_regions: Vec::new(),
             bbox: None,
             level: None,
             asset_id: None,
