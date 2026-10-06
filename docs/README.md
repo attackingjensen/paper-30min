@@ -18,6 +18,8 @@
 
 当前 v1.4.0 解析试点的质量证据见 [百度 49 页复核](research/2026-10-06-aistudio-full-audit.md) 和 [Docling 49 页对照](research/2026-10-06-docling-full-audit.md)，仅限报告中的配置与样本。
 
+当前实施范围为 [百度云端完整链路](plans/2026-09-30-1512-feat-parser-options-plan.md)；[本地组件调整](plans/2026-10-06-1436-feat-local-parser-components-plan.md) 已独立为后续需求计划。新对话从 current 与当前计划的 U3 接手。
+
 以下链接固定到迁移前的 Git 提交，用于追溯当时的决定和验证，不代表现行实现；行为变更仍以当前代码、测试和相关 Issue 为准。
 
 - 阅读协议与进度取舍：[三层阅读协议](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/adr/0006-three-layer-reading-protocol.md)、[进度与产物数据模型](https://github.com/attackingjensen/paper-30min/blob/35324e785c16059e6d4932ab5b483024733c1f01/docs/adr/0007-progress-and-products-data-model.md)。
