@@ -77,6 +77,28 @@ fn save(library: &Library, r: &mut Record) -> Result<(), BridgeError> {
     file.sync_all().map_err(io_error)?;
     fs::rename(dir.join("run.json.part"), dir.join("run.json")).map_err(io_error)
 }
+fn lock_paper(library: &Library, paper: &str) -> Result<File, BridgeError> {
+    files::require_safe_segment(paper, "paperId")?;
+    let dir = library.root().join("operations/cloudparse").join(paper);
+    fs::create_dir_all(&dir).map_err(io_error)?;
+    // Keep the inode stable; the OS releases the lock on close or process exit.
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("task.lock"))
+        .map_err(io_error)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(BridgeError::new(
+            "paper_busy",
+            "本篇论文的云端解析任务正在其他窗口运行，请等待完成或取消。",
+            true,
+        )),
+        Err(std::fs::TryLockError::Error(err)) => Err(io_error(err)),
+    }
+}
 fn records(library: &Library, paper: Option<&str>) -> Result<Vec<Record>, BridgeError> {
     if let Some(paper) = paper {
         files::require_safe_segment(paper, "paperId")?;
@@ -132,7 +154,7 @@ pub(crate) fn status(library: &Library, input: &Value) -> Result<Value, BridgeEr
         json!({"schemaVersion":1,"jobs":records(library,input.get("paperId").and_then(Value::as_str))?}),
     )
 }
-fn digest(file: &mut File, limit: u64) -> Result<String, BridgeError> {
+fn digest(file: &mut File, limit: u64) -> Result<(u64, String), BridgeError> {
     if file.metadata().map_err(io_error)?.len() > limit {
         return Err(error("too_large", "PDF 超过云端解析 50 MiB 上限"));
     }
@@ -154,7 +176,7 @@ fn digest(file: &mut File, limit: u64) -> Result<String, BridgeError> {
     if total == 0 {
         return Err(error("invalid_input", "PDF 不能为空"));
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok((total, format!("{:x}", hash.finalize())))
 }
 pub(crate) fn prepare(library: &Library, input: &Value) -> Result<CloudParsePlan, BridgeError> {
     let paper = input
@@ -187,8 +209,37 @@ pub(crate) fn prepare(library: &Library, input: &Value) -> Result<CloudParsePlan
         ));
     }
     let pdf_path = files::attachment_path(library.root(), paper, "pdf")?;
-    library.verify_attachment(paper, "pdf")?;
-    let pdf_sha256 = digest(&mut File::open(&pdf_path).map_err(io_error)?, MAX_PDF)?;
+    let attachment = library.get_attachment(paper, "pdf")?;
+    let mut file = File::open(&pdf_path).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            BridgeError::integrity_failed(paper, "pdf", "附件文件不存在")
+        } else {
+            io_error(err)
+        }
+    })?;
+    if !file.metadata().map_err(io_error)?.is_file() {
+        return Err(BridgeError::integrity_failed(
+            paper,
+            "pdf",
+            "附件文件不存在",
+        ));
+    }
+    // Bound reads before hashing; validate size and identity from this same stream.
+    let (pdf_size, pdf_sha256) = digest(&mut file, MAX_PDF)?;
+    if attachment.size < 0 || pdf_size != attachment.size as u64 {
+        return Err(BridgeError::integrity_failed(
+            paper,
+            "pdf",
+            "附件大小与记录不一致",
+        ));
+    }
+    if pdf_sha256 != attachment.sha256 {
+        return Err(BridgeError::integrity_failed(
+            paper,
+            "pdf",
+            "附件完整性校验失败",
+        ));
+    }
     let jobs = records(library, Some(paper))?;
     let selected = if let Some(batch) = input.get("batchId").and_then(Value::as_str) {
         Some(
@@ -384,6 +435,7 @@ fn execute(
     wait: Duration,
 ) -> Result<Value, BridgeError> {
     ctx.cancel_checkpoint()?;
+    let _paper_lock = lock_paper(&ctx.library, &plan.paper_id)?;
     let latest = records(&ctx.library, Some(&plan.paper_id))?
         .first()
         .map(|r| (r.batch_id.clone(), r.updated_at.clone()));
@@ -394,7 +446,7 @@ fn execute(
         ));
     }
     let mut file = File::open(&plan.pdf_path).map_err(io_error)?;
-    if digest(&mut file, MAX_PDF)? != plan.pdf_sha256 {
+    if digest(&mut file, MAX_PDF)?.1 != plan.pdf_sha256 {
         return Err(error("integrity_failed", "原 PDF 已改变"));
     }
     let mut record = plan.resume.clone().unwrap_or_else(|| Record {
@@ -693,6 +745,96 @@ mod tests {
     }
 
     #[test]
+    fn independent_registries_cannot_submit_while_same_paper_is_running() {
+        let (dir, ctx) = env();
+        let library = Arc::new(Library::open(dir.path()).unwrap());
+        let other = RunContext {
+            registry: TaskRegistry::new(library.clone()),
+            task_id: "other".into(),
+            sink: Collector::new(),
+            library,
+        };
+        let plan = submit_plan(&ctx);
+        let stale = submit_plan(&other);
+        let competing = submit_plan(&other);
+        let mut first = Fake::success();
+        first.on_submit = Some(Box::new(move || {
+            let mut second = Fake::success();
+            assert_eq!(
+                execute_now(&other, &competing, &mut second).unwrap_err().code,
+                "paper_busy"
+            );
+            assert_eq!(second.submissions, 0);
+        }));
+        execute_now(&ctx, &plan, &mut first).unwrap();
+        assert_eq!(first.submissions, 1);
+        let mut second = Fake::success();
+        assert_eq!(
+            execute_now(&ctx, &stale, &mut second).unwrap_err().code,
+            "cloud_job_changed"
+        );
+        assert_eq!(second.submissions, 0);
+        let resume = prepare(&ctx.library, &json!({"paperId":"p","action":"resume"})).unwrap();
+        execute_now(&ctx, &resume, &mut second).unwrap();
+        assert_eq!(second.submissions, 0);
+    }
+
+    #[test]
+    #[ignore = "subprocess helper, invoked by paper_lock_survives_process_competition_and_releases_on_exit"]
+    fn paper_lock_process_helper() {
+        let root = std::env::var_os("PAPER30MIN_CLOUD_LOCK_TEST_ROOT").unwrap();
+        let library = Library::open(&root).unwrap();
+        let _lock = lock_paper(&library, "p").unwrap();
+        fs::write(library.root().join("lock-held"), b"ready").unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[test]
+    fn paper_lock_survives_process_competition_and_releases_on_exit() {
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let (dir, ctx) = env();
+        let plan = submit_plan(&ctx);
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "cloudparse::tests::paper_lock_process_helper", "--ignored"])
+            .env("PAPER30MIN_CLOUD_LOCK_TEST_ROOT", dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = ChildGuard(command.spawn().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !dir.path().join("lock-held").exists() {
+            assert!(child.0.try_wait().unwrap().is_none(), "lock helper exited early");
+            assert!(std::time::Instant::now() < deadline, "lock helper timed out");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut transport = Fake::success();
+        assert_eq!(
+            execute_now(&ctx, &plan, &mut transport).unwrap_err().code,
+            "paper_busy"
+        );
+        assert_eq!(transport.submissions, 0);
+        assert!(records(&ctx.library, Some("p")).unwrap().is_empty());
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        execute_now(&ctx, &plan, &mut transport).unwrap();
+        assert_eq!(transport.submissions, 1);
+        assert!(dir.path().join("operations/cloudparse/p/task.lock").is_file());
+    }
+
+    #[test]
     fn accepted_query_failure_restores_same_job_without_upload() {
         let (_dir, ctx) = env();
         let plan = submit_plan(&ctx);
@@ -862,6 +1004,68 @@ mod tests {
         );
         assert_eq!(second.submissions, 0);
         assert!(prepare(&ctx.library, &json!({"paperId":"p","action":"resume"})).is_ok());
+    }
+    #[test]
+    fn prepare_rejects_oversized_pdf_before_attachment_integrity_read() {
+        let (_dir, ctx) = env();
+        let path = files::attachment_path(ctx.library.root(), "p", "pdf").unwrap();
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_len(MAX_PDF + 1)
+            .unwrap();
+        ctx.library.lock_conn().unwrap().execute(
+            "UPDATE attachments SET byte_size = ?1 WHERE paper_id = 'p' AND attachment_id = 'pdf'",
+            [MAX_PDF as i64 + 1],
+        ).unwrap();
+        assert_eq!(
+            prepare(&ctx.library, &json!({"paperId":"p"}))
+                .unwrap_err()
+                .code,
+            "too_large"
+        );
+        assert!(records(&ctx.library, Some("p")).unwrap().is_empty());
+    }
+    #[test]
+    fn prepare_preserves_attachment_integrity_and_execution_recheck() {
+        let (_dir, ctx) = env();
+        let path = files::attachment_path(ctx.library.root(), "p", "pdf").unwrap();
+        let original = fs::read(&path).unwrap();
+        let plan = submit_plan(&ctx);
+        assert_eq!(
+            plan.pdf_sha256,
+            ctx.library.get_attachment("p", "pdf").unwrap().sha256
+        );
+        fs::write(&path, b"%PDF-1.5").unwrap();
+        assert_eq!(
+            prepare(&ctx.library, &json!({"paperId":"p"}))
+                .unwrap_err()
+                .code,
+            "integrity_failed"
+        );
+        let mut transport = Fake::success();
+        assert_eq!(
+            execute_now(&ctx, &plan, &mut transport).unwrap_err().code,
+            "integrity_failed"
+        );
+        assert_eq!(transport.submissions, 0);
+        fs::write(&path, b"%PDF-1.4-extra").unwrap();
+        assert_eq!(
+            prepare(&ctx.library, &json!({"paperId":"p"}))
+                .unwrap_err()
+                .code,
+            "integrity_failed"
+        );
+        fs::write(&path, original).unwrap();
+        assert!(prepare(&ctx.library, &json!({"paperId":"p"})).is_ok());
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            prepare(&ctx.library, &json!({"paperId":"p"}))
+                .unwrap_err()
+                .code,
+            "integrity_failed"
+        );
     }
     #[test]
     fn pdf_size_and_restart_unknown_are_enforced_before_network() {

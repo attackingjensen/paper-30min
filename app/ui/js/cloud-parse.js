@@ -8,10 +8,9 @@ export function validateParserChoice(provider, settings = {}) {
 
 export function cloudTaskInput(paperId, job = null, resubmitConfirmed = false) {
   const batch = job?.batchId ? { batchId: job.batchId } : {};
-  if (job?.jobId) return { paperId, action: 'resume', ...batch };
-  const unknown = Boolean(job);
-  if (unknown && !resubmitConfirmed) throw new Error('受理状态未知；重新提交可能重复计费，需要明确确认');
-  return { paperId, action: 'submit', uploadConfirmed: true, ...batch, ...(unknown ? { resubmitConfirmed: true } : {}) };
+  if (job?.jobId && job.state !== 'remote-failed') return { paperId, action: 'resume', ...batch };
+  if (job && !resubmitConfirmed) throw new Error('重新提交可能再次计费，需要明确确认');
+  return { paperId, action: 'submit', uploadConfirmed: true, ...batch, ...(job ? { resubmitConfirmed: true } : {}) };
 }
 
 const LABELS = {
@@ -27,8 +26,8 @@ const LABELS = {
 export function cloudJobView(job = {}) {
   return {
     text: LABELS[job.state] || job.state || '未知状态',
-    canResume: Boolean(job.jobId) && job.state !== 'downloaded',
-    needsResubmit: !job.jobId && Boolean(job.state),
+    canResume: Boolean(job.jobId) && !['downloaded', 'remote-failed'].includes(job.state),
+    needsResubmit: job.state === 'remote-failed' || (!job.jobId && Boolean(job.state)),
     failure: {
       cloud_auth_error: '百度凭据无效或权限不足，请检查解析设置',
       cloud_rate_limit: '百度请求限额或额度不足',

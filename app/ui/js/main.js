@@ -75,32 +75,48 @@ let parserChoicePending = null;
 
 async function chooseParser() {
   if (parserChoicePending) return null;
+  let resolveChoice;
+  const choice = new Promise(resolve => { resolveChoice = resolve; });
+  const session = { resolve: resolveChoice };
+  parserChoicePending = session;
   let settings;
   try { settings = (await bridge.invoke('settings.get@1'))?.cloudparse || {}; }
-  catch (err) { toast(`解析设置读取失败：${errorText(err)}`, true); return null; }
+  catch (err) {
+    if (parserChoicePending === session) {
+      toast(`解析设置读取失败：${errorText(err)}`, true);
+      finishParserChoice(null, session);
+    }
+    return choice;
+  }
+  if (parserChoicePending !== session) return choice;
   $('#parser-choice-provider').value = settings.defaultProvider || '';
   $('#parser-choice-error').textContent = '';
+  $('#parser-choice-confirm').disabled = false;
   $('#modal-parser-choice').hidden = false;
   $('#parser-choice-provider').focus();
-  return new Promise(resolve => {
-    parserChoicePending = resolve;
-    $('#parser-choice-confirm').onclick = async () => {
-      try {
-        const latest = (await bridge.invoke('settings.get@1'))?.cloudparse || {};
-        const provider = $('#parser-choice-provider').value;
-        const valid = validateParserChoice(provider, latest);
-        if (!valid.ok) { $('#parser-choice-error').textContent = valid.message; return; }
-        finishParserChoice(provider);
-      } catch (err) { $('#parser-choice-error').textContent = errorText(err); }
-    };
-  });
+  $('#parser-choice-confirm').onclick = async () => {
+    const provider = $('#parser-choice-provider').value;
+    $('#parser-choice-confirm').disabled = true;
+    try {
+      const latest = (await bridge.invoke('settings.get@1'))?.cloudparse || {};
+      if (parserChoicePending !== session) return;
+      const valid = validateParserChoice(provider, latest);
+      if (!valid.ok) { $('#parser-choice-error').textContent = valid.message; return; }
+      finishParserChoice(provider, session);
+    } catch (err) {
+      if (parserChoicePending === session) $('#parser-choice-error').textContent = errorText(err);
+    } finally {
+      if (parserChoicePending === session) $('#parser-choice-confirm').disabled = false;
+    }
+  };
+  return choice;
 }
 
-function finishParserChoice(choice = null) {
+function finishParserChoice(choice = null, session = parserChoicePending) {
+  if (!session || session !== parserChoicePending) return;
   $('#modal-parser-choice').hidden = true;
-  const resolve = parserChoicePending;
   parserChoicePending = null;
-  resolve?.(choice);
+  session.resolve(choice);
 }
 
 async function latestCloudJob(paperId) {
@@ -1312,7 +1328,8 @@ async function ensureBlockModel(paperId) {
   if (!ids.has('pdf')) return { ok: false };
   const cloudJob = await latestCloudJob(paperId);
   if ((cloudJob && paperParserChoices.get(paperId) !== 'local') || paperParserChoices.get(paperId) === 'baidu') {
-    toast(cloudJob ? cloudJobView(cloudJob).text : '百度云端结果尚未就绪，请查看任务中心');
+    if (!cloudJob) void startCloudParse(paperId);
+    else toast(cloudJobView(cloudJob).text);
     return { ok: false };
   }
   if (!paperParserChoices.has(paperId)) {
@@ -3003,17 +3020,23 @@ async function refreshPdfAttachment(paper) {
 
 async function attachPdf(file) {
   if (!current || !file) return;
+  const paper = current;
   if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
     toast('请选择 PDF 文件', true);
     return;
   }
-  await papers.attachPdf(current, file);
-  await refreshPdfAttachment(current);
-  await refreshMapped(current);
-  destroyPdfViewer();
-  updatePdfSidebar();
-  await initPdfViewer();
+  await papers.attachPdf(paper, file);
+  await refreshPdfAttachment(paper);
+  if (current?.id === paper.id) {
+    await refreshMapped(paper);
+    destroyPdfViewer();
+    updatePdfSidebar();
+    await initPdfViewer();
+  }
   toast('PDF 已关联，可与精读结果对照查看');
+  if (paperParserChoices.get(paper.id) === 'baidu' && !await latestCloudJob(paper.id)) {
+    void startCloudParse(paper.id);
+  }
 }
 
 // ---------------- 内置使用说明（发布版首启播种） ----------------
@@ -3896,7 +3919,10 @@ function renderTaskList(tasks) {
     };
     if (state.canResume) action('恢复查询 / 取回', () => startCloudParse(job.paperId, false, job));
     if (state.needsResubmit) action('重新提交…', async () => {
-      if (await bridge.confirmUpdate('上次提交是否受理未知。重新上传可能重复执行并计费，是否继续？')) {
+      const warning = job.state === 'remote-failed'
+        ? '上次远端解析已失败。重新上传会创建新任务，可能再次计费，是否继续？'
+        : '上次提交是否受理未知。重新上传可能重复执行并计费，是否继续？';
+      if (await bridge.confirmUpdate(warning)) {
         await startCloudParse(job.paperId, true, job);
       }
     });

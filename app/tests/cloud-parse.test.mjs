@@ -26,3 +26,18 @@ test('raw download is explicitly pending integration and cancellation warns abou
   assert.match(cloudJobView({ state: 'cancelled', jobId: 'j' }).text, /计费/);
   assert.equal(cloudJobView({ state: 'cancelled', jobId: 'j' }).canResume, true);
 });
+
+test('remote failure offers a confirmed new submission, while interruptions resume the old job', () => {
+  const failed = { jobId: 'failed-job', batchId: 'failed-batch', state: 'remote-failed' };
+  assert.equal(cloudJobView(failed).needsResubmit, true);
+  assert.equal(cloudJobView(failed).canResume, false);
+  assert.throws(() => cloudTaskInput('p', failed), /确认/);
+  assert.deepEqual(cloudTaskInput('p', failed, true), {
+    paperId: 'p', action: 'submit', uploadConfirmed: true, batchId: 'failed-batch', resubmitConfirmed: true,
+  });
+  for (const state of ['interrupted', 'poll-timeout', 'cancelled', 'failed']) {
+    const job = { ...failed, state };
+    assert.equal(cloudJobView(job).needsResubmit, false);
+    assert.deepEqual(cloudTaskInput('p', job, true), { paperId: 'p', action: 'resume', batchId: 'failed-batch' });
+  }
+});
