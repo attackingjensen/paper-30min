@@ -16,6 +16,38 @@ spec.loader.exec_module(pilot)
 
 
 class GeometryTests(unittest.TestCase):
+    def test_aistudio_unverified_geometry_is_not_projected(self):
+        for settings, width in (({"use_doc_preprocessor": True}, 1200),
+                                (None, 1200),
+                                ({"use_doc_preprocessor": False}, 1600)):
+            with self.subTest(settings=settings, width=width):
+                pruned = {"width": width, "height": 1600, "parsing_res_list": [
+                    {"block_id": 1, "block_label": "text", "block_content": "text",
+                     "block_bbox": [100, 200, 400, 300]}]}
+                if settings is not None:
+                    pruned["model_settings"] = settings
+                raw = [{"errorCode": 0, "result": {"layoutParsingResults": [
+                    {"prunedResult": pruned}]}}]
+                record = pilot.aistudio_records(raw, [(600, 800)])[0]
+                self.assertIsNone(record["bboxPoints"])
+                self.assertEqual(record["geometryStatus"], "unverified")
+
+    def test_aistudio_jsonl_pages_xyxy_and_groups(self):
+        raw = [{"errorCode": 0, "result": {"layoutParsingResults": [
+            {"prunedResult": {"width": 1200, "height": 1600,
+                "model_settings": {"use_doc_preprocessor": False}, "parsing_res_list": [
+                    {"block_id": 1, "block_label": "text", "block_content": "Merged authors",
+                     "block_bbox": [100, 200, 400, 300], "group_id": 7, "block_order": 1},
+                    {"block_id": 2, "block_label": "text", "block_content": "",
+                     "block_bbox": [500, 200, 800, 300], "group_id": 7, "block_order": 2}]}}]}}]
+        records = pilot.aistudio_records(raw, [(600, 800)])
+        self.assertEqual(records[0]["bboxPoints"], [50, 100, 150, 50])
+        self.assertEqual(records[1]["groupId"], records[0]["groupId"])
+        self.assertEqual(records[0]["pageAssignment"], "jsonl-order")
+        self.assertEqual(records[1]["text"], "")
+        with self.assertRaises(ValueError):
+            pilot.aistudio_records(raw, [(600, 800), (600, 800)])
+
     def test_baidu_zero_based_page_and_scaled_box(self):
         raw = {"pages": [{"page_num": 0, "page_angle": 0,
             "meta": {"page_width": 1200, "page_height": 1600},

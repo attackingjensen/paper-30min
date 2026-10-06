@@ -95,14 +95,49 @@ def docling_records(raw, sizes):
     return records
 
 
+def aistudio_records(raw, sizes):
+    pages = []
+    for row in raw:
+        if row.get("errorCode") != 0:
+            raise ValueError("AI Studio JSONL contains a failed batch")
+        pages.extend(row["result"]["layoutParsingResults"])
+    if len(pages) != len(sizes):
+        raise ValueError("AI Studio JSONL page count differs from original PDF")
+    records = []
+    for n, page in enumerate(pages):
+        pruned = page["prunedResult"]
+        source = (pruned["width"], pruned["height"])
+        size = sizes[n]
+        geometry_ok = (all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in source)
+            and abs(source[0] / source[1] - size[0] / size[1]) < 0.005
+            and pruned.get("model_settings", {}).get("use_doc_preprocessor") is False)
+        for block in pruned["parsing_res_list"]:
+            xyxy = block.get("block_bbox")
+            projected = None
+            if (geometry_ok and isinstance(xyxy, list) and len(xyxy) == 4
+                    and all(isinstance(v, (int, float)) and math.isfinite(v) for v in xyxy)):
+                box = [xyxy[0], xyxy[1], xyxy[2] - xyxy[0], xyxy[3] - xyxy[1]]
+                if valid_box(box, source):
+                    projected = [box[0] * size[0] / source[0], box[1] * size[1] / source[1],
+                                 box[2] * size[0] / source[0], box[3] * size[1] / source[1]]
+            records.append({"page": n + 1, "id": f"{n + 1}:{block.get('block_id')}",
+                "type": block.get("block_label"), "text": block.get("block_content", ""),
+                "groupId": block.get("group_id"), "order": block.get("block_order"),
+                "bboxPoints": projected, "rawPositionXYXY": xyxy, "pageAssignment": "jsonl-order",
+                "geometryStatus": "candidate" if projected else "unverified"})
+    return records
+
+
 def inspect(pdf, raw_path, provider, out):
     import pypdfium2 as pdfium
     from PIL import ImageDraw
     out.mkdir(parents=True, exist_ok=False)
     with pdfium.PdfDocument(str(pdf)) as document:
         sizes = [tuple(document[i].get_size()) for i in range(len(document))]
-        raw = read(raw_path)
-        records = (baidu_records if provider == "baidu" else docling_records)(raw, sizes)
+        raw = ([json.loads(line) for line in raw_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()] if provider == "aistudio" else read(raw_path))
+        mapper = {"baidu": baidu_records, "docling": docling_records, "aistudio": aistudio_records}[provider]
+        records = mapper(raw, sizes)
         for record in records:
             page = document[record["page"] - 1]
             if page.get_rotation() != 0:
@@ -179,7 +214,7 @@ def main():
     local = commands.add_parser("baseline")
     local.add_argument("--out", type=Path, required=True)
     review = commands.add_parser("inspect")
-    review.add_argument("--provider", choices=("baidu", "docling"), required=True)
+    review.add_argument("--provider", choices=("baidu", "docling", "aistudio"), required=True)
     review.add_argument("--pdf", type=Path, required=True)
     review.add_argument("--raw", type=Path, required=True)
     review.add_argument("--out", type=Path, required=True)
