@@ -225,6 +225,8 @@ function recordToDto(paper) {
   const now = new Date().toISOString();
   return {
     id: paper.id,
+    parseBatchId: paper.parseBatchId ?? null,
+    parseHistory: (paper.parseHistory || []).map(entry => ({ batchId: entry.batchId, paper: recordToDto({ ...entry.paper, parseHistory: [] }) })),
     title: paper.title ?? '',
     sourceType: paper.sourceType ?? null,
     arxivId: paper.arxivId ?? null,
@@ -359,6 +361,8 @@ function dtoToRecord(dto) {
   const { sections, sectionPages } = sectionsFromDto(dto);
   const record = {
     id: dto.id,
+    parseBatchId: dto.parseBatchId ?? null,
+    parseHistory: (dto.parseHistory || []).map(entry => ({ batchId: entry.batchId, paper: dtoToRecord({ ...entry.paper, parseHistory: [] }) })),
     title: dto.title ?? '',
     numPages: dto.numPages ?? 0,
     fullText: dto.fullText ?? '',
@@ -457,7 +461,7 @@ export function createTauriStore(bridge) {
       async read(paperId, id) {
         const { attachment } = await bridge.invoke('files.getAttachment@1', { paperId, attachmentId: id });
         const { contentBase64 } = await bridge.invoke('files.readRange@1', { paperId, attachmentId: id, offset: 0, length: attachment.size });
-        return { id, name: attachment.name, contentType: attachment.contentType, contentBase64 };
+        return { id, name: attachment.name, contentType: attachment.contentType, size: attachment.size, sha256: attachment.sha256, contentBase64 };
       },
       async write(paperId, attachment) {
         await bridge.invoke('files.putAttachment@1', { paperId, attachment });
@@ -468,9 +472,10 @@ export function createTauriStore(bridge) {
     },
 
     async put(paper) {
+      if (paper.readOnlyHistory) throw new Error('历史解析版本仅供查看');
       // PDF 字节不随记录持久化：pdfBlob 是运行时字段，不进 DTO。
       // 必须先落论文记录再传附件——files.putAttachment@1 校验论文必须已存在。
-      await bridge.invoke('library.putPaper@1', { paper: recordToDto(paper) });
+      await bridge.invoke('library.putPaper@1', { paper: recordToDto(paper), expectedBatchId: paper.parseBatchId ?? null });
       if (isPdfBlob(paper.pdfBlob)) {
         await uploadPdfAttachment(bridge, paper);
         // 上传成功后清掉瞬时句柄，避免后续每次 put 重复上传整份 PDF。
@@ -481,6 +486,16 @@ export function createTauriStore(bridge) {
     async delete(id) {
       const result = await bridge.invoke('library.deletePaper@1', { paperId: id });
       return result?.cleanupPending === true;
+    },
+
+    async parseBatchExport(paper) {
+      return bridge.invoke('parsebatch.export@1', { paperId: paper.id });
+    },
+
+    history(paper, batchId) {
+      const entry = paper.parseHistory?.find(item => item.batchId === batchId);
+      if (!entry) throw new Error('历史解析版本不存在');
+      return { ...structuredClone(entry.paper), id: paper.id, parseBatchId: batchId, parseHistory: [], readOnlyHistory: true };
     },
 
     // 阅读位置三命令。位置 DTO 的 updatedAt 同样在边界做 毫秒↔ISO 双向转换。
@@ -511,15 +526,27 @@ export function createTauriStore(bridge) {
     // PDF 附件能力：bytes/base64 优先读瞬时 pdfBlob，否则经 readRange 全量读附件。
     pdf: {
       has(paper) {
+        if (paper?.readOnlyHistory || paper?.parseBatchId) return Boolean(paper.parseBatchSnapshot);
+        if (paper?.parseBatchSnapshot) return true;
         return isPdfBlob(paper?.pdfBlob) || Boolean(paper?.pdfAttachment);
       },
       async bytes(paper) {
+        if (paper.parseBatchSnapshot) {
+          const result = await bridge.invoke('parsebatch.read@1', { snapshot: paper.parseBatchSnapshot, attachmentId: 'pdf' });
+          return base64ToBytes(result.contentBase64).buffer;
+        }
+        if (paper.readOnlyHistory || paper.parseBatchId) throw new Error('解析批次 PDF 无法读取');
         if (isPdfBlob(paper?.pdfBlob)) return paper.pdfBlob.arrayBuffer();
         if (!paper?.pdfAttachment) return null;
         const base64 = await readPdfRange(paper);
         return base64ToBytes(base64).buffer;
       },
       async base64(paper) {
+        if (paper.parseBatchId) {
+          const snapshot = paper.parseBatchSnapshot || (await bridge.invoke('parsebatch.pin@1', { paperId: paper.id, batchId: paper.parseBatchId })).snapshot;
+          const result = await bridge.invoke('parsebatch.read@1', { snapshot, attachmentId: 'pdf' });
+          return result.contentBase64;
+        }
         if (isPdfBlob(paper?.pdfBlob)) {
           return bytesToBase64(new Uint8Array(await paper.pdfBlob.arrayBuffer()));
         }

@@ -73,52 +73,81 @@ let updaterState = updateState();
 let componentState = { ready: false, phase: 'idle', error: '' };
 const paperParserChoices = new Map();
 let cloudJobs = [];
-let parserChoicePending = null;
+let parserSettingsLoading = false;
+let savedCloudSettings = {};
+const reparsingPapers = new Set();
 
-async function chooseParser() {
-  if (parserChoicePending) return null;
-  let resolveChoice;
-  const choice = new Promise(resolve => { resolveChoice = resolve; });
-  const session = { resolve: resolveChoice };
-  parserChoicePending = session;
-  let settings;
-  try { settings = (await bridge.invoke('settings.get@1'))?.cloudparse || {}; }
-  catch (err) {
-    if (parserChoicePending === session) {
-      toast(`解析设置读取失败：${errorText(err)}`, true);
-      finishParserChoice(null, session);
-    }
-    return choice;
-  }
-  if (parserChoicePending !== session) return choice;
-  $('#parser-choice-provider').value = settings.defaultProvider || '';
-  $('#parser-choice-error').textContent = '';
-  $('#parser-choice-confirm').disabled = false;
-  $('#modal-parser-choice').hidden = false;
-  $('#parser-choice-provider').focus();
-  $('#parser-choice-confirm').onclick = async () => {
-    const provider = $('#parser-choice-provider').value;
-    $('#parser-choice-confirm').disabled = true;
-    try {
-      const latest = (await bridge.invoke('settings.get@1'))?.cloudparse || {};
-      if (parserChoicePending !== session) return;
-      const valid = validateParserChoice(provider, latest);
-      if (!valid.ok) { $('#parser-choice-error').textContent = valid.message; return; }
-      finishParserChoice(provider, session);
-    } catch (err) {
-      if (parserChoicePending === session) $('#parser-choice-error').textContent = errorText(err);
-    } finally {
-      if (parserChoicePending === session) $('#parser-choice-confirm').disabled = false;
-    }
-  };
-  return choice;
+function historyReadOnly() {
+  if (!current?.readOnlyHistory) return false;
+  toast('历史解析版本仅供查看，请切回当前版本');
+  return true;
 }
 
-function finishParserChoice(choice = null, session = parserChoicePending) {
-  if (!session || session !== parserChoicePending) return;
-  $('#modal-parser-choice').hidden = true;
-  parserChoicePending = null;
-  session.resolve(choice);
+async function publishParseCandidate(paperId, batchId, context = null) {
+  const paper = await store.get(paperId);
+  if (paper?.parseBatchId === batchId) return true;
+  if (paper?.parseBatchId && !context) {
+    if (!await bridge.confirmUpdate('替换当前解析结果后需要重新建图。继续吗？')) return false;
+    context = { expectedBatchId: paper.parseBatchId, overwriteConfirmed: true };
+  }
+  const input = { paperId, batchId, expectedBatchId: context?.expectedBatchId ?? null, overwriteConfirmed: !!context };
+  await bridge.invoke('parsebatch.publish@1', input);
+  await reloadPublishedPaper(paperId);
+  return true;
+}
+
+async function reloadPublishedPaper(paperId) {
+  const fresh = await refreshPaperRecord(paperId);
+  if (fresh && current?.id === paperId && current.readOnlyHistory) {
+    void refreshLibrary();
+    return;
+  }
+  if (fresh && current?.id === paperId) {
+    await abandonPaper({ keepView: true });
+    await openPaper(fresh);
+  }
+  void refreshLibrary();
+}
+
+function applyHistoryReadOnlyControls() {
+  const readOnly = !!current?.readOnlyHistory;
+  for (const id of ['chat-input', 'btn-chat-send', 'btn-build-map', 'btn-rebuild-map', 'btn-deep-all', 'btn-paste-split', 'paste-area', 'recall-editor', 'btn-recall-generate', 'btn-recall-save', 'btn-recall-image', 'btn-pdf-attach', 'btn-organize-save', 'pdf-selection-ask']) {
+    const control = document.getElementById(id);
+    if (control && readOnly) { control.dataset.historyDisabled = 'true'; control.disabled = true; }
+    else if (control?.dataset.historyDisabled) { delete control.dataset.historyDisabled; control.disabled = false; }
+  }
+  if (readOnly) $$('[data-action]').filter(control => !['trace', 'read-source'].includes(control.dataset.action)).forEach(control => { control.disabled = true; });
+}
+
+async function chooseParser() {
+  if (parserSettingsLoading) return null;
+  parserSettingsLoading = true;
+  try {
+    const settings = (await bridge.invoke('settings.get@1'))?.cloudparse || {};
+    const provider = settings.defaultProvider;
+    const valid = validateParserChoice(provider, settings);
+    if (provider === 'local') {
+      const status = await bridge.componentStatus();
+      if (!status.ready) {
+        toast('请先安装本地解析组件', true);
+        await openSettingsModal('service');
+        openServiceDetail('parser');
+        return null;
+      }
+    }
+    if (!valid.ok) {
+      toast(valid.message, true);
+      await openSettingsModal('service');
+      if (provider === 'baidu') openServiceDetail('cloud');
+      return null;
+    }
+    return provider;
+  } catch (err) {
+    toast(`解析设置读取失败：${errorText(err)}`, true);
+    return null;
+  } finally {
+    parserSettingsLoading = false;
+  }
 }
 
 async function latestCloudJob(paperId) {
@@ -126,21 +155,65 @@ async function latestCloudJob(paperId) {
   return result?.jobs?.[0] || null;
 }
 
-async function startCloudParse(paperId, resubmitConfirmed = false, selectedJob = null) {
+async function startReparse() {
+  const paper = current;
+  if (!paper || historyReadOnly() || reparsingPapers.has(paper.id)) return;
+  if (chatAborter || translateAborter || recallAborter || selectionAborter || chatSaving
+    || isMappingPaper(paper.id) || isDeepDivingPaper(paper.id) || isSynthesizingPaper(paper.id)
+    || ['pdfparse.convert@1', 'pdfassets.prerender@1', 'cloudparse.parse@1', 'cloudparse.map@1', 'cloudassets.prepare@1']
+      .some(kind => hasOpenPreflightTask(paper.id, kind))) {
+    toast('请先停止或等待本篇正在进行的任务');
+    return;
+  }
+  reparsingPapers.add(paper.id);
+  renderMapTab();
+  try {
+    const provider = await chooseParser();
+    if (!provider || current !== paper) return;
+    if (!await bridge.confirmUpdate('重新解析成功后将覆盖当前结果，并需要重新建图。失败或取消会保留当前结果。继续吗？')) return;
+    const context = { expectedBatchId: paper.parseBatchId ?? null, overwriteConfirmed: true };
+    paperParserChoices.set(paper.id, provider);
+    if (provider === 'baidu') {
+      await startCloudParse(paper.id, true, { state: 'new' }, context);
+      return;
+    }
+    if (!await ensureParserReady()) return;
+    const input = { paperId: paper.id, ...context };
+    const { taskId } = await bridge.start('pdfparse.convert@1', input);
+    const meta = { kind: 'pdfparse.convert@1', input, retry: startReparse };
+    registerSessionTask(taskId, meta);
+    const done = await trackTask(bridge, taskId, {});
+    meta.status = done.status;
+    if (done.status !== 'succeeded') {
+      if (done.status === 'failed') toast(done.error?.message || '重新解析失败', true);
+      return;
+    }
+    await ensurePrerender(paper.id, {
+      scope: 'all', doclingJsonPath: done.result?.doclingJsonPath,
+      force: true, batchId: done.result?.batchId, ...context, waitForCompletion: true,
+    });
+  } finally {
+    reparsingPapers.delete(paper.id);
+    if (current?.id === paper.id) renderMapTab();
+  }
+}
+
+async function startCloudParse(paperId, resubmitConfirmed = false, selectedJob = null, context = null) {
   if (hasOpenPreflightTask(paperId, 'cloudparse.parse@1') || hasOpenPreflightTask(paperId, 'cloudparse.map@1')) return false;
   try {
     const job = selectedJob || await latestCloudJob(paperId);
     const mapping = job?.state === 'downloaded';
     const input = mapping ? { paperId, batchId: job.batchId } : cloudTaskInput(paperId, job, resubmitConfirmed);
+    if (context) Object.assign(input, context);
     const kind = mapping ? 'cloudparse.map@1' : 'cloudparse.parse@1';
     const { taskId } = await bridge.start(kind, input);
-    const meta = { kind, input, retry: () => startCloudParse(paperId, false, job) };
+    const meta = { kind, input, retry: () => startCloudParse(paperId, false, job, context) };
     registerSessionTask(taskId, meta);
     const done = await trackTask(bridge, taskId, {});
     meta.status = done.status;
     if (done.status === 'succeeded') {
       toast(done.result?.candidateReady ? '正文与来源候选已保存，正在准备视觉资源' : '云端原始结果已保存');
-      if (done.result?.candidateReady) void startCloudVisual(paperId, done.result.batchId);
+      if (done.result?.candidateReady) await startCloudVisual(paperId, done.result.batchId, context);
     }
     else if (done.status === 'cancelled') toast('客户端已停止；已受理的远端任务可能继续执行或计费');
     else toast(`云端解析未完成：${done.error?.message || '请查看任务中心'}`, true);
@@ -148,14 +221,14 @@ async function startCloudParse(paperId, resubmitConfirmed = false, selectedJob =
   } catch (err) { toast(`云端解析未启动：${errorText(err)}`, true); return false; }
 }
 
-async function startCloudVisual(paperId, batchId) {
+async function startCloudVisual(paperId, batchId, context = null) {
   if (hasOpenPreflightTask(paperId, 'cloudassets.prepare@1')) return false;
   const controller = new AbortController();
   let taskId;
   try {
     const input = { paperId, batchId };
     ({ taskId } = await bridge.start('cloudassets.prepare@1', input));
-    const meta = { kind: 'cloudassets.prepare@1', input, retry: () => startCloudVisual(paperId, batchId) };
+    const meta = { kind: 'cloudassets.prepare@1', input, retry: () => startCloudVisual(paperId, batchId, context) };
     registerSessionTask(taskId, meta);
     const tracked = trackTask(bridge, taskId, { onEvent: event => {
       if (['cancel_requested', 'cancelled', 'failed'].includes(event.status)) controller.abort();
@@ -172,7 +245,10 @@ async function startCloudVisual(paperId, batchId) {
     const done = await tracked;
     meta.status = done.status;
     if (renderError) toast(`视觉准备失败：${errorText(renderError)}`, true);
-    else if (done.status === 'succeeded') toast('视觉候选已保存；尚未发布替换');
+    else if (done.status === 'succeeded') {
+      const published = await publishParseCandidate(paperId, done.result?.batchId, context);
+      toast(published ? '解析已发布' : '视觉候选已保存，当前解析保持不变');
+    }
     else if (done.status === 'failed') toast(`视觉准备失败：${done.error?.message || '请查看任务中心'}`, true);
     return done.status === 'succeeded';
   } catch (err) {
@@ -378,6 +454,7 @@ function renderReaderChrome({ restore = false } = {}) {
     updatePaneFabs();
   }
   if (!restore && reader.appView === 'reader' && current) schedulePositionSave();
+  if (reader.appView === 'reader') applyHistoryReadOnlyControls();
 }
 
 function commitReader(next, options) {
@@ -659,15 +736,15 @@ async function refreshLibrary() {
 // tab 切换、精读节点击、PDF 翻页、离开论文时保存；500ms 防抖；写入失败静默。
 
 function positionSnapshot(paper) {
-  return view.snapshotPosition({
+  return { ...view.snapshotPosition({
     ...reader,
     sourceSectionId: sourceTab || reader.sourceSectionId,
     pdfPage: pdfDocument ? pdfPage : reader.pdfPage,
-  }, paper.id);
+  }, paper.id), contentVersion: paper.parseBatchId ?? null };
 }
 
 function schedulePositionSave() {
-  if (!current) return;
+  if (!current || current.readOnlyHistory) return;
   const paper = current;
   clearTimeout(positionTimer);
   positionTimer = setTimeout(() => {
@@ -681,7 +758,7 @@ function schedulePositionSave() {
 async function flushPositionSave(paper) {
   clearTimeout(positionTimer);
   positionTimer = null;
-  if (!paper) return;
+  if (!paper || paper.readOnlyHistory) return;
   try { await writePosition(positionSnapshot(paper)); } catch { /* 失败静默 */ }
 }
 
@@ -731,9 +808,9 @@ async function openPaper(p) {
   renderSource();
   renderChat();
   let restored = null;
-  try { restored = await store.positions.get(p.id); } catch { restored = null; }
+  try { restored = p.readOnlyHistory ? null : await store.positions.get(p.id); } catch { restored = null; }
   if (current !== p) return;
-  if (restored && current === p) {
+  if (restored && current === p && (!restored.contentVersion || restored.contentVersion === p.parseBatchId)) {
     // 位置校验走内容域（readingParts）是有意的：旧位置可能停在进度域之外的摘要节，
     // 别改成 progressParts（会把这类位置判为失效）。
     const validPartIds = papers.readingParts(p).map(def => def.id);
@@ -751,6 +828,7 @@ async function openPaper(p) {
 async function abandonPaper({ keepView = false } = {}) {
   const paper = current;
   if (paper) await flushPositionSave(paper);
+  if (current !== paper) return false;
   mappedResource.invalidate();
   destroyPdfViewer();
   const settling = paper ? generation.cancelForPaper(paper) : null;
@@ -1266,10 +1344,12 @@ function renderMapTab() {
   const prerenderReady = prerenderAssetsReady(currentMapped, currentAttachmentIds);
   deepBtn.disabled = !reader.hasMap || partIds.length === 0 || isDeepDivingPaper(current.id) || !prerenderReady;
   rebuildBtn.disabled = isMappingPaper(current.id);
+  $('#btn-reparse').disabled = reparsingPapers.has(current.id) || isMappingPaper(current.id) || isDeepDivingPaper(current.id) || isSynthesizingPaper(current.id);
   if (surface === 'map') renderMapPage();
   if (surface === 'section') renderSectionPage();
   updateReaderMeta();
   updatePaneFabs();
+  applyHistoryReadOnlyControls();
 }
 
 function drillSection(sectionId) {
@@ -1291,6 +1371,7 @@ function readSectionSource(partId) {
 }
 
 async function toggleSectionMark() {
+  if (historyReadOnly()) return;
   if (!current || !reader.sectionId) return;
   const marked = current.readMarks?.[reader.sectionId] == null;
   await papers.setReadMark(current, reader.sectionId, marked);
@@ -1314,9 +1395,11 @@ async function refreshPaperRecord(paperId) {
     if (!fresh) return null;
     const idx = library.findIndex(item => item.id === fresh.id);
     if (idx >= 0) library[idx] = fresh;
-    if (current?.id === fresh.id) {
+    if (current?.id === fresh.id && !current.readOnlyHistory) {
       current = fresh;
       reader = view.setHasMap(reader, hasMapProduct(fresh.products));
+    }
+    if (current?.id === fresh.id) {
     }
     return fresh;
   } catch {
@@ -1341,6 +1424,12 @@ async function cancelOpenProtocolTask(kind) {
 
 // 论文记录只挂 pdfAttachment 句柄，附件全集要查 files.listAttachments@1（store.js attachPdfInfo 同缝）。
 async function paperAttachmentIds(paperId) {
+  try {
+    const snapshot = current?.id === paperId ? currentMapped?.parseBatch : null;
+    if (snapshot) return new Set(Object.keys(snapshot.manifest.attachments || {}));
+    const pinned = await bridge.invoke('parsebatch.pin@1', { paperId });
+    return new Set(Object.keys(pinned.snapshot.manifest.attachments || {}));
+  } catch { /* Unparsed imports still use their fixed PDF attachment. */ }
   try {
     const result = await bridge.invoke('files.listAttachments@1', { paperId });
     return new Set((result?.attachments || []).map(attachment => attachment.id));
@@ -1370,7 +1459,10 @@ function hasOpenPreflightTask(paperId, kind, scope) {
 /** 无块模型且有 PDF 时跑 convert 并等待；已有块模型直接返回。 */
 async function ensureBlockModel(paperId) {
   const ids = await paperAttachmentIds(paperId);
-  if (ids.has(BLOCKMODEL_ATTACHMENT_ID)) return { ok: true, doclingJsonPath: null };
+  if (ids.has(BLOCKMODEL_ATTACHMENT_ID)) {
+    const mapped = await readBlockModelJson(paperId);
+    return { ok: true, doclingJsonPath: null, batchId: mapped?.parseBatch?.manifest?.batchId };
+  }
   if (!ids.has('pdf')) return { ok: false };
   const cloudJob = await latestCloudJob(paperId);
   if ((cloudJob && paperParserChoices.get(paperId) !== 'local') || paperParserChoices.get(paperId) === 'baidu') {
@@ -1394,7 +1486,7 @@ async function ensureBlockModel(paperId) {
       input: convertInput,
       retry: async () => {
         const result = await ensureBlockModel(paperId);
-        if (result.ok) void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: result.doclingJsonPath });
+        if (result.ok) void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: result.doclingJsonPath, batchId: result.batchId, expectedBatchId: result.batchId });
         return result.ok;
       },
     });
@@ -1408,7 +1500,8 @@ async function ensureBlockModel(paperId) {
     const doclingJsonPath = convert.result?.doclingJsonPath || null;
     if (!doclingJsonPath) toast('PDF 解析结果缺少 doclingJsonPath', true);
     await refreshAttachmentIds(paperId);
-    return { ok: true, doclingJsonPath };
+    await reloadPublishedPaper(paperId);
+    return { ok: true, doclingJsonPath, batchId: convert.result?.batchId };
   } catch (err) {
     toast(`建图前置准备失败：${errorText(err)}`, true);
     return { ok: false };
@@ -1416,9 +1509,9 @@ async function ensureBlockModel(paperId) {
 }
 
 /** 按 scope 启动 prerender，不等待终态。force 用于失败重试（覆盖半成品）。 */
-async function ensurePrerender(paperId, { scope = 'all', doclingJsonPath = null, force = false } = {}) {
+async function ensurePrerender(paperId, { scope = 'all', doclingJsonPath = null, force = false, batchId = null, expectedBatchId = null, overwriteConfirmed = false, waitForCompletion = false } = {}) {
   if (!paperId) return false;
-  if (scope !== 'pages' && !doclingJsonPath) return false;
+  if (scope !== 'pages' && !doclingJsonPath && !batchId) return false;
   if (hasOpenPreflightTask(paperId, 'pdfassets.prerender@1', scope)) return false;
   if (!await ensureParserReady()) return false;
   if (!force) {
@@ -1431,16 +1524,17 @@ async function ensurePrerender(paperId, { scope = 'all', doclingJsonPath = null,
         : prerenderAssetsReady(mapped, ids);
     if (ready) return true;
   }
-  const prerenderInput = { paperId, scope };
+  const prerenderInput = { paperId, scope, ...(batchId ? { batchId, expectedBatchId, overwriteConfirmed } : {}) };
   if (doclingJsonPath) prerenderInput.doclingJsonPath = doclingJsonPath;
   try {
     const { taskId: prerenderId } = await bridge.start('pdfassets.prerender@1', prerenderInput);
     registerSessionTask(prerenderId, {
       kind: 'pdfassets.prerender@1',
       input: prerenderInput,
-      retry: () => ensurePrerender(paperId, { scope, doclingJsonPath, force: true }),
+      retry: () => ensurePrerender(paperId, { scope, doclingJsonPath, force: true, batchId, expectedBatchId, overwriteConfirmed }),
     });
-    void trackPrerender(paperId, prerenderId, scope);
+    const completion = trackPrerender(paperId, prerenderId, scope);
+    if (waitForCompletion) await completion;
     return true;
   } catch (err) {
     toast(`页图预渲染启动失败：${errorText(err)}`, true);
@@ -1450,19 +1544,7 @@ async function ensurePrerender(paperId, { scope = 'all', doclingJsonPath = null,
 
 async function readBlockModelJson(paperId) {
   try {
-    const meta = await bridge.invoke('files.getAttachment@1', {
-      paperId,
-      attachmentId: BLOCKMODEL_ATTACHMENT_ID,
-    });
-    const attachment = meta?.attachment;
-    if (!attachment) return null;
-    const range = await bridge.invoke('files.readRange@1', {
-      paperId,
-      attachmentId: BLOCKMODEL_ATTACHMENT_ID,
-      offset: 0,
-      length: attachment.size,
-    });
-    return JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
+    return await loadBatchModel(bridge, paperId, { recoverSource: false });
   } catch {
     return null;
   }
@@ -1475,6 +1557,7 @@ async function trackPrerender(paperId, prerenderId, scope = 'all') {
     const prerender = await trackTask(bridge, prerenderId, {});
     if (meta) meta.status = prerender.status;
     if (prerender.status === 'failed') toast(`${label}失败：${prerender.error?.message || '未知错误'}`, true);
+    if (prerender.status === 'succeeded' && meta?.input?.batchId) await reloadPublishedPaper(paperId);
     await refreshAttachmentIds(paperId);
     if (current?.id === paperId && reader.appView === 'reader') renderMapTab();
   } catch (err) {
@@ -1490,10 +1573,9 @@ async function queueImportPreflight(paperId, provider = paperParserChoices.get(p
   paperParserChoices.set(paperId, provider);
   if (provider === 'baidu') return startCloudParse(paperId);
   if (!await ensureParserReady()) return false;
-  void ensurePrerender(paperId, { scope: 'pages' });
   const ready = await ensureBlockModel(paperId);
   if (!ready.ok) return false;
-  void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: ready.doclingJsonPath });
+  void ensurePrerender(paperId, { scope: 'all', doclingJsonPath: ready.doclingJsonPath, batchId: ready.batchId, expectedBatchId: ready.batchId });
   return true;
 }
 
@@ -1502,6 +1584,8 @@ async function queueImportPreflight(paperId, provider = paperParserChoices.get(p
  * 前置兜底未启动（守卫拦截、解析未完成）返回 null（#96：任务中心重试据此决定是否弹完成提示）。
  */
 async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) {
+  if (current?.id === paperId && historyReadOnly()) return null;
+  let pendingVisual = null;
   if (!paperId || isMappingPaper(paperId) || !ensureSettings()) return null;
   // 前置兜底：缺块模型且有 PDF 时先补产（#76：只等 convert，预渲染与建图并行）。
   const preflightIds = await paperAttachmentIds(paperId);
@@ -1513,8 +1597,7 @@ async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) 
     toast('正在准备建图：先解析 PDF…');
     const ready = await ensureBlockModel(paperId);
     if (!ready.ok) return null;
-    void ensurePrerender(paperId, { scope: 'pages' });
-    void ensurePrerender(paperId, { scope: 'crops', doclingJsonPath: ready.doclingJsonPath });
+    pendingVisual = { scope: 'all', doclingJsonPath: ready.doclingJsonPath, batchId: ready.batchId, expectedBatchId: ready.batchId };
   }
   // #96：input 与 retry 闭包由 present.js 统一构造，retry 沿用原 input（含覆盖确认），
   // 「继续建图」不会退化为普通建图被 already_exists 拒绝。
@@ -1569,6 +1652,7 @@ async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) 
     toast(errorText(err), true);
     return meta?.status ?? 'failed';
   } finally {
+    if (pendingVisual) void ensurePrerender(paperId, pendingVisual);
     if (current?.id === paperId) {
       reader = view.setMapping(reader, isMappingPaper(paperId));
       if (reader.appView === 'reader') renderMapTab();
@@ -1578,6 +1662,7 @@ async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) 
 
 /** 返回终态 status；前置守卫未启动返回 null（#96：任务中心重试据此决定是否弹完成提示）。 */
 async function startSynthesize(overwriteConfirmed) {
+  if (historyReadOnly()) return null;
   if (!current || isSynthesizingPaper(current.id) || !ensureSettings()) return null;
   const paperId = current.id;
   const input = { paperId, overwriteConfirmed: !!overwriteConfirmed };
@@ -1654,6 +1739,7 @@ async function startSectionDive(overwrite) {
 
 /** 返回终态 status；前置守卫未启动返回 null（#96：同 startBuildMap 的重试契约）。 */
 async function startDeepDive(paperId, partIds) {
+  if (current?.id === paperId && historyReadOnly()) return;
   if (!paperId || !partIds?.length) return null;
   const input = { paperId, partIds };
   const batch = partIds.length > 1;
@@ -1780,6 +1866,7 @@ function renderRecallImages() {
       if (!confirm('从回想卡片中移除这张图片？')) return;
       const url = recallBlobUrls.get(image.id);
       if (url) { URL.revokeObjectURL(url); recallBlobUrls.delete(image.id); }
+      if (historyReadOnly()) return;
       await papers.removeRecallImage(current, image.id);
       renderRecallImages();
     };
@@ -1822,13 +1909,14 @@ function renderRecall() {
   $('#recall-status').textContent = card.updatedAt ? `已保存 · ${fmtDate(card.updatedAt)}` : '';
   const generate = $('#btn-recall-generate');
   generate.textContent = card.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
-  generate.disabled = !mapped;
+  generate.disabled = !mapped || !!current.readOnlyHistory;
   generate.title = mapped ? '' : '未建图：AI 草稿须先完成建图。';
   updateRecallPreview();
   renderRecallImages();
 }
 
 async function saveRecallCard({ silent = false } = {}) {
+  if (historyReadOnly()) return;
   await papers.saveRecallCard(current, $('#recall-editor').value.trim(), recallCard().images || []);
   $('#recall-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   $('#btn-recall-generate').textContent = current.recallCard.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
@@ -1836,6 +1924,7 @@ async function saveRecallCard({ silent = false } = {}) {
 }
 
 async function generateRecallDraft() {
+  if (historyReadOnly()) return;
   if (!hasMapProduct(current?.products)) {
     toast('未建图：AI 草稿须先完成建图。', true);
     return;
@@ -1910,6 +1999,7 @@ async function prepareRecallImage(file) {
 }
 
 async function addRecallImages(files) {
+  if (historyReadOnly()) return;
   const imageFiles = [...files].filter(file => file.type?.startsWith('image/'));
   if (!imageFiles.length) return;
   const existing = recallCard().images || [];
@@ -1944,14 +2034,19 @@ function qaReady() {
 }
 
 async function refreshMapped(paper) {
-  if (!paper || !hasMapProduct(paper.products)) {
+  if (!paper) {
     mappedResource.invalidate();
     currentMapped = null;
     return;
   }
   await mappedResource.load(
     async () => {
-      try { return await loadBlockModel(paper); } catch { return null; }
+      try {
+        const pinned = await bridge.invoke('parsebatch.pin@1', { paperId: paper.id, ...(paper.parseBatchId ? { batchId: paper.parseBatchId } : {}) });
+        paper.parseBatchSnapshot = pinned.snapshot;
+        const mapped = await loadBatchModel(bridge, paper.id, { snapshot: pinned.snapshot });
+        return mapped;
+      } catch { return null; }
     },
     mapped => { if (current === paper) currentMapped = mapped; },
   );
@@ -2236,6 +2331,7 @@ function splitTranslationText(text, maxChars) {
 }
 
 async function translateCurrentText() {
+  if (historyReadOnly()) return;
   const paper = current;
   const source = currentSectionSourceText().trim();
   if (!source) return toast('当前节没有可翻译的原文', true);
@@ -2500,8 +2596,8 @@ function renderChatComposer() {
   const send = $('#btn-chat-send');
   gate.hidden = ready;
   gate.textContent = ready ? '' : QA_GATE_MESSAGE;
-  input.disabled = !ready;
-  send.disabled = !ready;
+  input.disabled = !ready || !!current?.readOnlyHistory;
+  send.disabled = !ready || !!current?.readOnlyHistory;
   input.placeholder = ready
     ? '输入 @ 作绑定提问，或不绑定即全文提问；Enter 发送'
     : QA_GATE_MESSAGE;
@@ -2579,6 +2675,7 @@ function chooseMention(section) {
 
 let chatSaving = false;
 async function sendChat() {
+  if (historyReadOnly()) return;
   if (chatSaving) return;
   hideMentionMenu();
   const input = $('#chat-input');
@@ -2911,7 +3008,7 @@ async function loadPdfViewer() {
     const installed = await pdfResource.load(
       async () => {
         // 附件完整性校验失败时仍尝试渲染。
-        if (paper.pdfAttachment) {
+        if (paper.pdfAttachment && !paper.parseBatchSnapshot) {
           try {
             await bridge.invoke('files.verifyAttachment@1', { paperId: paper.id, attachmentId: 'pdf' });
           } catch (err) {
@@ -2941,7 +3038,7 @@ async function loadPdfViewer() {
     $('#pdf-page-input').max = pdfDocument.numPages;
     $('#pdf-page-count').textContent = `/ ${pdfDocument.numPages}`;
     const activePaper = current;
-    const changed = await papers.setNumPages(activePaper, pdfDocument.numPages);
+    const changed = activePaper.readOnlyHistory ? false : await papers.setNumPages(activePaper, pdfDocument.numPages);
     if (changed && pdfDocument === document && current === activePaper) updateReaderMeta();
     if (pdfDocument !== document || current?.id !== paper.id) return;
     await new Promise(resolve => requestAnimationFrame(resolve));
@@ -3029,6 +3126,7 @@ async function refreshPdfAttachment(paper) {
 }
 
 async function attachPdf(file) {
+  if (historyReadOnly()) return;
   if (!current || !file) return;
   const paper = current;
   if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
@@ -3293,6 +3391,7 @@ function openOrganizeModal() {
 }
 
 async function saveOrganizeMetadata() {
+  if (historyReadOnly()) return;
   await papers.saveOrganize(current, organizeDraft);
   library = library.map(paper => paper.id === current.id ? current : paper);
   $('#modal-organize').hidden = true;
@@ -3409,6 +3508,7 @@ function renderComponentState() {
   $('#btn-component-local').hidden = busy;
   $('#btn-component-cancel').hidden = !busy;
   $('#btn-component-remove').hidden = !componentState.ready || busy;
+  refreshParserAvailability();
 }
 
 async function refreshComponentStatus() {
@@ -3544,7 +3644,17 @@ function refreshServiceSummary() {
 function showParserSelection(provider, disabled = false) {
   $$('[data-parser-provider]').forEach(button => {
     button.setAttribute('aria-pressed', String(button.dataset.parserProvider === provider));
-    button.disabled = disabled;
+    button.dataset.selectionBusy = String(disabled);
+  });
+  refreshParserAvailability();
+}
+
+function refreshParserAvailability() {
+  $$('[data-parser-provider]').forEach(button => {
+    const available = button.dataset.parserProvider === 'local'
+      ? componentState.ready && !['downloading', 'verifying', 'installing', 'migrating'].includes(componentState.phase)
+      : validateParserChoice('baidu', savedCloudSettings).ok;
+    button.disabled = button.dataset.selectionBusy === 'true' || !available;
   });
 }
 
@@ -3577,6 +3687,7 @@ async function openSettingsModal(tab = 'about') {
   $('#network-settings-status').textContent = '';
   try {
     const all = await bridge.invoke('settings.get@1');
+    savedCloudSettings = all?.cloudparse || {};
     showParserSelection(all?.cloudparse?.defaultProvider);
     $('#set-cloud-token').value = all?.cloudparse?.accessToken || '';
     $('#set-cloud-consent').checked = all?.cloudparse?.uploadConfirmed === true;
@@ -3694,6 +3805,8 @@ async function saveCloudSettings() {
     accessToken: $('#set-cloud-token').value.trim(),
     uploadConfirmed: $('#set-cloud-consent').checked,
   } });
+  savedCloudSettings = (await bridge.invoke('settings.get@1'))?.cloudparse || {};
+  refreshParserAvailability();
   $('#service-cloud-status').textContent = $('#set-cloud-token').value.trim() && $('#set-cloud-consent').checked ? '已配置' : '待配置';
   closeServiceDetail();
   toast('云端解析设置已保存');
@@ -3874,10 +3987,16 @@ let tasksPollTimer = null;
 async function pollTasks() {
   try {
     const result = await bridge.invoke('tasks.list@1', {});
-    cloudJobs = (await bridge.invoke('cloudparse.status@1', {}))?.jobs || [];
     const tasks = (result?.tasks || [])
       .slice()
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    const jobs = (await bridge.invoke('cloudparse.status@1', {}))?.jobs || [];
+    cloudJobs = jobs.filter(job => {
+      const state = cloudJobView(job);
+      const running = tasks.some(task => task.input?.paperId === job.paperId
+        && !isTerminalStatus(task.status) && String(task.kind).startsWith('cloud'));
+      return !running && job.state !== 'downloaded' && (state.canResume || state.needsResubmit);
+    });
     if (currentView === 'tasks') renderTaskList(tasks);
   } catch (err) {
     console.warn('任务列表轮询失败：', err);
@@ -3927,20 +4046,20 @@ function renderTaskList(tasks) {
       button.onclick = async () => { button.disabled = true; try { await run(); } finally { void pollTasks(); } };
       row.appendChild(button);
     };
-    if (state.canResume) action('恢复查询 / 取回', () => startCloudParse(job.paperId, false, job));
-    if (state.canMap) action(job.candidateStored ? '校验正文与来源' : '转换正文与来源', () => startCloudParse(job.paperId, false, job));
-    if (job.candidateStored) action(job.visualCandidateStored ? '校验视觉资源' : '准备视觉资源', () => startCloudVisual(job.paperId, job.batchId));
+    const resume = async (resubmitConfirmed = false) => {
+      const provider = await chooseParser();
+      if (!provider) return;
+      if (provider !== 'baidu') { toast('当前设置使用本地解析，请在设置页切换后再恢复云端任务'); return; }
+      await startCloudParse(job.paperId, resubmitConfirmed, job);
+    };
+    if (state.canResume) action('恢复查询 / 取回', () => resume());
     if (state.needsResubmit) action('重新提交…', async () => {
       const warning = job.state === 'remote-failed'
         ? '上次远端解析已失败。重新上传会创建新任务，可能再次计费，是否继续？'
         : '上次提交是否受理未知。重新上传可能重复执行并计费，是否继续？';
       if (await bridge.confirmUpdate(warning)) {
-        await startCloudParse(job.paperId, true, job);
+        await resume(true);
       }
-    });
-    action('改用本地', async () => {
-      paperParserChoices.set(job.paperId, 'local');
-      await queueImportPreflight(job.paperId, 'local');
     });
     $('#task-list').appendChild(row);
   }
@@ -4282,14 +4401,6 @@ function bindEvents() {
   $('#open-llm-settings').onclick = () => openServiceDetail('llm');
   $('#open-parser-settings').onclick = () => openServiceDetail('parser');
   $('#open-cloud-settings').onclick = () => openServiceDetail('cloud');
-  $('#parser-choice-cancel').onclick = () => finishParserChoice();
-  $('#modal-parser-choice').addEventListener('click', event => {
-    if (event.target === $('#modal-parser-choice')) finishParserChoice();
-  });
-  $('#parser-choice-settings').onclick = async () => {
-    await openSettingsModal('service');
-    openServiceDetail('cloud');
-  };
   $('#set-cloud-token').oninput = () => { $('#set-cloud-consent').checked = false; };
   $('#close-service-detail').onclick = () => closeServiceDetail();
   $('#settings-detail-layer').onclick = event => {
@@ -4486,6 +4597,7 @@ function bindEvents() {
   $('#btn-back-map').onclick = backToMap;
   $('#btn-deep-all').onclick = () => startDeepAll().catch(err => toast(errorText(err), true));
   $('#btn-build-map').onclick = () => startBuildMap().catch(err => toast(errorText(err), true));
+  $('#btn-reparse').onclick = () => startReparse().catch(err => toast(errorText(err), true));
   $('#btn-rebuild-map').onclick = () => {
     if (!current || !confirm('重新建图会重新请求全部摘要和正文节，并覆盖当前地图。继续吗？')) return;
     void startBuildMap(current.id, true).catch(err => toast(errorText(err), true));
@@ -4546,6 +4658,7 @@ function bindEvents() {
   $('#btn-export').onclick = exportNotes;
 
   $('#btn-paste-split').onclick = async () => {
+    if (historyReadOnly()) return;
     const text = $('#paste-area').value.trim();
     if (!text) return toast('请先粘贴全文', true);
     const parsed = parser.parsePlainText(text);
@@ -4642,13 +4755,6 @@ function bindEvents() {
     mask.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { mask.hidden = true; });
   }
   document.addEventListener('keydown', e => {
-    if (e.key === 'Tab' && !$('#modal-parser-choice').hidden && $('#modal-settings').hidden) {
-      const controls = [...$('#modal-parser-choice').querySelectorAll('button, select')].filter(el => !el.disabled);
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    }
     if (e.key === 'Tab' && !$('#settings-detail-layer').hidden) {
       const focusable = [...$('#settings-detail-layer').querySelectorAll('button, input, select, textarea, summary')]
         .filter(element => !element.disabled && element.getClientRects().length);
@@ -4667,7 +4773,6 @@ function bindEvents() {
         closeServiceDetail();
         return;
       }
-      if (!$('#modal-parser-choice').hidden && $('#modal-settings').hidden) finishParserChoice();
       for (const id of ['modal-arxiv', 'modal-settings', 'modal-organize', 'modal-migrate', 'modal-close']) {
         $(`#${id}`).hidden = true;
       }

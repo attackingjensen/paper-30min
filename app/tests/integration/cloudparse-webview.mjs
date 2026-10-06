@@ -103,12 +103,14 @@ try {
   });
   await check('parser settings save through native bridge and credential change clears consent', async () => {
     await page.locator('#close-service-detail').click();
-    await page.locator('[data-parser-provider="local"]').click();
-    await page.waitForFunction(() => !document.querySelector('[data-parser-provider="local"]').disabled);
-    assert.equal((await bridge('settings.get@1')).cloudparse.defaultProvider, 'local');
+    assert.equal(await page.locator('[data-parser-provider="local"]').isDisabled(), true);
+    assert.equal(await page.locator('[data-parser-provider="baidu"]').isDisabled(), true);
+    const previousProvider = (await bridge('settings.get@1')).cloudparse.defaultProvider;
     await page.locator('#open-cloud-settings').click();
-    assert.equal((await bridge('settings.get@1')).cloudparse.defaultProvider, 'local', 'arrow opens settings without selecting cloud');
-    await page.locator('#close-service-detail').click();
+    assert.equal((await bridge('settings.get@1')).cloudparse.defaultProvider, previousProvider, 'arrow opens settings without selecting cloud');
+    await page.locator('#set-cloud-token').fill('fixture-cloud-token');
+    await page.locator('#set-cloud-consent').check();
+    await page.locator('#btn-save-cloud-settings').click();
     await page.locator('[data-parser-provider="baidu"]').click();
     await page.waitForFunction(() => !document.querySelector('[data-parser-provider="baidu"]').disabled);
     assert.equal(await page.locator('[data-parser-provider="baidu"]').getAttribute('aria-pressed'), 'true');
@@ -164,7 +166,7 @@ try {
     assert.equal(await page.locator('[data-parser-provider="local"]').getAttribute('aria-pressed'), 'false');
     await page.locator('#modal-settings [data-close]').click();
   });
-  await check('PDF, sample and arXiv ask before parsing and cancel preserves library', async () => {
+  await check('PDF, sample and arXiv use settings and missing consent preserves library', async () => {
     const existing = (await bridge('library.listPapers@1')).papers;
     const triggers = [
       () => page.locator('#file-input').setInputFiles(path.join(app, 'ui/samples/sample_paper.pdf')),
@@ -177,12 +179,10 @@ try {
     ];
     for (const trigger of triggers) {
       await trigger();
-      await page.locator('#modal-parser-choice').waitFor({ state: 'visible' });
-      assert.equal(await page.locator('#parser-choice-provider').inputValue(), 'baidu');
-      await page.locator('#parser-choice-confirm').click();
-      await page.waitForFunction(() => document.querySelector('#parser-choice-error').textContent.includes('确认上传'));
-      await page.locator('#parser-choice-provider').selectOption('local');
-      await page.locator('#parser-choice-cancel').click();
+      await page.locator('#settings-detail-cloud').waitFor({ state: 'visible' });
+      assert.equal(await page.locator('#modal-parser-choice').count(), 0);
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape');
       assert.deepEqual((await bridge('library.listPapers@1')).papers, existing);
     }
     await page.keyboard.press('Escape');
@@ -217,9 +217,10 @@ try {
     assert.equal(status.jobs[0].jobId, 'fixture-job');
     assert.equal(status.jobs[0].resultReady, false);
     assert.ok(!JSON.stringify(status).includes('fixture-token'));
-    // Consent is false: the real native preparation rejects before any network request.
+    // Missing consent routes to settings before any task or network request.
     await page.getByRole('button', { name: '恢复查询 / 取回', exact: true }).click();
-    await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some(node => node.textContent.includes('确认论文上传')));
+    await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some(node => node.textContent.includes('确认上传与费用')));
+    await page.locator('#modal-settings [data-close]').click();
     assert.deepEqual((await bridge('tasks.list@1')).tasks, []);
     await page.screenshot({ path: path.join(output, 'cloudparse-recovery.png') });
   });
@@ -273,7 +274,6 @@ try {
     await page.locator('#btn-arxiv').click();
     await page.locator('#arxiv-input').fill('1706.03762');
     await page.locator('#btn-arxiv-import').click();
-    await page.locator('#parser-choice-confirm').click();
     await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some(node => node.textContent.includes('PDF 下载未完成')));
     const paper = (await bridge('library.listPapers@1')).papers.find(paper => paper.arxivId === '1706.03762');
     assert.ok(paper);
@@ -307,34 +307,26 @@ try {
     assert.equal(await page.locator('#reader-title').textContent(), 'Mapped fixture');
     assert.equal(await page.locator('#chat-input').isEnabled(), true);
   });
-  await check('cancelled parser confirmation cannot confirm the next import dialog', async () => {
+  await check('settings read failure stops import and allows a later retry', async () => {
     await page.locator('#nav-library').click();
     const before = (await bridge('library.listPapers@1')).papers.length;
-    for (const reject of [false, true]) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await page.evaluate(() => {
+        document.querySelectorAll('.toast').forEach(node => node.remove());
+        Object.assign(window.cloudFixture, { delaySettings: true, settingsWaiting: false, settingsReturned: false, rejectSettings: true });
+      });
       await page.locator('#btn-sample').click();
-      await page.locator('#modal-parser-choice').waitFor({ state: 'visible' });
-      await page.evaluate(reject => {
-        Object.assign(window.cloudFixture, { delaySettings: true, settingsWaiting: false, settingsReturned: false, rejectSettings: reject });
-      }, reject);
-      await page.locator('#parser-choice-confirm').click();
       await page.waitForFunction(() => window.cloudFixture.settingsWaiting === true);
-      assert.equal(await page.locator('#parser-choice-confirm').isDisabled(), true);
-      await page.locator('#parser-choice-cancel').click();
       await page.evaluate(() => { window.cloudFixture.delaySettings = false; });
-      await page.locator('#btn-sample').click();
-      await page.locator('#modal-parser-choice').waitFor({ state: 'visible' });
       await page.evaluate(() => window.cloudFixture.releaseSettings());
       await page.waitForFunction(() => window.cloudFixture.settingsReturned === true);
-      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      assert.equal(await page.locator('#modal-parser-choice').isVisible(), true);
-      assert.equal(await page.locator('#parser-choice-confirm').isEnabled(), true);
-      assert.equal(await page.locator('#parser-choice-error').textContent(), '');
+      await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some(node => node.textContent.includes('解析设置读取失败')));
       assert.equal((await bridge('library.listPapers@1')).papers.length, before);
-      await page.locator('#parser-choice-cancel').click();
     }
   });
-  await check('concurrent import entry while initial settings load creates only one selection session', async () => {
+  await check('concurrent import entry while settings load starts only one import', async () => {
     const before = await page.evaluate(() => window.cloudFixture.settingsCalls || 0);
+    const startsBefore = await page.evaluate(() => window.cloudFixture.starts.length);
     await page.evaluate(() => {
       Object.assign(window.cloudFixture, { delaySettings: true, rejectSettings: false, settingsWaiting: false });
     });
@@ -347,8 +339,8 @@ try {
       window.cloudFixture.delaySettings = false;
       window.cloudFixture.releaseSettings();
     });
-    await page.locator('#modal-parser-choice').waitFor({ state: 'visible' });
-    await page.locator('#parser-choice-cancel').click();
+    await page.waitForFunction(count => window.cloudFixture.starts.length === count + 1, startsBefore);
+    assert.equal(await page.locator('#modal-parser-choice').count(), 0);
   });
   await check('remote-failed task needs paid resubmit confirmation and cancel sends no task', async () => {
     const dir = path.join(library.dataRoot, 'operations/cloudparse/recovery-paper/cloud-fixture');

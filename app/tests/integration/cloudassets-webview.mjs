@@ -11,10 +11,14 @@ import { chromium } from 'playwright';
 
 assert.equal(process.platform, 'win32', 'Windows WebView2 required');
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const identifier = `com.paper30min.cloudassets-webview-${Date.now()}`;
-const output = path.resolve(app, '../tmp', identifier);
+const readerReportPath = process.env.PAPER30MIN_U6_READER_REPORT;
+const readerReport = readerReportPath ? JSON.parse(await readFile(readerReportPath, 'utf8')) : null;
+if (readerReport) assert.equal(readerReport.result, 'passed');
+const identifier = readerReport ? path.basename(path.dirname(readerReportPath)) : `com.paper30min.cloudassets-webview-${Date.now()}`;
+if (readerReport) assert.match(identifier, /^com\.paper30min\.cloudassets-webview-\d+$/);
+const output = path.resolve(app, '../tmp', readerReport ? `${identifier}-reader-${Date.now()}` : identifier);
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], sources: [], papers: [] };
+const report = readerReport ? { ...readerReport, checks: [], errors: [], reusedReport: readerReportPath } : { checks: [], errors: [], sources: [], papers: [] };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const server = http.createServer(async (req, res) => {
   try {
@@ -51,13 +55,14 @@ async function launch() {
   child = spawn(executable, [], { cwd: output, env: { ...process.env,
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1`,
   }, stdio: 'ignore', windowsHide: true });
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + 90000;
+  let connectionError;
   while (!browser && Date.now() < deadline) {
     assert.equal(child.exitCode, null);
     try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`); }
-    catch { await new Promise(resolve => setTimeout(resolve, 200)); }
+    catch (error) { connectionError = error.message; await new Promise(resolve => setTimeout(resolve, 200)); }
   }
-  assert.ok(browser, 'native host must start');
+  assert.ok(browser, `native host must start: ${connectionError}`);
   page = browser.contexts()[0].pages()[0]; page.setDefaultTimeout(30000);
   page.on('pageerror', error => report.errors.push(error.message));
   await page.waitForFunction(() => window.__TAURI__?.core && window.pdfjsLib);
@@ -66,15 +71,28 @@ async function launch() {
 }
 async function stop() {
   if (browser) { await browser.close(); browser = null; }
-  if (child && child.exitCode === null) { const stopped = once(child, 'exit'); child.kill(); await stopped; }
+  if (child && child.exitCode === null) {
+    const stopped = once(child, 'exit');
+    const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    await once(killer, 'exit'); await stopped;
+  }
 }
 async function native(command, args = {}) {
   return page.evaluate(({ command, args }) => window.__TAURI__.core.invoke(command, args), { command, args });
 }
 const bridge = (command, input = {}) => page.evaluate(async ({ command, input }) => {
   const { createBridge } = await import('/bridge.js');
-  return createBridge(window.__TAURI__).invoke(command, input);
+  try { return await createBridge(window.__TAURI__).invoke(command, input); }
+  catch (error) { throw new Error(`${error.code}: ${error.message}`); }
 }, { command, input });
+async function expectNativeError(command, input, code) {
+  const actual = await page.evaluate(async ({ command, input }) => {
+    const { createBridge } = await import('/bridge.js');
+    try { await createBridge(window.__TAURI__).invoke(command, input); return null; }
+    catch (error) { return error.code; }
+  }, { command, input });
+  assert.equal(actual, code);
+}
 async function check(name, fn) { await fn(); report.checks.push(name); console.log(`PASS ${name}`); }
 async function terminal(taskId) {
   const deadline = Date.now() + 120000;
@@ -86,7 +104,8 @@ async function terminal(taskId) {
   throw new Error(`Task ${taskId} did not terminate`);
 }
 async function seed(paperId, batchId, pdf, raw) {
-  await bridge('library.putPaper@1', { paper: { id: paperId, title: paperId } });
+  const existing = (await bridge('library.listPapers@1')).papers.some(paper => paper.id === paperId);
+  if (!existing) await bridge('library.putPaper@1', { paper: { id: paperId, title: paperId } });
   await bridge('files.putAttachment@1', { paperId, attachment: {
     id: 'pdf', name: `${paperId}.pdf`, contentType: 'application/pdf', contentBase64: pdf.toString('base64'),
   } });
@@ -236,6 +255,7 @@ try {
   await run('cargo', ['rustc', '--offline', '--manifest-path', 'src-tauri/Cargo.toml', '--example', 'pdf_webview_host', '--', '-C', 'link-arg=/MANIFEST:EMBED'], { ...process.env, TAURI_CONFIG: config });
   await copyFile(path.join(app, 'src-tauri/target/debug/examples/pdf_webview_host.exe'), executable);
   await launch();
+  if (!readerReport) {
   await check('isolated native library has no full local component', async () => {
     report.component = await native('component_status');
     assert.equal(report.component.ready, false, JSON.stringify(report.component));
@@ -300,6 +320,180 @@ try {
     assert.ok(validated.assets.assets.every(asset => asset.resources.every(resource => resource.bbox === null && resource.evidence === 'page')));
     report.geometry = validated;
   });
+  }
+  if (process.env.PAPER30MIN_U6 === '1') {
+    if (!readerReport) {
+    await check('publish complete candidate then reject incomplete replacement and retain old snapshot', async () => {
+      const first = report.papers[0];
+      const { paper } = await bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: first.batchId, expectedBatchId: null });
+      assert.equal(paper.parseBatchId, first.batchId);
+      paper.products = [{ kind: 'map', partId: '', body: { problem: { text: 'OLD MAP', refs: [] }, method: { text: 'OLD METHOD', refs: [] } }, updatedAt: new Date().toISOString() }];
+      const image = await bridge('parsebatch.read@1', { snapshot: (await bridge('parsebatch.pin@1', { paperId: first.paperId })).snapshot, attachmentId: first.assets.pages[0].attachmentId });
+      await bridge('files.putAttachment@1', { paperId: first.paperId, attachment: { id: 'pdf-selection-history', name: 'selection.png', contentType: 'image/png', contentBase64: image.contentBase64 } });
+      await bridge('files.putAttachment@1', { paperId: first.paperId, attachment: { id: 'recall-history', name: 'recall.png', contentType: 'image/png', contentBase64: image.contentBase64 } });
+      paper.recallCard = { markdown: 'OLD RECALL', images: [{ id: 'old-recall-image', name: 'recall.png', attachmentId: 'recall-history' }] };
+      paper.chat = [{ role: 'user', content: 'OLD SELECTED TEXT', createdAt: new Date().toISOString(), bindingKind: 'pdf', assetIds: [], pdfSelection: { kind: 'area', text: 'OLD SELECTED TEXT', regions: [{ page: 1, bbox: [0, 0, 100, 100], pageSize: [612, 792] }], images: [{ attachmentId: 'pdf-selection-history' }], hits: [] } }];
+      await bridge('library.putPaper@1', { paper, expectedBatchId: first.batchId });
+      const pinned = (await bridge('parsebatch.pin@1', { paperId: first.paperId })).snapshot;
+      const model = await bridge('parsebatch.read@1', { snapshot: pinned, attachmentId: 'blockmodel.json' });
+      const pdf = await readFile(path.join(app, 'src-tauri/tests/fixtures/regression/corpus/1412.6980.pdf'));
+      const raw = await readFile(report.sources[0].source);
+      await seed(first.paperId, 'u6-reparse', pdf, raw);
+      await assert.rejects(bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: 'u6-reparse', expectedBatchId: first.batchId, overwriteConfirmed: true }));
+      assert.equal((await bridge('library.getPaper@1', { paperId: first.paperId })).paper.parseBatchId, first.batchId);
+      const preparing = await start(first.paperId, 'u6-reparse');
+      const complete = await render(preparing.taskId);
+      assert.equal(complete.outcome.status, 'succeeded', JSON.stringify(complete.outcome.error));
+      const next = complete.outcome.result.batchId;
+      await expectNativeError('parsebatch.publish@1', { paperId: first.paperId, batchId: next, expectedBatchId: first.batchId }, 'parse_replace_confirmation_required');
+      const published = (await bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: next, expectedBatchId: first.batchId, overwriteConfirmed: true })).paper;
+      assert.equal(published.parseBatchId, next); assert.equal(published.products.length, 0);
+      assert.equal(published.parseHistory.length, 1);
+      assert.equal(published.parseHistory[0].paper.products[0].body.problem.text, 'OLD MAP');
+      assert.equal(published.parseHistory[0].paper.chat[0].content, 'OLD SELECTED TEXT');
+      await expectNativeError('library.putPaper@1', { paper, expectedBatchId: first.batchId }, 'parse_batch_stale');
+      assert.equal((await bridge('parsebatch.read@1', { snapshot: pinned, attachmentId: 'blockmodel.json' })).contentBase64, model.contentBase64);
+      await bridge('files.cleanupPdfSelections@1', { paperId: first.paperId, attachmentIds: ['pdf-selection-history'] });
+      assert.ok((await bridge('files.getAttachment@1', { paperId: first.paperId, attachmentId: 'pdf-selection-history' })).attachment);
+      report.publication = { paperId: first.paperId, oldBatchId: first.batchId, batchId: next };
+    });
+    await check('restart retains current and historical pointer with complete export/import dependencies', async () => {
+      await stop(); await launch();
+      const id = report.publication.paperId;
+      const { paper } = await bridge('library.getPaper@1', { paperId: id });
+      assert.equal(paper.parseBatchId, report.publication.batchId); assert.equal(paper.parseHistory.length, 1);
+      const parseBatchExport = await bridge('parsebatch.export@1', { paperId: id });
+      assert.equal(parseBatchExport.batches.length, 2);
+      const exportFile = path.join(output, 'library-v2.json');
+      const selectionMeta = await bridge('files.getAttachment@1', { paperId: id, attachmentId: 'pdf-selection-history' });
+      const selection = await bridge('files.readRange@1', { paperId: id, attachmentId: 'pdf-selection-history', offset: 0, length: selectionMeta.attachment.size });
+      await writeFile(exportFile, JSON.stringify({ format: 'paper-30min-library', version: 2, papers: [{ ...paper, parseBatchExport, selectionAttachments: [{ id: 'pdf-selection-history', name: 'selection.png', contentType: 'image/png', sha256: selectionMeta.attachment.sha256, size: selectionMeta.attachment.size, contentBase64: selection.contentBase64 }], recallAttachments: [{ id: 'recall-history', name: 'recall.png', contentType: 'image/png', sha256: selectionMeta.attachment.sha256, size: selectionMeta.attachment.size, contentBase64: selection.contentBase64 }] }] }));
+      await bridge('library.deletePaper@1', { paperId: id });
+      const inspected = await bridge('migration.inspect@1', { sourcePath: exportFile });
+      assert.equal(inspected.errors.length, 0, JSON.stringify(inspected));
+      await bridge('migration.commit@1', { token: inspected.token });
+      const imported = (await bridge('library.getPaper@1', { paperId: id })).paper;
+      assert.equal(imported.parseHistory[0].paper.chat[0].content, 'OLD SELECTED TEXT');
+      assert.equal((await bridge('files.getAttachment@1', { paperId: id, attachmentId: 'recall-history' })).attachment.sha256, selectionMeta.attachment.sha256);
+      for (const batchId of [imported.parseBatchId, imported.parseHistory[0].batchId]) {
+        const { snapshot } = await bridge('parsebatch.pin@1', { paperId: id, batchId });
+        await bridge('parsebatch.read@1', { snapshot, attachmentId: 'pdf' });
+        await bridge('parsebatch.read@1', { snapshot, attachmentId: 'blockmodel.json' });
+        await bridge('cloudassets.manifest@1', { snapshot });
+      }
+    });
+    }
+    await check('reader groups reparse with rebuild and has no parser selector or history navigation', async () => {
+      await page.reload();
+      await page.locator('#su-enter').click();
+      await page.locator('#nav-library').click();
+      await page.locator('.paper-card').filter({ hasText: report.publication.paperId }).click();
+      await page.waitForFunction(id => document.querySelector('#reader-title').textContent === id, report.publication.paperId);
+      for (const selector of ['#parse-version-select', '#btn-parse-history', '#reader-history-status', '#modal-parser-choice']) {
+        assert.equal(await page.locator(selector).count(), 0);
+      }
+      await page.locator('#btn-rebuild-map').waitFor();
+      assert.equal(await page.locator('.reader-head .reader-rebuild-actions #btn-reparse').count(), 1);
+      assert.equal(await page.locator('.reader-head .reader-rebuild-actions #btn-rebuild-map').count(), 1);
+      await page.waitForFunction(() => !document.querySelector('#pdf-viewer').hidden
+        && document.querySelector('#pdf-pages canvas')?.width > 0);
+      const session = await browser.contexts()[0].newCDPSession(page);
+      for (const width of [1280, 430]) {
+        await session.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+        await page.evaluate(() => window.scrollTo(0, 0));
+        const reparse = await page.locator('#btn-reparse').boundingBox();
+        const rebuild = await page.locator('#btn-rebuild-map').boundingBox();
+        if (reparse && rebuild) assert.ok(Math.abs(reparse.y - rebuild.y) < 2);
+        await page.screenshot({ path: path.join(output, `reader-actions-${width}.png`) });
+      }
+      await session.send('Emulation.clearDeviceMetricsOverride');
+      await page.locator('#reader-tabs [data-tab="recall"]').click();
+      const notes = `CURRENT NOTES ${Date.now()}`;
+      await page.locator('#recall-editor').fill(notes);
+      await page.locator('#btn-recall-save').click();
+      await page.waitForFunction(async ({ paperId, notes }) => {
+        const { createBridge } = await import('/bridge.js');
+        const { paper } = await createBridge(window.__TAURI__).invoke('library.getPaper@1', { paperId });
+        return paper.recallCard.markdown === notes;
+      }, { paperId: report.publication.paperId, notes });
+    });
+    await check('completed cloud results have no extra verification or provider-switch card', async () => {
+      await page.locator('#nav-tasks').click();
+      await page.waitForFunction(() => document.querySelector('#view-tasks').hidden === false);
+      await page.waitForFunction(() => document.querySelector('#tasks-empty').hidden === false);
+      assert.equal(await page.locator('#task-list .task-row').count(), 0);
+      for (const label of ['校验正文与来源', '校验视觉资源', '改用本地']) {
+        assert.equal(await page.getByRole('button', { name: label, exact: true }).count(), 0);
+      }
+      await page.screenshot({ path: path.join(output, 'tasks-completed.png') });
+      await page.locator('#nav-reader').click();
+    });
+    await check('settings gate unavailable providers and reparse follows the saved provider while failure preserves current results', async () => {
+      const originalSettings = (await bridge('settings.get@1')).cloudparse;
+      const originalPaper = (await bridge('library.getPaper@1', { paperId: report.publication.paperId })).paper;
+      await page.evaluate(() => {
+        window.reparseFixture = { localReady: false, starts: [] };
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (input, options) => {
+          const command = decodeURIComponent(String(input));
+          const reply = (value, status = 'ok') => Promise.resolve(new Response(JSON.stringify(value), {
+            headers: { 'Content-Type': 'application/json', 'Tauri-Response': status },
+          }));
+          if (command.includes('component_status')) return reply({ ready: window.reparseFixture.localReady, phase: 'idle' });
+          if (command.includes('plugin:dialog|message')) return reply('Ok');
+          if (command.includes('bridge_invoke')) {
+            const args = JSON.parse(options.body);
+            if (args.command === 'pdfparse.status@1') return reply({ sidecar: { ready: window.reparseFixture.localReady } });
+          }
+          if (command.includes('bridge_start')) {
+            const args = JSON.parse(options.body);
+            if (['pdfparse.convert@1', 'cloudparse.parse@1'].includes(args.kind)) {
+              window.reparseFixture.starts.push(args);
+              return reply({ code: 'fixture_stop', message: 'offline routing check', retryable: false }, 'error');
+            }
+          }
+          return originalFetch(input, options);
+        };
+      });
+      await bridge('settings.putCloudparse@1', { settings: { accessToken: '', uploadConfirmed: false } });
+      await page.locator('#btn-settings').click();
+      await page.locator('#settings-tab-service').click();
+      await page.waitForFunction(() => document.querySelector('[data-parser-provider="local"]').disabled
+        && document.querySelector('[data-parser-provider="baidu"]').disabled);
+      assert.equal(await page.locator('#open-parser-settings').isEnabled(), true);
+      assert.equal(await page.locator('#open-cloud-settings').isEnabled(), true);
+      await page.locator('#modal-settings [data-close]').click();
+      await page.evaluate(() => { window.reparseFixture.localReady = true; });
+      await page.locator('#btn-settings').click();
+      await page.locator('#settings-tab-service').click();
+      await page.locator('[data-parser-provider="local"]').click();
+      await page.waitForFunction(async () => {
+        const { createBridge } = await import('/bridge.js');
+        return (await createBridge(window.__TAURI__).invoke('settings.get@1')).cloudparse.defaultProvider === 'local';
+      });
+      await page.locator('#modal-settings [data-close]').click();
+      await page.locator('#reader-tabs [data-tab="map"]').click();
+      await page.locator('#btn-reparse').click();
+      await page.waitForFunction(() => window.reparseFixture.starts.length === 1);
+      const local = await page.evaluate(() => window.reparseFixture.starts[0]);
+      assert.equal(local.kind, 'pdfparse.convert@1');
+      assert.equal(local.input.expectedBatchId, originalPaper.parseBatchId);
+      assert.equal(local.input.overwriteConfirmed, true);
+      await page.waitForFunction(() => !document.querySelector('#btn-reparse').disabled);
+      assert.equal((await bridge('library.getPaper@1', { paperId: originalPaper.id })).paper.parseBatchId, originalPaper.parseBatchId);
+      await bridge('settings.putCloudparse@1', { settings: { defaultProvider: 'baidu', accessToken: 'offline-fixture', uploadConfirmed: true } });
+      await page.locator('#btn-reparse').click();
+      await page.waitForFunction(() => window.reparseFixture.starts.length === 2);
+      const cloud = await page.evaluate(() => window.reparseFixture.starts[1]);
+      assert.equal(cloud.kind, 'cloudparse.parse@1');
+      assert.equal(cloud.input.expectedBatchId, originalPaper.parseBatchId);
+      assert.equal(cloud.input.overwriteConfirmed, true);
+      await page.waitForFunction(() => !document.querySelector('#btn-reparse').disabled);
+      assert.equal((await bridge('library.getPaper@1', { paperId: originalPaper.id })).paper.parseBatchId, originalPaper.parseBatchId);
+      await bridge('settings.putCloudparse@1', { settings: originalSettings });
+      report.reparseSubstitutions = 'Component availability, confirmation and task starts substituted for offline routing checks; settings and current paper persistence use the native bridge. No vendor upload or actual local conversion.';
+    });
+  }
   await check('saved source page and original figure table formula PNGs display offline at wide and narrow widths', async () => {
     await page.evaluate(async papers => {
       const { createBridge } = await import('/bridge.js'); const bridge = createBridge(window.__TAURI__);
@@ -330,7 +524,7 @@ try {
     await session.send('Emulation.clearDeviceMetricsOverride');
   });
   assert.deepEqual(report.errors, []);
-  report.substitutions = 'Vendor jobs are seeded from stored offline JSONL, not submitted. Geometry PDF and supplier table response are synthetic. Lifecycle hooks observe production PDF.js and bridge calls; cancellation and process interruption are injected. Preview DOM displays real saved PNGs; current-batch publication and normal reader activation belong to U6. CI not run.';
+  report.substitutions = 'Vendor jobs are seeded from stored offline JSONL, not submitted. Geometry PDF and supplier table response are synthetic. Lifecycle hooks observe production PDF.js; cancellation and process interruption are injected. Preview DOM displays real saved PNGs. U6 checks use native publication, migration and the production reader with settings-only parser selection and no history/reparse UI. CI not run.';
   report.result = 'passed';
 } catch (error) {
   report.result = 'failed'; report.error = error.stack || String(error); process.exitCode = 1; console.error(error);

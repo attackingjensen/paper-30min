@@ -322,6 +322,13 @@ impl Library {
         batch_id: Option<&str>,
     ) -> Result<ParseBatchSnapshot, BridgeError> {
         require_safe_segment(paper_id, "paperId")?;
+        let current;
+        let batch_id = if batch_id.is_none() {
+            current = self.current_parse_batch_id(paper_id)?;
+            current.as_deref()
+        } else {
+            batch_id
+        };
         if let Some(batch) = batch_id {
             require_safe_segment(batch, "batchId")?;
             {
@@ -425,6 +432,43 @@ impl Library {
         snapshot.manifest_sha256 = Some(sha);
         self.verify_parse_batch(&snapshot)?;
         Ok(snapshot)
+    }
+
+    pub fn freeze_legacy_parse_batch(&self, paper_id: &str) -> Result<ParseBatchSnapshot, BridgeError> {
+        let old = self.pin_parse_batch(paper_id, None)?;
+        if !old.legacy { return Ok(old); }
+        let mut manifest = old.manifest.clone();
+        manifest.batch_id = format!("frozen-{}", sha256_hex(serde_json::to_vec(&old.manifest).map_err(|_| stale())?.as_slice()));
+        if !manifest.options.is_object() { manifest.options = serde_json::json!({}); }
+        manifest.options["parseGeneration"] = serde_json::json!(manifest.batch_id);
+        manifest.raw_sha256 = manifest.attachments.get("docling-source.json")
+            .map(|r| r.sha256.clone()).unwrap_or_else(|| sha256_hex(b"legacy-without-source"));
+        if let Ok(existing) = self.pin_parse_batch(paper_id, Some(&manifest.batch_id)) { return Ok(existing); }
+        let mut resources = BTreeMap::new();
+        for logical in old.manifest.attachments.keys() {
+            resources.insert(logical.clone(), self.read_parse_batch_attachment(&old, logical)?.1);
+        }
+        if let Some(model) = old.manifest.attachments.get("blockmodel.json") {
+            if let Ok(evidence) = crate::pdfmap_evidence::get_source_regions(self, paper_id, &model.sha256) {
+                if !resources.contains_key("docling-source.json") {
+                    if let Some(bytes) = crate::pdfmap_evidence::recover_legacy_source_bytes(self,paper_id,&evidence) {
+                        manifest.raw_sha256 = sha256_hex(&bytes);
+                        manifest.attachments.insert("docling-source.json".into(),ParseBatchAttachment {
+                            attachment_id:"docling-source.json".into(),sha256:sha256_hex(&bytes),size:bytes.len() as u64,content_type:"application/json".into(),
+                        });
+                        resources.insert("docling-source.json".into(),bytes);
+                    }
+                }
+                let bytes = serde_json::to_vec(&evidence).map_err(|_| stale())?;
+                manifest.attachments.insert("local-source-evidence.json".into(), ParseBatchAttachment {
+                    attachment_id:"local-source-evidence.json".into(), sha256:sha256_hex(&bytes),size:bytes.len() as u64,content_type:"application/json".into(),
+                });
+                resources.insert("local-source-evidence.json".into(), bytes);
+            }
+        }
+        self.verify_parse_batch(&old)?;
+        self.write_parse_batch(manifest.clone(), resources)?;
+        self.pin_parse_batch(paper_id, Some(&manifest.batch_id))
     }
 
     pub fn verify_parse_batch(&self, snapshot: &ParseBatchSnapshot) -> Result<(), BridgeError> {

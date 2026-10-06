@@ -14,6 +14,8 @@ pub mod pdfassets;
 pub mod pdfmap;
 pub mod pdf_identity;
 pub mod parsebatch;
+pub mod parsepublish;
+pub mod parsebatch_export;
 pub mod cloudparse_map;
 pub mod pdfmap_evidence;
 pub mod pdfparse;
@@ -108,7 +110,7 @@ async fn pdfmap_source_regions(state: State<'_, AppState>, input: Value) -> Resu
 
 #[tauri::command]
 async fn parsebatch_read(state: State<'_, AppState>, command: String, input: Value) -> Result<Value, BridgeError> {
-    if !matches!(command.as_str(), "parsebatch.pin@1" | "parsebatch.read@1" | "cloudassets.plan@1" | "cloudassets.put@1" | "cloudassets.manifest@1") {
+    if !matches!(command.as_str(), "parsebatch.pin@1" | "parsebatch.read@1" | "parsebatch.publish@1" | "parsebatch.export@1" | "cloudassets.plan@1" | "cloudassets.put@1" | "cloudassets.manifest@1") {
         return Err(BridgeError::unknown_command(&command));
     }
     let registry = state.registry.clone();

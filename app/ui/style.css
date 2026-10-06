@@ -275,8 +275,8 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .pdf-task-row { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 
 /* ---------- 阅读视图 ---------- */
-.reader-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
-.reader-title-wrap { flex: 1; min-width: 0; }
+.reader-head { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.reader-title-wrap { flex: 1; min-width: min(180px, 100%); }
 #reader-title { margin: 0; font-size: 17px; line-height: 1.4; }
 .reader-meta { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
 
@@ -336,6 +336,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 }
 .tree-fold:hover { background: var(--accent-soft); color: var(--accent); }
 .tree-foot { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.reader-rebuild-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .tree-resizer, .pdf-resizer {
   position: absolute; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 5;
   touch-action: none;
@@ -803,10 +804,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
   .service-entry-select .service-entry-status { width: 100%; }
 }
 
-#modal-parser-choice .modal { width: min(520px, calc(100vw - 32px)); box-sizing: border-box; }
-#modal-parser-choice select { width: 100%; min-width: 0; }
-#modal-parser-choice .modal-actions { flex-wrap: wrap; }
-#modal-parser-choice p, .task-row p { overflow-wrap: anywhere; }
+.task-row p { overflow-wrap: anywhere; }
 
 /* 整理弹窗 */
 .organize-modal { width: 560px; }

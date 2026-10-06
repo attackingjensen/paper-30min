@@ -25,7 +25,7 @@ const LABELS = {
 
 export function cloudJobView(job = {}) {
   return {
-    text: job.visualCandidateStored ? '视觉候选已保存，待校验；尚未发布替换' : job.candidateStored ? '正文与来源候选已保存，待校验；视觉资源尚未完成' : LABELS[job.state] || job.state || '未知状态',
+    text: LABELS[job.state] || job.state || '未知状态',
     canMap: job.state === 'downloaded',
     canResume: Boolean(job.jobId) && !['downloaded', 'remote-failed'].includes(job.state),
     needsResubmit: job.state === 'remote-failed' || (!job.jobId && Boolean(job.state)),

@@ -5,6 +5,57 @@ import assert from 'node:assert/strict';
 
 import { createTauriStore, bytesToBase64, base64ToBytes } from '../ui/js/store.js';
 
+test('selection exports include native byte size and digest for version 2 import verification', async () => {
+  const metadata = { id: 'pdf-selection-old', name: 'old.png', contentType: 'image/png', size: 3, sha256: 'verified-digest' };
+  const bridge = createFakeBridge({
+    'files.getAttachment@1': () => ({ attachment: metadata }),
+    'files.readRange@1': input => {
+      assert.equal(input.length, metadata.size);
+      return { contentBase64: 'AQID' };
+    },
+  });
+  const exported = await createTauriStore(bridge).selectionAttachments.read('paper', metadata.id);
+  assert.deepEqual(exported, { ...metadata, contentBase64: 'AQID' });
+});
+
+test('archived reading states retain citations, chat and products, and cannot write to current', async () => {
+  let saved;
+  const bridge = createFakeBridge({
+    'library.putPaper@1': input => { saved = input; },
+    'library.getPaper@1': () => ({ paper: saved.paper }),
+    'files.listAttachments@1': () => ({ attachments: [] }),
+  });
+  const store = createTauriStore(bridge);
+  const current = sampleRecord();
+  current.parseBatchId = 'new-batch';
+  const archived = sampleRecord();
+  archived.parseBatchId = 'old-batch';
+  archived.chat[0].cite = { startSecId: 'part-1', endSecId: 'part-1', startBlock: 1, endBlock: 1 };
+  current.parseHistory = [{ batchId: 'old-batch', paper: archived }];
+  await store.put(current);
+  assert.equal(saved.expectedBatchId, 'new-batch');
+  const restored = await store.get(current.id);
+  const history = store.history(restored, 'old-batch');
+  assert.equal(history.parseBatchId, 'old-batch');
+  assert.equal(history.chat[0].cite.startBlock, 1);
+  assert.deepEqual(history.products, archived.products);
+  assert.equal(history.sections['part-1'], archived.sections['part-1']);
+  await assert.rejects(store.put(history), /仅供查看/);
+});
+
+test('PDF viewer reads the pinned batch PDF rather than the mutable fixed attachment', async () => {
+  const snapshot = { manifest: { batchId: 'old-batch' } };
+  const bridge = createFakeBridge({ 'parsebatch.read@1': input => {
+    assert.deepEqual(input, { snapshot, attachmentId: 'pdf' });
+    return { contentBase64: bytesToBase64(new Uint8Array([1, 2, 3])) };
+  } });
+  const store = createTauriStore(bridge);
+  const paper = { id: 'p', parseBatchSnapshot: snapshot, readOnlyHistory: true };
+  assert.equal(store.pdf.has(paper), true);
+  assert.deepEqual([...new Uint8Array(await store.pdf.bytes(paper))], [1, 2, 3]);
+  assert.equal(bridge.calls.length, 1);
+});
+
 function createFakeBridge(handlers = {}) {
   const calls = [];
   return {
@@ -66,6 +117,8 @@ test('put：记录 → DTO（ISO 日期、sections 数组、parts sortOrder、tr
   const dto = bridge.calls[0].input.paper;
   assert.deepEqual(dto, {
     id: 'p1',
+    parseBatchId: null,
+    parseHistory: [],
     title: '测试论文',
     sourceType: null,
     arxivId: null,

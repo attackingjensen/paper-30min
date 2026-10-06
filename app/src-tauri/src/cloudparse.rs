@@ -936,12 +936,7 @@ mod tests {
         .unwrap();
         (
             dir,
-            RunContext {
-                registry,
-                task_id: "test".into(),
-                sink,
-                library,
-            },
+            RunContext::for_test(registry, "test".into(), sink, library),
         )
     }
     fn submit_plan(ctx: &RunContext) -> CloudParsePlan {
@@ -959,12 +954,9 @@ mod tests {
     fn independent_registries_cannot_submit_while_same_paper_is_running() {
         let (dir, ctx) = env();
         let library = Arc::new(Library::open(dir.path()).unwrap());
-        let other = RunContext {
-            registry: TaskRegistry::new(library.clone()),
-            task_id: "other".into(),
-            sink: Collector::new(),
-            library,
-        };
+        let other = RunContext::for_test(
+            TaskRegistry::new(library.clone()), "other".into(), Collector::new(), library,
+        );
         let plan = submit_plan(&ctx);
         let stale = submit_plan(&other);
         let competing = submit_plan(&other);
@@ -1152,6 +1144,7 @@ mod tests {
                 ctx.sink.clone(),
             )
             .unwrap();
+        ctx = RunContext::for_test(ctx.registry.clone(), ctx.task_id.clone(), ctx.sink.clone(), ctx.library.clone());
         let registry = ctx.registry.clone();
         let task = ctx.task_id.clone();
         let mut http = Fake::success();

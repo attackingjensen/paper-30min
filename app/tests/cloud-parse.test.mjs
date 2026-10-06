@@ -27,11 +27,11 @@ test('raw download is explicitly pending integration and cancellation warns abou
   assert.equal(cloudJobView({ state: 'cancelled', jobId: 'j' }).canResume, true);
 });
 
-test('stored candidate keeps an on-demand verification action without claiming readiness', () => {
+test('stored candidate metadata does not create user-facing verification status', () => {
   const view = cloudJobView({ state: 'downloaded', candidateStored: true });
-  assert.match(view.text, /待校验/);
+  assert.doesNotMatch(view.text, /候选|待校验|尚未发布/);
   assert.equal(view.canMap, true);
-  assert.match(cloudJobView({ state: 'downloaded', candidateStored: true, visualCandidateStored: true }).text, /视觉候选.*待校验.*尚未发布/);
+  assert.doesNotMatch(cloudJobView({ state: 'downloaded', candidateStored: true, visualCandidateStored: true }).text, /候选|待校验|尚未发布/);
 });
 
 test('remote failure offers a confirmed new submission, while interruptions resume the old job', () => {

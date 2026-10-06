@@ -606,6 +606,7 @@ fn product_body<'a>(paper: &'a PaperDto, kind: &str, part_id: &str) -> Option<&'
 fn persist_products(
     library: &Library,
     paper_id: &str,
+    expected_batch_id: Option<&str>,
     updates: Vec<(String, String, Value)>,
     activity: Option<&'static str>,
 ) -> Result<(), BridgeError> {
@@ -636,7 +637,7 @@ fn persist_products(
         }
     }
     paper.updated_at = now;
-    library.put_paper(paper)?;
+    library.put_paper_for_batch(paper, expected_batch_id)?;
     Ok(())
 }
 
@@ -648,6 +649,7 @@ fn persist_products(
 fn align_parts_with_block_model(
     library: &Library,
     paper_id: &str,
+    expected_batch_id: Option<&str>,
     mapped: &MappedPaper,
     l2_entries: &[Value],
 ) -> Result<(), BridgeError> {
@@ -690,7 +692,7 @@ fn align_parts_with_block_model(
     }
     paper.parts = parts;
     paper.updated_at = now_iso();
-    library.put_paper(paper)?;
+    library.put_paper_for_batch(paper, expected_batch_id)?;
     Ok(())
 }
 
@@ -1829,7 +1831,7 @@ fn check_hard_top(estimated: u64, stage: &str) -> Result<(), BridgeError> {
 
 fn load_env(ctx: &RunContext, paper_id: &str) -> Result<ProtocolEnv, BridgeError> {
     let paper = ctx.library.get_paper(paper_id)?;
-    let snapshot = ctx.library.pin_parse_batch(paper_id, None)?;
+    let snapshot = ctx.library.pin_parse_batch(paper_id, paper.parse_batch_id.as_deref())?;
     let (mapped, source_fingerprint) = load_block_model(&ctx.library, &snapshot)?;
     let skills = load_skills(&ctx.library)?;
     let config = model::load_model_config(&ctx.library)?.ok_or_else(model::model_not_configured)?;
@@ -2293,9 +2295,10 @@ fn build_map_main(
     if !unpersisted.is_empty() {
         warnings.push(format!("l2_unpersisted:{}", unpersisted.join(",")));
     }
-    persist_products(&ctx.library, paper_id, updates, Some("analysis"))?;
+    ctx.library.verify_parse_batch(&env.snapshot)?;
+    persist_products(&ctx.library, paper_id, env.paper.parse_batch_id.as_deref(), updates, Some("analysis"))?;
     // #87 A：地图建成后记录 parts 对齐块模型，深挖 / 阅读进度 / 节树从此同域。
-    align_parts_with_block_model(&ctx.library, paper_id, &env.mapped, &l2_entries)?;
+    align_parts_with_block_model(&ctx.library, paper_id, env.paper.parse_batch_id.as_deref(), &env.mapped, &l2_entries)?;
     ctx.push_progress(Progress {
         done: total_shards as u64 + 1,
         total: total_shards as u64 + 1,
@@ -2335,7 +2338,8 @@ fn write_partial_l2(
         updates.push(("l2".to_string(), part_id, body));
     }
     if !updates.is_empty() {
-        persist_products(&ctx.library, paper_id, updates, Some("partial"))?;
+        ctx.library.verify_parse_batch(&env.snapshot)?;
+        persist_products(&ctx.library, paper_id, env.paper.parse_batch_id.as_deref(), updates, Some("partial"))?;
     }
     Ok(())
 }
@@ -3154,9 +3158,11 @@ fn deep_dive_main(ctx: &RunContext, paper_id: &str, part_ids: &[String]) -> Resu
         |index, outcome| {
             let (index, part_id, section) = targets[index];
             // 逐节完成逐节落库（完整结果计 analysis 打卡）。
+            ctx.library.verify_parse_batch(&env.snapshot)?;
             persist_products(
                 &ctx.library,
                 paper_id,
+                env.paper.parse_batch_id.as_deref(),
                 vec![("dig".to_string(), part_id.clone(), json!(outcome.markdown))],
                 Some("analysis"),
             )?;
@@ -3356,9 +3362,11 @@ fn synthesize_main(
         StageOutput::Markdown(SYNTHESIZE_HEADERS[0]),
         |text| validate_markdown_headers(text, &SYNTHESIZE_HEADERS).map(|_| text.to_string()),
     )?;
+    ctx.library.verify_parse_batch(&env.snapshot)?;
     persist_products(
         &ctx.library,
         paper_id,
+        env.paper.parse_batch_id.as_deref(),
         vec![("retell".to_string(), String::new(), json!(markdown))],
         Some("analysis"),
     )?;

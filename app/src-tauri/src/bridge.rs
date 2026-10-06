@@ -48,6 +48,8 @@ pub fn available_commands() -> &'static [&'static str] {
         "pdfmap.getSourceRegions@1",
         "parsebatch.pin@1",
         "parsebatch.read@1",
+        "parsebatch.publish@1",
+        "parsebatch.export@1",
         "cloudassets.plan@1",
         "cloudassets.put@1",
         "cloudassets.manifest@1",
@@ -69,6 +71,17 @@ pub fn invoke(
     input: &Value,
 ) -> Result<Value, BridgeError> {
     match command {
+        "parsebatch.export@1" => library.export_parse_batches(required_string(command, input, "paperId")?),
+        "parsebatch.publish@1" => {
+            let paper_id = required_string(command, input, "paperId")?;
+            let batch_id = required_string(command, input, "batchId")?;
+            let expected = input.get("expectedBatchId").filter(|v| !v.is_null()).map(|v| v.as_str().ok_or_else(|| BridgeError::invalid_input("expectedBatchId must be a string"))).transpose()?;
+            let confirmed = input.get("overwriteConfirmed").and_then(Value::as_bool).unwrap_or(false);
+            registry.with_paper_idle(paper_id, || {
+                let snapshot = library.pin_parse_batch(paper_id, Some(batch_id))?;
+                Ok(json!({"schemaVersion":1,"paper":library.publish_parse_batch(&snapshot,expected,confirmed,false,|| Ok(()))?}))
+            })
+        }
         "cloudassets.plan@1" => crate::cloudassets::plan(registry, input),
         "cloudassets.put@1" => crate::cloudassets::put(registry, library, input),
         "cloudassets.manifest@1" => {
@@ -171,9 +184,11 @@ pub fn invoke(
         }
         "library.putPaper@1" => {
             let paper = parse_dto::<PaperDto>(command, input, "paper")?;
+            let expected = input.get("expectedBatchId").map(|v| if v.is_null() { Ok(None) } else { v.as_str().map(Some).ok_or_else(|| BridgeError::invalid_input("expectedBatchId must be a string or null")) }).transpose()?;
+            let saved = match expected { Some(expected) => library.put_paper_for_batch(paper, expected)?, None => library.put_paper(paper)? };
             Ok(json!({
                 "schemaVersion": BRIDGE_SCHEMA_VERSION,
-                "paper": library.put_paper(paper)?,
+                "paper": saved,
             }))
         }
         "library.deletePaper@1" => {

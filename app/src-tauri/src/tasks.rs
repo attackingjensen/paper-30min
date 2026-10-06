@@ -168,6 +168,8 @@ enum TaskPlan {
         work_dir: Option<std::path::PathBuf>,
         formula_enrichment: bool,
         paper_id: Option<String>,
+        expected_batch_id: Option<String>,
+        overwrite_confirmed: bool,
     },
     PdfparseBootstrap {
         endpoint: Option<String>,
@@ -177,6 +179,9 @@ enum TaskPlan {
         docling_json_path: Option<std::path::PathBuf>,
         pdf_path: Option<std::path::PathBuf>,
         scope: crate::pdfassets::PrerenderScope,
+        batch_id: Option<String>,
+        expected_batch_id: Option<String>,
+        overwrite_confirmed: bool,
     },
     PaperBuildMap {
         paper_id: String,
@@ -194,6 +199,67 @@ enum TaskPlan {
 
 const DEFAULT_STREAM_TEXT: &str = "Paper30Min Windows 正式客户端桥接演示任务：\
 这段文本按块流式发送，验证 start / subscribe / getTask 事件闭环。";
+
+fn is_parse_writer(kind: &str) -> bool {
+    matches!(kind, "cloudparse.parse@1" | "cloudparse.map@1" | "cloudassets.prepare@1" | "pdfparse.convert@1" | "pdfassets.prerender@1")
+}
+
+fn expected_parse_batch(library: &Library, paper_id: &str, input: &Value) -> Result<Option<String>, BridgeError> {
+    let current = library.current_parse_batch_id(paper_id)?;
+    if let Some(value) = input.get("expectedBatchId") {
+        let expected = if value.is_null() { None } else { Some(value.as_str().ok_or_else(|| BridgeError::invalid_input("expectedBatchId must be a string or null"))?) };
+        if expected != current.as_deref() { return Err(crate::library::parse_state_stale()); }
+    }
+    Ok(current)
+}
+
+#[cfg(test)]
+mod parse_admission_tests {
+    use super::*;
+    use crate::library::PaperDto;
+    use crate::testkit::Collector;
+
+    #[test]
+    fn parsing_and_publication_cannot_enter_while_generation_is_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Arc::new(Library::open(dir.path()).unwrap());
+        library.put_paper(PaperDto { id: "p".into(), title: "Paper".into(), ..Default::default() }).unwrap();
+        let registry = TaskRegistry::new(library);
+        let now = now_iso();
+        registry.entries.lock().unwrap().insert("held".into(), TaskEntry {
+            paper_id: Some("p".into()), cancel: Arc::new(AtomicBool::new(false)), sink: Collector::new(),
+            snapshot: TaskSnapshot { schema_version:1,task_id:"held".into(),kind:"paper.build-map@1".into(),status:TaskStatus::Running,
+                progress:None,error:None,result:None,details:None,warnings:None,created_at:now.clone(),updated_at:now },
+        });
+        assert_eq!(registry.start("pdfparse.convert@1",json!({"paperId":"p"}),Collector::new()).unwrap_err().code,"paper_busy");
+        assert_eq!(registry.with_paper_idle("p", || Ok(())).unwrap_err().code,"paper_busy");
+        registry.entries.lock().unwrap().get_mut("held").unwrap().snapshot.kind = "pdfassets.prerender@1".into();
+        assert_eq!(registry.start("paper.build-map@1",json!({"paperId":"p"}),Collector::new()).unwrap_err().code,"paper_busy");
+        registry.entries.lock().unwrap().get_mut("held").unwrap().snapshot.status = TaskStatus::Cancelled;
+        registry.with_paper_idle("p", || Ok(())).unwrap();
+    }
+
+    #[test]
+    fn commit_cancel_checkpoint_does_not_wait_for_registry_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = Arc::new(Library::open(dir.path()).unwrap());
+        let registry = TaskRegistry::new(Arc::clone(&library));
+        let sink = Collector::new();
+        let task_id = registry.start("demo.stream-text@1", json!({"text":"held","chunks":200,"chunkDelayMs":1000}), sink.clone()).unwrap();
+        let ctx = RunContext::new(Arc::clone(&registry),task_id.clone(),sink,Arc::clone(&library));
+        let connection = library.lock_conn().unwrap();
+        let entries = registry.entries.lock().unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || { send.send(ctx.cancel_checkpoint()).unwrap(); });
+        let checkpoint = receive.recv_timeout(Duration::from_secs(1));
+        drop(entries);
+        drop(connection);
+        worker.join().unwrap();
+        registry.request_cancel(&task_id).unwrap();
+        assert!(checkpoint.expect("checkpoint must not acquire entries while a publication holds it").is_ok());
+        crate::testkit::wait_terminal(&registry,&task_id,Duration::from_secs(5)).unwrap();
+    }
+}
 
 fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, BridgeError> {
     if kind == "cloudassets.prepare@1" {
@@ -312,6 +378,8 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                     .ok_or_else(|| BridgeError::invalid_input("formulaEnrichment 必须是布尔值"))?,
             };
             Ok(TaskPlan::PdfparseConvert {
+                expected_batch_id: paper_id.as_deref().map(|id| expected_parse_batch(library, id, input)).transpose()?.flatten(),
+                overwrite_confirmed: optional_bool(crate::pdfparse::TASK_CONVERT, input, "overwriteConfirmed")?,
                 pdf_path,
                 work_dir,
                 formula_enrichment,
@@ -374,6 +442,9 @@ fn plan_task(kind: &str, input: &Value, library: &Library) -> Result<TaskPlan, B
                 .filter(|value| !value.is_empty())
                 .map(std::path::PathBuf::from);
             Ok(TaskPlan::PdfassetsPrerender {
+                batch_id: input.get("batchId").filter(|v| !v.is_null()).map(|v| v.as_str().map(str::to_string).ok_or_else(|| BridgeError::invalid_input("batchId must be a string"))).transpose()?,
+                expected_batch_id: expected_parse_batch(library, paper_id, input)?,
+                overwrite_confirmed: optional_bool(crate::pdfassets::TASK_PRERENDER, input, "overwriteConfirmed")?,
                 paper_id: paper_id.to_string(),
                 docling_json_path,
                 pdf_path,
@@ -700,19 +771,13 @@ impl TaskRegistry {
             .entries
             .lock()
             .map_err(|_| BridgeError::internal("任务注册表锁定失败"))?;
-        // Preserve local convert/prerender parallelism, but keep cloud candidate writes
-        // exclusive with operations that read or replace this paper's parse results.
+        // Admission and publication share this lock, so a writer cannot enter while
+        // another task is reading the paper's parse lineage.
         if let Some(paper_id) = &entry.paper_id {
             if entries.values().any(|active| {
                 !active.snapshot.status.is_terminal()
                     && active.paper_id.as_ref() == Some(paper_id)
-                    && (matches!(
-                        kind,
-                        "cloudparse.parse@1" | "cloudparse.map@1" | "cloudassets.prepare@1"
-                    ) || matches!(
-                        active.snapshot.kind.as_str(),
-                        "cloudparse.parse@1" | "cloudparse.map@1" | "cloudassets.prepare@1"
-                    ))
+                    && (is_parse_writer(kind) || is_parse_writer(&active.snapshot.kind))
             }) {
                 return Err(BridgeError::new(
                     "paper_busy",
@@ -736,6 +801,14 @@ impl TaskRegistry {
             .ok()?
             .get(task_id)
             .map(|entry| entry.snapshot.clone())
+    }
+
+    pub(crate) fn with_paper_idle<T>(&self, paper_id: &str, operation: impl FnOnce() -> Result<T, BridgeError>) -> Result<T, BridgeError> {
+        let entries = self.entries.lock().map_err(|_| BridgeError::internal("任务注册表锁定失败"))?;
+        if entries.values().any(|entry| entry.paper_id.as_deref() == Some(paper_id) && !entry.snapshot.status.is_terminal()) {
+            return Err(BridgeError::new("paper_busy", "本篇论文的解析或阅读任务正在运行，请等待完成或取消。", true));
+        }
+        operation()
     }
 
     /// 关闭前运行中任务查询：`active_only` 只返回非终态任务。
@@ -1000,27 +1073,44 @@ pub(crate) struct RunContext {
     pub task_id: String,
     pub sink: Arc<dyn EventSink>,
     pub library: Arc<Library>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl RunContext {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        registry: Arc<TaskRegistry>,
+        task_id: String,
+        sink: Arc<dyn EventSink>,
+        library: Arc<Library>,
+    ) -> Self {
+        let cancel = registry.entries.lock().unwrap().get(&task_id)
+            .map(|entry| Arc::clone(&entry.cancel))
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        Self { registry, task_id, sink, library, cancel }
+    }
+
     fn new(
         registry: Arc<TaskRegistry>,
         task_id: String,
         sink: Arc<dyn EventSink>,
         library: Arc<Library>,
     ) -> Self {
+        let cancel = registry.entries.lock().ok().and_then(|entries| entries.get(&task_id).map(|entry| Arc::clone(&entry.cancel)))
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(true)));
         Self {
             registry,
             task_id,
             sink,
             library,
+            cancel,
         }
     }
 
     /// 取消检查点：收到取消请求时返回哨兵错误，由 run_with_retry 或运行器统一切换
     /// cancelled 终态。
     pub(crate) fn cancel_checkpoint(&self) -> Result<(), BridgeError> {
-        if self.registry.cancel_requested(&self.task_id) {
+        if self.cancel.load(Ordering::SeqCst) {
             Err(BridgeError::new(CANCEL_SENTINEL, "任务已取消", false))
         } else {
             Ok(())
@@ -1207,12 +1297,16 @@ fn run_task(
             work_dir,
             formula_enrichment,
             paper_id,
+            expected_batch_id,
+            overwrite_confirmed,
         } => crate::pdfparse::run_convert(
             &ctx,
             &pdf_path,
             work_dir.as_deref(),
             formula_enrichment,
             paper_id.as_deref(),
+            expected_batch_id.as_deref(),
+            overwrite_confirmed,
         ),
         TaskPlan::PdfparseBootstrap { endpoint } => {
             crate::pdfparse::run_bootstrap(&ctx, endpoint.as_deref())
@@ -1222,12 +1316,18 @@ fn run_task(
             docling_json_path,
             pdf_path,
             scope,
+            batch_id,
+            expected_batch_id,
+            overwrite_confirmed,
         } => crate::pdfassets::run_prerender(
             &ctx,
             &paper_id,
             docling_json_path.as_deref(),
             pdf_path.as_deref(),
             scope,
+            batch_id.as_deref(),
+            expected_batch_id.as_deref(),
+            overwrite_confirmed,
         ),
         TaskPlan::PaperBuildMap {
             paper_id,

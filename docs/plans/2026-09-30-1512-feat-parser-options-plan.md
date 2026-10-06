@@ -38,7 +38,7 @@ Product Contract 已改动：R1 收敛为云端交付与现行本地兼容；R10
 
 - **本计划只交付百度云端新增能力，现行本地路径保持兼容。** Governs R1, R7. (session-settled: user-directed — 2026-10-06 用户将本地组件调整移至后续计划，本计划剩余工作为百度完整链路。)
 - **云端首版只接入一家通过论文对照的国内服务。** Governs R7, R8. (session-settled: user-directed — chosen over integrating three vendors or generic multimodal endpoints immediately: validate one route before expanding.)
-- **用户配置默认方式，导入时可改单篇选择，自行提供凭据并承担服务费用。** Governs R2, R3, R4. (session-settled: user-approved — chosen over automatic routing and shared credentials: preserve user control over upload and cost.)
+- **用户在设置页统一选择解析方式，导入和明确重解析直接沿用设置，自行提供凭据并确认上传与费用。** Governs R2, R3, R4. (session-settled: user-approved — 2026-10-06 supersedes per-import selection; settings remain the authority for new parsing.)
 - **失败由用户选择重试或改用本地。** Governs R5, R6. (session-settled: user-approved — chosen over automatic resubmission or fallback: avoid unexpected upload and repeated billing.)
 - **本地基础解析瘦身与按需能力另行实施。** Governs deferred R10-R13, R16. (session-settled: user-directed — 2026-10-06 范围调整；不作为本计划完成或开工条件。)
 - **切换方式不自动改写存量论文，云端结果完成后可离线查看。** Governs R7, R9, R14. (session-settled: user-approved — chosen over automatic reprocessing or dependence on the full local component: retain existing content and make cloud parsing independently useful.)
@@ -48,9 +48,9 @@ Product Contract 已改动：R1 收敛为云端交付与现行本地兼容；R10
 **选择、上传与任务**
 
 - R1. 用户可选择百度云端解析或现行本地解析组件；本计划交付实际可用云端链路，保持已有本地行为兼容，服务试验报告不能替代客户端交付。
-- R2. 设置中保存默认解析方式，导入 PDF、arXiv 论文及示例论文时可在解析启动前更改单篇选择；未作选择的新用户须先选择，不能因默认值而静默上传。
+- R2. 设置中保存解析方式，导入 PDF、arXiv 论文、示例论文及明确重解析时直接按设置执行，不再弹出单篇选择；未配置方式、凭据或上传确认时引导到设置，停止本次解析，不静默上传。
 - R3. 云端解析使用用户自行配置的服务凭据，费用由用户承担；凭据只存本机设置，不进入论文导出、日志或可分享的结果。
-- R4. 云端启动前明确告知论文或页面图像将发送到所选服务，并提示可能计费；提醒可随配置确认持续生效，实际发送须与当前单篇选择一致。
+- R4. 设置页明确告知论文或页面图像将发送到所选服务，并提示可能计费；提醒随配置确认持续生效，实际发送须与任务启动时的设置一致，受理后恢复沿用原任务。
 - R5. 云端任务显示实际阶段、成功或失败及可理解的原因；失败可由用户重试或明确改用本地，不自动重提可能计费的解析请求或自动切换服务。
 - R6. 取消须停止客户端后续提交和结果发布，释放本机任务准入；已经受理的远端任务可能继续执行或计费时如实提示，不能承诺供应商无法保证的撤销。中断后同一已受理任务的状态查询、结果取回与重新提交须区分，避免将查询恢复变成重复付费解析。
 
@@ -74,7 +74,7 @@ Product Contract 已改动：R1 收敛为云端交付与现行本地兼容；R10
 
 ```mermaid
 flowchart TB
-    A[导入论文并确认解析方式] --> B{用户选择}
+    A[导入论文并读取解析设置] --> B{设置中的解析方式}
     B -->|云端| C[核对凭据与上传费用提示]
     C --> D[上传并跟踪解析任务]
     D --> E[校验结果并保存本地内容和视觉资源]
@@ -84,7 +84,7 @@ flowchart TB
     E --> J[建图 深挖 复述稿 与出处回查]
 ```
 
-- F1. **Trigger:** 用户首次配置。**Steps:** 选择方式，云端配置凭据并了解上传与费用，本地沿用现行组件入口。**Outcome:** 后续导入有明确默认值，单篇仍可修改，满足 R2-R4。
+- F1. **Trigger:** 用户首次配置。**Steps:** 选择方式，云端配置凭据并确认上传与费用，本地沿用现行组件入口。**Outcome:** 后续导入和明确重解析直接使用设置，不重复选择，满足 R2-R4。
 - F2. **Trigger:** 用户选择云端导入。**Steps:** 核对配置，提交后跟踪任务，取回并核实所有所需结果，保存到本机。**Outcome:** 无完整侧车也能阅读和取证，后续不依赖临时链接，满足 R5-R9。
 - F3/F4. 本地基础与按需能力流程移至后续计划，同编号保留。
 - F5. **Trigger:** 切换默认方式或明确重解析。**Steps:** 按 R14 保留既有结果，核对替换影响，再发布新结果。**Outcome:** 切换不隐式改库，旧出处不误绑新内容。
@@ -224,11 +224,11 @@ sequenceDiagram
 
 ### U3. 云端设置与可恢复解析任务
 
-- **Goal / Requirements:** 设置默认方式与单篇选择，取得云端原始结果；R1-R6，F1/F2，AE2。
+- **Goal / Requirements:** 设置统一决定解析方式，取得云端原始结果；R1-R6，F1/F2，AE2。
 - **Dependencies:** U1/U2 的现有研究证据，无新的零错误质量前置条件。
 - **Files:** `app/src-tauri/src/settings.rs`、`net.rs`、`tasks.rs`、`bridge.rs`、`lib.rs`，新增 `cloudparse.rs`；`app/ui/js/main.js` 的设置/导入入口；新增 `app/ui/js/cloud-parse.test.js` 与 `app/src-tauri/tests/cloudparse_jobs.rs`。
 - **Approach:** 按 KTD1/KTD2 接线，用现行 bridge 任务、准入、网络模式及附件读写模式；已选本地不上传，旧用户不因新增默认值被改成云端。提交后参数与身份固定，配置变化只影响新任务。
-- **Test scenarios:** 缺凭据与未确认不发送；PDF/arXiv/示例单篇选择一致；受理后断线/重启只查询；提交不确定不自动重传；401/429/超时原因可见；取消不发布；代理切换影响后续请求；日志/导出无 Token。Covers AE2。
+- **Test scenarios:** 缺凭据与未确认不发送并引导设置；PDF/arXiv/示例直接沿用设置；受理后断线/重启只查询；提交不确定不自动重传；401/429/超时原因可见；取消不发布；代理切换影响后续请求；日志/导出无 Token。Covers AE2。
 - **Verification:** Rust 状态测试与 JS 流程测试通过，原生桥任务能读取脱敏进度和恢复记录；真实服务最晚在 U7 验收。
 
 U3 的下载完成仅表示原始结果取回，不标记正文、来源或视觉资源已就绪；后续状态由 U4-U6 接入。
@@ -255,12 +255,14 @@ U3 的下载完成仅表示原始结果取回，不标记正文、来源或视�
 
 - **Goal / Requirements:** 首次与替换结果不混批次，旧结果及历史不误绑；R6/R14/R15，F5，AE6。
 - **Dependencies:** U4/U5，使用 U3 任务准入。
-- **Files:** `app/src-tauri/src/library.rs`、`migration.rs`、`pdfmap_evidence.rs`、`pdfassets.rs`、`cloudparse.rs`、`protocol.rs`；`app/ui/js/papers.js`、`main.js`、`pdf-selection.js`；新增 `app/src-tauri/tests/cloudparse_publish.rs` 及 `app/ui/js/parser-history.test.js`。
-- **Approach:** KTD5/KTD6，候选校验/当前指针切换和恢复标记共同设计，沿用书库迁移及校验模式；云端到本地、现有本地到云端均覆盖。先补现行附件替换和历史绑定的特征测试，再落实版本隔离。
+- **Files:** `app/src-tauri/src/library.rs`、`migration.rs`、`parsebatch.rs`、`pdfmap_evidence.rs`、`pdfassets.rs`、`pdfparse.rs`、`protocol.rs`、`tasks.rs`、`bridge.rs`；新增 `parsepublish.rs`、`parsebatch_export.rs`；`app/ui/js/papers.js`、`main.js`、`store.js`、`app/ui/bridge.js`；扩展现有 JavaScript、Rust 契约及 `cloudassets-webview.mjs` 原生验收。
+- **Approach:** KTD5/KTD6，schema 9 保存当前指针和 Rust 管理的历史快照；完整候选校验后，归档与切换在同一 SQLite 事务提交，取消检查失败回滚，不依赖跨文件恢复标记。旧附件冻结为不可变资源；生成任务固定批次并比较保存身份，解析与阅读任务按论文互斥。新解析当前成果重新生成，旧成果保留在只读历史；同代补图及首次模型早启动保持兼容。导出版本 2 携带原生一致快照与全部历史依赖，导入隔离校验后事务写入，兼容旧格式。
 - **Test scenarios:** 下载/写来源/写图失败或取消旧结果仍可读；提交临界点崩溃恢复；迟到结果不发布；读取旧模型后切换当前批次，再取来源/图片仍属于旧读快照；旧截图/实际文字/聊天保存；旧 cite 不命中新块，旧来源可回看；导出导入携带完整历史依赖及无版本旧书库迁移；并行生成准入互斥。Covers AE6。
-- **Verification:** 故障注入和重启回归证明读者不见混合批次，原生窗口重解析提示及历史重放通过，无历史自动删除。
+- **Verification:** 故障注入和重启回归证明读者不见混合批次，已有资源兼容不被破坏。用户最新决定：解析方式仅由设置页全局二选一；缺组件或云端凭据时对应服务不可选；重新解析与重新建图并排。百度解析后改选本地，再重新解析应以成功结果覆盖当前结果，失败或取消保留原结果。阅读页不提供历史浏览，不要求历史浏览界面验收。
 
 ### U7. 完整链路与专项验收
+
+界面验收新增：正常云端流程自动串联取回、正文与来源转换校验、视觉准备校验和发布，用户不必在任务中心逐步点击内部阶段。任务中心保留进度、完成/失败状态与必要的恢复、取消、明确重提操作；保存候选不能显示为已完成。此项尚待 U7 实施和原生窗口验证，不表示整个任务中心将被替换。
 
 - **Goal / Requirements:** 同组真实论文与边界样本完成用户全流程；R1-R9/R14/R15，AE1/AE2/AE6/AE7。
 - **Dependencies:** U3-U6。

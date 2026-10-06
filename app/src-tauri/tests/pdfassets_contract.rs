@@ -14,6 +14,7 @@ use paper30min_lib::pdfassets;
 use paper30min_lib::tasks::TaskStatus;
 use paper30min_lib::testkit::{wait_terminal, Collector};
 use serde_json::{json, Value};
+use lopdf::dictionary;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -198,14 +199,16 @@ fn prerender_rejects_invalid_scope_at_plan() {
 #[test]
 fn prerender_pages_scope_does_not_require_docling_json_path() {
     let (registry, _library, _dir) = common::env();
-    let (task_id, _sink) =
-        start_prerender(&registry, json!({ "paperId": "no-such", "scope": "pages" }));
-    let status = wait_terminal(&registry, &task_id, Duration::from_secs(10)).expect("任务超时");
-    assert_eq!(status, TaskStatus::Failed);
-    let error = registry.get(&task_id).unwrap().error.unwrap();
+    let error = registry
+        .start(
+            pdfassets::TASK_PRERENDER,
+            json!({ "paperId": "no-such", "scope": "pages" }),
+            Collector::new(),
+        )
+        .expect_err("缺少论文应在捕获解析版本时拒绝");
     assert_eq!(
         error.code, "not_found",
-        "scope=pages 应越过计划阶段，在运行期报论文不存在"
+        "scope=pages 不要求 doclingJsonPath，但仍需有效论文身份"
     );
 }
 
@@ -214,13 +217,13 @@ fn prerender_fails_when_paper_missing() {
     let (registry, _library, dir) = common::env();
     let docling_path = dir.path().join("docling.json");
     std::fs::write(&docling_path, synthetic_docling_json().to_string()).unwrap();
-    let (task_id, _sink) = start_prerender(
-        &registry,
-        json!({ "paperId": "no-such", "doclingJsonPath": docling_path.to_string_lossy() }),
-    );
-    let status = wait_terminal(&registry, &task_id, Duration::from_secs(10)).expect("任务超时");
-    assert_eq!(status, TaskStatus::Failed);
-    let error = registry.get(&task_id).unwrap().error.unwrap();
+    let error = registry
+        .start(
+            pdfassets::TASK_PRERENDER,
+            json!({ "paperId": "no-such", "doclingJsonPath": docling_path.to_string_lossy() }),
+            Collector::new(),
+        )
+        .expect_err("捕获解析版本时拒绝不存在的论文");
     assert_eq!(error.code, "not_found");
 }
 
@@ -490,6 +493,32 @@ fn prerender_crops_scope_stores_only_crops_and_block_model() {
     put_pdf(&library, "p-1");
     put_blockmodel(&library, "p-1");
 
+    let mut document = lopdf::Document::with_version("1.4");
+    let pages_id = document.new_object_id();
+    let mut page_ids = Vec::new();
+    for _ in 0..2 {
+        let contents = document.add_object(lopdf::Stream::new(lopdf::dictionary! {}, b"0 0 0 rg 100 400 400 200 re f\n".to_vec()));
+        page_ids.push(lopdf::Object::Reference(document.add_object(lopdf::dictionary! {
+            "Type" => "Page", "Parent" => pages_id,
+            "MediaBox" => vec![0.into(),0.into(),612.into(),792.into()],
+            "Resources" => lopdf::dictionary! {}, "Contents" => contents,
+        })));
+    }
+    document.objects.insert(pages_id,lopdf::Object::Dictionary(lopdf::dictionary! { "Type" => "Pages", "Kids" => page_ids, "Count" => 2 }));
+    let catalog = document.add_object(lopdf::dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    document.trailer.set("Root",catalog);
+    let mut pdf_bytes = Vec::new();
+    document.save_to(&mut pdf_bytes).unwrap();
+    paper30min_lib::pdf_identity::read_pdf_identity_bytes(&pdf_bytes).expect("分步渲染夹具 PDF 身份有效");
+    library.put_attachment("p-1",AttachmentWrite { id:"pdf".into(),name:"fixture.pdf".into(),content_type:Some("application/pdf".into()),content_base64:base64_encode(&pdf_bytes) }).unwrap();
+    let pdf = library.verify_attachment("p-1", "pdf").unwrap();
+    let mut raw = synthetic_docling_json();
+    raw["origin"] = json!({"mimetype":"application/pdf","binary_hash":u64::from_str_radix(&pdf.sha256[48..],16).unwrap()});
+    library.put_attachment("p-1",AttachmentWrite { id:"docling-source.json".into(),name:"docling-source.json".into(),content_type:Some("application/json".into()),content_base64:base64_encode(&serde_json::to_vec(&raw).unwrap()) }).unwrap();
+    let mut paper = library.get_paper("p-1").unwrap();
+    paper.products.push(paper30min_lib::library::ProductDto { kind:"map".into(),part_id:String::new(),body:json!({"markdown":"EARLY MAP"}),updated_at:"2026-10-06T00:00:00Z".into() });
+    library.put_paper(paper).unwrap();
+
     let (task_id, sink) = start_prerender(
         &registry,
         json!({
@@ -516,12 +545,51 @@ fn prerender_crops_scope_stores_only_crops_and_block_model() {
     assert_eq!(crops[0]["assetId"], json!("crop-fig_1"));
 
     let ids = attachment_ids(&library, "p-1");
-    assert!(ids.contains(&"crop-fig_1".to_string()));
+    assert!(
+        !ids.contains(&"crop-fig_1".to_string()),
+        "候选裁切不覆盖旧逻辑附件"
+    );
     assert!(ids.contains(&"blockmodel.json".to_string()));
     assert!(
         !ids.iter().any(|id| id.starts_with("pageimg-")),
         "scope=crops 不落页图: {ids:?}"
     );
+    assert_eq!(result["candidateReady"], true);
+    assert_eq!(result["visualReady"], false, "仅裁切不足以满足完整视觉替换");
+    assert_eq!(result["resultReady"], false);
+    assert_eq!(library.current_parse_batch_id("p-1").unwrap(), None);
+    let snapshot: paper30min_lib::parsebatch::ParseBatchSnapshot =
+        serde_json::from_value(result["snapshot"].clone()).unwrap();
+    let (_, bytes) = library
+        .read_parse_batch_attachment(&snapshot, "crop-fig_1")
+        .expect("固定候选中的裁切可读");
+    assert_eq!(&bytes[..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WEBP");
+    let (_, model) = library
+        .read_parse_batch_attachment(&snapshot, "blockmodel.json")
+        .expect("固定候选中的模型可读");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&model).unwrap()["figures"][0]["id"],
+        "fig_1"
+    );
+    assert!(!snapshot.manifest.attachments.contains_key("pageimg-0001"));
+    assert!(!snapshot.manifest.attachments.contains_key("pageimg-0002"));
+
+    let (pages_task, pages_sink) = start_prerender(&registry, json!({
+        "paperId":"p-1", "scope":"pages", "batchId":snapshot.manifest.batch_id,
+    }));
+    assert_eq!(wait_terminal(&registry,&pages_task,PRERENDER_TIMEOUT).unwrap(),TaskStatus::Succeeded,"事件流: {:?}",pages_sink.events());
+    let completed = registry.get(&pages_task).unwrap().result.unwrap();
+    assert_eq!(completed["visualReady"],true);
+    assert_eq!(completed["resultReady"],true,"旧模型同一解析链补齐页图不要求重新解析确认");
+    let current = library.pin_parse_batch("p-1",None).unwrap();
+    assert_eq!(current.manifest.batch_id,completed["batchId"]);
+    assert!(current.manifest.attachments.contains_key("crop-fig_1"));
+    assert!(current.manifest.attachments.contains_key("pageimg-0001"));
+    let paper = library.get_paper("p-1").unwrap();
+    assert_eq!(paper.products[0].body["markdown"],"EARLY MAP","分步视觉补齐必须保留早期阅读产物");
+    assert!(paper.parse_history.is_empty(),"同一解析链补图不创建替换历史");
+    assert_eq!(library.read_parse_batch_attachment(&snapshot,"crop-fig_1").unwrap().1,bytes,"首个候选仍可读取");
 }
 
 #[test]

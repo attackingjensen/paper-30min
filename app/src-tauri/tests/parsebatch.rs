@@ -316,8 +316,8 @@ fn legacy_batch_only_pins_parse_dependencies_not_chat_or_recall_images() {
 }
 
 #[test]
-fn large_batch_checks_other_resources_when_reading_an_unchanged_model() {
-    let (library, _dir) = setup();
+fn sealed_writes_are_rejected_and_full_verification_detects_other_resource_corruption() {
+    let (library, dir) = setup();
     let mut files = resources();
     for page in 1..=128 {
         files.insert(
@@ -337,10 +337,26 @@ fn large_batch_checks_other_resources_when_reading_an_unchanged_model() {
         );
     }
     let other_id = &pinned.manifest.attachments["pageimg-0128"].attachment_id;
-    put(&library, other_id, b"changed-last-page");
+    let error = library
+        .put_attachment(
+            "p1",
+            AttachmentWrite {
+                id: other_id.clone(),
+                name: other_id.clone(),
+                content_type: Some("application/octet-stream".into()),
+                content_base64: STANDARD.encode(b"changed-last-page"),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "parse_batch_immutable");
+    std::fs::write(
+        dir.path().join("attachments/p1").join(other_id),
+        b"changed-last-page",
+    )
+    .unwrap();
     assert_eq!(
         library
-            .read_parse_batch_attachment(&pinned, "blockmodel.json")
+            .read_parse_batch_attachment(&pinned, "pageimg-0128")
             .unwrap_err()
             .code,
         "parse_batch_stale"

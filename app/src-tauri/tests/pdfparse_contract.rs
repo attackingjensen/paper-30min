@@ -288,21 +288,14 @@ fn convert_rejects_missing_pdf_path_input() {
     assert_eq!(error.code, "invalid_input");
 }
 
-/// paperId 缺省解析：计划阶段把 pdfPath 落到 attachments/{paperId}/pdf（#73 UI 承接）。
-/// 附件不存在时运行期报 pdf_not_found 且路径指向该论文附件目录——若计划阶段没接受
-/// paperId 会直接 invalid_input，两个断言可区分。
+/// paperId 解析先检查论文身份，避免为不存在的论文创建候选。
 #[test]
 fn convert_resolves_pdf_from_paper_id() {
     let (registry, _library, _dir) = common::env();
-    let task_id = registry
+    let error = registry
         .start(pdfparse::TASK_CONVERT, json!({ "paperId": "paper-x" }), Collector::new())
-        .expect("paperId 应被计划阶段接受");
-    let status = wait_terminal(&registry, &task_id, Duration::from_secs(30))
-        .expect("任务应收敛到终态");
-    assert_eq!(status, TaskStatus::Failed);
-    let snapshot = registry.get(&task_id).expect("任务快照");
-    let error = snapshot.error.expect("应有错误");
-    assert_eq!(error.code, "pdf_not_found");
+        .expect_err("不存在的论文应在计划阶段拒绝");
+    assert_eq!(error.code, "not_found");
     assert!(
         error.message.contains("paper-x"),
         "错误路径应指向该论文附件目录: {}",
@@ -345,7 +338,9 @@ fn convert_with_paper_id_persists_block_model_attachment() {
         } }),
     )
     .expect("建论文记录");
-    let pdf_bytes = std::fs::read(sample_pdf()).expect("读取示例 PDF");
+    // This fixture has a valid cross-reference table; the UI sample relies on PDFium recovery.
+    let pdf_bytes = std::fs::read(fixture("pdfparse_formula_graphics.pdf")).expect("读取有效 PDF");
+    paper30min_lib::pdf_identity::read_pdf_identity_bytes(&pdf_bytes).expect("真实 PDF 身份有效");
     library
         .put_attachment(
             "p-convert",
@@ -373,26 +368,30 @@ fn convert_with_paper_id_persists_block_model_attachment() {
     assert_eq!(status, TaskStatus::Succeeded, "事件流: {:?}", sink.events());
 
     let result = registry.get(&task_id).unwrap().result.expect("succeeded 应携带 result");
-    assert_eq!(result["blockModelAssetId"], json!("blockmodel.json"));
+    let batch_id = result["batchId"].as_str().expect("返回固定批次");
+    let pinned = library.pin_parse_batch("p-convert", Some(batch_id)).unwrap();
+    assert_eq!(library.current_parse_batch_id("p-convert").unwrap().as_deref(), Some(batch_id));
+    assert_eq!(result["blockModelAssetId"], pinned.manifest.attachments["blockmodel.json"].attachment_id);
     assert!(result["mappingWarnings"].is_array(), "应有 mappingWarnings 数组");
     library
-        .verify_attachment("p-convert", "blockmodel.json")
+        .verify_attachment("p-convert", &pinned.manifest.attachments["blockmodel.json"].attachment_id)
         .unwrap_or_else(|err| panic!("块模型附件完整性校验失败: {err}"));
     let attachment = library
-        .get_attachment("p-convert", "blockmodel.json")
+        .get_attachment("p-convert", &pinned.manifest.attachments["blockmodel.json"].attachment_id)
         .expect("块模型附件应在位");
     let (_, bytes) = library
-        .read_range("p-convert", "blockmodel.json", 0, attachment.size as u64)
+        .read_parse_batch_attachment(&pinned, "blockmodel.json")
         .expect("读块模型");
     let model: Value = serde_json::from_slice(&bytes).expect("块模型应为合法 JSON");
     assert!(model["pageCount"].as_u64().unwrap() >= 1, "块模型应有页数: {model}");
-    let source = library.verify_attachment("p-convert", "docling-source.json").expect("原始来源附件完整");
+    assert!(library.get_attachment("p-convert", "blockmodel.json").is_err(), "不可变候选不覆盖旧逻辑附件");
+    let source = library.verify_attachment("p-convert", &pinned.manifest.attachments["docling-source.json"].attachment_id).expect("原始来源附件完整");
     let (_, source_bytes) = library.read_range("p-convert", &source.id, 0, source.size as u64).unwrap();
     let raw_path = Path::new(result["doclingJsonPath"].as_str().unwrap());
     assert_eq!(source_bytes, std::fs::read(raw_path).unwrap());
     std::fs::remove_file(raw_path).unwrap();
     let evidence = bridge::invoke(&registry, &library, "pdfmap.getSourceRegions@1", &json!({
-        "paperId": "p-convert", "blockModelSha256": attachment.sha256,
+        "paperId": "p-convert", "batchId": batch_id, "blockModelSha256": attachment.sha256,
     })).expect("无任务缓存时仍可恢复来源");
     assert!(!evidence["blocks"].as_array().unwrap().is_empty());
 }

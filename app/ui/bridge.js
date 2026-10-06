@@ -8,7 +8,7 @@ export function createBridge(tauri) {
     // invoke(command, input)：短时、幂等或事务性操作。
     invoke: (command, input = {}) => {
       if (command === 'pdfmap.getSourceRegions@1') return invoke('pdfmap_source_regions', { input });
-      if (['parsebatch.pin@1', 'parsebatch.read@1', 'cloudassets.plan@1', 'cloudassets.put@1', 'cloudassets.manifest@1'].includes(command)) return invoke('parsebatch_read', { command, input });
+      if (['parsebatch.pin@1', 'parsebatch.read@1', 'parsebatch.publish@1', 'parsebatch.export@1', 'cloudassets.plan@1', 'cloudassets.put@1', 'cloudassets.manifest@1'].includes(command)) return invoke('parsebatch_read', { command, input });
       return invoke('bridge_invoke', { command, input });
     },
 

@@ -88,6 +88,10 @@
       <h2 id="reader-title"></h2>
       <div class="reader-meta" id="reader-meta"></div>
     </div>
+    <div class="reader-rebuild-actions">
+      <button class="btn small" id="btn-reparse" type="button" title="使用设置页选中的服务替换当前解析结果">重新解析</button>
+      <button class="btn small" id="btn-rebuild-map" type="button" title="重新请求所有正文节并覆盖当前地图">重新建图</button>
+    </div>
     <button class="btn ghost" id="btn-organize" type="button" title="评分、分类与标签">整理</button>
     <button class="btn ghost" id="btn-export" type="button" title="导出精读笔记 Markdown">⬇ 导出笔记</button>
     <button class="btn small pdf-toggle" id="btn-pdf-toggle" type="button" aria-expanded="true" aria-pressed="true" title="全开或全关 PDF 对照">PDF 对照</button>
@@ -113,7 +117,6 @@
       <div id="map-tree-items"></div>
       <div class="tree-foot">
         <button class="btn small primary" id="btn-deep-all" type="button" disabled>▶ 全部深挖</button>
-        <button class="btn small" id="btn-rebuild-map" type="button" title="重新请求所有正文节并覆盖当前地图">重新建图</button>
       </div>
       <div class="tree-resizer" id="tree-resizer" role="separator" aria-orientation="vertical" aria-label="调节节树宽度" title="拖拽调节节树宽度"></div>
     </aside>
@@ -300,15 +303,6 @@
 </div>
 
 <!-- ============ 设置弹窗 ============ -->
-<div class="modal-mask" id="modal-parser-choice" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="parser-choice-title">
-    <h3 id="parser-choice-title">解析方式</h3>
-    <label>本篇论文<select id="parser-choice-provider"><option value="">请选择</option><option value="local">本地组件</option><option value="baidu">百度 AI Studio</option></select></label>
-    <p id="parser-choice-notice" class="muted">选择百度将上传论文或页面图像，可能产生服务费用。已受理的任务可能在客户端取消后继续执行或计费。</p>
-    <p id="parser-choice-error" role="alert"></p>
-    <div class="modal-actions"><button id="parser-choice-settings" class="btn" type="button">解析设置</button><span class="spacer"></span><button id="parser-choice-cancel" class="btn" type="button">取消</button><button id="parser-choice-confirm" class="btn primary" type="button">确认</button></div>
-  </div>
-</div>
 <div class="modal-mask" id="modal-settings" hidden>
   <div class="modal settings-modal" role="dialog" aria-modal="true" aria-label="设置">
     <nav class="settings-nav" role="tablist" aria-label="设置分类">

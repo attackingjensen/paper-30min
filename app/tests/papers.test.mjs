@@ -16,6 +16,57 @@ function memoryStore() {
   };
 }
 
+test('version 2 export retains all archived batch dependencies and historical screenshots', async () => {
+  const source = memoryStore();
+  const dependencies = { batches: [{ manifest: { batchId: 'old' }, resources: [{ id: 'old-pdf', dataBase64: 'cGRm' }] }] };
+  const image = { id: 'pdf-selection-old', contentType: 'image/png', contentBase64: 'aGVsbG8=' };
+  source.records.set('p', { id: 'p', title: 'P', parseBatchId: 'new', chat: [],
+    parseHistory: [{ batchId: 'old', paper: { id: 'p', products: [{ kind: 'map', body: { problem: 'old' } }],
+      chat: [{ content: 'original', pdfSelection: { images: [{ attachmentId: image.id }] } }] } }] });
+  source.selectionAttachments = { read: async (paperId, id) => { assert.equal(id, image.id); return image; } };
+  source.parseBatchExport = async () => ({ ...dependencies, paper: { ...source.records.get('p'), title: 'Native consistent snapshot' } });
+  papers.init(source);
+  const payload = papers.parseLibraryFile(await papers.exportLibrary());
+  assert.equal(payload.version, 2);
+  assert.equal(payload.papers[0].title, 'Native consistent snapshot');
+  assert.deepEqual(payload.papers[0].parseBatchExport, dependencies);
+  assert.deepEqual(payload.papers[0].selectionAttachments, [image]);
+  assert.equal(payload.papers[0].parseHistory[0].paper.chat[0].content, 'original');
+  assert.equal(papers.parseLibraryFile(JSON.stringify({ format: 'paper-30min-library', version: 1, papers: [] })).version, 1);
+});
+
+test('recall image export includes current and archived resources once and browser import restores them before exposing references', async () => {
+  const source = memoryStore();
+  const images = new Map(['recall-current', 'recall-old'].map(id => [id, { id, name: `${id}.png`, contentType: 'image/png', contentBase64: 'AQID', size: 3, sha256: 'digest' }]));
+  source.records.set('p', { id: 'p', title: 'P', chat: [], recallCard: { markdown: 'current', images: [{ attachmentId: 'recall-current' }] },
+    parseHistory: [{ batchId: 'old', paper: { recallCard: { markdown: 'old', images: [{ attachmentId: 'recall-old' }, { attachmentId: 'recall-current' }] } } }] });
+  const reads = [];
+  source.selectionAttachments = { read: async (paperId, id) => { reads.push(id); return images.get(id); } };
+  papers.init(source);
+  const payload = papers.parseLibraryFile(await papers.exportLibrary());
+  assert.deepEqual(reads, ['recall-current', 'recall-old']);
+  assert.deepEqual(payload.papers[0].recallAttachments, [...images.values()]);
+  const unsafe = memoryStore();
+  papers.init(unsafe);
+  await assert.rejects(papers.importLibrary(payload), /客户端迁入/);
+  assert.equal(unsafe.records.size, 0);
+  const target = memoryStore();
+  const restored = [];
+  target.selectionAttachments = { write: async (paperId, image) => {
+    assert.deepEqual(target.records.get(paperId).recallCard.images, []);
+    restored.push(image.id);
+  } };
+  papers.init(target);
+  const unversioned = { ...payload.papers[0], parseHistory: [], recallAttachments: [images.get('recall-current')] };
+  await papers.importLibrary({ papers: [unversioned] });
+  assert.deepEqual(restored, ['recall-current']);
+  assert.equal(target.records.get('p').recallCard.images[0].attachmentId, 'recall-current');
+  const missing = memoryStore();
+  papers.init(missing);
+  await assert.rejects(papers.importLibrary({ papers: [{ ...unversioned, recallAttachments: [] }] }), /缺少回想卡片/);
+  assert.equal(missing.records.size, 0);
+});
+
 test('selection screenshot exports restore bytes into an empty library and failed imports roll back', async () => {
   const source = memoryStore();
   const image = { id: 'pdf-selection-a', name: 'a.webp', contentType: 'image/webp', contentBase64: 'aGVsbG8=' };

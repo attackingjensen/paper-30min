@@ -19,11 +19,11 @@ use crate::files::{
 };
 use crate::library::{
     normalize_paper, upsert_paper, ActivityDayDto, AnalysisDto, ChatCiteDto, ChatMessageDto,
-    Library, PartDto, PaperDto, ProductDto, ReadMarkDto, RecallCardDto, SectionDto, TranslationDto,
+    Library, PaperDto, PartDto, ProductDto, ReadMarkDto, RecallCardDto, SectionDto, TranslationDto,
     ACTIVITY_DAY_KINDS, BINDING_KINDS, LIBRARY_SCHEMA_VERSION, PRODUCT_KINDS,
 };
 
-pub const SUPPORTED_EXPORT_VERSION: i64 = 1;
+pub const SUPPORTED_EXPORT_VERSION: i64 = 2;
 pub const LIBRARY_FORMAT: &str = "paper-30min-library";
 pub const MAX_EXPORT_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_TTL_SECS: u64 = 15 * 60;
@@ -76,12 +76,7 @@ struct CommitReport {
     attachments: usize,
 }
 
-struct PendingAttachment {
-    id: String,
-    name: String,
-    content_type: String,
-    bytes: Vec<u8>,
-}
+type PendingAttachment = crate::parsebatch_export::ImportedResource;
 
 enum PreparedPaper {
     Invalid {
@@ -185,18 +180,16 @@ fn read_export(path: &Path) -> Result<(Vec<u8>, String), BridgeError> {
     if !path.is_file() {
         return Err(BridgeError::invalid_input("找不到导出文件"));
     }
-    let meta = fs::metadata(path).map_err(|err| {
-        BridgeError::invalid_input(format!("无法读取导出文件: {err}"))
-    })?;
+    let meta = fs::metadata(path)
+        .map_err(|err| BridgeError::invalid_input(format!("无法读取导出文件: {err}")))?;
     if meta.len() > MAX_EXPORT_BYTES {
         return Err(BridgeError::invalid_input(format!(
             "导出文件超过 {} MB 上限",
             MAX_EXPORT_BYTES / (1024 * 1024)
         )));
     }
-    let bytes = fs::read(path).map_err(|err| {
-        BridgeError::invalid_input(format!("无法读取导出文件: {err}"))
-    })?;
+    let bytes = fs::read(path)
+        .map_err(|err| BridgeError::invalid_input(format!("无法读取导出文件: {err}")))?;
     let digest = sha256_hex(&bytes);
     Ok((bytes, digest))
 }
@@ -210,11 +203,13 @@ fn require_library_export(payload: &Value) -> Result<i64, BridgeError> {
     if format != LIBRARY_FORMAT {
         return Err(BridgeError::invalid_input("这不是 Paper30Min 书库导出文件"));
     }
-    let version = payload
-        .get("version")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| BridgeError::invalid_input("导出文件缺少版本"))?;
-    if version != SUPPORTED_EXPORT_VERSION {
+    let version = match payload.get("version") {
+        None => 1,
+        Some(value) => value
+            .as_i64()
+            .ok_or_else(|| BridgeError::invalid_input("导出文件版本无效"))?,
+    };
+    if !matches!(version, 1 | 2) {
         return Err(BridgeError::unsupported_export_version(
             version,
             SUPPORTED_EXPORT_VERSION,
@@ -235,7 +230,11 @@ fn api_key_present(payload: &Value) -> bool {
 }
 
 fn existing_ids(library: &Library) -> Result<HashSet<String>, BridgeError> {
-    Ok(library.list_papers()?.into_iter().map(|paper| paper.id).collect())
+    Ok(library
+        .list_papers()?
+        .into_iter()
+        .map(|paper| paper.id)
+        .collect())
 }
 
 fn string_list(value: Option<&Value>) -> Vec<String> {
@@ -293,7 +292,11 @@ fn page_range(pages: Option<&Value>, id: &str) -> (Option<i64>, Option<i64>) {
     )
 }
 
-fn convert_sections(raw: Option<&Value>, parts: &[PartDto], pages: Option<&Value>) -> Vec<SectionDto> {
+fn convert_sections(
+    raw: Option<&Value>,
+    parts: &[PartDto],
+    pages: Option<&Value>,
+) -> Vec<SectionDto> {
     match raw {
         Some(Value::Array(items)) => items
             .iter()
@@ -365,7 +368,11 @@ fn convert_analyses(raw: Option<&Value>) -> Vec<AnalysisDto> {
                 }
                 Some(AnalysisDto {
                     section_id: section_id.to_string(),
-                    text: item.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+                    text: item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     updated_at: optional_timestamp(item.get("updatedAt")),
                 })
             })
@@ -378,7 +385,11 @@ fn convert_analyses(raw: Option<&Value>) -> Vec<AnalysisDto> {
                 }
                 Some(AnalysisDto {
                     section_id: section_id.clone(),
-                    text: item.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+                    text: item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     updated_at: optional_timestamp(item.get("updatedAt")),
                 })
             })
@@ -408,7 +419,11 @@ fn convert_translations(raw: Option<&Value>) -> Vec<TranslationDto> {
                 Some(TranslationDto {
                     section_id: section_id.to_string(),
                     language: language.to_string(),
-                    text: item.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+                    text: item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     source: item
                         .get("source")
                         .and_then(Value::as_str)
@@ -427,7 +442,11 @@ fn convert_translations(raw: Option<&Value>) -> Vec<TranslationDto> {
                 Some(TranslationDto {
                     section_id: section_id.to_string(),
                     language: language.to_string(),
-                    text: item.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+                    text: item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     source: item
                         .get("source")
                         .and_then(Value::as_str)
@@ -509,7 +528,11 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
     items
         .iter()
         .filter_map(|item| {
-            let role = item.get("role").and_then(Value::as_str).unwrap_or("").trim();
+            let role = item
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             if role.is_empty() {
                 return None;
             }
@@ -529,7 +552,10 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
                 fragment_text: convert_optional_text(item.get("fragmentText")),
                 cite: convert_cite(item.get("cite")),
                 asset_ids: convert_asset_ids(item.get("assetIds")),
-                pdf_selection: item.get("pdfSelection").filter(|value| value.is_object()).cloned(),
+                pdf_selection: item
+                    .get("pdfSelection")
+                    .filter(|value| value.is_object())
+                    .cloned(),
             };
             // 清洗而非拒绝整篇：缺必备字段的绑定降为 none，旧导出无绑定列也走这条。
             if message.binding_kind == "section" && message.sec_id.is_none() {
@@ -538,7 +564,9 @@ fn convert_chat(raw: Option<&Value>) -> Vec<ChatMessageDto> {
             if message.binding_kind == "fragment" && message.fragment_text.is_none() {
                 message.binding_kind = "none".to_string();
             }
-            if message.binding_kind == "pdf" && message.pdf_selection.is_none() { message.binding_kind = "none".to_string(); }
+            if message.binding_kind == "pdf" && message.pdf_selection.is_none() {
+                message.binding_kind = "none".to_string();
+            }
             if message.binding_kind == "none" {
                 message.sec_id = None;
                 message.fragment_text = None;
@@ -641,7 +669,11 @@ fn convert_activity_days(raw: Option<&Value>) -> Vec<ActivityDayDto> {
         .iter()
         .filter_map(|item| {
             let day = item.get("day").and_then(Value::as_str).unwrap_or("").trim();
-            let kind = item.get("kind").and_then(Value::as_str).unwrap_or("").trim();
+            let kind = item
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             if !crate::library::is_valid_day(day) || !ACTIVITY_DAY_KINDS.contains(&kind) {
                 return None;
             }
@@ -773,7 +805,15 @@ fn convert_attachment(raw: &Value, paper_id: &str) -> Result<Option<PendingAttac
     }))
 }
 
-fn convert_paper(raw: &Value) -> PreparedPaper {
+fn convert_paper(raw: &Value, require_integrity: bool) -> PreparedPaper {
+    convert_paper_inner(raw, true, require_integrity)
+}
+
+fn convert_paper_inner(
+    raw: &Value,
+    include_dependencies: bool,
+    require_integrity: bool,
+) -> PreparedPaper {
     if !raw.is_object() {
         return PreparedPaper::Invalid {
             paper_id: None,
@@ -790,6 +830,14 @@ fn convert_paper(raw: &Value) -> PreparedPaper {
         return PreparedPaper::Invalid {
             paper_id: None,
             message: "论文缺少 id".to_string(),
+        };
+    }
+    if raw.get("parseBatchId").is_some_and(|value| {
+        !value.is_null() && value.as_str().is_none_or(|text| text.trim().is_empty())
+    }) {
+        return PreparedPaper::Invalid {
+            paper_id: Some(id),
+            message: "当前解析批次编号无效".into(),
         };
     }
     let title = raw
@@ -850,7 +898,88 @@ fn convert_paper(raw: &Value) -> PreparedPaper {
         read_marks: convert_read_marks(raw.get("readMarks")),
         activity_days: convert_activity_days(raw.get("activityDays")),
         products: convert_products(raw.get("products")),
+        parse_batch_id: convert_optional_text(raw.get("parseBatchId")),
+        parse_history: Vec::new(),
     };
+    let mut history_attachments = Vec::new();
+    if let Some(history) = raw.get("parseHistory") {
+        let Some(history) = history.as_array() else {
+            return PreparedPaper::Invalid {
+                paper_id: Some(paper.id),
+                message: "解析历史格式无效".into(),
+            };
+        };
+        if !include_dependencies && !history.is_empty() {
+            return PreparedPaper::Invalid {
+                paper_id: Some(paper.id),
+                message: "解析历史不能嵌套".into(),
+            };
+        }
+        if history.len() > 1000 {
+            return PreparedPaper::Invalid {
+                paper_id: Some(paper.id),
+                message: "解析历史超过数量限制".into(),
+            };
+        }
+        let mut history_ids = HashSet::new();
+        for entry in history {
+            let Some(batch_id) = entry["batchId"].as_str().filter(|id| !id.trim().is_empty())
+            else {
+                return PreparedPaper::Invalid {
+                    paper_id: Some(paper.id),
+                    message: "解析历史缺少批次编号".into(),
+                };
+            };
+            if !history_ids.insert(batch_id) || paper.parse_batch_id.as_deref() == Some(batch_id) {
+                return PreparedPaper::Invalid {
+                    paper_id: Some(paper.id),
+                    message: "解析历史批次重复".into(),
+                };
+            }
+            let mut archived = entry["paper"].clone();
+            if let Some(object) = archived.as_object_mut() {
+                if let Some(images) = raw.get("selectionAttachments") {
+                    object.insert("selectionAttachments".into(), images.clone());
+                }
+                if let Some(images) = raw.get("recallAttachments") {
+                    object.insert("recallAttachments".into(), images.clone());
+                }
+            }
+            match convert_paper_inner(&archived, false, require_integrity) {
+                PreparedPaper::Invalid { message, .. } => {
+                    return PreparedPaper::Invalid {
+                        paper_id: Some(paper.id),
+                        message,
+                    }
+                }
+                PreparedPaper::Ready {
+                    paper: old,
+                    attachments,
+                } => {
+                    if old.id != paper.id
+                        || old.parse_batch_id.as_deref() != entry["batchId"].as_str()
+                    {
+                        return PreparedPaper::Invalid {
+                            paper_id: Some(paper.id),
+                            message: "解析历史论文身份不一致".into(),
+                        };
+                    }
+                    let mut converted = entry.clone();
+                    converted["paper"] = match serde_json::to_value(old) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            return PreparedPaper::Invalid {
+                                paper_id: Some(paper.id),
+                                message: "解析历史无法编码".into(),
+                            }
+                        }
+                    };
+                    paper.parse_history.push(converted);
+                    history_attachments.extend(attachments);
+                }
+            }
+        }
+    }
     if let Err(error) = normalize_paper(&mut paper) {
         return PreparedPaper::Invalid {
             paper_id: Some(paper.id),
@@ -858,38 +987,175 @@ fn convert_paper(raw: &Value) -> PreparedPaper {
         };
     }
     let mut attachments: Vec<_> = attachment.into_iter().collect();
-    match convert_selection_attachments(raw, &paper) {
+    attachments.extend(history_attachments);
+    match convert_selection_attachments(raw, &paper, require_integrity) {
         Ok(images) => attachments.extend(images),
-        Err(message) => return PreparedPaper::Invalid { paper_id: Some(paper.id), message },
+        Err(message) => {
+            return PreparedPaper::Invalid {
+                paper_id: Some(paper.id),
+                message,
+            }
+        }
     }
+    match convert_recall_attachments(raw, &paper, require_integrity) {
+        Ok(images) => attachments.extend(images),
+        Err(message) => {
+            return PreparedPaper::Invalid {
+                paper_id: Some(paper.id),
+                message,
+            }
+        }
+    }
+    if include_dependencies {
+        match crate::parsebatch_export::import_parse_batches(raw, &paper) {
+            Ok(resources) => attachments.extend(resources),
+            Err(message) => {
+                return PreparedPaper::Invalid {
+                    paper_id: Some(paper.id),
+                    message,
+                }
+            }
+        }
+    }
+    let mut merged: std::collections::BTreeMap<String, PendingAttachment> =
+        std::collections::BTreeMap::new();
+    for pending in attachments {
+        if let Some(previous) = merged.get(&pending.id) {
+            if previous.bytes != pending.bytes || previous.content_type != pending.content_type {
+                return PreparedPaper::Invalid {
+                    paper_id: Some(paper.id),
+                    message: format!("附件内容冲突: {}", pending.id),
+                };
+            }
+        } else {
+            merged.insert(pending.id.clone(), pending);
+        }
+    }
+    let attachments = merged.into_values().collect();
     PreparedPaper::Ready { paper, attachments }
 }
 
-fn convert_selection_attachments(raw: &Value, paper: &PaperDto) -> Result<Vec<PendingAttachment>, String> {
+fn convert_selection_attachments(
+    raw: &Value,
+    paper: &PaperDto,
+    require_integrity: bool,
+) -> Result<Vec<PendingAttachment>, String> {
     let mut seen = HashSet::new();
     let mut attachments = Vec::new();
     for message in &paper.chat {
-        let images = message.pdf_selection.as_ref().and_then(|selection| selection.get("images"))
+        let images = message
+            .pdf_selection
+            .as_ref()
+            .and_then(|selection| selection.get("images"))
             .and_then(Value::as_array);
         for image in images.into_iter().flatten() {
             let id = image["attachmentId"].as_str().unwrap_or_default();
-            if !seen.insert(id) { continue; }
+            if !seen.insert(id) {
+                continue;
+            }
             require_safe_segment(&paper.id, "paperId").map_err(|error| error.message)?;
-            let candidates: Vec<_> = raw.get("selectionAttachments").and_then(Value::as_array)
-                .into_iter().flatten().filter(|item| item["id"].as_str() == Some(id)).collect();
-            if candidates.len() != 1 { return Err(format!("选区截图缺失或重复: {id}")); }
+            let candidates: Vec<_> = raw
+                .get("selectionAttachments")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|item| item["id"].as_str() == Some(id))
+                .collect();
+            if candidates.len() != 1 {
+                return Err(format!("选区截图缺失或重复: {id}"));
+            }
             let item = candidates[0];
-            let encoded = item["contentBase64"].as_str().ok_or_else(|| format!("选区截图缺少内容: {id}"))?;
-            let bytes = BASE64.decode(encoded.trim()).map_err(|_| format!("选区截图不是有效的 Base64: {id}"))?;
-            if bytes.is_empty() { return Err(format!("选区截图为空: {id}")); }
+            let encoded = item["contentBase64"]
+                .as_str()
+                .ok_or_else(|| format!("选区截图缺少内容: {id}"))?;
+            let bytes = BASE64
+                .decode(encoded.trim())
+                .map_err(|_| format!("选区截图不是有效的 Base64: {id}"))?;
+            if bytes.is_empty() {
+                return Err(format!("选区截图为空: {id}"));
+            }
+            if require_integrity || item.get("sha256").is_some() || item.get("size").is_some() {
+                if item["sha256"].as_str() != Some(sha256_hex(&bytes).as_str())
+                    || item["size"].as_u64() != Some(bytes.len() as u64)
+                {
+                    return Err(format!("选区截图摘要或大小不一致: {id}"));
+                }
+            }
             let content_type = item["contentType"].as_str().unwrap_or("image/webp");
             if !matches!(content_type, "image/webp" | "image/png" | "image/jpeg") {
                 return Err(format!("选区截图类型无效: {id}"));
             }
-            attachments.push(PendingAttachment { id: id.to_string(),
+            attachments.push(PendingAttachment {
+                id: id.to_string(),
                 name: item["name"].as_str().unwrap_or(id).to_string(),
-                content_type: content_type.to_string(), bytes });
+                content_type: content_type.to_string(),
+                bytes,
+            });
         }
+    }
+    Ok(attachments)
+}
+
+fn convert_recall_attachments(
+    raw: &Value,
+    paper: &PaperDto,
+    require_integrity: bool,
+) -> Result<Vec<PendingAttachment>, String> {
+    let mut seen = HashSet::new();
+    let mut attachments = Vec::new();
+    for image in &paper.recall_card.images {
+        let Some(value) = image.get("attachmentId") else {
+            continue;
+        };
+        let id = value
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("回想卡图片附件编号无效")?;
+        require_safe_segment(&paper.id, "paperId").map_err(|e| e.message)?;
+        require_safe_segment(id, "attachmentId").map_err(|e| e.message)?;
+        if !seen.insert(id) {
+            continue;
+        }
+        let candidates: Vec<_> = raw
+            .get("recallAttachments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|item| item["id"].as_str() == Some(id))
+            .collect();
+        if !require_integrity && candidates.is_empty() {
+            continue;
+        }
+        if candidates.len() != 1 {
+            return Err(format!("回想卡图片缺失或重复: {id}"));
+        }
+        let item = candidates[0];
+        let encoded = item["contentBase64"]
+            .as_str()
+            .ok_or_else(|| format!("回想卡图片缺少内容: {id}"))?;
+        let bytes = BASE64
+            .decode(encoded.trim())
+            .map_err(|_| format!("回想卡图片 Base64 无效: {id}"))?;
+        if bytes.is_empty() || bytes.len() > 256 * 1024 * 1024 {
+            return Err(format!("回想卡图片大小无效: {id}"));
+        }
+        if require_integrity || item.get("sha256").is_some() || item.get("size").is_some() {
+            if item["sha256"].as_str() != Some(sha256_hex(&bytes).as_str())
+                || item["size"].as_u64() != Some(bytes.len() as u64)
+            {
+                return Err(format!("回想卡图片摘要或大小不一致: {id}"));
+            }
+        }
+        let content_type = item["contentType"].as_str().unwrap_or("image/webp");
+        if !matches!(content_type, "image/webp" | "image/png" | "image/jpeg") {
+            return Err(format!("回想卡图片类型无效: {id}"));
+        }
+        attachments.push(PendingAttachment {
+            id: id.into(),
+            name: item["name"].as_str().unwrap_or(id).into(),
+            content_type: content_type.into(),
+            bytes,
+        });
     }
     Ok(attachments)
 }
@@ -898,7 +1164,12 @@ fn prepare_papers(payload: &Value) -> Vec<PreparedPaper> {
     payload
         .get("papers")
         .and_then(Value::as_array)
-        .map(|papers| papers.iter().map(convert_paper).collect())
+        .map(|papers| {
+            papers
+                .iter()
+                .map(|raw| convert_paper(raw, payload["version"].as_i64() == Some(2)))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -926,9 +1197,15 @@ fn remove_written_files(paths: &[PathBuf]) {
 }
 
 impl Library {
-    pub fn inspect_migration(&self, source_path: &str, ttl_seconds: u64) -> Result<Value, BridgeError> {
+    pub fn inspect_migration(
+        &self,
+        source_path: &str,
+        ttl_seconds: u64,
+    ) -> Result<Value, BridgeError> {
         if source_path.trim().is_empty() {
-            return Err(BridgeError::invalid_input("migration.inspect@1 需要 sourcePath"));
+            return Err(BridgeError::invalid_input(
+                "migration.inspect@1 需要 sourcePath",
+            ));
         }
         let path = PathBuf::from(source_path);
         let (bytes, digest) = read_export(&path)?;
@@ -1040,17 +1317,33 @@ impl Library {
         }
 
         let mut written = Vec::new();
-        let added = to_add.len();
+        let mut added = 0;
         let mut attachments = 0;
         let commit_result = (|| {
             let mut conn = self.lock_conn()?;
-            let tx = conn.transaction().map_err(|err| {
-                BridgeError::internal(format!("书库数据库错误: {err}"))
-            })?;
+            let tx = conn
+                .transaction()
+                .map_err(|err| BridgeError::internal(format!("书库数据库错误: {err}")))?;
             for (paper, pending_attachments) in &to_add {
+                let exists: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM papers WHERE id=?1)",
+                        [&paper.id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| BridgeError::internal(format!("书库数据库错误: {error}")))?;
+                if exists {
+                    skipped += 1;
+                    continue;
+                }
                 upsert_paper(&tx, paper)?;
                 for pending in pending_attachments {
                     let dest = attachment_path(self.root(), &paper.id, &pending.id)?;
+                    if dest.exists() {
+                        return Err(BridgeError::invalid_input(
+                            "导入附件目标已存在，请先核查书库",
+                        ));
+                    }
                     write_atomic(&dest, &pending.bytes)?;
                     written.push(dest);
                     let dto = AttachmentDto {
@@ -1065,6 +1358,7 @@ impl Library {
                     insert_attachment_row(&tx, &dto)?;
                     attachments += 1;
                 }
+                added += 1;
             }
             tx.commit()
                 .map_err(|err| BridgeError::internal(format!("书库数据库错误: {err}")))?;

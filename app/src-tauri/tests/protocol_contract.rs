@@ -1229,11 +1229,11 @@ fn deep_dive_pre_attaches_section_assets() {
 }
 
 #[test]
-fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
+fn deep_dive_changed_crop_warns_but_rejects_stale_result_publication() {
     let (registry, library, dir) = common::env();
     let _lock = env_lock!();
     // 批量两节：part-1 第一轮在途时删掉 crop-tbl_1 文件（preflight 已过），part-2
-    // （sec_3_method，图表清单归属 tbl_1）配方读附件时缺文件 → warning，任务仍成功。
+    // （sec_3_method，图表清单归属 tbl_1）配方读附件时提示缺图；提交校验拒绝变化批次。
     // #83 并发改造后本用例以并发上限 1 固定节序（命中序 ↔ 节序的假设只在串行下成立）。
     let crop_path = dir
         .path()
@@ -1260,17 +1260,19 @@ fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
     );
     assert_eq!(
         terminal(&registry, &task_id),
-        TaskStatus::Succeeded,
+        TaskStatus::Failed,
         "事件流: {:?}",
         sink.events()
     );
 
-    let result = registry.get(&task_id).unwrap().result.expect("result");
-    let warnings = result["warnings"].as_array().cloned().unwrap();
-    assert!(
-        warnings.contains(&json!("crop_missing:crop-tbl_1")),
-        "warnings 含 crop_missing: {warnings:?}"
-    );
+    let error = registry.get(&task_id).unwrap().error.expect("变化批次不能发布");
+    assert_eq!(error.code, "protocol_deep_dive_failed");
+    let details = error.details.unwrap();
+    let failed = details["failedSections"].as_array().unwrap();
+    assert_eq!(failed.len(), 2);
+    assert!(failed.iter().all(|section| section["code"] == "parse_batch_stale"));
+    assert!(!library.get_paper(&paper_id).unwrap().products.iter().any(|product| product.kind == "dig"),
+        "不保存已变化批次的深挖结果");
     // part-2 的首条请求：tbl_1 缺附件不附图，列在「另有图表」；页图照常。
     let requests = mock.requests();
     let part2_prompt = prompt_text(&requests[1]);

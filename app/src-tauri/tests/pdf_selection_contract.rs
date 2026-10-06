@@ -42,10 +42,10 @@ fn v7_chat_rows_migrate_without_losing_existing_messages() {
         library.put_paper(paper).unwrap();
     }
     let conn = rusqlite::Connection::open(dir.path().join("database/library.sqlite")).unwrap();
-    conn.execute_batch("ALTER TABLE chat_messages DROP COLUMN pdf_selection_json; PRAGMA user_version=7;").unwrap();
+    conn.execute_batch("DROP TABLE parse_states; ALTER TABLE chat_messages DROP COLUMN pdf_selection_json; PRAGMA user_version=7;").unwrap();
     drop(conn);
     let library = Library::open(dir.path()).unwrap();
-    assert_eq!(library.info().database_version, 8);
+    assert_eq!(library.info().database_version, 9);
     let paper = library.get_paper("old").unwrap();
     assert_eq!(paper.chat[0].content, "existing question");
     assert_eq!(paper.chat[0].binding_kind, "none");
