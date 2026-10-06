@@ -130,9 +130,40 @@ flowchart TB
 - 现行重解析、产物失效和问答绑定清理规则；新增路径不得直接复用旧块标识而造成历史内容误绑，无法保持 R14 时先对齐行为。
 - 真实云端对照需要可用服务账号、凭据和费用预算；实际调用时取得可用配置，不在需求阶段写入凭据或上传论文。
 
+### v1.3.0 兼容复核（2026-10-06）
+
+Product Contract 未改动。以下补充落实 R5-R16 的技术边界与验收依据，不代表服务已选定或实施方案已补全。复核基点为 `main` 的 `477331d`，本目录在 `codex/v1.4.0` 继续推进；旧并行工作树已删除，需求提交仍保留在分支历史中。
+
+1. **可信来源需要后端验证接线，不能只写入坐标。** `main.js` 的 `loadBlockModel` 读取块模型后先移除 `sourceRegions`，再通过 `pdfmap.getSourceRegions@1` 恢复。现行 `pdfmap_evidence.rs` 仅从 `docling-source.json` 或 Docling 缓存恢复，校验附件完整性、PDF 的 Docling 身份值与去除来源字段后的块模型投影，并在返回前重查 PDF / 块模型摘要。云端适配需提供与原始 PDF 和本次块模型绑定的可验证来源结果，保留现有旧 Docling 恢复路径；不得绕过 Rust 验证来让高亮可见。具体来源附件格式及验证方式留给实施规划，不能把云端坐标伪装成 Docling 输出。对应 R8、R9、R15。
+
+2. **统一几何要写清单位、页尺寸和降级。** 当前 `SourceRegion` 使用 1 起始页码；`bbox` 为左上角原点、scale=2 的 `[x, y, width, height]`，`pageSize` 为 scale=1 的 PDF 页宽高，可选 `charspan` 为块内字符区间。多栏及跨页保留多个区域，不合成覆盖无关内容的大框。前端对页尺寸不匹配、越界或非零旋转不给精确矩形；云端坐标须完成转换和原始 PDF 叠加验证，不能在规划中承诺现行阅读器尚未支持的旋转高亮。对应 R8、R15。
+
+3. **实际选区与解析出处分开兼容。** schema v8 已保存 `pdfSelection`，截图使用 `pdf-selection-*` 附件，支持历史重放与导出导入。`selectionBinding` 只在文字和唯一、连续来源块匹配时给出精确片段绑定；框选或不可靠命中只提供上下文。重解析须分别处理原 PDF 上的实际文字 / 截图、选区中的旧块命中、聊天片段引用和章节绑定；不能因为解析器改变就将实际截图等同于旧块数据删除，也不能让旧 `hits` / `cite` 命中新块。具体保留、失效和用户提示规则仍按 R14 对齐后决定。对应 R9、R14、R15。
+
+4. **PDF 可显示不等于精读视觉资源就绪。** 连续阅读和选区截图已由 PDF.js 渲染，但 Rust 协议所需页图及图表 / 公式裁切仍走 `pdfassets.prerender@1`，需要侧车；`scope=all` 还会重映射 Docling 结果。前端 `ensureBlockModel` / `ensurePrerender` 也依赖本地解析就绪与 `doclingJsonPath`。云端方案必须覆盖这些前置入口、离线视觉附件和齐备性检查；不能只接入解析接口或看到 PDF.js 画面就宣称“无需完整组件”。本地瘦身测量须包含所选视觉资源生成依赖。对应 R7、R9、R10、R16。
+
+5. **重解析需要安全发布边界。** `persist_convert_block_model` 先覆盖 `blockmodel.json`，再写 `docling-source.json`；预渲染附件逐件提交，`scope=all/crops` 还可能覆盖块模型。现有流程不是整套解析结果的原子替换。`papers.applyResplit` 是文本重新切分规则，会保留论文级 map / retell 及聊天，不能直接作为解析器切换的兼容政策。实施规划须先定义候选结果暂存、校验、取消检查、整套发布与旧产物处理，防止块模型、来源、页图和裁切来自不同解析批次；同篇已有建图、深挖或渲染任务时须处理竞争与迟到结果。对应 R6、R12、R14、R15。
+
+6. **复用网络模式与任务准入，按云端提交语义重试。** v1.3.0 已有 Rust 自动代理 / 直连设置，新云端上传、查询与结果下载须遵循当前模式，尚未发送的后续请求重新读取模式，已发送请求沿原模式完成。Python 侧车不在此设置覆盖范围内。复用任务、组件与更新的统一准入边界，能力包下载沿用现有完整性及停流处理；云端计费提交不能直接套用通用网络自动重试，查询恢复与重新提交仍按 R5、R6 分开。新增网络阶段的超时阈值由实施规划确定，不直接把更新下载的阈值视作云端服务契约。对应 R5、R6、R12、R13。
+
+**必须补入实施验证的场景**
+
+| 场景 | 预期与追溯 |
+| --- | --- |
+| 云端双栏 / 跨页结果；错误 PDF 身份、旧块模型摘要、页尺寸不符、旋转页 | 合法来源经原生桥恢复并叠加；不可信来源保守降级，不猜画高亮。AE7、R15。 |
+| 未装完整侧车，云端完成后断网并重开；再次建图或读取图表 | 原文、可信出处、页图及图表附件可用，准备入口不误要求 Docling。AE1、R7、R9。 |
+| 本地与云端相互重解析；来源写入 / 裁切下载失败、取消或迟到任务 | 旧结果仍可读，不发布混合批次；成功后旧块引用不误绑新内容。AE6、R14。 |
+| 重解析前已有文字选区、截图追问和片段聊天；重开及导出导入 | 实际文字 / 截图与历史问题对象保持一致，旧块绑定按明确兼容规则处理；旧聊天无选区字段仍可读。AE6、R9、R14。 |
+| 云端任务已受理后查询断线、切换直连或取消；能力包停流后重试 | 不重复计费提交，后续请求使用当前网络模式，准入释放，已有本地能力不受破坏。AE2、AE5。 |
+
+**复核结论与剩余决定**
+
+两条解析路径与按需能力的产品方向仍适用，无需重做需求。实施规划应先确定共有的来源验证、视觉资源和安全发布契约，再落实云端适配及本地能力组合。服务真实质量、干净环境瘦身收益仍待实验；重解析后历史产物的具体处理尚未敲定，本轮不据此授权清空旧产物。v1.3.0 未更换解析组件，当前基线仍为 `1.2.0-beta.1`，原体积数字与现行清单一致，但不是新实测。
+
 ### Sources / Research
 
 - 本地实现：[组件清单](../../app/src-tauri/component-release.json)、[组件安装](../../app/src-tauri/src/component.rs)、[组件任务](../../app/src-tauri/src/component_runtime.rs)、[侧车门禁](../../app/src-tauri/src/pdfparse.rs)、[块模型映射](../../app/src-tauri/src/pdfmap.rs)、[侧车构建](../../tools/pdfparse-sidecar/build_sidecar.py)、[正式组件打包](../../tools/pdfparse-sidecar/package_component.py)和[侧车说明](../../tools/pdfparse-sidecar/README.md)。正式安装现行仅接受 bundled 整包；现有 download 构建变体不能直接当作新正式方案。
+- v1.3.0 复核依据：[来源恢复](../../app/src-tauri/src/pdfmap_evidence.rs)、[前端读取与准备入口](../../app/ui/js/main.js)、[视觉资源落库](../../app/src-tauri/src/pdfassets.rs)、[选区绑定](../../app/ui/js/pdf-selection.js)、[书库校验](../../app/src-tauri/src/library.rs)、[重新切分](../../app/ui/js/papers.js)、[网络任务](../../app/src-tauri/src/net.rs) 与 [更新实现](../../app/src-tauri/src/updater.rs)。复用 [来源与选区契约](../solutions/architecture-patterns/pdf-provenance-and-selection.md) 和 [v1.3.0 发布边界](../releases/v1.3.0.md)，本轮仅核对源码与文档，未运行产品测试、云端调用或组件基准。
 - 构想来源：[v2 构想](../ideation/2026-09-24-paper30min-v2-revision.md) 的「解析组件进一步瘦身」「替代解析后端」及试验门槛；整合 v1.3.0 后该文件已在本分支。
 - 2026-09-30 核对的官方候选：百度[文档解析](https://ai.baidu.com/ai-doc/OCR/llxst5nn0)描述版面、阅读顺序和坐标；火山[智能文档解析](https://docs.volcengine.com/docs/Largemodelofimagegeneration/Callingmethod-2?lang=zh)描述逐页文本块、类别和坐标；阿里[文档智能大模型版](https://help.aliyun.com/zh/document-mind/developer-reference/document-parsing-large-model-version)描述本地文件上传、异步结果及版面坐标。均未在本轮实际调用。
 - 百炼[文档解析提交](https://help.aliyun.com/zh/model-studio/parse/parse-submit)支持请求坐标，但所示接口要求文件 URL；本地 PDF 的上传路径和账号条件仍须验证。[Qwen-OCR](https://help.aliyun.com/zh/model-studio/qwen-vl-ocr)描述专用文档与文字定位任务，是候选而非已选后端。
