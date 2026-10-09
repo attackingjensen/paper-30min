@@ -11,7 +11,8 @@
 
 ## 快速导航
 
-- 术语与既有取舍：[CONCEPTS.md](CONCEPTS.md)
+- 术语表：[CONCEPTS.md](CONCEPTS.md)
+- 关键决策：[docs/adr/](docs/adr/)
 - Issue 跟踪配置（Linear / GitHub）：[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)
 - 版本交付约定：[docs/release-workflow.md](docs/release-workflow.md)
 
@@ -38,8 +39,6 @@ GitHub CI 因账户问题暂不可用。恢复前以本机检查记录验证结�
 
 ## 项目知识
 
-`STRATEGY.md` 承接已确认的产品定位、用户、边界和方向，供探索与规划使用。[CONCEPTS.md](CONCEPTS.md) 提供阅读模型、关键术语与既有取舍。历史资料索引见 [docs/README.md](docs/README.md)。
+产品定位、边界与关键决策见 [docs/adr/](docs/adr/)；[CONCEPTS.md](CONCEPTS.md) 提供阅读模型与领域术语。历史资料索引见 [docs/README.md](docs/README.md)。
 
-`docs/solutions/` 是长期经验库。涉及设计取舍、非琐碎实现或排障时，按主题、模块或症状定向检索标题、`module`、`tags`、`problem_type` 等元数据，精读并复用匹配条目；无匹配时照常推进。
-
-经验沉淀归 OpenViking 长期记忆，日常蒸馏自动进行，不因完成普通任务自动建档；复盘与记忆修订按 `nk-retro` 由用户触发。所有本地提交通过 `nk-commit`。
+经验与排障沉淀存放于 OpenViking（含原 `docs/solutions/` 迁入的条目）。涉及设计取舍、非琐碎实现或排障时，先语义检索复用既有结论，无匹配时照常推进；日常蒸馏自动进行，复盘与记忆修订按 `nk-retro` 由用户触发，不因完成普通任务自动建档。所有本地提交通过 `nk-commit`。

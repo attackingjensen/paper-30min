@@ -16,4 +16,4 @@
 
 需要 Beta 试用时，可从尚未合并的版本分支提交构建、签名并发布 `vX.Y.Z-beta.N` 预发布；后续 Beta 仍留在同一版本分支和 PR。Beta 使用独立的 `latest-beta.json`，不替换稳定版更新入口。记录试用结果后，再决定是否准备正式版。
 
-正式版从已合并的 `main` 提交构建、签名并发布；Beta 升正式版也须重新核对版本、产物和签名。验签、远端附件及安装行为的不同证据见[签名发布经验](solutions/workflow-issues/signed-release-evidence-stages.md)。发布后直接在 `main` 提交并推送最终文档更新，必要时同步 `docs/releases/`；无需另开仅文档 PR。
+正式版从已合并的 `main` 提交构建、签名并发布；Beta 升正式版也须重新核对版本、产物和签名。验签、远端附件及安装行为的不同证据见 OpenViking 个人资源中的「Windows 签名发布的证据分层」经验（原 `docs/solutions/` 条目迁入）。发布后直接在 `main` 提交并推送最终文档更新，必要时同步 `docs/releases/`；无需另开仅文档 PR。

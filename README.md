@@ -60,10 +60,10 @@ paper-30min/
 ├── app/                 # Windows 正式客户端（Tauri 外壳 + Rust/JavaScript 桥接 + 可选 Docling 组件）
 ├── tools/               # 侧车构建、示例论文与 mock 模型等工具
 └── docs/                # 开发产物与文档
-    ├── plans/           #   按需生成的计划
-    └── solutions/       #   经验证的项目经验
+    ├── adr/             #   编号式关键决策记录
+    └── plans/           #   v1.4.0 实施计划（发布后删除）
 ```
 
 ## 开发协作
 
-使用已安装的 NexusKit 技能，按任务选择入口。任务与进度跟踪见 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)，产品方向见 [STRATEGY.md](STRATEGY.md)，概念与关键取舍见 [CONCEPTS.md](CONCEPTS.md)，项目事实和测试入口见 [AGENTS.md](AGENTS.md)。其他资料从 [docs/README.md](docs/README.md) 查找。产品阅读提示词与 NexusKit 开发技能分开维护。
+使用已安装的 NexusKit 技能，按任务选择入口。任务与进度跟踪见 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)，概念见 [CONCEPTS.md](CONCEPTS.md)，关键决策见 [docs/adr/](docs/adr/)，项目事实和测试入口见 [AGENTS.md](AGENTS.md)。其他资料从 [docs/README.md](docs/README.md) 查找。产品阅读提示词与 NexusKit 开发技能分开维护。
