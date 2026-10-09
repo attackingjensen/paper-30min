@@ -6,7 +6,7 @@
 
 从 [GitHub Releases](https://github.com/attackingjensen/paper-30min/releases) 下载最新的 `Paper30Min_x.x.x_x64-setup.exe`，双击安装即可（免管理员权限）。v1.2.0 起主程序安装包不内置本地解析组件；需要导入并解析新 PDF 时，在「设置 → 服务 → 解析模型」中按需安装，已有可用组件的升级用户无需重新下载。
 
-当前正式版为 [v1.3.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.3.0)。可选本地解析组件见 [Beta.1 发布页](https://github.com/attackingjensen/paper-30min/releases/tag/v1.2.0-beta.1)；组件 ZIP 不是主程序安装包。验收情况见 [docs/current.md](docs/current.md)。
+当前正式版为 [v1.3.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.3.0)。可选本地解析组件见 [Beta.1 发布页](https://github.com/attackingjensen/paper-30min/releases/tag/v1.2.0-beta.1)；组件 ZIP 不是主程序安装包。验收情况见 [v1.3.0 发布说明](docs/releases/v1.3.0.md)。
 
 首次启动书库内置一份「使用说明」。使用前打开右上角「设置」，填入任意 **OpenAI 兼容** 的大模型接口并「连接测试」：
 
@@ -66,4 +66,4 @@ paper-30min/
 
 ## 开发协作
 
-使用已安装的 NexusKit 技能，按任务选择入口。当前进度见 [docs/current.md](docs/current.md)，产品方向见 [STRATEGY.md](STRATEGY.md)，概念与关键取舍见 [CONCEPTS.md](CONCEPTS.md)，项目事实和测试入口见 [AGENTS.md](AGENTS.md)。其他资料从 [docs/README.md](docs/README.md) 查找。产品阅读提示词与 NexusKit 开发技能分开维护。
+使用已安装的 NexusKit 技能，按任务选择入口。任务与进度跟踪见 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)，产品方向见 [STRATEGY.md](STRATEGY.md)，概念与关键取舍见 [CONCEPTS.md](CONCEPTS.md)，项目事实和测试入口见 [AGENTS.md](AGENTS.md)。其他资料从 [docs/README.md](docs/README.md) 查找。产品阅读提示词与 NexusKit 开发技能分开维护。
