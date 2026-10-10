@@ -278,6 +278,25 @@ export async function setNumPages(paper, numPages) {
   return true;
 }
 
+/** 占位标题识别：云端导入先用文件名 / arXiv 编号占位（真实标题发布后由 backfillParsedTitle 回填）。 */
+function isPlaceholderTitle(paper) {
+  const title = paper?.title?.trim() || '';
+  if (!title) return false;
+  if (paper.arxivId && title === `arXiv ${paper.arxivId}`) return true;
+  const name = paper.pdfName?.replace(/\.pdf$/i, '');
+  return Boolean(name) && title === name;
+}
+
+/** 发布后回填真实标题：占位标题换成块模型识别的标题；未占位或无变化时不写入，返回是否发生了变化。 */
+export async function backfillParsedTitle(paper, parsedTitle) {
+  const title = String(parsedTitle ?? '').trim();
+  if (!title || title === paper.title || !isPlaceholderTitle(paper)) return false;
+  paper.title = title;
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+  return true;
+}
+
 // ---------------- 重新切分 ----------------
 
 function nonEmptyEntries(source) {

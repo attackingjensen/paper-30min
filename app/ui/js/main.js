@@ -86,6 +86,14 @@ async function publishParseCandidate(paperId, batchId, context = null) {
   }
   const input = { paperId, batchId, expectedBatchId: context?.expectedBatchId ?? null, overwriteConfirmed: !!context };
   await bridge.invoke('parsebatch.publish@1', input);
+  // 云端导入以文件名 / arXiv 编号作占位标题：发布后从块模型回填真实标题，回填失败不阻塞发布结果。
+  try {
+    const mapped = await readBlockModelJson(paperId);
+    const fresh = mapped?.title ? await store.get(paperId) : null;
+    if (fresh) await papers.backfillParsedTitle(fresh, mapped.title);
+  } catch (err) {
+    console.warn('标题回填失败：', err);
+  }
   await reloadPublishedPaper(paperId);
   return true;
 }
