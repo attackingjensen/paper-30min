@@ -722,6 +722,15 @@ fn execute(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Value, BridgeErro
     })();
     if let Ok(mut state) = stage.lock() {
         state.active = false;
+        // 封存成功后暂存目录不再服务恢复；失败或取消时保留供恢复。
+        if state.sealed.is_some()
+            && state.dir.exists()
+            && safe(ctx.library.root(), &state.dir).is_ok()
+        {
+            if let Err(error) = fs::remove_dir_all(&state.dir) {
+                eprintln!("视觉暂存目录清理失败: {error}");
+            }
+        }
     }
     if let Ok(mut entries) = stages().lock() {
         entries.remove(&(owner(&ctx.registry), ctx.task_id.clone()));

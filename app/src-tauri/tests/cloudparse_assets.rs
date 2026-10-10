@@ -318,6 +318,31 @@ fn cancellation_preserves_verified_images_and_complete_resume_seals_new_batch() 
 }
 
 #[test]
+fn successful_seal_removes_the_staging_directory() {
+    let (registry, library, dir) = candidate();
+    let task = start(&registry);
+    let plan = wait_plan(&registry, &library, &task);
+    let staging = dir
+        .path()
+        .join("operations/cloudassets/p")
+        .join(cloudassets::output_batch_id("parent"));
+    assert!(staging.join("run.json").is_file());
+    for r in plan["resources"].as_array().unwrap() {
+        upload(&registry, &library, &task, r).unwrap();
+    }
+    assert_eq!(
+        testkit::wait_terminal(&registry, &task, Duration::from_secs(30)).unwrap(),
+        TaskStatus::Succeeded,
+        "{:?}",
+        registry.get(&task)
+    );
+    assert!(!staging.exists(), "封存成功后暂存目录应被清理");
+    library
+        .pin_parse_batch("p", Some(&cloudassets::output_batch_id("parent")))
+        .unwrap();
+}
+
+#[test]
 fn invalid_image_and_unplanned_identity_do_not_complete_resources() {
     let (registry, library, _dir) = candidate();
     let task = start(&registry);
