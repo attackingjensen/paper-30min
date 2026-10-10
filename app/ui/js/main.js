@@ -1388,8 +1388,6 @@ async function refreshPaperRecord(paperId) {
       current = fresh;
       reader = view.setHasMap(reader, hasMapProduct(fresh.products));
     }
-    if (current?.id === fresh.id) {
-    }
     return fresh;
   } catch {
     return null;
