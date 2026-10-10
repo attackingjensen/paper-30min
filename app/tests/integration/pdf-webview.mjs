@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPort, tauriConfig, run,
   buildHost, launchWebView, stopWebView, closeServers, restoreLibraryBuild } from './webview-host.mjs';
 
@@ -12,9 +15,21 @@ const output = path.resolve(app, '../tmp', runId);
 await mkdir(output, { recursive: true });
 const report = { runId, identifier, platform: process.platform, node: process.version,
   input: 'CDP synthesized events; physical mouse/trackpad are separate manual checks', checks: [] };
+const checkFilter = process.env.PAPER30MIN_PDF_CHECK_FILTER;
+if (checkFilter) report.checkFilter = checkFilter;
 const requests = [];
 let responseMode = 'success';
+let baselineReader = false;
+const baselineRef = process.env.PAPER30MIN_PDF_BASELINE_REF;
+const baselineCommit = baselineRef ? execFileSync('git', ['rev-parse', baselineRef], { cwd: app, encoding: 'utf8' }).trim() : null;
+const originalReader = baselineCommit ? execFileSync('git', ['show', `${baselineCommit}:app/ui/js/pdf-reader.js`],
+  { cwd: app, encoding: 'utf8' }) : null;
 const server = createUiServer(async (req, res) => {
+  if (baselineReader && req.url === '/js/pdf-reader.js') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' });
+    res.end(originalReader);
+    return true;
+  }
   if (req.url === '/v1/chat/completions' && req.method === 'POST') {
     let body = '';
     for await (const chunk of req) body += chunk;
@@ -42,6 +57,10 @@ const errors = [];
 const invoke = (command, input = {}) => page.evaluate(({ command, input }) =>
   window.__TAURI__.core.invoke('bridge_invoke', { command, input }), { command, input });
 async function check(name, fn) {
+  if (checkFilter && !new RegExp(checkFilter).test(name)) {
+    (report.skippedChecks ??= []).push(name);
+    return;
+  }
   const start = Date.now();
   const details = await fn();
   report.checks.push({ name, elapsedMs: Date.now() - start, details });
@@ -51,7 +70,7 @@ async function openPaper(id) {
   const previous = await page.$('#pdf-pages canvas');
   const previousTitle = await page.locator('#reader-title').textContent();
   await page.locator('#nav-library').click();
-  await page.locator('.paper-card').filter({ hasText: `U5 ${id}` }).click();
+  await page.locator('.paper-card').filter({ has: page.getByText(`U5 ${id}`, { exact: true }) }).click();
   if (previous && previousTitle !== `U5 ${id}`) {
     await page.waitForFunction(canvas => !canvas.isConnected, previous);
     await previous.dispose();
@@ -66,8 +85,11 @@ async function jump(number) {
 async function painted() {
   await page.waitForFunction(() => {
     const canvases = [...document.querySelectorAll('#pdf-pages canvas')];
-    return canvases.length && canvases.every(canvas => Math.abs(canvas.width -
-      Math.ceil(canvas.parentElement.getBoundingClientRect().width * Math.min(devicePixelRatio, 2))) <= 2);
+    return canvases.length && canvases.every(canvas => {
+      const { width, height } = canvas.parentElement.getBoundingClientRect();
+      const ratio = Math.min(devicePixelRatio, 2, Math.sqrt(4 * 1024 * 1024 / (width * height)));
+      return Math.abs(canvas.width - Math.floor(width * ratio)) <= 2;
+    });
   });
 }
 async function savedChats(count) {
@@ -121,6 +143,7 @@ async function stopHost() {
 const scrollState = () => page.locator('#pdf-canvas-wrap').evaluate(node => ({ top: node.scrollTop, left: node.scrollLeft }));
 try {
   await run('python', [path.join(app, 'tests/integration/make_pdf_fixtures.py'), output]);
+  await run('python', [path.join(app, 'tests/integration/make_scanned_paper.py'), path.join(output, 'scan-paper.pdf')]);
   await run('cargo', ['run', '--manifest-path', 'src-tauri/Cargo.toml', '--example', 'pdf_webview_fixtures', '--',
     path.join(app, 'src-tauri/tests/fixtures/docling/1512.03385.json.gz'), path.join(output, 'blockmodel.json')],
   { ...process.env, TAURI_CONFIG: config });
@@ -143,6 +166,7 @@ try {
     ['formula', path.join(fixtureRoot, 'pdfparse_formula_graphics.pdf'), 1],
     ['long', path.join(output, 'long.pdf'), 150],
     ['mixed', path.join(output, 'mixed.pdf'), 3],
+    ['scan-paper', path.join(output, 'scan-paper.pdf'), 12],
   ];
   for (const [id, file, pages] of fixtures) {
     await invoke('library.putPaper@1', { paper: { id, title: `U5 ${id}`, numPages: pages,
@@ -392,17 +416,80 @@ try {
     return sizes;
   });
   await check('actual native narrow window remains readable in full PDF mode', async () => {
+    await openPaper('mixed');
     await page.evaluate(async () => {
       await window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(430, 760));
     });
     report.narrowNative = await page.evaluate(async () => ({ viewport: [innerWidth, innerHeight],
       native: await window.__TAURI__.window.getCurrentWindow().innerSize(),
       dpi: await window.__TAURI__.window.getCurrentWindow().scaleFactor() }));
-    await page.waitForFunction(() => innerWidth === 430);
+    // Native physical pixels round at fractional Windows display scaling.
+    await page.waitForFunction(() => Math.abs(innerWidth - 430) <= 1);
     await page.locator('#btn-pdf-mode').click();
     await painted();
     await page.screenshot({ path: path.join(output, 'narrow.png') });
     return page.evaluate(() => ({ viewport: [innerWidth, innerHeight], documentWidth: document.documentElement.scrollWidth }));
+  });
+  await check('reader raster budget and optional cold-host memory comparison', async () => {
+    const runs = [];
+    await invoke('settings.putPdfparse@1', { settings: { warmStart: false } });
+    const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+    const sources = { baselineCommit, baselineSha256: originalReader && sha256(originalReader),
+      worktreeSha256: sha256(await readFile(path.join(app, 'ui/js/pdf-reader.js'))) };
+    for (const baseline of baselineCommit ? [true, false] : [false]) {
+      await stopHost();
+      baselineReader = baseline;
+      await launch(executable);
+      await enter();
+      const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio }));
+      const file = path.join(output, baseline ? 'memory-before.jsonl' : 'memory-after.jsonl');
+      const sampler = spawn('powershell.exe', ['-NoProfile', '-File', path.join(app, 'tests/integration/installed-memory.ps1'),
+        '-RootPid', String(child.pid), '-OutputPath', file], { windowsHide: true, stdio: 'ignore' });
+      const samplerExit = once(sampler, 'exit');
+      const stages = [];
+      try {
+        for (const id of ['long', 'scan-paper', 'mixed', 'scan-paper']) {
+          await openPaper(id);
+          await jump(1);
+          await page.locator('#btn-pdf-fit').click();
+          for (let i = 0; i < 10; i++) await page.locator('#btn-pdf-zoom-in').click();
+          await page.waitForTimeout(600);
+          for (let i = 0; i < 12; i++) {
+            await page.locator(i % 4 < 2 ? '#btn-pdf-zoom-out' : '#btn-pdf-zoom-in').click();
+          }
+          await page.waitForTimeout(600);
+          await jump(id === 'mixed' ? 3 : 8);
+          await jump(1);
+          if (!baseline) await painted();
+          const surfaces = await page.locator('#pdf-pages canvas').evaluateAll(nodes => nodes.map(canvas => ({
+            width: canvas.width, height: canvas.height, pixels: canvas.width * canvas.height,
+          })));
+          if (!baseline) assert.ok(surfaces.every(surface => surface.pixels <= 4 * 1024 * 1024));
+          stages.push({ id, time: Date.now(), surfaces });
+        }
+        await page.screenshot({ path: path.join(output, baseline ? 'memory-before.png' : 'memory-after.png') });
+        const idleStarted = Date.now();
+        await page.waitForTimeout(5000);
+        await stopHost();
+        await samplerExit;
+        const samples = (await readFile(file, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+        assert.ok(samples.length >= 5);
+        assert.ok(samples.every(sample => !sample.processes.some(process => /python|docling/i.test(process.name))),
+          'reader memory probe must exclude parser warm-start processes');
+        runs.push({ baseline, stages, idleStarted, samples: samples.length,
+          viewport,
+          peakWorkingSetBytes: Math.max(...samples.map(sample => sample.workingSetBytes)),
+          peakPrivateBytes: Math.max(...samples.map(sample => sample.privateBytes)),
+          idle: samples.filter(sample => sample.time >= idleStarted),
+          sampleIntervalsMs: samples.slice(1).map((sample, index) => sample.time - samples[index].time),
+        });
+      } finally {
+        await stopHost();
+        await samplerExit;
+      }
+    }
+    baselineReader = false;
+    return { runs, sources, boundary: 'debug native host, cold process per version, 48 zoom inputs plus initial zooms; 5-second idle; no installed-release or 1 GiB acceptance claim' };
   });
   assert.deepEqual(errors, []);
   report.result = 'passed';
