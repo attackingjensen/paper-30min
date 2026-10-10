@@ -256,132 +256,132 @@ try {
   await copyFile(path.join(app, 'src-tauri/target/debug/examples/pdf_webview_host.exe'), executable);
   await launch();
   if (!readerReport) {
-  await check('isolated native library has no full local component', async () => {
-    report.component = await native('component_status');
-    assert.equal(report.component.ready, false, JSON.stringify(report.component));
-    assert.equal(report.component.installedVersion, '');
-    assert.ok((await bridge('app.info@1')).taskKinds.includes('cloudassets.prepare@1'));
-  });
-  let pageCount = 0, multiRegions = 0; const kinds = new Set();
-  for (const [index, id] of ['1412.6980', '1503.02531', '1512.03385', '1603.02754'].entries()) {
-    const paperId = `u5-${id}`, batchId = `u4-${id}`;
-    const pdf = await readFile(path.join(app, `src-tauri/tests/fixtures/regression/corpus/${id}.pdf`));
-    let raw, source = path.resolve(app, `../tmp/aistudio-pilot-20261006/${id}/result.jsonl`);
-    try { raw = await readFile(source); } catch { source = path.join(app, `src-tauri/tests/fixtures/aistudio/${id}.jsonl`); raw = await readFile(source); }
-    report.sources.push({ id, source, pdfSha256: digest(pdf), rawSha256: digest(raw) });
-    await seed(paperId, batchId, pdf, raw);
-    let current = await start(paperId, batchId), staged = [];
-    if (index === 0) await check('cancel during actual PDF render preserves one verified upload for resume', async () => {
-      const cancelled = await render(current.taskId, 'cancel');
-      assert.equal(cancelled.outcome.status, 'cancelled'); assert.equal(cancelled.stats.uploads.length, 1);
-      assert.equal(cancelled.stats.destroyed, 1); assert.equal(cancelled.stats.canvases, 0);
-      staged = cancelled.stats.uploads; report.cancellation = cancelled;
-      current = await start(paperId, batchId);
-      assert.deepEqual(current.plan.completedAttachmentIds, staged);
+    await check('isolated native library has no full local component', async () => {
+      report.component = await native('component_status');
+      assert.equal(report.component.ready, false, JSON.stringify(report.component));
+      assert.equal(report.component.installedVersion, '');
+      assert.ok((await bridge('app.info@1')).taskKinds.includes('cloudassets.prepare@1'));
     });
-    if (index === 1) await check('native window process interruption and restart recover persisted staged PNG', async () => {
-      const interrupted = render(current.taskId, 'disconnect').catch(() => {});
-      await page.waitForFunction(() => window.u5Render?.paused);
-      staged = await page.evaluate(() => window.u5Render.stats.uploads);
-      assert.equal(staged.length, 1);
-      await stop(); await interrupted; await launch();
-      current = await start(paperId, batchId);
-      assert.deepEqual(current.plan.completedAttachmentIds, staged);
-      report.restart = { staged, outputBatchId: current.plan.outputBatchId };
+    let pageCount = 0, multiRegions = 0; const kinds = new Set();
+    for (const [index, id] of ['1412.6980', '1503.02531', '1512.03385', '1603.02754'].entries()) {
+      const paperId = `u5-${id}`, batchId = `u4-${id}`;
+      const pdf = await readFile(path.join(app, `src-tauri/tests/fixtures/regression/corpus/${id}.pdf`));
+      let raw, source = path.resolve(app, `../tmp/aistudio-pilot-20261006/${id}/result.jsonl`);
+      try { raw = await readFile(source); } catch { source = path.join(app, `src-tauri/tests/fixtures/aistudio/${id}.jsonl`); raw = await readFile(source); }
+      report.sources.push({ id, source, pdfSha256: digest(pdf), rawSha256: digest(raw) });
+      await seed(paperId, batchId, pdf, raw);
+      let current = await start(paperId, batchId), staged = [];
+      if (index === 0) await check('cancel during actual PDF render preserves one verified upload for resume', async () => {
+        const cancelled = await render(current.taskId, 'cancel');
+        assert.equal(cancelled.outcome.status, 'cancelled'); assert.equal(cancelled.stats.uploads.length, 1);
+        assert.equal(cancelled.stats.destroyed, 1); assert.equal(cancelled.stats.canvases, 0);
+        staged = cancelled.stats.uploads; report.cancellation = cancelled;
+        current = await start(paperId, batchId);
+        assert.deepEqual(current.plan.completedAttachmentIds, staged);
+      });
+      if (index === 1) await check('native window process interruption and restart recover persisted staged PNG', async () => {
+        const interrupted = render(current.taskId, 'disconnect').catch(() => {});
+        await page.waitForFunction(() => window.u5Render?.paused);
+        staged = await page.evaluate(() => window.u5Render.stats.uploads);
+        assert.equal(staged.length, 1);
+        await stop(); await interrupted; await launch();
+        current = await start(paperId, batchId);
+        assert.deepEqual(current.plan.completedAttachmentIds, staged);
+        report.restart = { staged, outputBatchId: current.plan.outputBatchId };
+      });
+      await check(`${id}: offline native PNG preparation and immutable new candidate`, async () => {
+        const complete = await render(current.taskId);
+        assert.equal(complete.outcome.status, 'succeeded', JSON.stringify(complete.outcome.error));
+        assert.equal(complete.stats.maxCanvases, 1); assert.equal(complete.stats.canvases, 0);
+        assert.equal(complete.stats.reset, complete.stats.uploads.length); assert.equal(complete.stats.destroyed, 1);
+        assert.ok(complete.stats.pageCleanup > 0);
+        for (const id of staged) assert.ok(!complete.stats.uploads.includes(id), 'resumed ID must not rerender');
+        const validated = await validate(paperId, batchId, current.plan, complete.outcome.result);
+        pageCount += validated.assets.pages.length;
+        for (const asset of validated.assets.assets) {
+          assert.ok(asset.resources.length > 0);
+          if (asset.resources.some(resource => validated.pixels.find(image => image.id === resource.attachmentId)?.ink > 10)) kinds.add(asset.kind);
+          if (asset.resources.length > 1) multiRegions++;
+        }
+        report.papers.push({ paperId, parentBatchId: batchId, batchId: complete.outcome.result.batchId,
+          stats: complete.stats, memory: await memorySnapshot(), assets: validated.assets, pixels: validated.pixels });
+      });
+    }
+    await check('four complete PDF documents cover 49 pages, formulas tables figures and multiple regions', async () => {
+      assert.equal(pageCount, 49); for (const kind of ['figure', 'table', 'formula']) assert.ok(kinds.has(kind));
+      assert.ok(multiRegions > 0); report.coverage = { pageCount, kinds: [...kinds], multiRegions };
     });
-    await check(`${id}: offline native PNG preparation and immutable new candidate`, async () => {
-      const complete = await render(current.taskId);
+    await check('rotated and CropBox PDF tables use complete page evidence without fabricated crop', async () => {
+      const { pdf, raw } = geometryFixture(); await seed('u5-geometry', 'u4-geometry', pdf, raw);
+      const current = await start('u5-geometry', 'u4-geometry'), complete = await render(current.taskId);
       assert.equal(complete.outcome.status, 'succeeded', JSON.stringify(complete.outcome.error));
-      assert.equal(complete.stats.maxCanvases, 1); assert.equal(complete.stats.canvases, 0);
-      assert.equal(complete.stats.reset, complete.stats.uploads.length); assert.equal(complete.stats.destroyed, 1);
-      assert.ok(complete.stats.pageCleanup > 0);
-      for (const id of staged) assert.ok(!complete.stats.uploads.includes(id), 'resumed ID must not rerender');
-      const validated = await validate(paperId, batchId, current.plan, complete.outcome.result);
-      pageCount += validated.assets.pages.length;
-      for (const asset of validated.assets.assets) {
-        assert.ok(asset.resources.length > 0);
-        if (asset.resources.some(resource => validated.pixels.find(image => image.id === resource.attachmentId)?.ink > 10)) kinds.add(asset.kind);
-        if (asset.resources.length > 1) multiRegions++;
-      }
-      report.papers.push({ paperId, parentBatchId: batchId, batchId: complete.outcome.result.batchId,
-        stats: complete.stats, memory: await memorySnapshot(), assets: validated.assets, pixels: validated.pixels });
+      const validated = await validate('u5-geometry', 'u4-geometry', current.plan, complete.outcome.result);
+      assert.ok(validated.assets.assets.length >= 2);
+      assert.ok(validated.assets.assets.every(asset => asset.resources.every(resource => resource.bbox === null && resource.evidence === 'page')));
+      report.geometry = validated;
     });
-  }
-  await check('four complete PDF documents cover 49 pages, formulas tables figures and multiple regions', async () => {
-    assert.equal(pageCount, 49); for (const kind of ['figure', 'table', 'formula']) assert.ok(kinds.has(kind));
-    assert.ok(multiRegions > 0); report.coverage = { pageCount, kinds: [...kinds], multiRegions };
-  });
-  await check('rotated and CropBox PDF tables use complete page evidence without fabricated crop', async () => {
-    const { pdf, raw } = geometryFixture(); await seed('u5-geometry', 'u4-geometry', pdf, raw);
-    const current = await start('u5-geometry', 'u4-geometry'), complete = await render(current.taskId);
-    assert.equal(complete.outcome.status, 'succeeded', JSON.stringify(complete.outcome.error));
-    const validated = await validate('u5-geometry', 'u4-geometry', current.plan, complete.outcome.result);
-    assert.ok(validated.assets.assets.length >= 2);
-    assert.ok(validated.assets.assets.every(asset => asset.resources.every(resource => resource.bbox === null && resource.evidence === 'page')));
-    report.geometry = validated;
-  });
   }
   if (process.env.PAPER30MIN_U6 === '1') {
     if (!readerReport) {
-    await check('publish complete candidate then reject incomplete replacement and retain old snapshot', async () => {
-      const first = report.papers[0];
-      const { paper } = await bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: first.batchId, expectedBatchId: null });
-      assert.equal(paper.parseBatchId, first.batchId);
-      paper.products = [{ kind: 'map', partId: '', body: { problem: { text: 'OLD MAP', refs: [] }, method: { text: 'OLD METHOD', refs: [] } }, updatedAt: new Date().toISOString() }];
-      const image = await bridge('parsebatch.read@1', { snapshot: (await bridge('parsebatch.pin@1', { paperId: first.paperId })).snapshot, attachmentId: first.assets.pages[0].attachmentId });
-      await bridge('files.putAttachment@1', { paperId: first.paperId, attachment: { id: 'pdf-selection-history', name: 'selection.png', contentType: 'image/png', contentBase64: image.contentBase64 } });
-      await bridge('files.putAttachment@1', { paperId: first.paperId, attachment: { id: 'recall-history', name: 'recall.png', contentType: 'image/png', contentBase64: image.contentBase64 } });
-      paper.recallCard = { markdown: 'OLD RECALL', images: [{ id: 'old-recall-image', name: 'recall.png', attachmentId: 'recall-history' }] };
-      paper.chat = [{ role: 'user', content: 'OLD SELECTED TEXT', createdAt: new Date().toISOString(), bindingKind: 'pdf', assetIds: [], pdfSelection: { kind: 'area', text: 'OLD SELECTED TEXT', regions: [{ page: 1, bbox: [0, 0, 100, 100], pageSize: [612, 792] }], images: [{ attachmentId: 'pdf-selection-history' }], hits: [] } }];
-      await bridge('library.putPaper@1', { paper, expectedBatchId: first.batchId });
-      const pinned = (await bridge('parsebatch.pin@1', { paperId: first.paperId })).snapshot;
-      const model = await bridge('parsebatch.read@1', { snapshot: pinned, attachmentId: 'blockmodel.json' });
-      const pdf = await readFile(path.join(app, 'src-tauri/tests/fixtures/regression/corpus/1412.6980.pdf'));
-      const raw = await readFile(report.sources[0].source);
-      await seed(first.paperId, 'u6-reparse', pdf, raw);
-      await assert.rejects(bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: 'u6-reparse', expectedBatchId: first.batchId, overwriteConfirmed: true }));
-      assert.equal((await bridge('library.getPaper@1', { paperId: first.paperId })).paper.parseBatchId, first.batchId);
-      const preparing = await start(first.paperId, 'u6-reparse');
-      const complete = await render(preparing.taskId);
-      assert.equal(complete.outcome.status, 'succeeded', JSON.stringify(complete.outcome.error));
-      const next = complete.outcome.result.batchId;
-      await expectNativeError('parsebatch.publish@1', { paperId: first.paperId, batchId: next, expectedBatchId: first.batchId }, 'parse_replace_confirmation_required');
-      const published = (await bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: next, expectedBatchId: first.batchId, overwriteConfirmed: true })).paper;
-      assert.equal(published.parseBatchId, next); assert.equal(published.products.length, 0);
-      assert.equal(published.parseHistory.length, 1);
-      assert.equal(published.parseHistory[0].paper.products[0].body.problem.text, 'OLD MAP');
-      assert.equal(published.parseHistory[0].paper.chat[0].content, 'OLD SELECTED TEXT');
-      await expectNativeError('library.putPaper@1', { paper, expectedBatchId: first.batchId }, 'parse_batch_stale');
-      assert.equal((await bridge('parsebatch.read@1', { snapshot: pinned, attachmentId: 'blockmodel.json' })).contentBase64, model.contentBase64);
-      await bridge('files.cleanupPdfSelections@1', { paperId: first.paperId, attachmentIds: ['pdf-selection-history'] });
-      assert.ok((await bridge('files.getAttachment@1', { paperId: first.paperId, attachmentId: 'pdf-selection-history' })).attachment);
-      report.publication = { paperId: first.paperId, oldBatchId: first.batchId, batchId: next };
-    });
-    await check('restart retains current and historical pointer with complete export/import dependencies', async () => {
-      await stop(); await launch();
-      const id = report.publication.paperId;
-      const { paper } = await bridge('library.getPaper@1', { paperId: id });
-      assert.equal(paper.parseBatchId, report.publication.batchId); assert.equal(paper.parseHistory.length, 1);
-      const parseBatchExport = await bridge('parsebatch.export@1', { paperId: id });
-      assert.equal(parseBatchExport.batches.length, 2);
-      const exportFile = path.join(output, 'library-v2.json');
-      const selectionMeta = await bridge('files.getAttachment@1', { paperId: id, attachmentId: 'pdf-selection-history' });
-      const selection = await bridge('files.readRange@1', { paperId: id, attachmentId: 'pdf-selection-history', offset: 0, length: selectionMeta.attachment.size });
-      await writeFile(exportFile, JSON.stringify({ format: 'paper-30min-library', version: 2, papers: [{ ...paper, parseBatchExport, selectionAttachments: [{ id: 'pdf-selection-history', name: 'selection.png', contentType: 'image/png', sha256: selectionMeta.attachment.sha256, size: selectionMeta.attachment.size, contentBase64: selection.contentBase64 }], recallAttachments: [{ id: 'recall-history', name: 'recall.png', contentType: 'image/png', sha256: selectionMeta.attachment.sha256, size: selectionMeta.attachment.size, contentBase64: selection.contentBase64 }] }] }));
-      await bridge('library.deletePaper@1', { paperId: id });
-      const inspected = await bridge('migration.inspect@1', { sourcePath: exportFile });
-      assert.equal(inspected.errors.length, 0, JSON.stringify(inspected));
-      await bridge('migration.commit@1', { token: inspected.token });
-      const imported = (await bridge('library.getPaper@1', { paperId: id })).paper;
-      assert.equal(imported.parseHistory[0].paper.chat[0].content, 'OLD SELECTED TEXT');
-      assert.equal((await bridge('files.getAttachment@1', { paperId: id, attachmentId: 'recall-history' })).attachment.sha256, selectionMeta.attachment.sha256);
-      for (const batchId of [imported.parseBatchId, imported.parseHistory[0].batchId]) {
-        const { snapshot } = await bridge('parsebatch.pin@1', { paperId: id, batchId });
-        await bridge('parsebatch.read@1', { snapshot, attachmentId: 'pdf' });
-        await bridge('parsebatch.read@1', { snapshot, attachmentId: 'blockmodel.json' });
-        await bridge('cloudassets.manifest@1', { snapshot });
-      }
-    });
+      await check('publish complete candidate then reject incomplete replacement and retain old snapshot', async () => {
+        const first = report.papers[0];
+        const { paper } = await bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: first.batchId, expectedBatchId: null });
+        assert.equal(paper.parseBatchId, first.batchId);
+        paper.products = [{ kind: 'map', partId: '', body: { problem: { text: 'OLD MAP', refs: [] }, method: { text: 'OLD METHOD', refs: [] } }, updatedAt: new Date().toISOString() }];
+        const image = await bridge('parsebatch.read@1', { snapshot: (await bridge('parsebatch.pin@1', { paperId: first.paperId })).snapshot, attachmentId: first.assets.pages[0].attachmentId });
+        await bridge('files.putAttachment@1', { paperId: first.paperId, attachment: { id: 'pdf-selection-history', name: 'selection.png', contentType: 'image/png', contentBase64: image.contentBase64 } });
+        await bridge('files.putAttachment@1', { paperId: first.paperId, attachment: { id: 'recall-history', name: 'recall.png', contentType: 'image/png', contentBase64: image.contentBase64 } });
+        paper.recallCard = { markdown: 'OLD RECALL', images: [{ id: 'old-recall-image', name: 'recall.png', attachmentId: 'recall-history' }] };
+        paper.chat = [{ role: 'user', content: 'OLD SELECTED TEXT', createdAt: new Date().toISOString(), bindingKind: 'pdf', assetIds: [], pdfSelection: { kind: 'area', text: 'OLD SELECTED TEXT', regions: [{ page: 1, bbox: [0, 0, 100, 100], pageSize: [612, 792] }], images: [{ attachmentId: 'pdf-selection-history' }], hits: [] } }];
+        await bridge('library.putPaper@1', { paper, expectedBatchId: first.batchId });
+        const pinned = (await bridge('parsebatch.pin@1', { paperId: first.paperId })).snapshot;
+        const model = await bridge('parsebatch.read@1', { snapshot: pinned, attachmentId: 'blockmodel.json' });
+        const pdf = await readFile(path.join(app, 'src-tauri/tests/fixtures/regression/corpus/1412.6980.pdf'));
+        const raw = await readFile(report.sources[0].source);
+        await seed(first.paperId, 'u6-reparse', pdf, raw);
+        await assert.rejects(bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: 'u6-reparse', expectedBatchId: first.batchId, overwriteConfirmed: true }));
+        assert.equal((await bridge('library.getPaper@1', { paperId: first.paperId })).paper.parseBatchId, first.batchId);
+        const preparing = await start(first.paperId, 'u6-reparse');
+        const complete = await render(preparing.taskId);
+        assert.equal(complete.outcome.status, 'succeeded', JSON.stringify(complete.outcome.error));
+        const next = complete.outcome.result.batchId;
+        await expectNativeError('parsebatch.publish@1', { paperId: first.paperId, batchId: next, expectedBatchId: first.batchId }, 'parse_replace_confirmation_required');
+        const published = (await bridge('parsebatch.publish@1', { paperId: first.paperId, batchId: next, expectedBatchId: first.batchId, overwriteConfirmed: true })).paper;
+        assert.equal(published.parseBatchId, next); assert.equal(published.products.length, 0);
+        assert.equal(published.parseHistory.length, 1);
+        assert.equal(published.parseHistory[0].paper.products[0].body.problem.text, 'OLD MAP');
+        assert.equal(published.parseHistory[0].paper.chat[0].content, 'OLD SELECTED TEXT');
+        await expectNativeError('library.putPaper@1', { paper, expectedBatchId: first.batchId }, 'parse_batch_stale');
+        assert.equal((await bridge('parsebatch.read@1', { snapshot: pinned, attachmentId: 'blockmodel.json' })).contentBase64, model.contentBase64);
+        await bridge('files.cleanupPdfSelections@1', { paperId: first.paperId, attachmentIds: ['pdf-selection-history'] });
+        assert.ok((await bridge('files.getAttachment@1', { paperId: first.paperId, attachmentId: 'pdf-selection-history' })).attachment);
+        report.publication = { paperId: first.paperId, oldBatchId: first.batchId, batchId: next };
+      });
+      await check('restart retains current and historical pointer with complete export/import dependencies', async () => {
+        await stop(); await launch();
+        const id = report.publication.paperId;
+        const { paper } = await bridge('library.getPaper@1', { paperId: id });
+        assert.equal(paper.parseBatchId, report.publication.batchId); assert.equal(paper.parseHistory.length, 1);
+        const parseBatchExport = await bridge('parsebatch.export@1', { paperId: id });
+        assert.equal(parseBatchExport.batches.length, 2);
+        const exportFile = path.join(output, 'library-v2.json');
+        const selectionMeta = await bridge('files.getAttachment@1', { paperId: id, attachmentId: 'pdf-selection-history' });
+        const selection = await bridge('files.readRange@1', { paperId: id, attachmentId: 'pdf-selection-history', offset: 0, length: selectionMeta.attachment.size });
+        await writeFile(exportFile, JSON.stringify({ format: 'paper-30min-library', version: 2, papers: [{ ...paper, parseBatchExport, selectionAttachments: [{ id: 'pdf-selection-history', name: 'selection.png', contentType: 'image/png', sha256: selectionMeta.attachment.sha256, size: selectionMeta.attachment.size, contentBase64: selection.contentBase64 }], recallAttachments: [{ id: 'recall-history', name: 'recall.png', contentType: 'image/png', sha256: selectionMeta.attachment.sha256, size: selectionMeta.attachment.size, contentBase64: selection.contentBase64 }] }] }));
+        await bridge('library.deletePaper@1', { paperId: id });
+        const inspected = await bridge('migration.inspect@1', { sourcePath: exportFile });
+        assert.equal(inspected.errors.length, 0, JSON.stringify(inspected));
+        await bridge('migration.commit@1', { token: inspected.token });
+        const imported = (await bridge('library.getPaper@1', { paperId: id })).paper;
+        assert.equal(imported.parseHistory[0].paper.chat[0].content, 'OLD SELECTED TEXT');
+        assert.equal((await bridge('files.getAttachment@1', { paperId: id, attachmentId: 'recall-history' })).attachment.sha256, selectionMeta.attachment.sha256);
+        for (const batchId of [imported.parseBatchId, imported.parseHistory[0].batchId]) {
+          const { snapshot } = await bridge('parsebatch.pin@1', { paperId: id, batchId });
+          await bridge('parsebatch.read@1', { snapshot, attachmentId: 'pdf' });
+          await bridge('parsebatch.read@1', { snapshot, attachmentId: 'blockmodel.json' });
+          await bridge('cloudassets.manifest@1', { snapshot });
+        }
+      });
     }
     await check('reader groups reparse with rebuild and has no parser selector or history navigation', async () => {
       await page.reload();
