@@ -108,6 +108,8 @@ async fn pdfmap_source_regions(state: State<'_, AppState>, input: Value) -> Resu
     }).await.map_err(|err| BridgeError::internal(format!("来源恢复失败: {err}")))?
 }
 
+/// 7 命令白名单与 app/ui/bridge.js 的 parsebatch_read 分支双端手工同步，改动须同时对齐；
+/// 命令名 parsebatch_read 名不符实（实际含 publish/put 写操作），改名留 v2.0。
 #[tauri::command]
 async fn parsebatch_read(state: State<'_, AppState>, command: String, input: Value) -> Result<Value, BridgeError> {
     if !matches!(command.as_str(), "parsebatch.pin@1" | "parsebatch.read@1" | "parsebatch.publish@1" | "parsebatch.export@1" | "cloudassets.plan@1" | "cloudassets.put@1" | "cloudassets.manifest@1") {
