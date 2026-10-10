@@ -1323,7 +1323,11 @@ function renderMapTab() {
   const prerenderReady = prerenderAssetsReady(currentMapped, currentAttachmentIds);
   deepBtn.disabled = !reader.hasMap || partIds.length === 0 || isDeepDivingPaper(current.id) || !prerenderReady;
   rebuildBtn.disabled = isMappingPaper(current.id);
-  $('#btn-reparse').disabled = reparsingPapers.has(current.id) || isMappingPaper(current.id) || isDeepDivingPaper(current.id) || isSynthesizingPaper(current.id);
+  const reparseBtn = $('#btn-reparse');
+  // 已发布批次必有固定 pdf 附件（发布校验要求），不依赖瞬时 parseBatchSnapshot。
+  const pdfReady = Boolean(current.parseBatchId) || store.pdf.has(current);
+  reparseBtn.disabled = !pdfReady || reparsingPapers.has(current.id) || isMappingPaper(current.id) || isDeepDivingPaper(current.id) || isSynthesizingPaper(current.id);
+  reparseBtn.title = pdfReady ? '使用设置页选中的服务替换当前解析结果' : '未关联 PDF，无法重新解析';
   if (surface === 'map') renderMapPage();
   if (surface === 'section') renderSectionPage();
   updateReaderMeta();
@@ -3106,6 +3110,7 @@ async function attachPdf(file) {
     await refreshMapped(paper);
     destroyPdfViewer();
     updatePdfSidebar();
+    renderMapTab();
     await initPdfViewer();
   }
   toast('PDF 已关联，可与精读结果对照查看');
@@ -3221,6 +3226,7 @@ async function importArxiv() {
         await refreshPdfAttachment(target);
         if (current?.id === paper.id) {
           updatePdfSidebar();
+          renderMapTab();
           await initPdfViewer();
         }
         toast('arXiv PDF 已下载并关联');
