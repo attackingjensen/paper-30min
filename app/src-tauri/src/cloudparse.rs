@@ -57,7 +57,6 @@ struct Record {
     raw_sha256: Option<String>,
     failure_code: Option<String>,
     updated_at: String,
-    result_ready: bool,
 }
 fn record_dir(library: &Library, r: &Record) -> Result<PathBuf, BridgeError> {
     files::require_safe_segment(&r.paper_id, "paperId")?;
@@ -154,7 +153,6 @@ fn records(library: &Library, paper: Option<&str>) -> Result<Vec<Record>, Bridge
             if r.state == "submitting" {
                 r.state = "submit-unknown".into();
             }
-            r.result_ready = false;
             result.push(r);
         }
     }
@@ -683,7 +681,6 @@ fn execute(
         raw_sha256: None,
         failure_code: None,
         updated_at: files::now_iso(),
-        result_ready: false,
     });
     let outcome = (|| {
         if record.job_id.is_none() {
@@ -1077,7 +1074,6 @@ mod tests {
         assert_eq!(recovered.submissions, 0);
         assert_eq!(recovered.queries, 1);
         assert_eq!(result["job"]["state"], "downloaded");
-        assert_eq!(result["job"]["resultReady"], false);
         assert!(!status(&ctx.library, &json!({}))
             .unwrap()
             .to_string()
@@ -1316,7 +1312,6 @@ mod tests {
             raw_sha256: None,
             failure_code: None,
             updated_at: "".into(),
-            result_ready: false,
         };
         save(&ctx.library, &mut r).unwrap();
         assert_eq!(

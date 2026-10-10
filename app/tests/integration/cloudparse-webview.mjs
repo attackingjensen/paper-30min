@@ -206,7 +206,7 @@ try {
       batchId: 'cloud-fixture', provider: 'baidu', model: 'PaddleOCR-VL-1.6',
       options: { useDocOrientationClassify: false, useDocUnwarping: false, useChartRecognition: false },
       pdfSha256: saved.attachment.sha256, state: 'interrupted', jobId: 'fixture-job', rawSha256: null,
-      failureCode: 'cloud_network_error', updatedAt: new Date().toISOString(), resultReady: false,
+      failureCode: 'cloud_network_error', updatedAt: new Date().toISOString(),
     }));
     await page.reload();
     await page.locator('#su-enter').click();
@@ -215,7 +215,7 @@ try {
     await page.getByRole('button', { name: '恢复查询 / 取回', exact: true }).waitFor();
     const status = await bridge('cloudparse.status@1');
     assert.equal(status.jobs[0].jobId, 'fixture-job');
-    assert.equal(status.jobs[0].resultReady, false);
+    assert.equal(status.jobs[0].resultReady, undefined);
     assert.ok(!JSON.stringify(status).includes('fixture-token'));
     // Missing consent routes to settings before any task or network request.
     await page.getByRole('button', { name: '恢复查询 / 取回', exact: true }).click();
@@ -377,7 +377,7 @@ try {
     await writeFile(path.join(jobDir, 'result.jsonl'), raw);
     await writeFile(path.join(jobDir, 'run.json'), JSON.stringify({ schemaVersion: 1, paperId, batchId, provider: 'baidu', model: 'PaddleOCR-VL-1.6',
       options: { useDocOrientationClassify: false, useDocUnwarping: false, useChartRecognition: false }, pdfSha256: digest(pdf),
-      state: 'downloaded', jobId: 'offline-fixture', rawSha256: digest(raw), failureCode: null, updatedAt: new Date().toISOString(), resultReady: false }));
+      state: 'downloaded', jobId: 'offline-fixture', rawSha256: digest(raw), failureCode: null, updatedAt: new Date().toISOString() }));
     const started = await native('bridge_start', { kind: 'cloudparse.map@1', input: { paperId, batchId } });
     const deadline = Date.now() + 30000;
     let task;
