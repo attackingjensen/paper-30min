@@ -974,4 +974,144 @@ mod tests {
         assert_eq!(value["quality"], json!(86));
         assert_eq!(value["crops"][0]["bbox"], json!([1.0, 2.0, 3.0, 4.0]));
     }
+
+    // ---- webp_dimensions：手写容器解析的表驱动直接单测 ----
+
+    fn riff(chunks: &[u8]) -> Vec<u8> {
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&((chunks.len() + 4) as u32).to_le_bytes());
+        out.extend_from_slice(b"WEBP");
+        out.extend_from_slice(chunks);
+        out
+    }
+    fn chunk(fourcc: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = fourcc.to_vec();
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            out.push(0);
+        }
+        out
+    }
+    fn vp8(width: u32, height: u32) -> Vec<u8> {
+        // VP8 关键帧：3 字节帧头 + 起始码 + 两个 14 位小端尺寸。
+        let mut data = vec![0u8; 10];
+        data[3..6].copy_from_slice(b"\x9d\x01\x2a");
+        data[6..8].copy_from_slice(&((width as u16) & 0x3fff).to_le_bytes());
+        data[8..10].copy_from_slice(&((height as u16) & 0x3fff).to_le_bytes());
+        chunk(b"VP8 ", &data)
+    }
+    fn vp8l(width: u32, height: u32) -> Vec<u8> {
+        // VP8L：0x2f 签名 + 28 位打包尺寸（宽、高各 14 位、减一编码），高 4 位须为零。
+        let bits = ((width - 1) & 0x3fff) | (((height - 1) & 0x3fff) << 14);
+        let mut data = vec![0x2f];
+        data.extend_from_slice(&bits.to_le_bytes());
+        chunk(b"VP8L", &data)
+    }
+    fn vp8x(width: u32, height: u32, flags: u8) -> Vec<u8> {
+        // VP8X：旗标 + 3 保留字节 + 两个 24 位小端画布尺寸（减一编码）。
+        let mut data = vec![0u8; 10];
+        data[0] = flags;
+        data[4..7].copy_from_slice(&(width - 1).to_le_bytes()[..3]);
+        data[7..10].copy_from_slice(&(height - 1).to_le_bytes()[..3]);
+        chunk(b"VP8X", &data)
+    }
+
+    #[test]
+    fn webp_dimensions_accepts_vp8_vp8l_and_vp8x_containers() {
+        let cases: [(&str, Vec<u8>, Option<(u32, u32)>); 4] = [
+            ("VP8 关键帧", riff(&vp8(800, 600)), Some((800, 600))),
+            ("VP8L 无损", riff(&vp8l(1024, 768)), Some((1024, 768))),
+            (
+                "VP8X 画布与图像一致",
+                riff(&[vp8x(800, 600, 0), vp8(800, 600)].concat()),
+                Some((800, 600)),
+            ),
+            (
+                "未知块跳过且奇数尺寸块带填充字节",
+                riff(&[chunk(b"ICCP", &[1, 2, 3]), vp8(64, 48)].concat()),
+                Some((64, 48)),
+            ),
+        ];
+        for (name, bytes, expected) in cases {
+            assert_eq!(webp_dimensions(&bytes), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn webp_dimensions_rejects_every_invalid_branch() {
+        let mut bad_riff_magic = riff(&vp8(2, 2));
+        bad_riff_magic[0] = b'X';
+        let mut bad_webp_magic = riff(&vp8(2, 2));
+        bad_webp_magic[8] = b'X';
+        let mut size_mismatch = riff(&vp8(2, 2));
+        size_mismatch.push(0);
+        let mut vp8_not_keyframe_data = vec![0u8; 10];
+        vp8_not_keyframe_data[0] = 1;
+        vp8_not_keyframe_data[3..6].copy_from_slice(b"\x9d\x01\x2a");
+        let mut vp8_bad_signature_data = vec![0u8; 10];
+        vp8_bad_signature_data[3..6].copy_from_slice(b"\x9d\x01\x2b");
+        let mut vp8l_reserved_bits = vec![0x2f];
+        vp8l_reserved_bits.extend_from_slice(&(1u32 << 29).to_le_bytes());
+        let cases: [(&str, Vec<u8>); 23] = [
+            ("不足最小长度", vec![0u8; 19]),
+            ("RIFF 魔数错误", bad_riff_magic),
+            ("WEBP 魔数错误", bad_webp_magic),
+            ("RIFF 长度字段与文件长不一致", size_mismatch),
+            (
+                "块头截断",
+                riff(&[chunk(b"EXIF", &[]), vec![1, 2, 3, 4]].concat()),
+            ),
+            (
+                "块声明长度超出剩余字节",
+                riff(&[b"VP8 ".to_vec(), 10u32.to_le_bytes().to_vec(), vec![0u8; 4]].concat()),
+            ),
+            (
+                "VP8X 数据长度非 10",
+                riff(&[chunk(b"VP8X", &[0u8; 9]), vp8(2, 2)].concat()),
+            ),
+            (
+                "VP8X 动画旗标",
+                riff(&[vp8x(2, 2, 2), vp8(2, 2)].concat()),
+            ),
+            (
+                "VP8X 画布与图像尺寸不一致",
+                riff(&[vp8x(800, 600, 0), vp8(800, 601)].concat()),
+            ),
+            (
+                "VP8 重复图像块",
+                riff(&[vp8(2, 2), vp8(2, 2)].concat()),
+            ),
+            ("VP8 数据不足 10 字节", riff(&chunk(b"VP8 ", &[0u8; 9]))),
+            ("VP8 非关键帧", riff(&chunk(b"VP8 ", &vp8_not_keyframe_data))),
+            ("VP8 起始码错误", riff(&chunk(b"VP8 ", &vp8_bad_signature_data))),
+            (
+                "VP8L 重复图像块",
+                riff(&[vp8l(2, 2), vp8l(2, 2)].concat()),
+            ),
+            ("VP8L 数据不足 5 字节", riff(&chunk(b"VP8L", &[0x2f, 0, 0, 0]))),
+            ("VP8L 签名非 0x2f", riff(&chunk(b"VP8L", &[0x30, 0, 0, 0, 0]))),
+            ("VP8L 保留位非零", riff(&chunk(b"VP8L", &vp8l_reserved_bits))),
+            (
+                "ANIM 动画块",
+                riff(&[chunk(b"ANIM", &[0u8; 6]), vp8(2, 2)].concat()),
+            ),
+            (
+                "ANMF 动画帧块",
+                riff(&[vp8(2, 2), chunk(b"ANMF", &[0u8; 16])].concat()),
+            ),
+            ("无图像块", riff(&chunk(b"EXIF", &[1, 2]))),
+            ("VP8 零宽", riff(&vp8(0, 600))),
+            ("VP8 零高", riff(&vp8(800, 0))),
+            (
+                "末块奇数尺寸缺填充字节",
+                // chunk() 恒补填充字节，此分支须手工构造：有效图像块之后，EXIF 声明
+                // 奇数尺寸而文件缺填充字节，推进后 offset 越过文件尾；缺该守卫会误接受 (2,2)。
+                riff(&[vp8(2, 2), [b"EXIF".as_slice(), &3u32.to_le_bytes(), &[7, 8, 9]].concat()].concat()),
+            ),
+        ];
+        for (name, bytes) in cases {
+            assert_eq!(webp_dimensions(&bytes), None, "{name}");
+        }
+    }
 }
