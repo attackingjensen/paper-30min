@@ -253,7 +253,8 @@ struct RenderPayload {
 
 /// pdfassets.prerender@1：按 scope 渲染页图和/或裁切图。
 /// 输入: { paperId, scope?, doclingJsonPath?, pdfPath? }
-/// （scope 默认 all；all/crops 需要 doclingJsonPath；pdfPath 缺省 = 论文的 pdf 附件）。
+/// （scope 默认 all；all/crops 需要 doclingJsonPath；批次上下文——batchId 或论文已有解析批次——
+///  一律以批次封存的 PDF 为准并忽略显式 pdfPath；仅无批次上下文时 pdfPath 生效，缺省 = 论文的 pdf 附件）。
 /// 结果: { paperId, scope, pageAssets[], crops[], skippedCrops[], warnings[],
 ///         resident, sidecarPid?, sidecarReused?, sidecarFallback?,
 ///         blockModelAssetId?, elapsedMs, renderMs, encodeMs }
@@ -324,7 +325,8 @@ fn prerender_once(
         }
     };
 
-    // PDF 路径：显式参数优先，缺省取论文的 pdf 附件。
+    // PDF 路径：批次上下文以批次封存的 PDF 为准（显式 pdfPath 被忽略，保证与批次身份一致）；
+    // 无批次上下文时显式参数优先，缺省取论文的 pdf 附件。
     let default_pdf;
     let pdf_path = match pdf_path {
         _ if parent.is_some() => {
