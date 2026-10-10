@@ -352,6 +352,7 @@ fn initial_model_candidate(library: &Library) -> paper30min_lib::parsebatch::Par
                 pdf_sha256: sha,
                 provider: "docling".into(),
                 model: "local".into(),
+                // parseGeneration 是旧版写入的遗留字段（现行生产者已不再写），此处模拟存量数据形状。
                 options: json!({"parseGeneration":"initial"}),
                 raw_sha256: sha256_hex(&source),
                 attachments,

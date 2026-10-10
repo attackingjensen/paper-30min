@@ -146,14 +146,7 @@ impl Library {
                         .map(|r| &r.sha256)
                 && (current.batch_id == crate::cloudassets::output_batch_id(&previous.batch_id)
                     || current.options.get("parentBatchId").and_then(Value::as_str)
-                        == Some(previous.batch_id.as_str())
-                    || (previous
-                        .options
-                        .get("parseGeneration")
-                        .and_then(Value::as_str)
-                        .is_some()
-                        && previous.options["parseGeneration"]
-                            == current.options["parseGeneration"]))
+                        == Some(previous.batch_id.as_str()))
         });
         if (before.parse_batch_id.is_some() || had_legacy_model)
             && !same_generation
