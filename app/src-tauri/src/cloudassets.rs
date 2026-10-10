@@ -371,12 +371,23 @@ fn lookup(registry: &Arc<TaskRegistry>, input: &Value) -> Result<Arc<Mutex<Stage
     if snap.kind != "cloudassets.prepare@1" {
         return Err(invalid("Wrong visual task kind"));
     }
-    stages()
+    let stage = stages()
         .lock()
         .map_err(|_| invalid("Visual state unavailable"))?
         .get(&(owner(registry), task.to_string()))
-        .cloned()
-        .ok_or_else(|| BridgeError::new("visual_preparing", "Visual task is initializing", true))
+        .cloned();
+    match stage {
+        Some(stage) => Ok(stage),
+        // 任务已终结而暂存已回收：语义是「不再接收资源」，不是「正在初始化」。
+        None if snap.status.is_terminal() => {
+            Err(invalid("Visual task no longer accepts resources"))
+        }
+        None => Err(BridgeError::new(
+            "visual_preparing",
+            "Visual task is initializing",
+            true,
+        )),
+    }
 }
 pub(crate) fn plan(registry: &Arc<TaskRegistry>, input: &Value) -> Result<Value, BridgeError> {
     if let Some(task) = registry.get(required(input, "taskId")?) {

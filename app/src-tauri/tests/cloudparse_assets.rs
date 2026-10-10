@@ -375,6 +375,22 @@ fn sealed_batch_rerun_ignores_damaged_staging_residue() {
 }
 
 #[test]
+fn put_after_task_terminal_reports_ended_not_initializing() {
+    let (registry, library, _dir) = candidate();
+    let task = start(&registry);
+    let plan = wait_plan(&registry, &library, &task);
+    let r = plan["resources"][0].clone();
+    registry.request_cancel(&task).unwrap();
+    assert_eq!(
+        testkit::wait_terminal(&registry, &task, Duration::from_secs(10)).unwrap(),
+        TaskStatus::Cancelled
+    );
+    let error = upload(&registry, &library, &task, &r).unwrap_err();
+    assert_eq!(error.code, "invalid_input");
+    assert!(!error.retryable, "终态任务不得返回可重试错误");
+}
+
+#[test]
 fn invalid_image_and_unplanned_identity_do_not_complete_resources() {
     let (registry, library, _dir) = candidate();
     let task = start(&registry);
