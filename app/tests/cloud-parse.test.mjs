@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cloudTaskInput, cloudJobView, validateParserChoice } from '../ui/js/cloud-parse.js';
+import { cloudTaskInput, cloudJobView, cloudJobVisible, validateParserChoice } from '../ui/js/cloud-parse.js';
 
 test('cloud selection requires credentials and current upload consent; local needs neither', () => {
   assert.equal(validateParserChoice('local', {}).ok, true);
@@ -32,6 +32,26 @@ test('stored candidate metadata does not create user-facing verification status'
   assert.doesNotMatch(view.text, /候选|待校验|尚未发布/);
   assert.equal(view.canMap, true);
   assert.doesNotMatch(cloudJobView({ state: 'downloaded', candidateStored: true, visualCandidateStored: true }).text, /候选|待校验|尚未发布/);
+});
+
+test('downloaded job stays listed in the task center with a convert entry, running tasks hide it', () => {
+  const downloaded = { jobId: 'j', batchId: 'b', state: 'downloaded' };
+  assert.equal(cloudJobVisible(downloaded, false), true, 'downloaded 须有「转换 / 继续准备」入口');
+  assert.equal(cloudJobVisible(downloaded, true), false, '运行中云端任务接管时不列出');
+  assert.equal(cloudJobVisible({ jobId: 'j', state: 'poll-timeout' }, false), true);
+  assert.equal(cloudJobVisible({ state: 'remote-failed' }, false), true);
+  assert.equal(cloudJobVisible({}, false), false, '无任何动作的任务不列出');
+});
+
+test('downloaded row exits only after its chain is published, sealed candidate keeps the entry', () => {
+  const base = { jobId: 'j', batchId: 'b', state: 'downloaded' };
+  const sealed = { ...base, candidateStored: true, visualCandidateStored: true };
+  assert.equal(cloudJobView(sealed).canMap, true, '视觉已封存但未发布仍保留入口，不重新付费');
+  assert.equal(cloudJobVisible(sealed, false), true);
+  assert.equal(cloudJobView(sealed).text, '正文与视觉资源已就绪，待确认发布');
+  const published = { ...sealed, published: true };
+  assert.equal(cloudJobView(published).canMap, false);
+  assert.equal(cloudJobVisible(published, false), false, '发布后任务行不再滞留');
 });
 
 test('remote failure offers a confirmed new submission, while interruptions resume the old job', () => {

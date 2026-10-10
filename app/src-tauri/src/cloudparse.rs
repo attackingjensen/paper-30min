@@ -177,12 +177,19 @@ pub(crate) fn status(library: &Library, input: &Value) -> Result<Value, BridgeEr
                 Err(err) if err.code == "not_found" => false,
                 Err(err) => return Err(err),
             };
+            let output_batch = crate::cloudassets::output_batch_id(&record.batch_id);
             let visual_id = format!(
                 "parsebatch-{}",
-                files::sha256_hex(crate::cloudassets::output_batch_id(&record.batch_id).as_bytes())
+                files::sha256_hex(output_batch.as_bytes())
             );
             let visual_stored = match library.get_attachment(&record.paper_id, &visual_id) {
                 Ok(_) => true,
+                Err(err) if err.code == "not_found" => false,
+                Err(err) => return Err(err),
+            };
+            // 恢复入口只在该记录产出的视觉批次成为当前批次后收场；封存未发布不算完。
+            let published = match library.current_parse_batch_id(&record.paper_id) {
+                Ok(current) => current.as_deref() == Some(output_batch.as_str()),
                 Err(err) if err.code == "not_found" => false,
                 Err(err) => return Err(err),
             };
@@ -190,6 +197,7 @@ pub(crate) fn status(library: &Library, input: &Value) -> Result<Value, BridgeEr
                 .map_err(|_| error("cloud_record_invalid", "任务记录无效"))?;
             value["candidateStored"] = json!(candidate_stored);
             value["visualCandidateStored"] = json!(visual_stored);
+            value["published"] = json!(published);
             Ok(value)
         })
         .collect::<Result<Vec<_>, BridgeError>>()?;

@@ -391,6 +391,42 @@ fn put_after_task_terminal_reports_ended_not_initializing() {
 }
 
 #[test]
+fn job_status_published_tracks_current_batch_not_just_sealed_candidate() {
+    let (registry, library, dir) = candidate();
+    let pdf = include_bytes!("fixtures/regression/corpus/1412.6980.pdf");
+    let job = dir.path().join("operations/cloudparse/p/parent");
+    std::fs::create_dir_all(&job).unwrap();
+    std::fs::write(job.join("run.json"), json!({"schemaVersion":1,"paperId":"p","batchId":"parent","provider":"baidu","model":"PaddleOCR-VL-1.6","options":{"useDocOrientationClassify":false,"useDocUnwarping":false,"useChartRecognition":false},"pdfSha256":sha256_hex(pdf),"state":"downloaded","jobId":"fixture","rawSha256":null,"failureCode":null,"updatedAt":"2026-10-06T00:00:00Z","resultReady":false}).to_string()).unwrap();
+    let status = |library: &Library| {
+        bridge::invoke(&registry, library, "cloudparse.status@1", &json!({"paperId":"p"}))
+            .unwrap()["jobs"][0]
+            .clone()
+    };
+    let initial = status(&library);
+    assert_eq!(initial["visualCandidateStored"], false);
+    assert_eq!(initial["published"], false);
+    let task = start(&registry);
+    let plan = wait_plan(&registry, &library, &task);
+    for r in plan["resources"].as_array().unwrap() {
+        upload(&registry, &library, &task, r).unwrap();
+    }
+    assert_eq!(
+        testkit::wait_terminal(&registry, &task, Duration::from_secs(30)).unwrap(),
+        TaskStatus::Succeeded
+    );
+    let sealed = status(&library);
+    assert_eq!(sealed["visualCandidateStored"], true);
+    assert_eq!(sealed["published"], false, "封存不等于发布，恢复入口须保留");
+    let snapshot = library
+        .pin_parse_batch("p", Some(&cloudassets::output_batch_id("parent")))
+        .unwrap();
+    library
+        .publish_parse_batch(&snapshot, None, false, false, || Ok(()))
+        .unwrap();
+    assert_eq!(status(&library)["published"], true);
+}
+
+#[test]
 fn invalid_image_and_unplanned_identity_do_not_complete_resources() {
     let (registry, library, _dir) = candidate();
     let task = start(&registry);

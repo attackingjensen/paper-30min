@@ -8,7 +8,7 @@ import * as papers from './papers.js';
 import * as model from './model.js';
 import * as generation from './generation.js';
 import * as parser from './parser.js';
-import { cloudTaskInput, cloudJobView, validateParserChoice } from './cloud-parse.js';
+import { cloudTaskInput, cloudJobView, cloudJobVisible, validateParserChoice } from './cloud-parse.js';
 import { prepareCloudPdfAssets } from './cloud-pdf-assets.js';
 import { createTauriStore, bytesToBase64, base64ToBytes } from './store.js';
 import { renderMarkdown, renderStreamingTextInto, typesetMath } from './markdown.js';
@@ -3992,10 +3992,9 @@ async function pollTasks() {
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     const jobs = (await bridge.invoke('cloudparse.status@1', {}))?.jobs || [];
     cloudJobs = jobs.filter(job => {
-      const state = cloudJobView(job);
       const running = tasks.some(task => task.input?.paperId === job.paperId
         && !isTerminalStatus(task.status) && String(task.kind).startsWith('cloud'));
-      return !running && job.state !== 'downloaded' && (state.canResume || state.needsResubmit);
+      return cloudJobVisible(job, running);
     });
     if (currentView === 'tasks') renderTaskList(tasks);
   } catch (err) {
@@ -4052,6 +4051,7 @@ function renderTaskList(tasks) {
       if (provider !== 'baidu') { toast('当前设置使用本地解析，请在设置页切换后再恢复云端任务'); return; }
       await startCloudParse(job.paperId, resubmitConfirmed, job);
     };
+    if (state.canMap) action(job.visualCandidateStored ? '继续发布' : '转换 / 继续准备', () => startCloudParse(job.paperId, false, job));
     if (state.canResume) action('恢复查询 / 取回', () => resume());
     if (state.needsResubmit) action('重新提交…', async () => {
       const warning = job.state === 'remote-failed'

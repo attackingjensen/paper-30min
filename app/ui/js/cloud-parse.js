@@ -25,8 +25,11 @@ const LABELS = {
 
 export function cloudJobView(job = {}) {
   return {
-    text: LABELS[job.state] || job.state || '未知状态',
-    canMap: job.state === 'downloaded',
+    // 视觉候选已封存而尚未发布时如实标注；发布完成（published）后恢复入口才收场。
+    text: job.state === 'downloaded' && job.visualCandidateStored
+      ? '正文与视觉资源已就绪，待确认发布'
+      : (LABELS[job.state] || job.state || '未知状态'),
+    canMap: job.state === 'downloaded' && !job.published,
     canResume: Boolean(job.jobId) && !['downloaded', 'remote-failed'].includes(job.state),
     needsResubmit: job.state === 'remote-failed' || (!job.jobId && Boolean(job.state)),
     failure: {
@@ -40,4 +43,14 @@ export function cloudJobView(job = {}) {
       cloud_remote_failed: '百度远端解析失败，请查看服务控制台',
     }[job.failureCode] || (job.failureCode ? '任务未完成，请检查配置或恢复查询' : ''),
   };
+}
+
+/**
+ * 任务中心是否列出该云端任务：有运行中云端任务接管时不列出；
+ * 其余按可转换（已下载待转换）、可恢复、需重提的用户动作判定。
+ */
+export function cloudJobVisible(job, running) {
+  if (running) return false;
+  const state = cloudJobView(job);
+  return state.canMap || state.canResume || state.needsResubmit;
 }
