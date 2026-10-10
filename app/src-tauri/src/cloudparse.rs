@@ -57,7 +57,6 @@ struct Record {
     raw_sha256: Option<String>,
     failure_code: Option<String>,
     updated_at: String,
-    result_ready: bool,
 }
 fn record_dir(library: &Library, r: &Record) -> Result<PathBuf, BridgeError> {
     files::require_safe_segment(&r.paper_id, "paperId")?;
@@ -154,12 +153,22 @@ fn records(library: &Library, paper: Option<&str>) -> Result<Vec<Record>, Bridge
             if r.state == "submitting" {
                 r.state = "submit-unknown".into();
             }
-            r.result_ready = false;
             result.push(r);
         }
     }
-    result.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(result)
+    // RFC3339 小数秒为变长格式（time crate 去掉尾零，整秒无小数段），同秒记录的字符串序
+    // 与数值序可能相反（"…00Z" 字典序大于 "…00.5Z"），须解析后比较；无法解析视为记录损坏。
+    let mut timed = Vec::with_capacity(result.len());
+    for r in result {
+        let parsed = time::OffsetDateTime::parse(
+            &r.updated_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .map_err(|_| error("cloud_record_invalid", "云端任务记录损坏"))?;
+        timed.push((parsed, r));
+    }
+    timed.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(timed.into_iter().map(|(_, r)| r).collect())
 }
 pub(crate) fn status(library: &Library, input: &Value) -> Result<Value, BridgeError> {
     if input.get("paperId").is_some_and(|v| !v.is_string()) {
@@ -683,7 +692,6 @@ fn execute(
         raw_sha256: None,
         failure_code: None,
         updated_at: files::now_iso(),
-        result_ready: false,
     });
     let outcome = (|| {
         if record.job_id.is_none() {
@@ -959,6 +967,40 @@ mod tests {
     }
 
     #[test]
+    fn records_sort_by_parsed_timestamp_not_rfc3339_string() {
+        let (_dir, ctx) = env();
+        // RFC3339 小数秒变长（time crate 去掉尾零，整秒无小数段）：字符串序里
+        // "…00Z" 大于 "…00.5Z"，与数值序相反；排序须解析后比较，同秒记录不再错位。
+        let write = |batch_id: &str, updated_at: &str| {
+            let r = Record {
+                schema_version: 1,
+                paper_id: "p".into(),
+                batch_id: batch_id.into(),
+                provider: "baidu".into(),
+                model: MODEL.into(),
+                options: options(),
+                pdf_sha256: "abc".into(),
+                state: "failed".into(),
+                job_id: None,
+                raw_sha256: None,
+                failure_code: None,
+                updated_at: updated_at.into(),
+            };
+            let dir = record_dir(&ctx.library, &r).unwrap();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("run.json"), serde_json::to_vec(&r).unwrap()).unwrap();
+        };
+        write("exact-second", "2026-10-10T06:00:00Z");
+        write("half-second", "2026-10-10T06:00:00.5Z");
+        let jobs = records(&ctx.library, Some("p")).unwrap();
+        assert_eq!(
+            jobs.iter().map(|r| r.batch_id.as_str()).collect::<Vec<_>>(),
+            ["half-second", "exact-second"],
+            "同秒记录按解析后的时间排序：带小数秒的记录更新"
+        );
+    }
+
+    #[test]
     fn independent_registries_cannot_submit_while_same_paper_is_running() {
         let (dir, ctx) = env();
         let library = Arc::new(Library::open(dir.path()).unwrap());
@@ -1077,7 +1119,6 @@ mod tests {
         assert_eq!(recovered.submissions, 0);
         assert_eq!(recovered.queries, 1);
         assert_eq!(result["job"]["state"], "downloaded");
-        assert_eq!(result["job"]["resultReady"], false);
         assert!(!status(&ctx.library, &json!({}))
             .unwrap()
             .to_string()
@@ -1316,7 +1357,6 @@ mod tests {
             raw_sha256: None,
             failure_code: None,
             updated_at: "".into(),
-            result_ready: false,
         };
         save(&ctx.library, &mut r).unwrap();
         assert_eq!(

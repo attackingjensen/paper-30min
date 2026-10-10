@@ -396,7 +396,7 @@ fn job_status_published_tracks_current_batch_not_just_sealed_candidate() {
     let pdf = include_bytes!("fixtures/regression/corpus/1412.6980.pdf");
     let job = dir.path().join("operations/cloudparse/p/parent");
     std::fs::create_dir_all(&job).unwrap();
-    std::fs::write(job.join("run.json"), json!({"schemaVersion":1,"paperId":"p","batchId":"parent","provider":"baidu","model":"PaddleOCR-VL-1.6","options":{"useDocOrientationClassify":false,"useDocUnwarping":false,"useChartRecognition":false},"pdfSha256":sha256_hex(pdf),"state":"downloaded","jobId":"fixture","rawSha256":null,"failureCode":null,"updatedAt":"2026-10-06T00:00:00Z","resultReady":false}).to_string()).unwrap();
+    std::fs::write(job.join("run.json"), json!({"schemaVersion":1,"paperId":"p","batchId":"parent","provider":"baidu","model":"PaddleOCR-VL-1.6","options":{"useDocOrientationClassify":false,"useDocUnwarping":false,"useChartRecognition":false},"pdfSha256":sha256_hex(pdf),"state":"downloaded","jobId":"fixture","rawSha256":null,"failureCode":null,"updatedAt":"2026-10-06T00:00:00Z"}).to_string()).unwrap();
     let status = |library: &Library| {
         bridge::invoke(&registry, library, "cloudparse.status@1", &json!({"paperId":"p"}))
             .unwrap()["jobs"][0]

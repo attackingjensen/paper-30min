@@ -70,7 +70,7 @@ fn local_candidate(
                 pdf_sha256: sha,
                 provider: "docling".into(),
                 model: "local".into(),
-                options: json!({"parseGeneration":batch}),
+                options: json!({}),
                 raw_sha256: format!("{:x}", Sha256::digest(&source)),
                 attachments,
             },

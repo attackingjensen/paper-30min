@@ -43,6 +43,8 @@ pub const PARSE_BATCH_SCHEMA_VERSION: u32 = 1;
 const MAX_RESOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BATCH_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+/// 单批次附件数上限：约束清单体积与内存占用；cloudassets 的视觉资源配额由它推导。
+pub(crate) const MAX_BATCH_ATTACHMENTS: usize = 10000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -133,7 +135,7 @@ fn validate(manifest: &ParseBatchManifest, legacy: bool) -> Result<(), BridgeErr
             .checked_add(resource.size)
             .ok_or_else(|| BridgeError::invalid_input("批次大小无效"))?;
     }
-    if total > MAX_BATCH_BYTES || manifest.attachments.len() > 10000 {
+    if total > MAX_BATCH_BYTES || manifest.attachments.len() > MAX_BATCH_ATTACHMENTS {
         return Err(BridgeError::invalid_input("批次资源超过限制"));
     }
     Ok(())
@@ -157,14 +159,6 @@ impl Library {
     }
 
     /// Seal staged files one at a time; the immutable manifest is still written last.
-    pub fn write_parse_batch_paths(
-        &self,
-        manifest: ParseBatchManifest,
-        resources: BTreeMap<String, PathBuf>,
-    ) -> Result<ParseBatchManifest, BridgeError> {
-        self.write_parse_batch_paths_with_checkpoint(manifest, resources, || Ok(()))
-    }
-
     pub(crate) fn write_parse_batch_paths_with_checkpoint(
         &self,
         manifest: ParseBatchManifest,
@@ -199,7 +193,7 @@ impl Library {
                 .checked_add(size)
                 .ok_or_else(|| BridgeError::invalid_input("批次大小无效"))
         })?;
-        if total > MAX_BATCH_BYTES || resources.len() > 10000 {
+        if total > MAX_BATCH_BYTES || resources.len() > MAX_BATCH_ATTACHMENTS {
             return Err(BridgeError::invalid_input("批次资源超过限制"));
         }
         self.get_paper(&manifest.paper_id)?;
@@ -439,8 +433,6 @@ impl Library {
         if !old.legacy { return Ok(old); }
         let mut manifest = old.manifest.clone();
         manifest.batch_id = format!("frozen-{}", sha256_hex(serde_json::to_vec(&old.manifest).map_err(|_| stale())?.as_slice()));
-        if !manifest.options.is_object() { manifest.options = serde_json::json!({}); }
-        manifest.options["parseGeneration"] = serde_json::json!(manifest.batch_id);
         manifest.raw_sha256 = manifest.attachments.get("docling-source.json")
             .map(|r| r.sha256.clone()).unwrap_or_else(|| sha256_hex(b"legacy-without-source"));
         if let Ok(existing) = self.pin_parse_batch(paper_id, Some(&manifest.batch_id)) { return Ok(existing); }

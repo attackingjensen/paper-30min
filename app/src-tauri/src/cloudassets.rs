@@ -22,6 +22,9 @@ use std::{
 const MAX_IMAGE: usize = 8 * 1024 * 1024;
 const MAX_BATCH: u64 = 512 * 1024 * 1024;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// 视觉资源数上限：封存清单 = 父批次 3 件基础件（pdf / blockmodel.json / cloud-source.json）
+/// + 视觉资源 + 封存时新增的 visual-assets.json，总数不得越过批次附件上限。
+const MAX_VISUAL_RESOURCES: usize = crate::parsebatch::MAX_BATCH_ATTACHMENTS - 4;
 
 #[derive(Debug)]
 pub(crate) struct CloudAssetsPlan {
@@ -69,8 +72,8 @@ pub fn output_batch_id(parent: &str) -> String {
 fn invalid(message: &str) -> BridgeError {
     BridgeError::invalid_input(message)
 }
-fn io_error(_: std::io::Error) -> BridgeError {
-    BridgeError::internal("Visual staging I/O failed")
+fn io_error(path: &Path, err: std::io::Error) -> BridgeError {
+    BridgeError::internal(format!("Visual staging I/O failed: {}: {err}", path.display()))
 }
 fn required<'a>(input: &'a Value, name: &str) -> Result<&'a str, BridgeError> {
     input[name]
@@ -257,7 +260,7 @@ fn resources(assets: &VisualAssets) -> Result<BTreeMap<String, VisualResource>, 
             }
         }
     }
-    if result.len() > 9996 {
+    if result.len() > MAX_VISUAL_RESOURCES {
         return Err(invalid("Too many visual resources"));
     }
     Ok(result)
@@ -345,7 +348,6 @@ struct Record {
     completed: BTreeMap<String, Completed>,
 }
 struct Stage {
-    owner: usize,
     active: bool,
     dir: PathBuf,
     snapshot: ParseBatchSnapshot,
@@ -411,9 +413,6 @@ pub(crate) fn plan(registry: &Arc<TaskRegistry>, input: &Value) -> Result<Value,
     let stage = stage
         .lock()
         .map_err(|_| invalid("Visual state unavailable"))?;
-    if stage.owner != owner(registry) {
-        return Err(invalid("Visual task identity mismatch"));
-    }
     Ok(
         json!({"schemaVersion":1,"state":if stage.sealed.is_some(){"succeeded"}else{"ready"},
         "snapshot":stage.snapshot,"outputBatchId":stage.assets.batch_id,
@@ -452,11 +451,11 @@ fn write_atomic(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), BridgeErro
     if part.exists() {
         safe(root, &part)?;
     }
-    let mut file = fs::File::create(&part).map_err(io_error)?;
-    file.write_all(bytes).map_err(io_error)?;
-    file.sync_all().map_err(io_error)?;
+    let mut file = fs::File::create(&part).map_err(|e| io_error(&part, e))?;
+    file.write_all(bytes).map_err(|e| io_error(&part, e))?;
+    file.sync_all().map_err(|e| io_error(&part, e))?;
     drop(file);
-    fs::rename(part, path).map_err(io_error)
+    fs::rename(&part, path).map_err(|e| io_error(path, e))
 }
 pub(crate) fn put(
     registry: &Arc<TaskRegistry>,
@@ -468,8 +467,7 @@ pub(crate) fn put(
     let mut stage = stage
         .lock()
         .map_err(|_| invalid("Visual state unavailable"))?;
-    if stage.owner != owner(registry)
-        || !stage.active
+    if !stage.active
         || registry.get(task).is_none_or(|s| s.status.is_terminal())
         || registry.cancel_requested(task)
     {
@@ -536,7 +534,6 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
         .join(&plan.paper_id)
         .join(&assets.batch_id);
     let mut stage = Stage {
-        owner: owner(&ctx.registry),
         active: true,
         dir,
         snapshot: plan.snapshot.clone(),
@@ -570,17 +567,17 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
             .ok_or_else(|| invalid("Invalid staging path"))?;
     }
     safe(ctx.library.root(), probe)?;
-    fs::create_dir_all(&stage.dir).map_err(io_error)?;
+    fs::create_dir_all(&stage.dir).map_err(|e| io_error(&stage.dir, e))?;
     safe(ctx.library.root(), &stage.dir)?;
     let path = stage.dir.join("run.json");
     if path.exists() {
         safe(ctx.library.root(), &path)?;
         let mut bytes = Vec::new();
         fs::File::open(&path)
-            .map_err(io_error)?
+            .map_err(|e| io_error(&path, e))?
             .take(1024 * 1024 + 1)
             .read_to_end(&mut bytes)
-            .map_err(io_error)?;
+            .map_err(|e| io_error(&path, e))?;
         if bytes.len() > 1024 * 1024 {
             return Err(invalid("Visual record too large"));
         }
@@ -600,11 +597,11 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
             let image = stage.dir.join(&id);
             safe(ctx.library.root(), &image)?;
             let mut bytes = Vec::new();
-            fs::File::open(image)
-                .map_err(io_error)?
+            fs::File::open(&image)
+                .map_err(|e| io_error(&image, e))?
                 .take(MAX_IMAGE as u64 + 1)
                 .read_to_end(&mut bytes)
-                .map_err(io_error)?;
+                .map_err(|e| io_error(&image, e))?;
             if files::sha256_hex(&bytes) != complete.sha256 || bytes.len() as u64 != complete.size {
                 return Err(invalid("Resumed visual resource changed"));
             }
@@ -654,10 +651,10 @@ fn seal(ctx: &RunContext, stage: &mut Stage) -> Result<(), BridgeError> {
         safe(ctx.library.root(), &path)?;
         let mut bytes = Vec::new();
         fs::File::open(&path)
-            .map_err(io_error)?
+            .map_err(|e| io_error(&path, e))?
             .take(MAX_IMAGE as u64 + 1)
             .read_to_end(&mut bytes)
-            .map_err(io_error)?;
+            .map_err(|e| io_error(&path, e))?;
         if files::sha256_hex(&bytes) != complete.sha256 || bytes.len() as u64 != complete.size {
             return Err(invalid("Staged visual resource changed"));
         }

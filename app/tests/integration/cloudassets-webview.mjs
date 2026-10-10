@@ -78,7 +78,7 @@ async function seed(paperId, batchId, pdf, raw) {
     provider: 'baidu', model: 'PaddleOCR-VL-1.6',
     options: { useDocOrientationClassify: false, useDocUnwarping: false, useChartRecognition: false },
     pdfSha256: digest(pdf), rawSha256: digest(raw), state: 'downloaded', jobId: 'offline-fixture',
-    failureCode: null, updatedAt: new Date().toISOString(), resultReady: false,
+    failureCode: null, updatedAt: new Date().toISOString(),
   }));
   const { taskId } = await native('bridge_start', { kind: 'cloudparse.map@1', input: { paperId, batchId } });
   const task = await terminal(taskId); assert.equal(task.status, 'succeeded', JSON.stringify(task.error));

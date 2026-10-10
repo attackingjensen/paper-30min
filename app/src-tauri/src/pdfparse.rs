@@ -751,7 +751,7 @@ fn persist_convert_block_model(
     })).collect();
     let manifest = crate::parsebatch::ParseBatchManifest {
         schema_version:1,paper_id:paper_id.into(),batch_id:batch_id.clone(),pdf_sha256,provider:"docling".into(),model:"local".into(),
-        options:json!({"parseGeneration":batch_id}),raw_sha256,attachments,
+        options:json!({}),raw_sha256,attachments,
     };
     ctx.cancel_checkpoint()?;
     ctx.library.write_parse_batch(manifest,resources)?;

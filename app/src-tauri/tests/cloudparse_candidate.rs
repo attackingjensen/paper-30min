@@ -24,7 +24,7 @@ fn offline_conversion_stays_candidate_and_native_bridge_recovers_bound_sources()
     let job = dir.path().join("operations/cloudparse/p/batch");
     fs::create_dir_all(&job).unwrap();
     fs::write(job.join("result.jsonl"), raw).unwrap();
-    fs::write(job.join("run.json"), json!({"schemaVersion":1,"paperId":"p","batchId":"batch","provider":"baidu","model":"PaddleOCR-VL-1.6","options":{"useDocOrientationClassify":false,"useDocUnwarping":false,"useChartRecognition":false},"pdfSha256":digest(pdf),"state":"downloaded","jobId":"fixture","rawSha256":digest(raw),"failureCode":null,"updatedAt":"2026-10-06T00:00:00Z","resultReady":false}).to_string()).unwrap();
+    fs::write(job.join("run.json"), json!({"schemaVersion":1,"paperId":"p","batchId":"batch","provider":"baidu","model":"PaddleOCR-VL-1.6","options":{"useDocOrientationClassify":false,"useDocUnwarping":false,"useChartRecognition":false},"pdfSha256":digest(pdf),"state":"downloaded","jobId":"fixture","rawSha256":digest(raw),"failureCode":null,"updatedAt":"2026-10-06T00:00:00Z"}).to_string()).unwrap();
     let sink = testkit::Collector::new();
     let task = registry
         .start(

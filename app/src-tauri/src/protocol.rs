@@ -1030,14 +1030,8 @@ fn exec_get_figure(
     mapped: &MappedPaper,
     args: &Map<String, Value>,
 ) -> ToolOutcome {
+    // 云端分发由 execute_tool 按 preflight 结果裁决；到这里一定是本地视觉路径。
     let fig_id = args.get("fig_id").and_then(Value::as_str).unwrap_or("");
-    match load_cloud_visual_assets(library, snapshot, mapped) {
-        Ok(Some(visual)) => return exec_get_cloud_figure(library, snapshot, &visual, fig_id),
-        Err(error) => {
-            return tool_error_observation(TOOL_GET_FIGURE, "asset_missing", error.message)
-        }
-        Ok(None) => {}
-    }
     let entry = mapped
         .figures
         .iter()
