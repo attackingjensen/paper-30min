@@ -69,8 +69,8 @@ pub fn output_batch_id(parent: &str) -> String {
 fn invalid(message: &str) -> BridgeError {
     BridgeError::invalid_input(message)
 }
-fn io_error(_: std::io::Error) -> BridgeError {
-    BridgeError::internal("Visual staging I/O failed")
+fn io_error(path: &Path, err: std::io::Error) -> BridgeError {
+    BridgeError::internal(format!("Visual staging I/O failed: {}: {err}", path.display()))
 }
 fn required<'a>(input: &'a Value, name: &str) -> Result<&'a str, BridgeError> {
     input[name]
@@ -448,11 +448,11 @@ fn write_atomic(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), BridgeErro
     if part.exists() {
         safe(root, &part)?;
     }
-    let mut file = fs::File::create(&part).map_err(io_error)?;
-    file.write_all(bytes).map_err(io_error)?;
-    file.sync_all().map_err(io_error)?;
+    let mut file = fs::File::create(&part).map_err(|e| io_error(&part, e))?;
+    file.write_all(bytes).map_err(|e| io_error(&part, e))?;
+    file.sync_all().map_err(|e| io_error(&part, e))?;
     drop(file);
-    fs::rename(part, path).map_err(io_error)
+    fs::rename(&part, path).map_err(|e| io_error(path, e))
 }
 pub(crate) fn put(
     registry: &Arc<TaskRegistry>,
@@ -564,17 +564,17 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
             .ok_or_else(|| invalid("Invalid staging path"))?;
     }
     safe(ctx.library.root(), probe)?;
-    fs::create_dir_all(&stage.dir).map_err(io_error)?;
+    fs::create_dir_all(&stage.dir).map_err(|e| io_error(&stage.dir, e))?;
     safe(ctx.library.root(), &stage.dir)?;
     let path = stage.dir.join("run.json");
     if path.exists() {
         safe(ctx.library.root(), &path)?;
         let mut bytes = Vec::new();
         fs::File::open(&path)
-            .map_err(io_error)?
+            .map_err(|e| io_error(&path, e))?
             .take(1024 * 1024 + 1)
             .read_to_end(&mut bytes)
-            .map_err(io_error)?;
+            .map_err(|e| io_error(&path, e))?;
         if bytes.len() > 1024 * 1024 {
             return Err(invalid("Visual record too large"));
         }
@@ -594,11 +594,11 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
             let image = stage.dir.join(&id);
             safe(ctx.library.root(), &image)?;
             let mut bytes = Vec::new();
-            fs::File::open(image)
-                .map_err(io_error)?
+            fs::File::open(&image)
+                .map_err(|e| io_error(&image, e))?
                 .take(MAX_IMAGE as u64 + 1)
                 .read_to_end(&mut bytes)
-                .map_err(io_error)?;
+                .map_err(|e| io_error(&image, e))?;
             if files::sha256_hex(&bytes) != complete.sha256 || bytes.len() as u64 != complete.size {
                 return Err(invalid("Resumed visual resource changed"));
             }
@@ -648,10 +648,10 @@ fn seal(ctx: &RunContext, stage: &mut Stage) -> Result<(), BridgeError> {
         safe(ctx.library.root(), &path)?;
         let mut bytes = Vec::new();
         fs::File::open(&path)
-            .map_err(io_error)?
+            .map_err(|e| io_error(&path, e))?
             .take(MAX_IMAGE as u64 + 1)
             .read_to_end(&mut bytes)
-            .map_err(io_error)?;
+            .map_err(|e| io_error(&path, e))?;
         if files::sha256_hex(&bytes) != complete.sha256 || bytes.len() as u64 != complete.size {
             return Err(invalid("Staged visual resource changed"));
         }
