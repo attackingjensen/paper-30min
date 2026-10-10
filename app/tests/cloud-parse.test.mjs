@@ -22,7 +22,8 @@ test('accepted cloud job retry resumes without another paid submission', () => {
 
 test('raw download is explicitly pending integration and cancellation warns about remote billing', () => {
   assert.match(cloudJobView({ state: 'downloaded' }).text, /原始结果/);
-  assert.equal(cloudJobView({ state: 'downloaded' }).canResume, false);
+  assert.equal(cloudJobView({ state: 'downloaded', jobId: 'j' }).canResume, false,
+    'downloaded with a jobId stays non-resumable through the exclusion list, not via Boolean(undefined)');
   assert.match(cloudJobView({ state: 'cancelled', jobId: 'j' }).text, /计费/);
   assert.equal(cloudJobView({ state: 'cancelled', jobId: 'j' }).canResume, true);
 });
