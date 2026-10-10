@@ -1,46 +1,20 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
-import http from 'node:http';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { chromium } from 'playwright';
+import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPort, tauriConfig,
+  buildHost, launchWebView, stopWebView, closeServers, restoreLibraryBuild } from './webview-host.mjs';
 
-assert.equal(process.platform, 'win32', 'Windows WebView2 required');
-const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+assertWindowsHost();
 const identifier = `com.paper30min.cloudparse-webview-${Date.now()}`;
 const output = path.resolve(app, '../tmp', identifier);
 await mkdir(output, { recursive: true });
 const report = { checks: [], errors: [] };
-const server = http.createServer(async (req, res) => {
-  try {
-    const relative = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).replace(/^\/+/, '') || 'index.html';
-    const root = path.resolve(app, 'ui');
-    const target = path.resolve(root, relative);
-    assert.ok(target.startsWith(root + path.sep));
-    const bytes = await readFile(target);
-    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.pdf': 'application/pdf' };
-    res.writeHead(200, { 'Content-Type': types[path.extname(target)] || 'application/octet-stream' });
-    res.end(bytes);
-  } catch { res.writeHead(404); res.end(); }
-});
-async function listen(handle) {
-  handle.listen(0, '127.0.0.1'); await once(handle, 'listening'); return handle.address().port;
-}
+const server = createUiServer();
 const url = `http://127.0.0.1:${await listen(server)}`;
-const probe = http.createServer();
-const debugPort = await listen(probe);
-await new Promise(resolve => probe.close(resolve));
-const config = JSON.stringify({ identifier, build: { devUrl: url },
-  app: { windows: [{ label: 'main', title: 'Paper30Min cloud parse integration', width: 1280, height: 900 }] },
-});
+const debugPort = await claimDebugPort();
+const config = tauriConfig({ identifier, url, title: 'Paper30Min cloud parse integration' });
 let child, browser, page;
-async function run(command, args, env = process.env) {
-  const handle = spawn(command, args, { cwd: app, env, stdio: 'inherit', windowsHide: true });
-  const [code] = await once(handle, 'exit'); assert.equal(code, 0);
-}
 async function native(command, args = {}) {
   const result = await page.evaluate(async ({ command, args }) => {
     try { return { ok: true, value: await window.__TAURI__.core.invoke(command, args) }; }
@@ -52,24 +26,9 @@ async function native(command, args = {}) {
 const bridge = (command, input = {}) => native('bridge_invoke', { command, input });
 async function check(name, fn) { await fn(); report.checks.push(name); console.log(`PASS ${name}`); }
 try {
-  await run('cargo', ['rustc', '--offline', '--manifest-path', 'src-tauri/Cargo.toml', '--example', 'pdf_webview_host', '--',
-    '-C', 'link-arg=/MANIFEST:EMBED'], { ...process.env, TAURI_CONFIG: config });
-  const executable = path.join(output, 'paper30min.exe');
-  await copyFile(path.join(app, 'src-tauri/target/debug/examples/pdf_webview_host.exe'), executable);
-  child = spawn(executable, [], { cwd: output, env: { ...process.env,
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1`,
-  }, stdio: 'ignore', windowsHide: true });
-  const deadline = Date.now() + 45000;
-  while (!browser && Date.now() < deadline) {
-    assert.equal(child.exitCode, null);
-    try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`); }
-    catch { await new Promise(resolve => setTimeout(resolve, 200)); }
-  }
-  assert.ok(browser, 'native WebView2 host must start');
-  page = browser.contexts()[0].pages()[0];
-  page.setDefaultTimeout(15000);
-  page.on('pageerror', error => report.errors.push(error.message));
-  await page.waitForFunction(() => window.__TAURI__?.core);
+  const executable = await buildHost({ config, output });
+  ({ child, browser, page } = await launchWebView({ executable, cwd: output, debugPort,
+    onPageError: error => report.errors.push(error.message) }));
   const library = await bridge('library.info@1');
   assert.equal(path.basename(library.dataRoot), identifier, 'must use isolated library');
   await bridge('settings.putUi@1', { settings: { welcomeSeeded: true } });
@@ -431,9 +390,8 @@ try {
   if (page) await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
 } finally {
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
-  if (browser) await browser.close();
-  if (child && child.exitCode === null) { const stopped = once(child, 'exit'); child.kill(); await stopped; }
-  server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
-  await run('cargo', ['build', '--offline', '--manifest-path', 'src-tauri/Cargo.toml', '--lib']);
+  await stopWebView({ child, browser });
+  await closeServers(server);
+  await restoreLibraryBuild();
   console.log(`Report: ${output}`);
 }

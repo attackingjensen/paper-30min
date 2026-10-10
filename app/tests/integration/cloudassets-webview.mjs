@@ -1,16 +1,13 @@
 import assert from 'node:assert/strict';
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { once } from 'node:events';
-import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
-import http from 'node:http';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { chromium } from 'playwright';
+import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPort, tauriConfig,
+  buildHost, launchWebView, stopWebView, closeServers, restoreLibraryBuild } from './webview-host.mjs';
 
-assert.equal(process.platform, 'win32', 'Windows WebView2 required');
-const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+assertWindowsHost();
 const readerReportPath = process.env.PAPER30MIN_U6_READER_REPORT;
 const readerReport = readerReportPath ? JSON.parse(await readFile(readerReportPath, 'utf8')) : null;
 if (readerReport) assert.equal(readerReport.result, 'passed');
@@ -20,62 +17,28 @@ const output = path.resolve(app, '../tmp', readerReport ? `${identifier}-reader-
 await mkdir(output, { recursive: true });
 const report = readerReport ? { ...readerReport, checks: [], errors: [], reusedReport: readerReportPath } : { checks: [], errors: [], sources: [], papers: [] };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
-const server = http.createServer(async (req, res) => {
-  try {
-    const relative = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).replace(/^\/+/, '') || 'index.html';
-    const root = path.resolve(app, 'ui'), target = path.resolve(root, relative);
-    assert.ok(target.startsWith(root + path.sep));
-    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
-    res.writeHead(200, { 'Content-Type': types[path.extname(target)] || 'application/octet-stream' });
-    res.end(await readFile(target));
-  } catch { res.writeHead(404); res.end(); }
-});
-async function listen(handle) {
-  handle.listen(0, '127.0.0.1'); await once(handle, 'listening'); return handle.address().port;
-}
+const server = createUiServer();
 const url = `http://127.0.0.1:${await listen(server)}`;
-const probe = http.createServer(), debugPort = await listen(probe);
-await new Promise(resolve => probe.close(resolve));
-const config = JSON.stringify({ identifier, build: { devUrl: url }, app: {
-  windows: [{ label: 'main', title: 'Paper30Min visual assets integration', width: 1280, height: 900 }],
-} });
+const debugPort = await claimDebugPort();
+const config = tauriConfig({ identifier, url, title: 'Paper30Min visual assets integration' });
 let child, browser, page, library;
-const executable = path.join(output, 'paper30min.exe');
+let executable;
 async function memorySnapshot() {
   const script = `$all = Get-CimInstance Win32_Process; $ids = [System.Collections.Generic.HashSet[int]]::new(); [void]$ids.Add(${child.pid}); do { $added = $false; foreach ($p in $all) { if ($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)) { $added = $true } } } while ($added); @(Get-Process -Id @($ids) -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,WorkingSet64,PeakWorkingSet64) | ConvertTo-Json -Compress`;
   const { stdout } = await promisify(execFile)('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true });
   const heap = await (await browser.contexts()[0].newCDPSession(page)).send('Runtime.getHeapUsage');
   return { processes: JSON.parse(stdout), heap };
 }
-async function run(command, args, env = process.env) {
-  const handle = spawn(command, args, { cwd: app, env, stdio: 'inherit', windowsHide: true });
-  const [code] = await once(handle, 'exit'); assert.equal(code, 0);
-}
 async function launch() {
-  child = spawn(executable, [], { cwd: output, env: { ...process.env,
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1`,
-  }, stdio: 'ignore', windowsHide: true });
-  const deadline = Date.now() + 90000;
-  let connectionError;
-  while (!browser && Date.now() < deadline) {
-    assert.equal(child.exitCode, null);
-    try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`); }
-    catch (error) { connectionError = error.message; await new Promise(resolve => setTimeout(resolve, 200)); }
-  }
-  assert.ok(browser, `native host must start: ${connectionError}`);
-  page = browser.contexts()[0].pages()[0]; page.setDefaultTimeout(30000);
-  page.on('pageerror', error => report.errors.push(error.message));
-  await page.waitForFunction(() => window.__TAURI__?.core && window.pdfjsLib);
+  ({ child, browser, page } = await launchWebView({ executable, cwd: output, debugPort, deadlineMs: 90000, pageTimeout: 30000,
+    onPageError: error => report.errors.push(error.message),
+    ready: () => window.__TAURI__?.core && window.pdfjsLib }));
   library = await bridge('library.info@1');
   assert.equal(path.basename(library.dataRoot), identifier, 'isolated library required');
 }
 async function stop() {
-  if (browser) { await browser.close(); browser = null; }
-  if (child && child.exitCode === null) {
-    const stopped = once(child, 'exit');
-    const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-    await once(killer, 'exit'); await stopped;
-  }
+  await stopWebView({ child, browser });
+  child = browser = page = null;
 }
 async function native(command, args = {}) {
   return page.evaluate(({ command, args }) => window.__TAURI__.core.invoke(command, args), { command, args });
@@ -252,8 +215,7 @@ function geometryFixture() {
   return { pdf: Buffer.from(pdf), raw: Buffer.from(raw) };
 }
 try {
-  await run('cargo', ['rustc', '--offline', '--manifest-path', 'src-tauri/Cargo.toml', '--example', 'pdf_webview_host', '--', '-C', 'link-arg=/MANIFEST:EMBED'], { ...process.env, TAURI_CONFIG: config });
-  await copyFile(path.join(app, 'src-tauri/target/debug/examples/pdf_webview_host.exe'), executable);
+  executable = await buildHost({ config, output });
   await launch();
   if (!readerReport) {
     await check('isolated native library has no full local component', async () => {
@@ -531,7 +493,7 @@ try {
   if (page) await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
 } finally {
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
-  await stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
-  await run('cargo', ['build', '--offline', '--manifest-path', 'src-tauri/Cargo.toml', '--lib']);
+  await stop(); await closeServers(server);
+  await restoreLibraryBuild();
   console.log(`Report: ${output}`);
 }

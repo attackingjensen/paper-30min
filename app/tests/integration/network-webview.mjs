@@ -1,14 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPort, tauriConfig,
+  buildHost, launchWebView, stopWebView, closeServers, restoreLibraryBuild } from './webview-host.mjs';
 
-assert.equal(process.platform, 'win32', 'Windows WebView2 required');
-const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+assertWindowsHost();
 const identifier = `com.paper30min.network-webview-${Date.now()}`;
 const output = path.resolve(app, '../tmp', identifier);
 await mkdir(output, { recursive: true });
@@ -28,54 +25,36 @@ const proxy = http.createServer((req, res) => {
   res.writeHead(403, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: { message: 'blocked by fixture proxy' } }));
 });
-const server = http.createServer(async (req, res) => {
+const server = createUiServer((req, res) => {
   if (req.url === '/latest.json') {
     originHits++;
-    if (!updateAvailable) { res.writeHead(204); res.end(); return; }
+    if (!updateAvailable) { res.writeHead(204); res.end(); return true; }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ version: '9.9.9', url: `${url}/fixture.bin`, signature: signed.signature })); return;
+    res.end(JSON.stringify({ version: '9.9.9', url: `${url}/fixture.bin`, signature: signed.signature })); return true;
   }
-  if (req.url === '/fixture.bin') { originHits++; res.writeHead(200); res.end(updateBytes); return; }
+  if (req.url === '/fixture.bin') { originHits++; res.writeHead(200); res.end(updateBytes); return true; }
   if (req.url === '/v1/models') {
     originHits++;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ data: [{ id: 'fixture' }] })); return;
+    res.end(JSON.stringify({ data: [{ id: 'fixture' }] })); return true;
   }
   if (req.url === '/v1/chat/completions') {
     originHits++;
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-    res.end('data: {"choices":[{"delta":{"content":"direct fixture"}}]}\n\ndata: [DONE]\n\n'); return;
+    res.end('data: {"choices":[{"delta":{"content":"direct fixture"}}]}\n\ndata: [DONE]\n\n'); return true;
   }
   if (req.url === '/text' || req.url === '/paper.pdf') {
     originHits++;
-    res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('fixture bytes'); return;
+    res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('fixture bytes'); return true;
   }
-  try {
-    const relative = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).replace(/^\/+/, '') || 'index.html';
-    const root = path.resolve(app, 'ui');
-    const target = path.resolve(root, relative);
-    if (!target.startsWith(root + path.sep)) throw new Error('outside UI');
-    const bytes = await readFile(target);
-    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
-    res.writeHead(200, { 'Content-Type': types[path.extname(target)] || 'application/octet-stream' });
-    res.end(bytes);
-  } catch { res.writeHead(404); res.end(); }
+  return false;
 });
-async function listen(server) { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port; }
 const url = `http://127.0.0.1:${await listen(server)}`;
 const proxyUrl = `http://127.0.0.1:${await listen(proxy)}`;
-const probe = http.createServer();
-const debugPort = await listen(probe);
-await new Promise(resolve => probe.close(resolve));
-const config = JSON.stringify({ identifier, build: { devUrl: url },
-  plugins: { updater: { pubkey: signed.pubkey, endpoints: [`${url}/latest.json`] } },
-  app: { windows: [{ label: 'main', title: 'Paper30Min network integration', width: 1280, height: 900 }] },
-});
+const debugPort = await claimDebugPort();
+const config = tauriConfig({ identifier, url, title: 'Paper30Min network integration',
+  plugins: { updater: { pubkey: signed.pubkey, endpoints: [`${url}/latest.json`] } } });
 let child, browser, page;
-async function run(command, args, env = process.env) {
-  const handle = spawn(command, args, { cwd: app, env, stdio: 'inherit', windowsHide: true });
-  const [code] = await once(handle, 'exit'); assert.equal(code, 0);
-}
 async function native(command, args = {}) {
   const result = await page.evaluate(async ({ command, args }) => {
     try { return { ok: true, value: await window.__TAURI__.core.invoke(command, args) }; }
@@ -114,26 +93,11 @@ async function saveMode(mode) {
   assert.equal(await page.locator('#network-settings-status').textContent(), '网络设置已保存');
 }
 try {
-  await run('cargo', ['rustc', '--offline', '--manifest-path', 'src-tauri/Cargo.toml', '--example', 'pdf_webview_host', '--',
-    '-C', 'link-arg=/MANIFEST:EMBED'], { ...process.env, TAURI_CONFIG: config });
-  const executable = path.join(output, 'paper30min.exe');
-  await copyFile(path.join(app, 'src-tauri/target/debug/examples/pdf_webview_host.exe'), executable);
-  const env = { ...process.env, HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, ALL_PROXY: proxyUrl,
-    http_proxy: proxyUrl, https_proxy: proxyUrl, all_proxy: proxyUrl, NO_PROXY: '', no_proxy: '',
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1 --no-proxy-server`,
-  };
-  child = spawn(executable, [], { cwd: app, env, stdio: 'ignore', windowsHide: true });
-  const deadline = Date.now() + 45000;
-  while (!browser && Date.now() < deadline) {
-    assert.equal(child.exitCode, null);
-    try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`); }
-    catch { await new Promise(resolve => setTimeout(resolve, 200)); }
-  }
-  assert.ok(browser, 'native WebView2 host must start');
-  page = browser.contexts()[0].pages()[0];
-  page.setDefaultTimeout(15000);
-  page.on('pageerror', error => report.errors.push(error.message));
-  await page.waitForFunction(() => window.__TAURI__?.core);
+  const executable = await buildHost({ config, output });
+  const env = { HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, ALL_PROXY: proxyUrl,
+    http_proxy: proxyUrl, https_proxy: proxyUrl, all_proxy: proxyUrl, NO_PROXY: '', no_proxy: '' };
+  ({ child, browser, page } = await launchWebView({ executable, cwd: app, debugPort, env, browserArgs: ' --no-proxy-server',
+    onPageError: error => report.errors.push(error.message) }));
   const library = await bridge('library.info@1');
   assert.equal(path.basename(library.dataRoot), identifier, 'must use an isolated library');
   await bridge('settings.putUi@1', { settings: { welcomeSeeded: true } });
@@ -248,9 +212,8 @@ try {
 } finally {
   report.proxyHits = proxyHits; report.originHits = originHits;
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
-  if (browser) await browser.close();
-  if (child && child.exitCode === null) { const stopped = once(child, 'exit'); child.kill(); await stopped; }
-  for (const handle of [server, proxy]) { handle.closeAllConnections(); await new Promise(resolve => handle.close(resolve)); }
-  await run('cargo', ['build', '--offline', '--manifest-path', 'src-tauri/Cargo.toml', '--lib']);
+  await stopWebView({ child, browser });
+  await closeServers(server, proxy);
+  await restoreLibraryBuild();
   console.log(`Report: ${output}`);
 }

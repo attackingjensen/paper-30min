@@ -1,15 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
-import http from 'node:http';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { chromium } from 'playwright';
+import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPort, tauriConfig, run,
+  buildHost, launchWebView, stopWebView, closeServers, restoreLibraryBuild } from './webview-host.mjs';
 
-assert.equal(process.platform, 'win32', 'This suite requires Windows WebView2');
-const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+assertWindowsHost();
 const runId = `pdf-webview-${Date.now()}`;
 const identifier = `com.paper30min.${runId}`;
 const output = path.resolve(app, '../tmp', runId);
@@ -18,44 +14,29 @@ const report = { runId, identifier, platform: process.platform, node: process.ve
   input: 'CDP synthesized events; physical mouse/trackpad are separate manual checks', checks: [] };
 const requests = [];
 let responseMode = 'success';
-const server = http.createServer(async (req, res) => {
+const server = createUiServer(async (req, res) => {
   if (req.url === '/v1/chat/completions' && req.method === 'POST') {
     let body = '';
     for await (const chunk of req) body += chunk;
     requests.push(JSON.parse(body));
-    if (responseMode === 'fail') { res.writeHead(400); res.end('fixture rejection'); return; }
+    if (responseMode === 'fail') { res.writeHead(400); res.end('fixture rejection'); return true; }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Native fixture response.' }, finish_reason: null }] })}\n\n`);
     if (responseMode === 'slow') {
       const timer = setInterval(() => res.write(': heartbeat\n\n'), 100);
       res.on('close', () => clearInterval(timer));
-      return;
+      return true;
     }
     res.end(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
-    return;
+    return true;
   }
-  try {
-    const relative = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).replace(/^\/+/, '') || 'index.html';
-    const target = path.resolve(app, 'ui', relative);
-    if (!target.startsWith(path.resolve(app, 'ui') + path.sep)) throw new Error('outside UI');
-    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.pdf': 'application/pdf' };
-    res.writeHead(200, { 'Content-Type': types[path.extname(target)] || 'application/octet-stream' });
-    res.end(await readFile(target));
-  } catch { res.writeHead(404); res.end(); }
+  return false;
 });
-server.listen(0, '127.0.0.1');
-await once(server, 'listening');
-const url = `http://127.0.0.1:${server.address().port}`;
-const portProbe = http.createServer();
-portProbe.listen(0, '127.0.0.1');
-await once(portProbe, 'listening');
-const debugPort = portProbe.address().port;
-await new Promise(resolve => portProbe.close(resolve));
-const config = JSON.stringify({ identifier, build: { devUrl: url }, app: { security: { capabilities: [
+const url = `http://127.0.0.1:${await listen(server)}`;
+const debugPort = await claimDebugPort();
+const config = tauriConfig({ identifier, url, title: 'Paper30Min PDF integration', app: { security: { capabilities: [
   'default', { identifier: 'pdf-test-resize', windows: ['main'], permissions: ['core:window:allow-set-size'] },
-] }, windows: [{
-  label: 'main', title: 'Paper30Min PDF integration', width: 1280, height: 900,
-}] } });
+] } } });
 let child, browser, page;
 const errors = [];
 const invoke = (command, input = {}) => page.evaluate(({ command, input }) =>
@@ -97,12 +78,6 @@ async function savedChats(count) {
     return paper.chat.length === count;
   }, count);
 }
-async function run(command, args, env = process.env) {
-  const processHandle = spawn(command, args, { cwd: app, env, stdio: 'inherit', windowsHide: true });
-  const completion = once(processHandle, 'exit');
-  const [code] = await completion;
-  assert.equal(code, 0, `${command} ${args.join(' ')}`);
-}
 async function enter() {
   await page.locator('#su-enter').click();
   await page.locator('#startup-view').waitFor({ state: 'hidden' });
@@ -136,31 +111,12 @@ async function inkRegion(rect) {
   }, rect);
 }
 async function launch(executable) {
-  child = spawn(executable, [], {
-    cwd: app, env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1` },
-    stdio: 'ignore', windowsHide: true,
-  });
-  await Promise.race([once(child, 'error').then(([error]) => { throw error; }), (async () => {
-    const deadline = Date.now() + 45000;
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`Native host exited with code ${child.exitCode}`);
-      try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`); return; }
-      catch { await new Promise(resolve => setTimeout(resolve, 200)); }
-    }
-    throw new Error('WebView2 CDP did not start');
-  })()]);
-  page = browser.contexts()[0].pages()[0];
-  page.setDefaultTimeout(20000);
-  page.on('pageerror', error => errors.push(error.message));
-  await page.waitForFunction(() => window.__TAURI__?.core);
+  ({ child, browser, page } = await launchWebView({ executable, cwd: app, debugPort, pageTimeout: 20000,
+    onPageError: error => errors.push(error.message) }));
 }
 async function stopHost() {
-  if (browser) { await browser.close(); browser = null; }
-  if (child && child.exitCode === null) {
-    const stopped = once(child, 'exit');
-    child.kill();
-    await stopped;
-  }
+  await stopWebView({ child, browser });
+  child = browser = page = null;
 }
 const scrollState = () => page.locator('#pdf-canvas-wrap').evaluate(node => ({ top: node.scrollTop, left: node.scrollLeft }));
 try {
@@ -169,12 +125,9 @@ try {
     path.join(app, 'src-tauri/tests/fixtures/docling/1512.03385.json.gz'), path.join(output, 'blockmodel.json')],
   { ...process.env, TAURI_CONFIG: config });
   // Cargo examples do not inherit Tauri's executable manifest; dialogs require Common Controls v6.
-  await run('cargo', ['rustc', '--manifest-path', 'src-tauri/Cargo.toml', '--example', 'pdf_webview_host', '--',
-    '-C', 'link-arg=/MANIFEST:EMBED', '-C', "link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"],
-  { ...process.env, TAURI_CONFIG: config });
   // Launch away from target/debug/sidecar so startup cannot migrate a developer's legacy parser.
-  const executable = path.join(output, 'paper30min.exe');
-  await copyFile(path.join(app, 'src-tauri/target/debug/examples/pdf_webview_host.exe'), executable);
+  const executable = await buildHost({ config, output, extraLinkArgs: ['-C',
+    "link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"] });
   await launch(executable);
   report.build = 'debug; unchanged UI served from loopback devUrl; isolated Tauri identifier';
   report.browser = await browser.version();
@@ -466,9 +419,8 @@ try {
 } finally {
   report.pageErrors = errors;
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
-  await stopHost();
-  server.closeAllConnections();
-  await new Promise(resolve => server.close(resolve));
-  await run('cargo', ['build', '--manifest-path', 'src-tauri/Cargo.toml', '--lib']);
+  await stopWebView({ child, browser });
+  await closeServers(server);
+  await restoreLibraryBuild();
   console.log(`Report: ${output}`);
 }
