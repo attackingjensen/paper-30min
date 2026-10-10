@@ -43,6 +43,8 @@ pub const PARSE_BATCH_SCHEMA_VERSION: u32 = 1;
 const MAX_RESOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BATCH_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+/// 单批次附件数上限：约束清单体积与内存占用；cloudassets 的视觉资源配额由它推导。
+pub(crate) const MAX_BATCH_ATTACHMENTS: usize = 10000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -133,7 +135,7 @@ fn validate(manifest: &ParseBatchManifest, legacy: bool) -> Result<(), BridgeErr
             .checked_add(resource.size)
             .ok_or_else(|| BridgeError::invalid_input("批次大小无效"))?;
     }
-    if total > MAX_BATCH_BYTES || manifest.attachments.len() > 10000 {
+    if total > MAX_BATCH_BYTES || manifest.attachments.len() > MAX_BATCH_ATTACHMENTS {
         return Err(BridgeError::invalid_input("批次资源超过限制"));
     }
     Ok(())
@@ -191,7 +193,7 @@ impl Library {
                 .checked_add(size)
                 .ok_or_else(|| BridgeError::invalid_input("批次大小无效"))
         })?;
-        if total > MAX_BATCH_BYTES || resources.len() > 10000 {
+        if total > MAX_BATCH_BYTES || resources.len() > MAX_BATCH_ATTACHMENTS {
             return Err(BridgeError::invalid_input("批次资源超过限制"));
         }
         self.get_paper(&manifest.paper_id)?;

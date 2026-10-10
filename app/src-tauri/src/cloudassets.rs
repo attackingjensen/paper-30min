@@ -22,6 +22,9 @@ use std::{
 const MAX_IMAGE: usize = 8 * 1024 * 1024;
 const MAX_BATCH: u64 = 512 * 1024 * 1024;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// 视觉资源数上限：封存清单 = 父批次 3 件基础件（pdf / blockmodel.json / cloud-source.json）
+/// + 视觉资源 + 封存时新增的 visual-assets.json，总数不得越过批次附件上限。
+const MAX_VISUAL_RESOURCES: usize = crate::parsebatch::MAX_BATCH_ATTACHMENTS - 4;
 
 #[derive(Debug)]
 pub(crate) struct CloudAssetsPlan {
@@ -257,7 +260,7 @@ fn resources(assets: &VisualAssets) -> Result<BTreeMap<String, VisualResource>, 
             }
         }
     }
-    if result.len() > 9996 {
+    if result.len() > MAX_VISUAL_RESOURCES {
         return Err(invalid("Too many visual resources"));
     }
     Ok(result)
