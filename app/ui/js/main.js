@@ -77,12 +77,6 @@ let parserSettingsLoading = false;
 let savedCloudSettings = {};
 const reparsingPapers = new Set();
 
-function historyReadOnly() {
-  if (!current?.readOnlyHistory) return false;
-  toast('历史解析版本仅供查看，请切回当前版本');
-  return true;
-}
-
 async function publishParseCandidate(paperId, batchId, context = null) {
   const paper = await store.get(paperId);
   if (paper?.parseBatchId === batchId) return true;
@@ -98,25 +92,11 @@ async function publishParseCandidate(paperId, batchId, context = null) {
 
 async function reloadPublishedPaper(paperId) {
   const fresh = await refreshPaperRecord(paperId);
-  if (fresh && current?.id === paperId && current.readOnlyHistory) {
-    void refreshLibrary();
-    return;
-  }
   if (fresh && current?.id === paperId) {
     await abandonPaper({ keepView: true });
     await openPaper(fresh);
   }
   void refreshLibrary();
-}
-
-function applyHistoryReadOnlyControls() {
-  const readOnly = !!current?.readOnlyHistory;
-  for (const id of ['chat-input', 'btn-chat-send', 'btn-build-map', 'btn-rebuild-map', 'btn-deep-all', 'btn-paste-split', 'paste-area', 'recall-editor', 'btn-recall-generate', 'btn-recall-save', 'btn-recall-image', 'btn-pdf-attach', 'btn-organize-save', 'pdf-selection-ask']) {
-    const control = document.getElementById(id);
-    if (control && readOnly) { control.dataset.historyDisabled = 'true'; control.disabled = true; }
-    else if (control?.dataset.historyDisabled) { delete control.dataset.historyDisabled; control.disabled = false; }
-  }
-  if (readOnly) $$('[data-action]').filter(control => !['trace', 'read-source'].includes(control.dataset.action)).forEach(control => { control.disabled = true; });
 }
 
 async function chooseParser() {
@@ -157,7 +137,7 @@ async function latestCloudJob(paperId) {
 
 async function startReparse() {
   const paper = current;
-  if (!paper || historyReadOnly() || reparsingPapers.has(paper.id)) return;
+  if (!paper || reparsingPapers.has(paper.id)) return;
   if (chatAborter || translateAborter || recallAborter || selectionAborter || chatSaving
     || isMappingPaper(paper.id) || isDeepDivingPaper(paper.id) || isSynthesizingPaper(paper.id)
     || ['pdfparse.convert@1', 'pdfassets.prerender@1', 'cloudparse.parse@1', 'cloudparse.map@1', 'cloudassets.prepare@1']
@@ -454,7 +434,6 @@ function renderReaderChrome({ restore = false } = {}) {
     updatePaneFabs();
   }
   if (!restore && reader.appView === 'reader' && current) schedulePositionSave();
-  if (reader.appView === 'reader') applyHistoryReadOnlyControls();
 }
 
 function commitReader(next, options) {
@@ -744,7 +723,7 @@ function positionSnapshot(paper) {
 }
 
 function schedulePositionSave() {
-  if (!current || current.readOnlyHistory) return;
+  if (!current) return;
   const paper = current;
   clearTimeout(positionTimer);
   positionTimer = setTimeout(() => {
@@ -758,7 +737,7 @@ function schedulePositionSave() {
 async function flushPositionSave(paper) {
   clearTimeout(positionTimer);
   positionTimer = null;
-  if (!paper || paper.readOnlyHistory) return;
+  if (!paper) return;
   try { await writePosition(positionSnapshot(paper)); } catch { /* 失败静默 */ }
 }
 
@@ -808,7 +787,7 @@ async function openPaper(p) {
   renderSource();
   renderChat();
   let restored = null;
-  try { restored = p.readOnlyHistory ? null : await store.positions.get(p.id); } catch { restored = null; }
+  try { restored = await store.positions.get(p.id); } catch { restored = null; }
   if (current !== p) return;
   if (restored && current === p && (!restored.contentVersion || restored.contentVersion === p.parseBatchId)) {
     // 位置校验走内容域（readingParts）是有意的：旧位置可能停在进度域之外的摘要节，
@@ -1349,7 +1328,6 @@ function renderMapTab() {
   if (surface === 'section') renderSectionPage();
   updateReaderMeta();
   updatePaneFabs();
-  applyHistoryReadOnlyControls();
 }
 
 function drillSection(sectionId) {
@@ -1371,7 +1349,6 @@ function readSectionSource(partId) {
 }
 
 async function toggleSectionMark() {
-  if (historyReadOnly()) return;
   if (!current || !reader.sectionId) return;
   const marked = current.readMarks?.[reader.sectionId] == null;
   await papers.setReadMark(current, reader.sectionId, marked);
@@ -1395,7 +1372,7 @@ async function refreshPaperRecord(paperId) {
     if (!fresh) return null;
     const idx = library.findIndex(item => item.id === fresh.id);
     if (idx >= 0) library[idx] = fresh;
-    if (current?.id === fresh.id && !current.readOnlyHistory) {
+    if (current?.id === fresh.id) {
       current = fresh;
       reader = view.setHasMap(reader, hasMapProduct(fresh.products));
     }
@@ -1584,7 +1561,6 @@ async function queueImportPreflight(paperId, provider = paperParserChoices.get(p
  * 前置兜底未启动（守卫拦截、解析未完成）返回 null（#96：任务中心重试据此决定是否弹完成提示）。
  */
 async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) {
-  if (current?.id === paperId && historyReadOnly()) return null;
   let pendingVisual = null;
   if (!paperId || isMappingPaper(paperId) || !ensureSettings()) return null;
   // 前置兜底：缺块模型且有 PDF 时先补产（#76：只等 convert，预渲染与建图并行）。
@@ -1662,7 +1638,6 @@ async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) 
 
 /** 返回终态 status；前置守卫未启动返回 null（#96：任务中心重试据此决定是否弹完成提示）。 */
 async function startSynthesize(overwriteConfirmed) {
-  if (historyReadOnly()) return null;
   if (!current || isSynthesizingPaper(current.id) || !ensureSettings()) return null;
   const paperId = current.id;
   const input = { paperId, overwriteConfirmed: !!overwriteConfirmed };
@@ -1739,7 +1714,6 @@ async function startSectionDive(overwrite) {
 
 /** 返回终态 status；前置守卫未启动返回 null（#96：同 startBuildMap 的重试契约）。 */
 async function startDeepDive(paperId, partIds) {
-  if (current?.id === paperId && historyReadOnly()) return;
   if (!paperId || !partIds?.length) return null;
   const input = { paperId, partIds };
   const batch = partIds.length > 1;
@@ -1866,7 +1840,6 @@ function renderRecallImages() {
       if (!confirm('从回想卡片中移除这张图片？')) return;
       const url = recallBlobUrls.get(image.id);
       if (url) { URL.revokeObjectURL(url); recallBlobUrls.delete(image.id); }
-      if (historyReadOnly()) return;
       await papers.removeRecallImage(current, image.id);
       renderRecallImages();
     };
@@ -1909,14 +1882,13 @@ function renderRecall() {
   $('#recall-status').textContent = card.updatedAt ? `已保存 · ${fmtDate(card.updatedAt)}` : '';
   const generate = $('#btn-recall-generate');
   generate.textContent = card.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
-  generate.disabled = !mapped || !!current.readOnlyHistory;
+  generate.disabled = !mapped;
   generate.title = mapped ? '' : '未建图：AI 草稿须先完成建图。';
   updateRecallPreview();
   renderRecallImages();
 }
 
 async function saveRecallCard({ silent = false } = {}) {
-  if (historyReadOnly()) return;
   await papers.saveRecallCard(current, $('#recall-editor').value.trim(), recallCard().images || []);
   $('#recall-status').textContent = `已保存 · ${fmtDate(Date.now())}`;
   $('#btn-recall-generate').textContent = current.recallCard.markdown ? '重新生成 AI 草稿' : '生成 AI 草稿';
@@ -1924,7 +1896,6 @@ async function saveRecallCard({ silent = false } = {}) {
 }
 
 async function generateRecallDraft() {
-  if (historyReadOnly()) return;
   if (!hasMapProduct(current?.products)) {
     toast('未建图：AI 草稿须先完成建图。', true);
     return;
@@ -1999,7 +1970,6 @@ async function prepareRecallImage(file) {
 }
 
 async function addRecallImages(files) {
-  if (historyReadOnly()) return;
   const imageFiles = [...files].filter(file => file.type?.startsWith('image/'));
   if (!imageFiles.length) return;
   const existing = recallCard().images || [];
@@ -2331,7 +2301,6 @@ function splitTranslationText(text, maxChars) {
 }
 
 async function translateCurrentText() {
-  if (historyReadOnly()) return;
   const paper = current;
   const source = currentSectionSourceText().trim();
   if (!source) return toast('当前节没有可翻译的原文', true);
@@ -2596,8 +2565,8 @@ function renderChatComposer() {
   const send = $('#btn-chat-send');
   gate.hidden = ready;
   gate.textContent = ready ? '' : QA_GATE_MESSAGE;
-  input.disabled = !ready || !!current?.readOnlyHistory;
-  send.disabled = !ready || !!current?.readOnlyHistory;
+  input.disabled = !ready;
+  send.disabled = !ready;
   input.placeholder = ready
     ? '输入 @ 作绑定提问，或不绑定即全文提问；Enter 发送'
     : QA_GATE_MESSAGE;
@@ -2675,7 +2644,6 @@ function chooseMention(section) {
 
 let chatSaving = false;
 async function sendChat() {
-  if (historyReadOnly()) return;
   if (chatSaving) return;
   hideMentionMenu();
   const input = $('#chat-input');
@@ -3038,7 +3006,7 @@ async function loadPdfViewer() {
     $('#pdf-page-input').max = pdfDocument.numPages;
     $('#pdf-page-count').textContent = `/ ${pdfDocument.numPages}`;
     const activePaper = current;
-    const changed = activePaper.readOnlyHistory ? false : await papers.setNumPages(activePaper, pdfDocument.numPages);
+    const changed = await papers.setNumPages(activePaper, pdfDocument.numPages);
     if (changed && pdfDocument === document && current === activePaper) updateReaderMeta();
     if (pdfDocument !== document || current?.id !== paper.id) return;
     await new Promise(resolve => requestAnimationFrame(resolve));
@@ -3126,7 +3094,6 @@ async function refreshPdfAttachment(paper) {
 }
 
 async function attachPdf(file) {
-  if (historyReadOnly()) return;
   if (!current || !file) return;
   const paper = current;
   if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
@@ -3391,7 +3358,6 @@ function openOrganizeModal() {
 }
 
 async function saveOrganizeMetadata() {
-  if (historyReadOnly()) return;
   await papers.saveOrganize(current, organizeDraft);
   library = library.map(paper => paper.id === current.id ? current : paper);
   $('#modal-organize').hidden = true;
@@ -4658,7 +4624,6 @@ function bindEvents() {
   $('#btn-export').onclick = exportNotes;
 
   $('#btn-paste-split').onclick = async () => {
-    if (historyReadOnly()) return;
     const text = $('#paste-area').value.trim();
     if (!text) return toast('请先粘贴全文', true);
     const parsed = parser.parsePlainText(text);

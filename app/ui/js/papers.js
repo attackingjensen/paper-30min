@@ -414,7 +414,6 @@ async function serializePaper(paper) {
   // PDF base64 经注入缝获取（Tauri 端从附件存储读，缺省从瞬时 pdfBlob 读）。
   delete copy.pdfAttachment;
   delete copy.parseBatchSnapshot;
-  delete copy.readOnlyHistory;
   const pdfSource = dependencies?.paper ? { ...paper, parseBatchId: copy.parseBatchId, parseBatchSnapshot: null } : paper;
   const base64 = await pdfHelpers.pdfBase64(pdfSource);
   copy.pdfBlob = base64
