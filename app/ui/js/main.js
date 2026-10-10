@@ -1405,8 +1405,8 @@ async function cancelOpenProtocolTask(kind) {
 }
 
 // ---------------- 建图前置产物（#73 / #76 / #77）----------------
-// 导入后同时排队 convert 与 prerender(scope=pages)；convert 成功后再排队
-// prerender(scope=crops)。「开始建图」只兜底块模型；页图/裁切图齐备检查在深挖开工前。
+// 导入后串行等待 convert 产出块模型，再排队一次 prerender(scope=all)（不等待终态）。
+// 「开始建图」只兜底块模型；页图/裁切图齐备检查在深挖开工前。
 // 各任务进会话登记（任务中心可见、失败可重试）；在途按 (kind, scope) 去重。
 
 // 论文记录只挂 pdfAttachment 句柄，附件全集要查 files.listAttachments@1（store.js attachPdfInfo 同缝）。
@@ -1553,7 +1553,7 @@ async function trackPrerender(paperId, prerenderId, scope = 'all') {
   }
 }
 
-/** 导入后：页图与解析并行；解析完成后补渲染图表裁切图。 */
+/** 导入后：串行等待解析产出块模型，再启动全部预渲染（不等待终态）。 */
 async function queueImportPreflight(paperId, provider = paperParserChoices.get(paperId)) {
   if (!provider) provider = await chooseParser();
   if (!provider) return false;
@@ -1573,7 +1573,7 @@ async function queueImportPreflight(paperId, provider = paperParserChoices.get(p
 async function startBuildMap(paperId = current?.id, overwriteConfirmed = false) {
   let pendingVisual = null;
   if (!paperId || isMappingPaper(paperId) || !ensureSettings()) return null;
-  // 前置兜底：缺块模型且有 PDF 时先补产（#76：只等 convert，预渲染与建图并行）。
+  // 前置兜底：缺块模型且有 PDF 时先补产（#76：串行等 convert；兜底预渲染在建图收尾的 finally 才启动）。
   const preflightIds = await paperAttachmentIds(paperId);
   if (!preflightIds.has(BLOCKMODEL_ATTACHMENT_ID) && preflightIds.has('pdf')) {
     if (hasOpenPreflightTask(paperId, 'pdfparse.convert@1')) {
