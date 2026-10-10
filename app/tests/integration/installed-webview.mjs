@@ -13,6 +13,8 @@ const root = path.resolve(appDir, '..');
 const runId = `installed-${Date.now()}`;
 const output = path.join(root, 'tmp', runId);
 const readingOnly = Boolean(process.env.PAPER30MIN_READING_REPORT);
+const installOnly = process.env.PAPER30MIN_INSTALL_ONLY === '1';
+const worktreeNsis = process.env.PAPER30MIN_INSTALLED_NSIS_WORKTREE === '1';
 const reusedPath = process.env.PAPER30MIN_READING_REPORT ?? process.env.PAPER30MIN_INSTALLED_ARTIFACTS;
 const reused = reusedPath ? JSON.parse(await readFile(reusedPath, 'utf8')) : null;
 const product = reused?.product ?? `Paper30Min Test ${runId}`;
@@ -31,6 +33,7 @@ const report = { runId, identifier, product, head: execFileSync('git', ['rev-par
     'generated mixed-size and 300 DPI rasterized real-paper fixtures; not real scanned-paper quality acceptance'],
   thresholds: { minFps: 45, maxP95FrameMs: 50, maxWorkingSetBytes: 1024 ** 3 }, artifacts: [], checks: [], baseline: [] };
 if (reused) {
+  assert.ok(!worktreeNsis, 'worktree NSIS builds cannot reuse previous artifacts');
   assert.equal(reused.head, report.head, 'reused installers must match the current HEAD');
   report.reusedArtifacts = path.resolve(reusedPath);
 }
@@ -53,6 +56,11 @@ async function check(name, action) {
 const invoke = (command, input = {}) => page.evaluate(({ command, input }) =>
   window.__TAURI__.core.invoke('bridge_invoke', { command, input }), { command, input });
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+if (reused?.worktreeNsisSha256) {
+  assert.equal(hash(await readFile(path.join(appDir, 'src-tauri/windows/installer.nsi'))), reused.worktreeNsisSha256,
+    'reused worktree installer must match the current NSIS template');
+  report.worktreeNsisSha256 = reused.worktreeNsisSha256;
+}
 async function build(ref, version, publicKey) {
   const snapshot = path.join(output, version);
   await mkdir(snapshot);
@@ -60,6 +68,11 @@ async function build(ref, version, publicKey) {
   await run('git', ['archive', '--format=tar', `--output=${archive}`, ref]);
   await run('tar', ['-xf', archive, '-C', snapshot]);
   const app = path.join(snapshot, 'app');
+  if (worktreeNsis && version === '1.4.0-beta.1') {
+    const template = await readFile(path.join(appDir, 'src-tauri/windows/installer.nsi'));
+    await writeFile(path.join(app, 'src-tauri/windows/installer.nsi'), template);
+    report.worktreeNsisSha256 = hash(template);
+  }
   const configPath = path.join(app, 'src-tauri/tauri.conf.json');
   const config = JSON.parse(await readFile(configPath, 'utf8'));
   Object.assign(config, { productName: product, identifier, version });
@@ -90,23 +103,36 @@ async function install(installer, destination) {
   await run(installer, ['/S', '/NS', ...(destination ? [`/D=${destination}`] : [])], { windowsVerbatimArguments: true, timeoutMs: 60000 });
 }
 async function uninstall(directory) {
-  // _?= avoids the uninstaller's temporary child process, so exit means registry cleanup finished.
-  await run(path.join(directory, 'uninstall.exe'), ['/S', `_?=${directory}`], { windowsVerbatimArguments: true, timeoutMs: 60000 });
-  await clearTestInstallResidue();
+  await runUninstaller(directory);
+  const identity = readInstallIdentity();
+  assert.equal(identity.location, '', 'retaining the library must clear the install location');
+  assert.deepEqual(identity.uninstallValues, [], 'uninstall metadata must be removed');
+  assert.deepEqual(identity.uninstallSubkeys, [], 'uninstall subkeys must be removed');
 }
-async function clearTestInstallResidue() {
-  const keyPath = `HKCU\\Software\\paper30min\\${product}`;
-  const value = execFileSync('powershell.exe', ['-NoProfile', '-Command',
-    `(Get-ItemProperty -LiteralPath 'HKCU:\\Software\\paper30min\\${product}' -ErrorAction SilentlyContinue).'(default)'`], { encoding: 'utf8' }).trim();
-  if (!value) return;
-  report.uninstallResidue ??= [];
-  report.uninstallResidue.push({ registryKey: keyPath, installDirectory: value });
-  if (!report.checks.some(item => item.name === 'uninstall retaining library clears install identity')) {
-    report.checks.push({ name: 'uninstall retaining library clears install identity', status: 'failed',
-      error: 'Uninstall removes the Uninstall key but leaves the product install location; FindExistingInstall rejects the next install.' });
+async function runUninstaller(directory) {
+  // Let NSIS copy itself to temp so it can delete the installed uninstaller too.
+  await run(path.join(directory, 'uninstall.exe'), ['/S'], { timeoutMs: 60000 });
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const files = await readdir(directory).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    const identity = readInstallIdentity();
+    if (!files.includes('paper30min.exe') && !files.includes('uninstall.exe')
+      && !identity.uninstallValues.length && !identity.uninstallSubkeys.length) return;
+    await new Promise(resolve => setTimeout(resolve, 250));
   }
-  // Remove only this run's orphaned installation metadata, so other matrix rows can continue.
-  await run('reg.exe', ['delete', keyPath, '/f']);
+  assert.fail('uninstaller did not finish deleting binaries and uninstall metadata');
+}
+function readInstallIdentity() {
+  return JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-Command',
+    `$location = (Get-Item -LiteralPath 'HKCU:\\Software\\paper30min\\${product}' -ErrorAction SilentlyContinue); ` +
+    `$uninstall = (Get-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${product}' -ErrorAction SilentlyContinue); ` +
+    `@{ location = $(if ($location) { [string]$location.GetValue('') } else { '' }); ` +
+    `uninstallValues = @($(if ($uninstall) { foreach ($name in $uninstall.GetValueNames()) { @{ name = $name; value = $uninstall.GetValue($name) } } })); ` +
+    `uninstallSubkeys = @($(if ($uninstall) { $uninstall.GetSubKeyNames() })) } | ConvertTo-Json -Compress -Depth 5`],
+  { encoding: 'utf8' }));
 }
 async function archiveLibrary(dataRoot, label) {
   assert.equal(path.basename(dataRoot), identifier);
@@ -148,6 +174,18 @@ async function seed() {
   await invoke('library.putReadingPosition@1', { position: { paperId: 'long', view: 'map', pdfPage: 73, updatedAt: '2026-10-10T00:00:00Z' } });
   await page.reload();
   await enter();
+}
+async function assertLibraryPreserved() {
+  const paper = (await invoke('library.getPaper@1', { paperId: 'long' })).paper;
+  assert.equal(paper.chat[0].content, 'Preserve this old-library note.');
+  assert.equal((await invoke('library.getReadingPosition@1', { paperId: 'long' })).position.pdfPage, 73);
+  for (const fixture of report.fixtures) {
+    const result = await invoke('files.readRange@1', { paperId: fixture.id, attachmentId: 'pdf', offset: 0, length: fixture.bytes });
+    assert.equal(hash(Buffer.from(result.contentBase64, 'base64')), fixture.sha256, `${fixture.id} PDF survives byte for byte`);
+  }
+  await enter(); await openPaper('long');
+  assert.equal(await page.locator('#pdf-page-input').inputValue(), '73');
+  return nonblank();
 }
 async function openPaper(id) {
   const previousTitle = await page.locator('#reader-title').textContent();
@@ -264,7 +302,19 @@ try {
     if (registry) {
       assert.ok(registry === defaultDir || registry.startsWith(path.join(root, 'tmp') + path.sep));
       await uninstall(registry);
-    } else await clearTestInstallResidue();
+    } else {
+      const orphan = readInstallIdentity().location;
+      if (orphan) {
+        assert.ok(orphan === defaultDir || orphan.startsWith(path.join(root, 'tmp') + path.sep));
+        const files = await readdir(orphan).catch(error => {
+          if (error.code === 'ENOENT') return [];
+          throw error;
+        });
+        if (files.includes('uninstall.exe')) await uninstall(orphan);
+        else { await install(current, defaultDir); await uninstall(defaultDir); }
+        report.previousTestRecovery = { directory: orphan, method: 'production installer/uninstaller' };
+      }
+    }
     const oldData = path.join(process.env.APPDATA, identifier);
     if (await readdir(oldData).catch(() => null)) await archiveLibrary(oldData, 'previous-test-library');
   }
@@ -282,13 +332,58 @@ try {
     const details = await nonblank(); await stop(); return details;
   });
   // Uninstall only the unique test identity. App data is retained by the production uninstaller.
-  await uninstall(defaultDir);
+  await check('default path uninstall and reinstall retains library and clears identity', async () => {
+    await uninstall(defaultDir); await install(current); await launch(defaultDir);
+    const details = await assertLibraryPreserved(); await stop(); await uninstall(defaultDir);
+    return details;
+  });
   await check('fresh current installer custom path with spaces', async () => {
     await install(current, customDir); await launch(customDir); await enter(); await openPaper('mixed');
     const details = await nonblank(); await page.screenshot({ path: path.join(output, 'custom.png') });
     await stop(); return { directory: customDir, ...details };
   });
-  await uninstall(customDir);
+  await check('custom path uninstall and reinstall retains library and clears identity', async () => {
+    await uninstall(customDir); await install(current, customDir); await launch(customDir);
+    const details = await assertLibraryPreserved(); await stop(); await uninstall(customDir);
+    return details;
+  });
+  await check('legacy orphan install location safely recovers without deleting contents', async () => {
+    const sentinel = path.join(customDir, 'retained-user-content.txt');
+    await mkdir(customDir, { recursive: true });
+    await writeFile(sentinel, 'User content must survive orphan recovery.');
+    await run('reg.exe', ['add', `HKCU\\Software\\paper30min\\${product}`, '/ve', '/d', customDir, '/f']);
+    await install(current); await launch(defaultDir);
+    const details = await assertLibraryPreserved(); await stop();
+    assert.equal(await readFile(sentinel, 'utf8'), 'User content must survive orphan recovery.');
+    await uninstall(defaultDir); return details;
+  });
+  await check('incomplete or foreign install identities are rejected without mutation', async () => {
+    const productKey = `HKCU\\Software\\paper30min\\${product}`;
+    const uninstallKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${product}`;
+    const binary = path.join(customDir, 'paper30min.exe');
+    const scenarios = ['remaining-binary', 'remaining-uninstaller', 'foreign-metadata', 'unnamed-metadata', 'unknown-metadata', 'metadata-subkey'];
+    for (const scenario of scenarios) {
+      await run('reg.exe', ['add', productKey, '/ve', '/d', customDir, '/f']);
+      if (scenario === 'remaining-binary') await writeFile(binary, 'not an installation');
+      else if (scenario === 'remaining-uninstaller') await writeFile(path.join(customDir, 'uninstall.exe'), 'not an uninstaller');
+      else if (scenario === 'unnamed-metadata') await run('reg.exe', ['add', uninstallKey, '/ve', '/d', 'Other product', '/f']);
+      else if (scenario === 'metadata-subkey') await run('reg.exe', ['add', `${uninstallKey}\\OtherProduct`, '/f']);
+      else await run('reg.exe', ['add', uninstallKey, '/v', scenario === 'foreign-metadata' ? 'DisplayName' : 'OtherProduct', '/d', 'Other product', '/f']);
+      const before = readInstallIdentity();
+      await assert.rejects(install(current), error => error.code === 'ERR_ASSERTION' && error.actual === 1 && error.expected === 0);
+      assert.deepEqual(readInstallIdentity(), before);
+      assert.ok(!await readdir(defaultDir).then(names => names.includes('paper30min.exe')).catch(() => false));
+      if (scenario === 'remaining-binary') {
+        assert.equal(await readFile(binary, 'utf8'), 'not an installation');
+        await rm(binary);
+      } else if (scenario === 'remaining-uninstaller') {
+        assert.equal(await readFile(path.join(customDir, 'uninstall.exe'), 'utf8'), 'not an uninstaller');
+        await rm(path.join(customDir, 'uninstall.exe'));
+      } else await run('reg.exe', ['delete', uninstallKey, '/f']);
+      await run('reg.exe', ['delete', productKey, '/ve', '/f']);
+    }
+    return { scenarios };
+  });
   await archiveLibrary(report.library.dataRoot, 'current-library-before-old-install');
   await check('install main 1.3.0 and create old library', async () => {
     await install(old, customDir); await launch(customDir); assert.equal(report.app.version, '1.3.0');
@@ -318,7 +413,17 @@ try {
     await page.screenshot({ path: path.join(output, 'upgrade.png') });
     return { oldDatabaseSha256: hash(oldDatabase), ...details };
   });
+  await check('historical uninstaller orphan recovers and preserves the library', async () => {
+    await stop(); await uninstall(customDir);
+    await install(old, customDir); await runUninstaller(customDir);
+    const identity = readInstallIdentity();
+    assert.equal(identity.location, customDir, 'historical uninstaller reproduces the orphan location');
+    assert.deepEqual(identity.uninstallValues, []);
+    await install(current, customDir); await launch(customDir);
+    return assertLibraryPreserved();
+  });
   }
+  if (!installOnly) {
   sampler = spawn('powershell.exe', ['-NoProfile', '-File', path.join(appDir, 'tests/integration/installed-memory.ps1'),
     '-RootPid', String(child.pid), '-OutputPath', path.join(output, 'memory.jsonl')], { windowsHide: true, stdio: 'inherit' });
   report.host = { os: os.release(), cpu: os.cpus()[0].model, logicalCpus: os.cpus().length, ramBytes: os.totalmem() };
@@ -330,6 +435,7 @@ try {
     for (const phase of ['scroll', 'zoom']) await measure(id, phase, dpr);
     await page.waitForTimeout(500);
     await page.screenshot({ path: path.join(output, `${id}-dpr-${dpr}.png`) });
+  }
   }
   report.pageErrors = pageErrors;
   assert.deepEqual(pageErrors, []);

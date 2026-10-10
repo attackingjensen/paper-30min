@@ -510,7 +510,7 @@ Function .onInit
 
   Call FindExistingInstall
   ${If} ${Errors}
-    MessageBox MB_ICONSTOP "无法确认旧版 Paper30Min 的安装目录。请修复旧版安装记录或先备份组件后手动卸载，再重新安装。安装程序尚未修改旧版。"
+    MessageBox MB_ICONSTOP "无法确认旧版 Paper30Min 的安装目录。请修复旧版安装记录或先备份组件后手动卸载，再重新安装。安装程序尚未修改旧版。" /SD IDOK
     SetErrorLevel 1
     Abort
   ${EndIf}
@@ -903,11 +903,8 @@ Section Uninstall
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
   ${EndIf}
 
-  ; Delete app data if the checkbox is selected
-  ; and if not updating
-  ${If} $DeleteAppDataCheckboxState = 1
-  ${AndIf} $UpdateMode <> 1
-    ; Clear the install location $INSTDIR from registry
+  ; Installation identity belongs to the binaries, not to the retained library.
+  ${If} $UpdateMode <> 1
     DeleteRegKey SHCTX "${MANUPRODUCTKEY}"
     DeleteRegKey /ifempty SHCTX "${MANUKEY}"
 
@@ -915,7 +912,11 @@ Section Uninstall
     DeleteRegValue HKCU "${MANUPRODUCTKEY}" "Installer Language"
     DeleteRegKey /ifempty HKCU "${MANUPRODUCTKEY}"
     DeleteRegKey /ifempty HKCU "${MANUKEY}"
+  ${EndIf}
 
+  ; Delete app data only when explicitly selected and not updating.
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
@@ -954,6 +955,36 @@ Function FindExistingInstall
   ${If} "$0$1$2$3$4$5$ExistingInstallDir" == ""
     ClearErrors
     Return
+  ${EndIf}
+  ; Older uninstallers retained only the product location when keeping app data.
+  ; Recover only without any uninstall metadata or either installed executable.
+  ${If} "$0$1$2$3$4$5" == ""
+  ${AndIf} $ExistingInstallDir != ""
+    ; The unnamed registry value also has an empty name; use enumeration errors.
+    ClearErrors
+    EnumRegValue $6 HKCU "${UNINSTKEY}" 0
+    ${IfNot} ${Errors}
+      Goto invalid_existing_install
+    ${EndIf}
+    ClearErrors
+    EnumRegKey $6 HKCU "${UNINSTKEY}" 0
+    ${IfNot} ${Errors}
+      Goto invalid_existing_install
+    ${EndIf}
+    ClearErrors
+    GetFullPathName $6 "$ExistingInstallDir"
+    ${If} $6 == $ExistingInstallDir
+    ${AndIfNot} ${FileExists} "$ExistingInstallDir\${MAINBINARYNAME}.exe"
+    ${AndIfNot} ${FileExists} "$ExistingInstallDir\uninstall.exe"
+      ClearErrors
+      DeleteRegValue HKCU "${MANUPRODUCTKEY}" ""
+      ${If} ${Errors}
+        Goto invalid_existing_install
+      ${EndIf}
+      StrCpy $ExistingInstallDir ""
+      ClearErrors
+      Return
+    ${EndIf}
   ${EndIf}
   ${If} $ExistingInstallDir == ""
   ${OrIf} $1 == ""
