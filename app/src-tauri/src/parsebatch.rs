@@ -433,6 +433,8 @@ impl Library {
         if !old.legacy { return Ok(old); }
         let mut manifest = old.manifest.clone();
         manifest.batch_id = format!("frozen-{}", sha256_hex(serde_json::to_vec(&old.manifest).map_err(|_| stale())?.as_slice()));
+        if !manifest.options.is_object() { manifest.options = serde_json::json!({}); }
+        manifest.options["parseGeneration"] = serde_json::json!(manifest.batch_id);
         manifest.raw_sha256 = manifest.attachments.get("docling-source.json")
             .map(|r| r.sha256.clone()).unwrap_or_else(|| sha256_hex(b"legacy-without-source"));
         if let Ok(existing) = self.pin_parse_batch(paper_id, Some(&manifest.batch_id)) { return Ok(existing); }
