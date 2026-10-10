@@ -8,6 +8,8 @@ export function createBridge(tauri) {
     // invoke(command, input)：短时、幂等或事务性操作。
     invoke: (command, input = {}) => {
       if (command === 'pdfmap.getSourceRegions@1') return invoke('pdfmap_source_regions', { input });
+      // 7 命令白名单与 app/src-tauri/src/lib.rs 的 parsebatch_read 双端手工同步，改动须同时对齐；
+      // 命令名 parsebatch_read 名不符实（实际含 publish/put 写操作），改名留 v2.0。
       if (['parsebatch.pin@1', 'parsebatch.read@1', 'parsebatch.publish@1', 'parsebatch.export@1', 'cloudassets.plan@1', 'cloudassets.put@1', 'cloudassets.manifest@1'].includes(command)) return invoke('parsebatch_read', { command, input });
       return invoke('bridge_invoke', { command, input });
     },

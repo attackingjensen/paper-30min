@@ -1,5 +1,5 @@
-// app/ui/js/papers.js 的领域行为测试（Tauri 副本）。当前只覆盖与 #61 数据契约相关的
-// 重新切分规则：已读完标记随其结果一并作废（规格 #51 决策 9）。
+// app/ui/js/papers.js 的领域行为测试（Tauri 副本）：重新切分规则（#61 数据契约，
+// 规格 #51 决策 9）、导出信封往返、占位标题回填等。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -607,4 +607,35 @@ test('activityDays / streakDays：连续天数从落库活动日派生', async (
   // 只有前天以前的活动 → 连续中断归 0
   const stale = { ...progressFixture(), activityDays: [{ day: '2020-01-01', kind: 'mark' }] };
   assert.equal(papers.streakDays([stale]), 0);
+});
+
+test('backfillParsedTitle：占位标题换成识别标题，真实标题不动', async () => {
+  const source = memoryStore();
+  papers.init(source);
+
+  // 云端 PDF 导入的占位形式：文件名去扩展名
+  const byName = { id: 'a', title: 'paper', pdfName: 'paper.pdf', updatedAt: 1 };
+  assert.equal(await papers.backfillParsedTitle(byName, 'Real Title'), true);
+  assert.equal(byName.title, 'Real Title');
+  assert.ok(byName.updatedAt > 1);
+  assert.equal(source.records.get('a').title, 'Real Title');
+  // 已回填的标题不再是占位形式，重复调用不再写入
+  assert.equal(await papers.backfillParsedTitle(byName, 'Other Title'), false);
+  assert.equal(byName.title, 'Real Title');
+
+  // 云端 arXiv 导入的占位形式：arXiv 编号
+  const byArxiv = { id: 'b', title: 'arXiv 2401.00001', arxivId: '2401.00001', pdfName: '2401.00001.pdf', updatedAt: 1 };
+  assert.equal(await papers.backfillParsedTitle(byArxiv, 'Real Title'), true);
+  assert.equal(byArxiv.title, 'Real Title');
+
+  // 真实标题（本地解析所得）不占位：不被识别结果覆盖，也不落库
+  const real = { id: 'c', title: 'Attention Is All You Need', pdfName: 'paper.pdf', updatedAt: 1 };
+  assert.equal(await papers.backfillParsedTitle(real, 'Other Title'), false);
+  assert.equal(real.title, 'Attention Is All You Need');
+  assert.equal(real.updatedAt, 1);
+  assert.equal(source.records.has('c'), false);
+
+  // 空识别结果与同名结果都不写入
+  assert.equal(await papers.backfillParsedTitle(byArxiv, ''), false);
+  assert.equal(await papers.backfillParsedTitle(byArxiv, 'Real Title'), false);
 });

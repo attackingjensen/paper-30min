@@ -18,7 +18,7 @@ test('selection exports include native byte size and digest for version 2 import
   assert.deepEqual(exported, { ...metadata, contentBase64: 'AQID' });
 });
 
-test('archived reading states retain citations, chat and products, and cannot write to current', async () => {
+test('archived reading states retain citations, chat and products, and read-only history records are rejected on write', async () => {
   let saved;
   const bridge = createFakeBridge({
     'library.putPaper@1': input => { saved = input; },
@@ -35,12 +35,13 @@ test('archived reading states retain citations, chat and products, and cannot wr
   await store.put(current);
   assert.equal(saved.expectedBatchId, 'new-batch');
   const restored = await store.get(current.id);
-  const history = store.history(restored, 'old-batch');
-  assert.equal(history.parseBatchId, 'old-batch');
-  assert.equal(history.chat[0].cite.startBlock, 1);
-  assert.deepEqual(history.products, archived.products);
-  assert.equal(history.sections['part-1'], archived.sections['part-1']);
-  await assert.rejects(store.put(history), /仅供查看/);
+  const entry = restored.parseHistory[0];
+  assert.equal(entry.batchId, 'old-batch');
+  assert.equal(entry.paper.chat[0].cite.startBlock, 1);
+  assert.deepEqual(entry.paper.products, archived.products);
+  assert.equal(entry.paper.sections['part-1'], archived.sections['part-1']);
+  // 数据边界：历史浏览入口已拆除，store.put 仍拒绝带只读标记的记录。
+  await assert.rejects(store.put({ ...restored, readOnlyHistory: true }), /仅供查看/);
 });
 
 test('PDF viewer reads the pinned batch PDF rather than the mutable fixed attachment', async () => {
@@ -50,7 +51,7 @@ test('PDF viewer reads the pinned batch PDF rather than the mutable fixed attach
     return { contentBase64: bytesToBase64(new Uint8Array([1, 2, 3])) };
   } });
   const store = createTauriStore(bridge);
-  const paper = { id: 'p', parseBatchSnapshot: snapshot, readOnlyHistory: true };
+  const paper = { id: 'p', parseBatchSnapshot: snapshot };
   assert.equal(store.pdf.has(paper), true);
   assert.deepEqual([...new Uint8Array(await store.pdf.bytes(paper))], [1, 2, 3]);
   assert.equal(bridge.calls.length, 1);
