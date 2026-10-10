@@ -27,7 +27,7 @@
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -2027,7 +2027,7 @@ fn build_map_main(
         done: reused.len() as u64,
         total: total_shards as u64 + 1,
     });
-    let completed_count = AtomicU64::new(reused.len() as u64);
+    let mut completed_count = reused.len() as u64;
     let concurrency = settings::protocol_concurrency(&ctx.library) as usize;
     let outcome = run_bounded(
         ctx,
@@ -2105,11 +2105,6 @@ fn build_map_main(
                             "shardStatus": "done",
                         }),
                     );
-                    let done = completed_count.fetch_add(1, Ordering::SeqCst) + 1;
-                    ctx.push_progress(Progress {
-                        done,
-                        total: total_shards as u64 + 1,
-                    });
                     Ok(entries)
                 }
                 Err(Halt::Failed(error)) => {
@@ -2128,8 +2123,16 @@ fn build_map_main(
                 Err(other) => Err(other),
             }
         },
-        // 建图的落库在收尾统一进行（partial / 全量），收集侧无需逐项动作。
-        |_, _| Ok(()),
+        // Count and publish on the serial collector so concurrent shards cannot
+        // deliver a later completion count before an earlier one.
+        |_, _| {
+            completed_count += 1;
+            ctx.push_progress(Progress {
+                done: completed_count,
+                total: total_shards as u64 + 1,
+            });
+            Ok(())
+        },
     );
 
     let mut warnings = warnings
