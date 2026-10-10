@@ -345,7 +345,6 @@ struct Record {
     completed: BTreeMap<String, Completed>,
 }
 struct Stage {
-    owner: usize,
     active: bool,
     dir: PathBuf,
     snapshot: ParseBatchSnapshot,
@@ -411,9 +410,6 @@ pub(crate) fn plan(registry: &Arc<TaskRegistry>, input: &Value) -> Result<Value,
     let stage = stage
         .lock()
         .map_err(|_| invalid("Visual state unavailable"))?;
-    if stage.owner != owner(registry) {
-        return Err(invalid("Visual task identity mismatch"));
-    }
     Ok(
         json!({"schemaVersion":1,"state":if stage.sealed.is_some(){"succeeded"}else{"ready"},
         "snapshot":stage.snapshot,"outputBatchId":stage.assets.batch_id,
@@ -468,8 +464,7 @@ pub(crate) fn put(
     let mut stage = stage
         .lock()
         .map_err(|_| invalid("Visual state unavailable"))?;
-    if stage.owner != owner(registry)
-        || !stage.active
+    if !stage.active
         || registry.get(task).is_none_or(|s| s.status.is_terminal())
         || registry.cancel_requested(task)
     {
@@ -536,7 +531,6 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
         .join(&plan.paper_id)
         .join(&assets.batch_id);
     let mut stage = Stage {
-        owner: owner(&ctx.registry),
         active: true,
         dir,
         snapshot: plan.snapshot.clone(),
