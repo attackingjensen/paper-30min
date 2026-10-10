@@ -54,8 +54,19 @@ export function cropImagesReady(mapped, attachmentIds) {
   return true;
 }
 
+/**
+ * 深挖预渲染门禁。云端批次带视觉资产清单（visualAssets）：按清单判定，每件资产的
+ * 全部资源 attachmentId 均在批次内即齐备——区域裁切（crop-{id}-r{n}）与合法的页级
+ * 降级（pageimg-*）都放行。本地批次保持页图逐页 + 图表裁切逐件检查。
+ */
 export function prerenderAssetsReady(mapped, attachmentIds) {
-  return pageImagesReady(mapped, attachmentIds) && cropImagesReady(mapped, attachmentIds);
+  const ids = attachmentIds instanceof Set ? attachmentIds : new Set(attachmentIds ?? []);
+  if (mapped?.visualAssets) {
+    return (mapped.visualAssets.assets ?? []).every(asset =>
+      (asset.resources ?? []).length > 0
+      && asset.resources.every(resource => ids.has(resource?.attachmentId)));
+  }
+  return pageImagesReady(mapped, ids) && cropImagesReady(mapped, ids);
 }
 
 function qaError(code, message, details) {

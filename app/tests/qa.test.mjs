@@ -373,3 +373,19 @@ test('页图附件 ID 零填充；预渲染齐备按页数与图表清单逐件�
   assert.equal(cropImagesReady(mapped, complete.filter(id => id !== 'pageimg-0003')), true);
   assert.equal(cropImagesReady(mapped, complete.filter(id => id !== 'crop-fig_1')), false);
 });
+
+test('云端深挖门禁按视觉资产清单判定，区域裁切与页级降级均合法放行', () => {
+  const cloud = structuredClone(mapped);
+  cloud.visualAssets = { assets: [
+    { secId: 'sec_2_introduction', blockId: 2, resources: [{ attachmentId: 'crop-fig_1-r1' }, { attachmentId: 'crop-fig_1-r2' }] },
+    { secId: 'sec_3_method', blockId: 1, resources: [{ attachmentId: 'pageimg-0002' }] },
+  ] };
+  // 云端批次不含裸 crop-fig_1，也无需页图逐页齐备：只按清单资源判定。
+  const ready = ['crop-fig_1-r1', 'crop-fig_1-r2', 'pageimg-0002'];
+  assert.equal(prerenderAssetsReady(cloud, ready), true);
+  assert.equal(prerenderAssetsReady(cloud, ready.filter(id => id !== 'crop-fig_1-r2')), false);
+  assert.equal(prerenderAssetsReady(cloud, ready.filter(id => id !== 'pageimg-0002')), false);
+  const broken = structuredClone(cloud);
+  broken.visualAssets.assets[0].resources = [];
+  assert.equal(prerenderAssetsReady(broken, ready), false);
+});
