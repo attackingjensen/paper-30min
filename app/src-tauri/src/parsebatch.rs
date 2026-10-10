@@ -157,14 +157,6 @@ impl Library {
     }
 
     /// Seal staged files one at a time; the immutable manifest is still written last.
-    pub fn write_parse_batch_paths(
-        &self,
-        manifest: ParseBatchManifest,
-        resources: BTreeMap<String, PathBuf>,
-    ) -> Result<ParseBatchManifest, BridgeError> {
-        self.write_parse_batch_paths_with_checkpoint(manifest, resources, || Ok(()))
-    }
-
     pub(crate) fn write_parse_batch_paths_with_checkpoint(
         &self,
         manifest: ParseBatchManifest,
