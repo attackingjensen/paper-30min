@@ -189,6 +189,37 @@ fn replacement_fault_rolls_back_and_success_archives_actual_history() {
 }
 
 #[test]
+fn confirmed_overwrite_skips_archiving_a_corrupt_current_batch() {
+    let (library, _dir) = setup_local();
+    let first = local_candidate(&library, "first", "Old paragraph");
+    library
+        .publish_parse_batch(&first, None, false, false, || Ok(()))
+        .unwrap();
+    let resource = &first.manifest.attachments["pdf"].attachment_id;
+    std::fs::write(
+        std::path::Path::new(&library.info().data_root)
+            .join("attachments/p")
+            .join(resource),
+        b"corrupted",
+    )
+    .unwrap();
+    assert!(library.pin_parse_batch("p", None).is_err());
+    let next = local_candidate(&library, "next", "New paragraph");
+    assert!(library
+        .publish_parse_batch(&next, Some("first"), false, false, || Ok(()))
+        .is_err());
+    let current = library
+        .publish_parse_batch(&next, Some("first"), true, false, || Ok(()))
+        .unwrap();
+    assert_eq!(current.parse_batch_id.as_deref(), Some("next"));
+    assert!(current.parse_history.is_empty());
+    assert_eq!(
+        library.current_parse_batch_id("p").unwrap().as_deref(),
+        Some("next")
+    );
+}
+
+#[test]
 fn visual_successor_preserves_early_map_but_missing_visual_replacement_cannot_publish() {
     let (library, _dir) = setup_local();
     let parent = local_candidate(&library, "initial-local", "Same text");

@@ -116,7 +116,15 @@ impl Library {
         let mapped = self.validate_parse_candidate(snapshot, false)?;
         let had_legacy_model = self.get_attachment(paper_id, "blockmodel.json").is_ok();
         let old = if before.parse_batch_id.is_some() {
-            Some(self.pin_parse_batch(paper_id, None)?)
+            // 旧批次字节已不可读时归档本无可保全内容；用户确认覆盖后跳过归档继续发布。
+            match self.pin_parse_batch(paper_id, None) {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) if overwrite_confirmed => {
+                    eprintln!("旧批次校验失败，按确认覆盖跳过归档: {error}");
+                    None
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             // A user may save chat or notes while the candidate is validating.
             // Retain the old PDF before the transaction, and decide whether to archive
