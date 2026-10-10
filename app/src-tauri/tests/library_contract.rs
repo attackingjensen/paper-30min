@@ -269,6 +269,28 @@ fn put_paper_replaces_nested_records_in_one_transaction() {
 }
 
 #[test]
+fn delete_paper_clears_cloudparse_run_directory() {
+    let (registry, library, dir) = common::env();
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-a", "云端解析论文"),
+    );
+    let run_dir = dir.path().join("operations/cloudparse/paper-a/batch-1");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    std::fs::write(run_dir.join("run.json"), b"{}").unwrap();
+    std::fs::write(run_dir.join("result.jsonl"), b"full text residue").unwrap();
+    invoke(
+        &registry,
+        &library,
+        "library.deletePaper@1",
+        json!({ "paperId": "paper-a" }),
+    );
+    assert!(!dir.path().join("operations/cloudparse/paper-a").exists());
+}
+
+#[test]
 fn delete_paper_removes_record_and_reading_position() {
     let (registry, library, _dir) = common::env();
     invoke(

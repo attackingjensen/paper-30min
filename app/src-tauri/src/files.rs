@@ -618,6 +618,11 @@ impl Library {
         if dir.exists() {
             fs::remove_dir_all(&dir).map_err(io_error)?;
         }
+        // 云端任务运行目录含任务记录与全文结果，随论文一并删除。
+        let runs = self.root().join("operations/cloudparse").join(paper_id);
+        if runs.exists() {
+            fs::remove_dir_all(&runs).map_err(io_error)?;
+        }
         Ok(())
     }
 }
