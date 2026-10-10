@@ -54,6 +54,25 @@ test('downloaded row exits only after its chain is published, sealed candidate k
   assert.equal(cloudJobVisible(published, false), false, '发布后任务行不再滞留');
 });
 
+test('failure codes map to specific user-facing reasons instead of the generic fallback', () => {
+  const cases = {
+    cloud_auth_error: '百度凭据无效或权限不足，请检查解析设置',
+    cloud_rate_limit: '百度请求限额或额度不足',
+    cloud_poll_timeout: '本轮等待超时，恢复查询不会重新上传',
+    cloud_submit_unknown: '受理状态未知，重新提交可能重复计费',
+    cloud_network_error: '网络请求中断',
+    cloud_invalid_result: '原始结果格式校验失败',
+    integrity_failed: 'PDF 或结果身份校验失败',
+    cloud_remote_failed: '百度远端解析失败，请查看服务控制台',
+  };
+  for (const [failureCode, text] of Object.entries(cases)) {
+    assert.equal(cloudJobView({ state: 'failed', jobId: 'j', failureCode }).failure, text, failureCode);
+  }
+  assert.equal(cloudJobView({ state: 'failed', jobId: 'j', failureCode: 'unexpected_code' }).failure,
+    '任务未完成，请检查配置或恢复查询', '未知 failureCode 退化为笼统文案');
+  assert.equal(cloudJobView({ state: 'failed', jobId: 'j' }).failure, '', '无 failureCode 不显示原因');
+});
+
 test('remote failure offers a confirmed new submission, while interruptions resume the old job', () => {
   const failed = { jobId: 'failed-job', batchId: 'failed-batch', state: 'remote-failed' };
   assert.equal(cloudJobView(failed).needsResubmit, true);
