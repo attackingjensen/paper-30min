@@ -520,20 +520,10 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
     assets.batch_id = output_batch_id(&plan.snapshot.manifest.batch_id);
     let resources = resources(&assets)?;
     let parent = ctx.library.root().join("operations");
-    safe(ctx.library.root(), &parent)?;
     let dir = parent
         .join("cloudassets")
         .join(&plan.paper_id)
         .join(&assets.batch_id);
-    let mut probe = dir.as_path();
-    while !probe.exists() {
-        probe = probe
-            .parent()
-            .ok_or_else(|| invalid("Invalid staging path"))?;
-    }
-    safe(ctx.library.root(), probe)?;
-    fs::create_dir_all(&dir).map_err(io_error)?;
-    safe(ctx.library.root(), &dir)?;
     let mut stage = Stage {
         owner: owner(&ctx.registry),
         active: true,
@@ -545,6 +535,32 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
         last_change: Instant::now(),
         sealed: None,
     };
+    // 幂等识别先于暂存恢复：输出批次已封存时不建暂存、不校验残留。
+    match ctx
+        .library
+        .pin_parse_batch(&plan.paper_id, Some(&stage.assets.batch_id))
+    {
+        Ok(snapshot) => {
+            read_visual_assets(&ctx.library, &snapshot, &mapped)?;
+            stage.sealed = Some(snapshot);
+            stage.active = false;
+        }
+        Err(e) if e.code == "not_found" => {}
+        Err(e) => return Err(e),
+    }
+    if stage.sealed.is_some() {
+        return Ok(stage);
+    }
+    safe(ctx.library.root(), &parent)?;
+    let mut probe = stage.dir.as_path();
+    while !probe.exists() {
+        probe = probe
+            .parent()
+            .ok_or_else(|| invalid("Invalid staging path"))?;
+    }
+    safe(ctx.library.root(), probe)?;
+    fs::create_dir_all(&stage.dir).map_err(io_error)?;
+    safe(ctx.library.root(), &stage.dir)?;
     let path = stage.dir.join("run.json");
     if path.exists() {
         safe(ctx.library.root(), &path)?;
@@ -584,18 +600,6 @@ fn initialize(ctx: &RunContext, plan: &CloudAssetsPlan) -> Result<Stage, BridgeE
             validate_png(&bytes, r.width, r.height)?;
             stage.completed.insert(id, complete);
         }
-    }
-    match ctx
-        .library
-        .pin_parse_batch(&plan.paper_id, Some(&stage.assets.batch_id))
-    {
-        Ok(snapshot) => {
-            read_visual_assets(&ctx.library, &snapshot, &mapped)?;
-            stage.sealed = Some(snapshot);
-            stage.active = false;
-        }
-        Err(e) if e.code == "not_found" => {}
-        Err(e) => return Err(e),
     }
     save(ctx.library.root(), &stage)?;
     Ok(stage)

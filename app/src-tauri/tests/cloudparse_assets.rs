@@ -343,6 +343,38 @@ fn successful_seal_removes_the_staging_directory() {
 }
 
 #[test]
+fn sealed_batch_rerun_ignores_damaged_staging_residue() {
+    let (registry, library, dir) = candidate();
+    let task = start(&registry);
+    let plan = wait_plan(&registry, &library, &task);
+    for r in plan["resources"].as_array().unwrap() {
+        upload(&registry, &library, &task, r).unwrap();
+    }
+    assert_eq!(
+        testkit::wait_terminal(&registry, &task, Duration::from_secs(30)).unwrap(),
+        TaskStatus::Succeeded
+    );
+    // 旧版本残留的损坏暂存（run.json 无法解析）不得让已封存批次的重跑误报失败。
+    let staging = dir
+        .path()
+        .join("operations/cloudassets/p")
+        .join(cloudassets::output_batch_id("parent"));
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("run.json"), b"corrupted").unwrap();
+    let repeated = start(&registry);
+    assert_eq!(
+        testkit::wait_terminal(&registry, &repeated, Duration::from_secs(15)).unwrap(),
+        TaskStatus::Succeeded,
+        "{:?}",
+        registry.get(&repeated)
+    );
+    assert_eq!(
+        registry.get(&repeated).unwrap().result.unwrap()["batchId"],
+        cloudassets::output_batch_id("parent")
+    );
+}
+
+#[test]
 fn invalid_image_and_unplanned_identity_do_not_complete_resources() {
     let (registry, library, _dir) = candidate();
     let task = start(&registry);
