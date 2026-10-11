@@ -4,7 +4,7 @@
 
 ## 下载安装（Windows）
 
-从 [GitHub Releases](https://github.com/attackingjensen/paper-30min/releases) 下载最新的 `Paper30Min_x.x.x_x64-setup.exe`，双击安装即可（免管理员权限）。v1.2.0 起主程序安装包不内置本地解析组件；需要导入并解析新 PDF 时，在「设置 → 服务 → 解析模型」中按需安装，已有可用组件的升级用户无需重新下载。
+从 [GitHub Releases](https://github.com/attackingjensen/paper-30min/releases) 下载最新的 `Paper30Min_x.x.x_x64-setup.exe`，双击安装即可（免管理员权限）。主程序安装包不内置本地解析组件；在「设置 → 服务」选择本地解析或百度 AI Studio 云端解析。本地解析需按需安装组件，已有可用组件的升级用户无需重新下载；云端解析需填写自己的凭据并确认上传与费用。
 
 当前正式版为 [v1.3.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.3.0)。可选本地解析组件见 [Beta.1 发布页](https://github.com/attackingjensen/paper-30min/releases/tag/v1.2.0-beta.1)；组件 ZIP 不是主程序安装包。验收情况见 [v1.3.0 发布说明](docs/releases/v1.3.0.md)。
 
@@ -18,7 +18,7 @@
 | 阿里云百炼（通义） | `https://dashscope.aliyuncs.com/compatible-mode/v1`（直接填裸域名 `https://dashscope.aliyuncs.com` 也可以，会自动改写） | `qwen-max` |
 | Ollama（本地） | `http://127.0.0.1:11434/v1` | `qwen2.5:14b` |
 
-安装解析组件后，导入论文（本地 PDF / arXiv 编号 / 示例论文），解析与预渲染会自动在后台完成，点「开始建图」即可开始精读。
+配置解析服务后，导入论文（本地 PDF / arXiv 编号 / 示例论文），解析与视觉资源准备会自动在后台完成，点「开始建图」即可开始精读。云端结果发布后可离线阅读原文与来源资源；更改默认解析服务不改写已有论文，需主动重新解析。
 
 没有 API Key 时，可运行 `python tools/mock_llm.py` 启动本地演示模型；在客户端设置中填入 `http://127.0.0.1:8799/v1`、任意 Key 和模型名 `mock-reader-1`。
 
@@ -41,15 +41,15 @@
 
 ## 数据与隐私
 
-- Windows 客户端的书库（论文、PDF、精读产物、问答、设置）全部保存在本机数据目录，不经过任何第三方服务器；
-- 只有建图 / 深挖 / 提问时，相关论文内容会发送给你配置的模型 API；
+- Windows 客户端的书库（论文、PDF、精读产物、问答、设置）保存在本机数据目录；
+- 选择百度云端解析并确认上传与费用后，论文 PDF 会发送给百度 AI Studio。建图 / 深挖 / 提问时，相关论文内容会发送给你配置的模型 API；
 - API Key 只保存在本机设置表，不进入任何导出文件；
 - 支持整库 JSON 导出/导入备份迁移（按论文 id 合并）。
 
 ## 平台与限制
 
 - 当前仅 Windows 10/11 x64；Linux / macOS 暂未适配（卡在文档解析侧车的平台构建）；
-- 任务列表为会话内记录，重启后不保留历史任务；
+- 普通任务列表为会话内记录；云端解析的已受理任务另有本机持久记录，重启后可恢复查询与取回，重新付费提交需再次确认；
 - 云端同步服务与 Android 阅读伴侣在路线图中，本版未包含。
 
 ## 目录结构
