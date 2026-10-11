@@ -69,6 +69,16 @@ test('PDF viewport mismatches fail before producing an image', async () => {
   assert.deepEqual(f.cleaned, [1]);
 });
 
+test('CropBox viewport rounding preserves the verified whole-page pixel dimensions', async () => {
+  const f = fixture(undefined, [400, 600.000007]), saved = [];
+  const resource = { attachmentId: 'pageimg-0002', page: 2, bbox: null,
+    pageSize: [400, 600], width: 800, height: 1200 };
+  await renderCloudPdfAssets(f.doc, [resource], { createCanvas: f.createCanvas,
+    put: async id => saved.push({ id, width: f.canvases[0].width, height: f.canvases[0].height }) });
+  assert.deepEqual(saved, [{ id: 'pageimg-0002', width: 800, height: 1200 }]);
+  assert.deepEqual(f.cleaned, [2]);
+});
+
 test('preparation reads the pinned PDF and destroys its document when upload fails', async () => {
   const f = fixture(), snapshot = { manifest: { batchId: 'parent' } };
   let destroyed = 0;

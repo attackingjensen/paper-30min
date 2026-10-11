@@ -22,7 +22,8 @@ export async function renderCloudPdfAssets(doc, resources, {
       const base = page.getViewport({ scale: 1 });
       if (Math.abs(base.width - resource.pageSize[0]) > 0.05 || Math.abs(base.height - resource.pageSize[1]) > 0.05) throw new Error('PDF 页面尺寸与候选不一致');
       const crop = resource.bbox?.map(value => value / 2);
-      const [x, y, width, height] = crop || [0, 0, base.width, base.height];
+      // CropBox conversion can put the PDF.js viewport just above an integer.
+      const [x, y, width, height] = crop || [0, 0, ...resource.pageSize];
       const scale = Math.min(2, 1600 / Math.max(width, height));
       if (![x, y, width, height, scale].every(Number.isFinite) || width <= 0 || height <= 0
         || x < 0 || y < 0 || x + width > base.width + 0.01 || y + height > base.height + 0.01
