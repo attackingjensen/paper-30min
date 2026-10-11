@@ -17,6 +17,8 @@ const report = { runId, identifier, platform: process.platform, node: process.ve
   input: 'CDP synthesized events; physical mouse/trackpad are separate manual checks', checks: [] };
 const checkFilter = process.env.PAPER30MIN_PDF_CHECK_FILTER;
 if (checkFilter) report.checkFilter = checkFilter;
+const memIdleMs = Number(process.env.PAPER30MIN_PDF_MEM_IDLE_MS) || 5000;
+const memTeardown = process.env.PAPER30MIN_PDF_MEM_TEARDOWN === '1';
 const requests = [];
 let responseMode = 'success';
 let baselineReader = false;
@@ -468,19 +470,40 @@ try {
           stages.push({ id, time: Date.now(), surfaces });
         }
         await page.screenshot({ path: path.join(output, baseline ? 'memory-before.png' : 'memory-after.png') });
+        if (memTeardown) {
+          // 返回书库（产品行为：保留 viewer 与文档，仅切换视图），观察长 idle 归还。
+          await page.locator('#nav-library').click();
+          await page.locator('.paper-card').first().waitFor({ state: 'visible' });
+          await page.waitForTimeout(2000);
+        }
         const idleStarted = Date.now();
-        await page.waitForTimeout(5000);
+        await page.waitForTimeout(memIdleMs);
         await stopHost();
         await samplerExit;
         const samples = (await readFile(file, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
         assert.ok(samples.length >= 5);
         assert.ok(samples.every(sample => !sample.processes.some(process => /python|docling/i.test(process.name))),
           'reader memory probe must exclude parser warm-start processes');
+        // 归因摘要：perProcess 按进程角色聚合，idle 后半段最小值作为 settled 稳态。
+        const processPrivateBytes = {};
+        for (const sample of samples) {
+          for (const proc of sample.perProcess ?? []) {
+            const key = proc.name === 'msedgewebview2' ? `webview2:${proc.type || 'browser'}` : proc.name;
+            processPrivateBytes[key] ??= { peakBytes: 0, endBytes: proc.privateBytes };
+            processPrivateBytes[key].peakBytes = Math.max(processPrivateBytes[key].peakBytes, proc.privateBytes);
+            processPrivateBytes[key].endBytes = proc.privateBytes;
+          }
+        }
+        const idleSamples = samples.filter(sample => sample.time >= idleStarted);
+        const settledHalf = idleSamples.slice(Math.floor(idleSamples.length / 2));
         runs.push({ baseline, stages, idleStarted, samples: samples.length,
+          teardown: memTeardown, idleMs: memIdleMs,
           viewport,
           peakWorkingSetBytes: Math.max(...samples.map(sample => sample.workingSetBytes)),
           peakPrivateBytes: Math.max(...samples.map(sample => sample.privateBytes)),
-          idle: samples.filter(sample => sample.time >= idleStarted),
+          settledPrivateBytes: settledHalf.length ? Math.min(...settledHalf.map(sample => sample.privateBytes)) : null,
+          processPrivateBytes,
+          idle: idleSamples,
           sampleIntervalsMs: samples.slice(1).map((sample, index) => sample.time - samples[index].time),
         });
       } finally {
