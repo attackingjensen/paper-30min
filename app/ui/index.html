@@ -88,13 +88,15 @@
       <h2 id="reader-title"></h2>
       <div class="reader-meta" id="reader-meta"></div>
     </div>
-    <div class="reader-rebuild-actions">
-      <button class="btn small" id="btn-reparse" type="button" title="使用设置页选中的服务替换当前解析结果">重新解析</button>
-      <button class="btn small" id="btn-rebuild-map" type="button" title="重新请求所有正文节并覆盖当前地图">重新建图</button>
+    <div class="reader-actions" role="group" aria-label="论文操作">
+      <div class="reader-rebuild-actions">
+        <button class="btn" id="btn-reparse" type="button" title="使用设置页选中的服务替换当前解析结果">重新解析</button>
+        <button class="btn" id="btn-rebuild-map" type="button" title="重新请求所有正文节并覆盖当前地图">重新建图</button>
+      </div>
+      <button class="btn" id="btn-organize" type="button" title="评分、分类与标签">整理</button>
+      <button class="btn" id="btn-export" type="button" title="导出精读笔记 Markdown"><img src="vendor/icons/download.svg" alt="">导出笔记</button>
+      <button class="btn pdf-toggle" id="btn-pdf-toggle" type="button" aria-expanded="true" aria-pressed="true" title="全开或全关 PDF 对照">PDF 对照</button>
     </div>
-    <button class="btn ghost" id="btn-organize" type="button" title="评分、分类与标签">整理</button>
-    <button class="btn ghost" id="btn-export" type="button" title="导出精读笔记 Markdown">⬇ 导出笔记</button>
-    <button class="btn small pdf-toggle" id="btn-pdf-toggle" type="button" aria-expanded="true" aria-pressed="true" title="全开或全关 PDF 对照">PDF 对照</button>
   </div>
 
   <nav class="tabs" id="reader-tabs" aria-label="阅读面板">
