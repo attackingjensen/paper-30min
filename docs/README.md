@@ -3,9 +3,8 @@
 开发使用已安装的 NexusKit 技能。需求探索、计划、实施、审查和经验沉淀的步骤与新产物格式由技能管理，仓库不维护第二套流程。已有 CE 产物保留原始格式，使用前核对适用范围与当前代码。
 
 - `adr/`：编号式关键决策记录；新决策接续现有最大编号，历史决策不再复述。
-- `plans/`：v1.4.0 实施计划；发布后整体删除，仅由 Git 历史保存。
 - `reviews/`：仅保留仍服务于当前交付的审查记录；v1.2.0 的已消费记录由 Git 历史保存，未完成的安装版验证见[正式版说明](releases/v1.2.0.md)。
-- `releases/`：发布说明与安装版验收范围；当前见 [v1.3.0](releases/v1.3.0.md)，解析组件说明见 [v1.2.0-beta.1](releases/v1.2.0-beta.1.md)。
+- `releases/`：发布说明与安装版验收范围；当前见 [v1.4.0](releases/v1.4.0.md)，解析组件说明见 [v1.2.0-beta.1](releases/v1.2.0-beta.1.md)。
 - 其他产物目录由相应技能按需创建；不预建完整目录树或空白模板。
 
 项目介绍见 [README](../README.md)，关键决策见 [adr/](adr/)，业务概念见 [CONCEPTS.md](../CONCEPTS.md)，运行和测试见 [客户端 README](../app/README.md)，issue 跟踪见 [agents/issue-tracker.md](agents/issue-tracker.md)。工作上下文来自当前任务、相关计划、代码、测试和必要的 Issue；任务与进度由 Linear 承接。
