@@ -6,7 +6,7 @@
 
 从 [GitHub Releases](https://github.com/attackingjensen/paper-30min/releases) 下载最新的 `Paper30Min_x.x.x_x64-setup.exe`，双击安装即可（免管理员权限）。主程序安装包不内置本地解析组件；在「设置 → 服务」选择本地解析或百度 AI Studio 云端解析。本地解析需按需安装组件，已有可用组件的升级用户无需重新下载；云端解析需填写自己的凭据并确认上传与费用。
 
-当前正式版为 [v1.3.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.3.0)。可选本地解析组件见 [Beta.1 发布页](https://github.com/attackingjensen/paper-30min/releases/tag/v1.2.0-beta.1)；组件 ZIP 不是主程序安装包。验收情况见 [v1.3.0 发布说明](docs/releases/v1.3.0.md)。
+当前正式版为 [v1.4.0](https://github.com/attackingjensen/paper-30min/releases/tag/v1.4.0)。可选本地解析组件见 [Beta.1 发布页](https://github.com/attackingjensen/paper-30min/releases/tag/v1.2.0-beta.1)；组件 ZIP 不是主程序安装包。验收情况见 [v1.4.0 发布说明](docs/releases/v1.4.0.md)。
 
 首次启动书库内置一份「使用说明」。使用前打开右上角「设置」，填入任意 **OpenAI 兼容** 的大模型接口并「连接测试」：
 

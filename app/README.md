@@ -146,7 +146,7 @@ npm run test:network-webview
 
 ## Windows 更新与发版核对
 
-v1.2.0 正式版仅更新主程序；解析组件继续使用 v1.2.0-beta.1 的 ZIP、内置哈希及下载地址，不重新打包。v1.1.0 用户需手动运行新版安装包；Beta 用户也可手动升级。更新沿用 `com.paper30min.reader` 的 currentUser NSIS 安装身份，书库仍位于 Tauri 应用数据目录。主程序安装包不含 Docling：新安装用户可在设置的「服务」页按需下载或选择本地 ZIP 安装解析组件。未安装组件时仍可查看 PDF 与已有阅读内容，新 PDF 的结构化解析和页图生成不可用。v1.1.0 原地升级时安装器锁定旧安装目录并保留旧侧车，首次启动复制到用户本地组件目录；迁移失败可在设置中重试。安装前应备份现有书库，并等待生成任务完成或确认取消。
+v1.4.0 正式版仅更新主程序；本地解析组件继续使用 v1.2.0-beta.1 的 ZIP、内置哈希及下载地址，不重新打包。v1.1.0 用户需手动运行新版安装包；Beta 用户也可手动升级。更新沿用 `com.paper30min.reader` 的 currentUser NSIS 安装身份，书库仍位于 Tauri 应用数据目录。主程序安装包不含 Docling：新安装用户可在设置的「服务」页按需下载或选择本地 ZIP 安装解析组件。未安装组件时仍可查看 PDF 与已有阅读内容，也可配置百度凭据使用云端解析及离线视觉资源；本地解析仍需要组件。v1.1.0 原地升级时安装器锁定旧安装目录并保留旧侧车，首次启动复制到用户本地组件目录；迁移失败可在设置中重试。安装前应备份现有书库，并等待生成任务完成或确认取消。
 
 1. 将 Tauri updater 私钥及密码保存在仓库外并独立备份；公钥在 `src-tauri/tauri.conf.json`。私钥丢失后，已安装版本将无法验证后续更新。Windows 代码签名与 updater 的 `.sig` 是不同事项，应分别核对。不要把私钥、密码或组件包提交到仓库。
 2. 核对 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 都是同一版本。使用 `TAURI_SIGNING_PRIVATE_KEY`（私钥路径或内容）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量运行 `npm run tauri build`，不要把凭据写进 `.env`、命令日志或仓库。
