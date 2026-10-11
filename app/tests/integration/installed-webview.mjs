@@ -14,9 +14,13 @@ const runId = `installed-${Date.now()}`;
 const output = path.join(root, 'tmp', runId);
 const readingOnly = Boolean(process.env.PAPER30MIN_READING_REPORT);
 const installOnly = process.env.PAPER30MIN_INSTALL_ONLY === '1';
+const zoomOnly = process.env.PAPER30MIN_ZOOM_ONLY === '1';
 const worktreeNsis = process.env.PAPER30MIN_INSTALLED_NSIS_WORKTREE === '1';
+const worktreeReader = process.env.PAPER30MIN_INSTALLED_READER_WORKTREE === '1';
 const reusedPath = process.env.PAPER30MIN_READING_REPORT ?? process.env.PAPER30MIN_INSTALLED_ARTIFACTS;
 const reused = reusedPath ? JSON.parse(await readFile(reusedPath, 'utf8')) : null;
+assert.ok(!zoomOnly || !installOnly, 'zoom and installation-only modes are mutually exclusive');
+assert.ok(!zoomOnly || !reused || readingOnly, 'reuse a zoom installation with PAPER30MIN_READING_REPORT');
 const product = reused?.product ?? `Paper30Min Test ${runId}`;
 const identifier = reused?.identifier ?? `com.paper30min.${runId}`;
 assert.match(product, /^Paper30Min Test installed-\d+$/);
@@ -25,6 +29,7 @@ const target = path.join(appDir, 'src-tauri/target');
 const cli = path.join(appDir, 'node_modules/@tauri-apps/cli/tauri.js');
 const key = path.join(os.tmpdir(), `${runId}.key`);
 const report = { runId, identifier, product, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
+  scope: zoomOnly ? 'continuous zoom convergence; FPS and memory are observations' : 'installation and reading baseline',
   input: 'NSIS /S installs; CDP synthesized wheel and zoom-button inputs in installed release WebView2',
   boundaries: ['isolated product/identifier and temporary test signing key', 'no remote upload or official updater channel',
     'animation callback cadence is measured, not physical display presentation',
@@ -33,7 +38,7 @@ const report = { runId, identifier, product, head: execFileSync('git', ['rev-par
     'generated mixed-size and 300 DPI rasterized real-paper fixtures; not real scanned-paper quality acceptance'],
   thresholds: { minFps: 45, maxP95FrameMs: 50, maxWorkingSetBytes: 1024 ** 3 }, artifacts: [], checks: [], baseline: [] };
 if (reused) {
-  assert.ok(!worktreeNsis, 'worktree NSIS builds cannot reuse previous artifacts');
+  assert.ok(!worktreeNsis && !worktreeReader, 'worktree builds cannot reuse previous artifacts');
   assert.equal(reused.head, report.head, 'reused installers must match the current HEAD');
   report.reusedArtifacts = path.resolve(reusedPath);
 }
@@ -61,6 +66,11 @@ if (reused?.worktreeNsisSha256) {
     'reused worktree installer must match the current NSIS template');
   report.worktreeNsisSha256 = reused.worktreeNsisSha256;
 }
+if (reused?.worktreeReaderSha256) {
+  assert.equal(hash(await readFile(path.join(appDir, 'ui/js/pdf-reader.js'))), reused.worktreeReaderSha256,
+    'reused reader build must match the current reader source');
+  report.worktreeReaderSha256 = reused.worktreeReaderSha256;
+}
 async function build(ref, version, publicKey) {
   const snapshot = path.join(output, version);
   await mkdir(snapshot);
@@ -72,6 +82,11 @@ async function build(ref, version, publicKey) {
     const template = await readFile(path.join(appDir, 'src-tauri/windows/installer.nsi'));
     await writeFile(path.join(app, 'src-tauri/windows/installer.nsi'), template);
     report.worktreeNsisSha256 = hash(template);
+  }
+  if (worktreeReader && version === '1.4.0-beta.1') {
+    const reader = await readFile(path.join(appDir, 'ui/js/pdf-reader.js'));
+    await writeFile(path.join(app, 'ui/js/pdf-reader.js'), reader);
+    report.worktreeReaderSha256 = hash(reader);
   }
   const configPath = path.join(app, 'src-tauri/tauri.conf.json');
   const config = JSON.parse(await readFile(configPath, 'utf8'));
@@ -207,6 +222,7 @@ async function nonblank() {
   });
 }
 async function measure(id, phase, dpr) {
+  assert.equal(await page.evaluate(() => devicePixelRatio), dpr, 'actual DPR must match the requested measurement');
   await page.evaluate(() => {
     window.__baseline = { start: performance.now(), last: performance.now(), intervals: [], active: true };
     const tick = time => {
@@ -221,6 +237,9 @@ async function measure(id, phase, dpr) {
   const box = await page.locator('#pdf-canvas-wrap').boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   for (let i = 0; i < 100; i++) {
+    if (phase !== 'scroll' && i === 99) await page.evaluate(() => {
+      window.__baseline.lastInputCanvases = [...document.querySelectorAll('#pdf-pages canvas')];
+    });
     if (phase === 'scroll') await page.mouse.wheel(0, (i % 20 < 10 ? 1 : -1) * 200);
     else await page.locator(i % 20 < 10 ? '#btn-pdf-zoom-in' : '#btn-pdf-zoom-out').click();
     await page.waitForTimeout(phase === 'scroll' ? 60 : 200);
@@ -229,12 +248,21 @@ async function measure(id, phase, dpr) {
     const state = window.__baseline;
     state.interactionEnd = performance.now(); state.interactionFrames = state.intervals.length;
   });
-  await page.waitForTimeout(500);
   let settleError = null;
   await page.waitForFunction(() => {
-    const canvases = [...document.querySelectorAll('#pdf-pages canvas')];
-    return canvases.length && canvases.every(canvas => Math.abs(canvas.width -
-      Math.ceil(canvas.parentElement.getBoundingClientRect().width * Math.min(devicePixelRatio, 2))) <= 2);
+    const wrap = document.querySelector('#pdf-canvas-wrap').getBoundingClientRect();
+    const visible = [...document.querySelectorAll('#pdf-pages .pdf-page')].filter(slot => {
+      const box = slot.getBoundingClientRect();
+      return box.bottom > wrap.top && box.top < wrap.bottom;
+    });
+    return visible.length && document.querySelector('#pdf-loading').hidden && visible.every(slot => {
+      const canvas = slot.querySelector('canvas');
+      const { width, height } = slot.getBoundingClientRect();
+      const ratio = Math.min(devicePixelRatio, 2, Math.sqrt(4 * 1024 * 1024 / (width * height)));
+      return canvas && Math.abs(canvas.width - Math.floor(width * ratio)) <= 2
+        && Math.abs(canvas.height - Math.floor(height * ratio)) <= 2
+        && !window.__baseline.lastInputCanvases?.includes(canvas);
+    });
   }, undefined, { timeout: 10000 }).catch(error => { settleError = error.message; });
   const metrics = await page.evaluate(() => {
     const state = window.__baseline; state.active = false;
@@ -250,10 +278,28 @@ async function measure(id, phase, dpr) {
       viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, canvases: document.querySelectorAll('#pdf-pages canvas').length,
       scrollTop: document.querySelector('#pdf-canvas-wrap').scrollTop, zoom: document.querySelector('#pdf-zoom-label')?.textContent };
   });
-  const renderState = settleError ? await page.evaluate(() => ({ loading: document.querySelector('#pdf-loading').textContent,
-    renderError: document.querySelector('#pdf-render-error-message').textContent,
-    canvases: [...document.querySelectorAll('#pdf-pages canvas')].map(canvas => ({ page: canvas.parentElement.dataset.page,
-      width: canvas.width, cssWidth: canvas.parentElement.getBoundingClientRect().width, dpr: devicePixelRatio })) })) : null;
+  assert.equal(metrics.dpr, dpr, 'DPR must remain stable through the interaction');
+  const renderState = await page.evaluate(() => {
+    const wrap = document.querySelector('#pdf-canvas-wrap').getBoundingClientRect();
+    const visiblePages = [...document.querySelectorAll('#pdf-pages .pdf-page')].filter(slot => {
+      const box = slot.getBoundingClientRect();
+      return box.bottom > wrap.top && box.top < wrap.bottom;
+    }).map(slot => {
+      const canvas = slot.querySelector('canvas');
+      const { width, height } = slot.getBoundingClientRect();
+      const ratio = Math.min(devicePixelRatio, 2, Math.sqrt(4 * 1024 * 1024 / (width * height)));
+      let ink = 0;
+      if (canvas?.width && canvas.height) {
+        const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 3] && Math.min(pixels[i], pixels[i + 1], pixels[i + 2]) < 230) ink++;
+      }
+      return { page: slot.dataset.page, width: canvas?.width ?? 0, height: canvas?.height ?? 0,
+        expectedWidth: Math.floor(width * ratio), expectedHeight: Math.floor(height * ratio), ink };
+    });
+    return { loadingVisible: !document.querySelector('#pdf-loading').hidden,
+      errorVisible: !document.querySelector('#pdf-render-error').hidden,
+      renderError: document.querySelector('#pdf-render-error-message').textContent, visiblePages };
+  });
   const samples = (await readFile(path.join(output, 'memory.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line))
     .filter(sample => sample.time >= started && sample.time <= Date.now());
   assert.ok(samples.length, 'memory sampler must observe the interaction');
@@ -276,20 +322,32 @@ try {
       await verifyInstallerSignature(artifact.installer, (await readFile(`${artifact.installer}.sig`, 'utf8')).trim(), parseUpdaterPublicKey(config.plugins.updater.pubkey), artifact.version);
     }
     report.artifacts = reused.artifacts;
-    old = reused.artifacts.find(artifact => artifact.version === '1.3.0').installer;
+    old = reused.artifacts.find(artifact => artifact.version === '1.3.0')?.installer;
     current = reused.artifacts.find(artifact => artifact.version === '1.4.0-beta.1').installer;
   } else {
     await run(process.execPath, [cli, 'signer', 'generate', '--ci', '--write-keys', key], { quiet: true });
     const publicKey = (await readFile(`${key}.pub`, 'utf8')).trim();
-    old = await build(execFileSync('git', ['rev-parse', 'main'], { cwd: root, encoding: 'utf8' }).trim(), '1.3.0', publicKey);
+    if (!zoomOnly) old = await build(execFileSync('git', ['rev-parse', 'main'], { cwd: root, encoding: 'utf8' }).trim(), '1.3.0', publicKey);
     current = await build(report.head, '1.4.0-beta.1', publicKey);
   }
   if (readingOnly) {
     report.reusedInstallation = path.resolve(reusedPath);
     report.checks = reused.checks;
     report.fixtures = reused.fixtures;
-    const directory = reused.checks.find(check => check.name === 'fresh current installer custom path with spaces').details.directory;
+    const directory = reused.checks.find(check => check.name === (zoomOnly
+      ? 'fresh installed build for continuous zoom' : 'fresh current installer custom path with spaces')).details.directory;
     await launch(directory); assert.equal(report.app.version, '1.4.0-beta.1'); await enter();
+  } else if (zoomOnly) {
+    await run('python', [path.join(appDir, 'tests/integration/make_pdf_fixtures.py'), output]);
+    await run('python', [path.join(appDir, 'tests/integration/make_scanned_paper.py'), path.join(output, 'scan-paper.pdf')]);
+    const directory = path.join(output, 'zoom install path');
+    await check('fresh installed build for continuous zoom', async () => {
+      await install(current, directory);
+      await launch(directory);
+      await invoke('settings.putPdfparse@1', { settings: { warmStart: false } });
+      await seed();
+      return { directory };
+    });
   } else {
     await run('python', [path.join(appDir, 'tests/integration/make_pdf_fixtures.py'), output]);
     await run('python', [path.join(appDir, 'tests/integration/make_scanned_paper.py'), path.join(output, 'scan-paper.pdf')]);
@@ -430,9 +488,16 @@ try {
   report.physicalViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, screen: [screen.width, screen.height] }));
   const dpr = report.physicalViewport.dpr;
   for (const id of ['long', 'mixed', 'scan']) {
-    await openPaper(id); await page.locator('#btn-pdf-fit').click(); await page.waitForTimeout(1500);
-    if (id === 'scan') for (let i = 0; i < 10; i++) await page.locator('#btn-pdf-zoom-in').click();
-    for (const phase of ['scroll', 'zoom']) await measure(id, phase, dpr);
+    await openPaper(id);
+    await page.locator('#btn-pdf-fit').click(); await page.waitForTimeout(1500);
+    if (id === 'scan') {
+      for (let i = 0; i < 20 && await page.locator('#pdf-zoom-label').textContent() !== '300%'; i++) await page.locator('#btn-pdf-zoom-in').click();
+      assert.equal(await page.locator('#pdf-zoom-label').textContent(), '300%', 'scan input must begin at 300%');
+    }
+    for (const phase of zoomOnly ? ['scroll', 'zoom', 'zoom-again'] : ['scroll', 'zoom']) await measure(id, phase, dpr);
+    if (zoomOnly) assert.ok(report.baseline.filter(row => row.id === id).every(row => row.settled
+      && !row.renderState.errorVisible && row.renderState.visiblePages.every(slot => slot.ink > 1000)),
+    `${id} visible pages must settle without errors and contain PDF content`);
     await page.waitForTimeout(500);
     await page.screenshot({ path: path.join(output, `${id}-dpr-${dpr}.png`) });
   }
@@ -457,7 +522,7 @@ try {
     await rm(path.join(os.tmpdir(), `${reused.runId}.key.pub`), { force: true });
   }
   report.result = report.error ? 'failed' : report.checks.some(check => check.status === 'failed')
-    || report.baseline.some(row => !row.settled || Object.values(row.exceeds).some(Boolean)) ? 'completed-with-findings' : 'passed';
+    || report.baseline.some(row => !row.settled || (!zoomOnly && Object.values(row.exceeds).some(Boolean))) ? 'completed-with-findings' : 'passed';
   report.finishedAt = new Date().toISOString();
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
   console.log(`REPORT ${path.join(output, 'report.json')}`);

@@ -578,6 +578,40 @@ test('continuous zoom coalesces renders and rejects an obsolete completed frame'
   assert.equal(f.pages.children.length, 0);
 });
 
+test('zoom hands an unfinished PDF instruction stream to the replacement render', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture();
+  let ready, abortTimer, aborted = false;
+  const instructions = new Promise(resolve => { ready = resolve; });
+  const page = {
+    getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
+    cleanup() {},
+    render() {
+      clearTimeout(abortTimer);
+      let cancel;
+      const cancellation = new Promise((_, reject) => { cancel = reject; });
+      return { promise: Promise.race([instructions, cancellation]), cancel(extraDelay = 0) {
+        cancel(Object.assign(new Error('cancelled'), { name: 'RenderingCancelledException' }));
+        // PDF.js gives a replacement render 100 ms plus extraDelay to reuse the stream.
+        abortTimer = setTimeout(() => { aborted = true; }, 100 + extraDelay);
+      } };
+    },
+  };
+  setTimeout(() => { if (!aborted) ready(); }, 200);
+  await f.reader.open({ numPages: 1, getPage: async () => page }, 1, 1);
+  await f.flush();
+  t.mock.timers.tick(40);
+  f.reader.resize(1.5);
+  await f.flush();
+  t.mock.timers.tick(120);
+  await f.flush();
+  t.mock.timers.tick(40);
+  await f.flush();
+  assert.equal(f.pages.children[0].children[0]?.width, 900);
+  assert.deepEqual(f.errors, []);
+  f.reader.clear();
+});
+
 test('initial rendering never exposes an unfinished opaque canvas', async () => {
   const f = readerFixture();
   const doc = f.doc(2);
