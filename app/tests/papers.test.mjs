@@ -1,5 +1,5 @@
-// app/ui/js/papers.js 的领域行为测试（Tauri 副本）。当前只覆盖与 #61 数据契约相关的
-// 重新切分规则：已读完标记随其结果一并作废（规格 #51 决策 9）。
+// app/ui/js/papers.js 的领域行为测试（Tauri 副本）：重新切分规则（#61 数据契约，
+// 规格 #51 决策 9）、导出信封往返、占位标题回填等。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -15,6 +15,57 @@ function memoryStore() {
     async delete(id) { records.delete(id); },
   };
 }
+
+test('version 2 export retains all archived batch dependencies and historical screenshots', async () => {
+  const source = memoryStore();
+  const dependencies = { batches: [{ manifest: { batchId: 'old' }, resources: [{ id: 'old-pdf', dataBase64: 'cGRm' }] }] };
+  const image = { id: 'pdf-selection-old', contentType: 'image/png', contentBase64: 'aGVsbG8=' };
+  source.records.set('p', { id: 'p', title: 'P', parseBatchId: 'new', chat: [],
+    parseHistory: [{ batchId: 'old', paper: { id: 'p', products: [{ kind: 'map', body: { problem: 'old' } }],
+      chat: [{ content: 'original', pdfSelection: { images: [{ attachmentId: image.id }] } }] } }] });
+  source.selectionAttachments = { read: async (paperId, id) => { assert.equal(id, image.id); return image; } };
+  source.parseBatchExport = async () => ({ ...dependencies, paper: { ...source.records.get('p'), title: 'Native consistent snapshot' } });
+  papers.init(source);
+  const payload = papers.parseLibraryFile(await papers.exportLibrary());
+  assert.equal(payload.version, 2);
+  assert.equal(payload.papers[0].title, 'Native consistent snapshot');
+  assert.deepEqual(payload.papers[0].parseBatchExport, dependencies);
+  assert.deepEqual(payload.papers[0].selectionAttachments, [image]);
+  assert.equal(payload.papers[0].parseHistory[0].paper.chat[0].content, 'original');
+  assert.equal(papers.parseLibraryFile(JSON.stringify({ format: 'paper-30min-library', version: 1, papers: [] })).version, 1);
+});
+
+test('recall image export includes current and archived resources once and browser import restores them before exposing references', async () => {
+  const source = memoryStore();
+  const images = new Map(['recall-current', 'recall-old'].map(id => [id, { id, name: `${id}.png`, contentType: 'image/png', contentBase64: 'AQID', size: 3, sha256: 'digest' }]));
+  source.records.set('p', { id: 'p', title: 'P', chat: [], recallCard: { markdown: 'current', images: [{ attachmentId: 'recall-current' }] },
+    parseHistory: [{ batchId: 'old', paper: { recallCard: { markdown: 'old', images: [{ attachmentId: 'recall-old' }, { attachmentId: 'recall-current' }] } } }] });
+  const reads = [];
+  source.selectionAttachments = { read: async (paperId, id) => { reads.push(id); return images.get(id); } };
+  papers.init(source);
+  const payload = papers.parseLibraryFile(await papers.exportLibrary());
+  assert.deepEqual(reads, ['recall-current', 'recall-old']);
+  assert.deepEqual(payload.papers[0].recallAttachments, [...images.values()]);
+  const unsafe = memoryStore();
+  papers.init(unsafe);
+  await assert.rejects(papers.importLibrary(payload), /客户端迁入/);
+  assert.equal(unsafe.records.size, 0);
+  const target = memoryStore();
+  const restored = [];
+  target.selectionAttachments = { write: async (paperId, image) => {
+    assert.deepEqual(target.records.get(paperId).recallCard.images, []);
+    restored.push(image.id);
+  } };
+  papers.init(target);
+  const unversioned = { ...payload.papers[0], parseHistory: [], recallAttachments: [images.get('recall-current')] };
+  await papers.importLibrary({ papers: [unversioned] });
+  assert.deepEqual(restored, ['recall-current']);
+  assert.equal(target.records.get('p').recallCard.images[0].attachmentId, 'recall-current');
+  const missing = memoryStore();
+  papers.init(missing);
+  await assert.rejects(papers.importLibrary({ papers: [{ ...unversioned, recallAttachments: [] }] }), /缺少回想卡片/);
+  assert.equal(missing.records.size, 0);
+});
 
 test('selection screenshot exports restore bytes into an empty library and failed imports roll back', async () => {
   const source = memoryStore();
@@ -556,4 +607,35 @@ test('activityDays / streakDays：连续天数从落库活动日派生', async (
   // 只有前天以前的活动 → 连续中断归 0
   const stale = { ...progressFixture(), activityDays: [{ day: '2020-01-01', kind: 'mark' }] };
   assert.equal(papers.streakDays([stale]), 0);
+});
+
+test('backfillParsedTitle：占位标题换成识别标题，真实标题不动', async () => {
+  const source = memoryStore();
+  papers.init(source);
+
+  // 云端 PDF 导入的占位形式：文件名去扩展名
+  const byName = { id: 'a', title: 'paper', pdfName: 'paper.pdf', updatedAt: 1 };
+  assert.equal(await papers.backfillParsedTitle(byName, 'Real Title'), true);
+  assert.equal(byName.title, 'Real Title');
+  assert.ok(byName.updatedAt > 1);
+  assert.equal(source.records.get('a').title, 'Real Title');
+  // 已回填的标题不再是占位形式，重复调用不再写入
+  assert.equal(await papers.backfillParsedTitle(byName, 'Other Title'), false);
+  assert.equal(byName.title, 'Real Title');
+
+  // 云端 arXiv 导入的占位形式：arXiv 编号
+  const byArxiv = { id: 'b', title: 'arXiv 2401.00001', arxivId: '2401.00001', pdfName: '2401.00001.pdf', updatedAt: 1 };
+  assert.equal(await papers.backfillParsedTitle(byArxiv, 'Real Title'), true);
+  assert.equal(byArxiv.title, 'Real Title');
+
+  // 真实标题（本地解析所得）不占位：不被识别结果覆盖，也不落库
+  const real = { id: 'c', title: 'Attention Is All You Need', pdfName: 'paper.pdf', updatedAt: 1 };
+  assert.equal(await papers.backfillParsedTitle(real, 'Other Title'), false);
+  assert.equal(real.title, 'Attention Is All You Need');
+  assert.equal(real.updatedAt, 1);
+  assert.equal(source.records.has('c'), false);
+
+  // 空识别结果与同名结果都不写入
+  assert.equal(await papers.backfillParsedTitle(byArxiv, ''), false);
+  assert.equal(await papers.backfillParsedTitle(byArxiv, 'Real Title'), false);
 });

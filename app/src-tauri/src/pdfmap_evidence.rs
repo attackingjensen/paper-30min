@@ -9,6 +9,192 @@ const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CACHE_CANDIDATES: usize = 256;
 const SOURCE_ATTACHMENT: &str = "docling-source.json";
 
+pub(crate) fn get_batch_source_regions(
+    library: &Library,
+    paper_id: &str,
+    batch_id: &str,
+    expected_model_sha256: &str,
+) -> Result<Value, BridgeError> {
+    let snapshot = library.pin_parse_batch(paper_id, Some(batch_id))?;
+    if snapshot.manifest.provider == "docling" {
+        library.verify_parse_batch(&snapshot)?;
+        let mut result = if batch_id.starts_with("legacy-") {
+            get_source_regions(library, paper_id, expected_model_sha256)?
+        } else {
+            get_pinned_docling_source_regions(library, &snapshot, expected_model_sha256)?
+        };
+        library.verify_parse_batch(&snapshot)?;
+        result["batchId"] = json!(batch_id);
+        return Ok(result);
+    }
+    let (meta, model_bytes) = library.read_parse_batch_attachment(&snapshot, "blockmodel.json")?;
+    if meta.sha256 != expected_model_sha256 {
+        return Err(model_changed());
+    }
+    let saved: MappedPaper = serde_json::from_slice(&model_bytes)
+        .map_err(|_| BridgeError::invalid_input("Invalid block model"))?;
+    let (_, source_bytes) = library.read_parse_batch_attachment(&snapshot, "cloud-source.json")?;
+    let source: Value = serde_json::from_slice(&source_bytes)
+        .map_err(|_| BridgeError::invalid_input("Invalid cloud provenance"))?;
+    let manifest = &snapshot.manifest;
+    if source["schemaVersion"] != 1
+        || source["provider"] != manifest.provider
+        || source["model"] != manifest.model
+        || source["options"] != manifest.options
+        || source["paperId"] != paper_id
+        || source["batchId"] != batch_id
+        || source["pdfSha256"] != manifest.pdf_sha256
+        || source["rawSha256"] != manifest.raw_sha256
+        || source["blockModelSha256"] != meta.sha256
+        || source["projectionSha256"] != crate::cloudparse_map::projection_sha256(&saved)?
+    {
+        return Err(BridgeError::new(
+            "source_identity_mismatch",
+            "云端来源与解析批次不匹配",
+            false,
+        ));
+    }
+    let (_, pdf_bytes) = library.read_parse_batch_attachment(&snapshot, "pdf")?;
+    let identity = crate::pdf_identity::read_pdf_identity_bytes(&pdf_bytes)?;
+    if identity.sha256 != manifest.pdf_sha256 || identity.pages.len() != saved.page_count as usize {
+        return Err(BridgeError::new(
+            "source_identity_mismatch",
+            "云端来源与原 PDF 不匹配",
+            false,
+        ));
+    }
+    let entries = source["blocks"]
+        .as_array()
+        .ok_or_else(|| BridgeError::invalid_input("Cloud source blocks are missing"))?;
+    let mut seen = std::collections::HashSet::new();
+    let mut blocks = Vec::new();
+    for entry in entries {
+        let sec = entry["secId"]
+            .as_str()
+            .ok_or_else(|| BridgeError::invalid_input("Invalid source section"))?;
+        let id = entry["blockId"]
+            .as_u64()
+            .ok_or_else(|| BridgeError::invalid_input("Invalid source block"))?;
+        if !seen.insert((sec, id)) {
+            return Err(BridgeError::invalid_input("Duplicate source block"));
+        }
+        let block = saved
+            .sections
+            .iter()
+            .find(|s| s.id == sec)
+            .and_then(|s| s.blocks.iter().find(|b| b.id as u64 == id))
+            .ok_or_else(|| BridgeError::invalid_input("Unknown source block"))?;
+        let regions: Vec<crate::pdfmap::SourceRegion> =
+            serde_json::from_value(entry["sourceRegions"].clone())
+                .map_err(|_| BridgeError::invalid_input("Invalid source geometry"))?;
+        if regions != block.source_regions {
+            return Err(BridgeError::invalid_input(
+                "Source geometry differs from model",
+            ));
+        }
+        for region in &regions {
+            let page = identity
+                .pages
+                .get(
+                    region
+                        .page
+                        .checked_sub(1)
+                        .ok_or_else(|| BridgeError::invalid_input("Invalid source page"))?
+                        as usize,
+                )
+                .ok_or_else(|| BridgeError::invalid_input("Invalid source page"))?;
+            let [x, y, w, h] = region.bbox;
+            if !page.trusted_geometry
+                || region.charspan.is_some()
+                || region.page_size != [page.width, page.height]
+                || !region.bbox.iter().all(|v| v.is_finite())
+                || x < 0.0
+                || y < 0.0
+                || w <= 0.0
+                || h <= 0.0
+                || x + w > page.width * 2.0 + 0.01
+                || y + h > page.height * 2.0 + 0.01
+            {
+                return Err(BridgeError::invalid_input(
+                    "Uncalibrated cloud source geometry",
+                ));
+            }
+        }
+        blocks
+            .push(json!({"secId":sec,"blockId":id,"sourceRegions":regions,"pages":entry["pages"]}));
+    }
+    if seen.len() != saved.sections.iter().map(|s| s.blocks.len()).sum::<usize>() {
+        return Err(BridgeError::invalid_input(
+            "Cloud source model coverage mismatch",
+        ));
+    }
+    library.verify_parse_batch(&snapshot)?;
+    Ok(
+        json!({"schemaVersion":1,"batchId":batch_id,"pdfSha256":manifest.pdf_sha256,"blockModelSha256":meta.sha256,"blocks":blocks}),
+    )
+}
+
+fn get_pinned_docling_source_regions(
+    library: &Library,
+    snapshot: &crate::parsebatch::ParseBatchSnapshot,
+    expected_model_sha256: &str,
+) -> Result<Value, BridgeError> {
+    let (model_meta, model_bytes) = library.read_parse_batch_attachment(snapshot, "blockmodel.json")?;
+    if model_meta.sha256 != expected_model_sha256 { return Err(model_changed()); }
+    let saved: MappedPaper = serde_json::from_slice(&model_bytes).map_err(|_| BridgeError::invalid_input("Invalid block model"))?;
+    let (_, pdf) = library.read_parse_batch_attachment(snapshot, "pdf")?;
+    let pdf_sha = files::sha256_hex(&pdf);
+    if pdf_sha != snapshot.manifest.pdf_sha256 { return Err(model_changed()); }
+    let mut blocks = json!([]);
+    if !snapshot.manifest.attachments.contains_key(SOURCE_ATTACHMENT) && !snapshot.manifest.batch_id.starts_with("frozen-") {
+        return Err(BridgeError::new("source_identity_mismatch", "本地解析候选缺少 Docling 来源", false));
+    }
+    if snapshot.manifest.attachments.contains_key("local-source-evidence.json") {
+        let (_, bytes) = library.read_parse_batch_attachment(snapshot, "local-source-evidence.json")?;
+        let evidence: Value = serde_json::from_slice(&bytes).map_err(|_| BridgeError::invalid_input("Invalid retained provenance"))?;
+        if evidence["pdfSha256"] != pdf_sha || evidence["blockModelSha256"] != model_meta.sha256 {
+            return Err(model_changed());
+        }
+        blocks = evidence["blocks"].clone();
+        if !blocks.is_array() { return Err(model_changed()); }
+    }
+    if snapshot.manifest.attachments.contains_key(SOURCE_ATTACHMENT) {
+        let (_, bytes) = library.read_parse_batch_attachment(snapshot, SOURCE_ATTACHMENT)?;
+        let raw: Value = serde_json::from_slice(&bytes).map_err(|_| BridgeError::invalid_input("Invalid Docling source"))?;
+        let pdf_hash = u64::from_str_radix(&pdf_sha[48..],16).map_err(|_| model_changed())?;
+        if raw.pointer("/origin/mimetype").and_then(Value::as_str) != Some("application/pdf")
+            || raw.pointer("/origin/binary_hash").and_then(Value::as_u64) != Some(pdf_hash) { return Err(model_changed()); }
+        let recovered = crate::pdfmap::map_docling_json_str(&raw.to_string())?;
+        if legacy_projection(&recovered)? != legacy_projection(&saved)? { return Err(model_changed()); }
+        let recovered_blocks = source_blocks(&recovered)?;
+        if snapshot.manifest.attachments.contains_key("local-source-evidence.json") {
+            if blocks.as_array().is_some_and(|blocks| !blocks.is_empty()) && blocks != recovered_blocks { return Err(model_changed()); }
+        } else { blocks = recovered_blocks; }
+    } else if blocks.as_array().is_some_and(|blocks| !blocks.is_empty()) {
+        return Err(model_changed());
+    }
+    Ok(json!({"schemaVersion":1,"pdfSha256":pdf_sha,"blockModelSha256":model_meta.sha256,"blocks":blocks}))
+}
+
+pub(crate) fn recover_legacy_source_bytes(library: &Library, paper_id: &str, evidence: &Value) -> Option<Vec<u8>> {
+    if evidence["blocks"].as_array()?.is_empty() { return None; }
+    let model = library.get_attachment(paper_id,"blockmodel.json").ok()?;
+    let (_,bytes) = library.read_range(paper_id,"blockmodel.json",0,model.size as u64).ok()?;
+    let saved: MappedPaper = serde_json::from_slice(&bytes).ok()?;
+    let projection = legacy_projection(&saved).ok()?;
+    let pdf_sha = evidence["pdfSha256"].as_str()?;
+    let hash = u64::from_str_radix(pdf_sha.get(48..)?,16).ok()?;
+    let entries = fs::read_dir(library.root().join("pdfparse")).ok()?;
+    for entry in entries.flatten().take(MAX_CACHE_CANDIDATES) {
+        let bytes = match read_safe(library.root(), &entry.path().join("docling.json")) { Some(bytes) => bytes, None => continue };
+        let raw: Value = match serde_json::from_slice(&bytes) { Ok(raw) => raw, Err(_) => continue };
+        if raw.pointer("/origin/mimetype").and_then(Value::as_str) != Some("application/pdf") || raw.pointer("/origin/binary_hash").and_then(Value::as_u64) != Some(hash) { continue; }
+        let mapped = match crate::pdfmap::map_docling_json_str(&raw.to_string()) { Ok(mapped) => mapped,Err(_) => continue };
+        if legacy_projection(&mapped).ok().as_ref() == Some(&projection) && source_blocks(&mapped).ok().as_ref() == Some(&evidence["blocks"]) { return Some(bytes); }
+    }
+    None
+}
+
 pub(crate) fn get_source_regions(
     library: &Library,
     paper_id: &str,
@@ -197,7 +383,7 @@ fn read_safe(root: &Path, path: &Path) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= MAX_DOCUMENT_BYTES).then_some(bytes)
 }
 
-fn safe_path(root: &Path, path: &Path) -> bool {
+pub(crate) fn safe_path(root: &Path, path: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return false;
     };

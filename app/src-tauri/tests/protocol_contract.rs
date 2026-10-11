@@ -12,12 +12,12 @@ use paper30min_lib::bridge;
 use paper30min_lib::files::AttachmentWrite;
 use paper30min_lib::library::{Library, PaperDto, PartDto, ProductDto};
 use paper30min_lib::protocol;
-use paper30min_lib::tasks::{TaskRegistry, TaskStatus};
+use paper30min_lib::tasks::{EventSink, TaskEvent, TaskRegistry, TaskStatus};
 use paper30min_lib::testkit::{wait_terminal, Collector, MockHttp, MockRequest, MockResponse};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -703,6 +703,75 @@ fn build_map_shards_concurrently_with_bounded_inflight() {
 }
 
 #[test]
+fn build_map_progress_stays_ordered_when_first_delivery_is_blocked() {
+    // Hold the first progress delivery until every shard finishes. Other workers
+    // can finish, but must not publish later completion counts ahead of it.
+    struct DelayedProgressSink {
+        collector: Arc<Collector>,
+        completed_shards: Mutex<usize>,
+        shards_done: Condvar,
+    }
+    impl EventSink for DelayedProgressSink {
+        fn emit(&self, event: TaskEvent) {
+            if event.event == "status" && event.progress.as_ref().is_some_and(|p| p.done == 1) {
+                let (completed, _) = self
+                    .shards_done
+                    .wait_timeout_while(
+                        self.completed_shards.lock().unwrap(),
+                        TIMEOUT,
+                        |completed| *completed < 4,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    *completed, 4,
+                    "all concurrent shards must finish while delivery is held"
+                );
+            }
+            let shard_done = event.event == "stage"
+                && event.detail.as_ref().is_some_and(|d| d["shardStatus"] == "done");
+            self.collector.emit(event);
+            if shard_done {
+                *self.completed_shards.lock().unwrap() += 1;
+                self.shards_done.notify_all();
+            }
+        }
+    }
+
+    let (registry, library, _dir) = common::env();
+    let _lock = env_lock!();
+    let mock = MockHttp::start(|request, _hit| map_or_l2_response(request));
+    let paper_id = seed_four_section_paper(&library);
+    seed_assets(&library, &paper_id);
+    configure_model(&registry, &library, &mock.url(""));
+    configure_concurrency(&registry, &library, 2);
+    let collector = Collector::new();
+    let sink = Arc::new(DelayedProgressSink {
+        collector: collector.clone(),
+        completed_shards: Mutex::new(0),
+        shards_done: Condvar::new(),
+    });
+    let task_id = registry
+        .start(
+            protocol::TASK_BUILD_MAP,
+            json!({ "paperId": paper_id }),
+            sink,
+        )
+        .expect("start build-map");
+    assert_eq!(terminal(&registry, &task_id), TaskStatus::Succeeded);
+    let progresses: Vec<u64> = collector
+        .events()
+        .iter()
+        .filter(|event| event.event == "status")
+        .filter_map(|event| event.progress.as_ref().map(|p| p.done))
+        .collect();
+    assert_eq!(
+        progresses,
+        vec![0, 1, 2, 3, 4, 5],
+        "completion progress must arrive in order"
+    );
+}
+
+#[test]
 fn build_map_rejects_rerun_without_overwrite_confirmation() {
     let (registry, library, _dir) = common::env();
     let _lock = env_lock!();
@@ -1229,11 +1298,11 @@ fn deep_dive_pre_attaches_section_assets() {
 }
 
 #[test]
-fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
+fn deep_dive_changed_crop_warns_but_rejects_stale_result_publication() {
     let (registry, library, dir) = common::env();
     let _lock = env_lock!();
     // 批量两节：part-1 第一轮在途时删掉 crop-tbl_1 文件（preflight 已过），part-2
-    // （sec_3_method，图表清单归属 tbl_1）配方读附件时缺文件 → warning，任务仍成功。
+    // （sec_3_method，图表清单归属 tbl_1）配方读附件时提示缺图；提交校验拒绝变化批次。
     // #83 并发改造后本用例以并发上限 1 固定节序（命中序 ↔ 节序的假设只在串行下成立）。
     let crop_path = dir
         .path()
@@ -1260,17 +1329,19 @@ fn deep_dive_pre_attached_crop_missing_warns_but_succeeds() {
     );
     assert_eq!(
         terminal(&registry, &task_id),
-        TaskStatus::Succeeded,
+        TaskStatus::Failed,
         "事件流: {:?}",
         sink.events()
     );
 
-    let result = registry.get(&task_id).unwrap().result.expect("result");
-    let warnings = result["warnings"].as_array().cloned().unwrap();
-    assert!(
-        warnings.contains(&json!("crop_missing:crop-tbl_1")),
-        "warnings 含 crop_missing: {warnings:?}"
-    );
+    let error = registry.get(&task_id).unwrap().error.expect("变化批次不能发布");
+    assert_eq!(error.code, "protocol_deep_dive_failed");
+    let details = error.details.unwrap();
+    let failed = details["failedSections"].as_array().unwrap();
+    assert_eq!(failed.len(), 2);
+    assert!(failed.iter().all(|section| section["code"] == "parse_batch_stale"));
+    assert!(!library.get_paper(&paper_id).unwrap().products.iter().any(|product| product.kind == "dig"),
+        "不保存已变化批次的深挖结果");
     // part-2 的首条请求：tbl_1 缺附件不附图，列在「另有图表」；页图照常。
     let requests = mock.requests();
     let part2_prompt = prompt_text(&requests[1]);

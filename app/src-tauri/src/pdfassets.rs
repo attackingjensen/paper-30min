@@ -29,7 +29,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::error::BridgeError;
@@ -155,11 +155,11 @@ pub fn build_render_job(mapped: &MappedPaper) -> RenderJob {
         .figures
         .iter()
         .chain(mapped.tables.iter())
-        .map(|entry| RenderJobCrop {
+        .filter_map(|entry| Some(RenderJobCrop {
             id: entry.id.clone(),
             page: entry.page,
-            bbox: entry.bbox,
-        })
+            bbox: entry.bbox?,
+        }))
         .collect();
     // 公式块不进图表清单（无图注编号），裁切 ID 从地址空间派生：
     // fml-{sec_id}-b{块号}（frontmatter 区用 fml-frontmatter-b{块号}）。
@@ -253,7 +253,8 @@ struct RenderPayload {
 
 /// pdfassets.prerender@1：按 scope 渲染页图和/或裁切图。
 /// 输入: { paperId, scope?, doclingJsonPath?, pdfPath? }
-/// （scope 默认 all；all/crops 需要 doclingJsonPath；pdfPath 缺省 = 论文的 pdf 附件）。
+/// （scope 默认 all；all/crops 需要 doclingJsonPath；批次上下文——batchId 或论文已有解析批次——
+///  一律以批次封存的 PDF 为准并忽略显式 pdfPath；仅无批次上下文时 pdfPath 生效，缺省 = 论文的 pdf 附件）。
 /// 结果: { paperId, scope, pageAssets[], crops[], skippedCrops[], warnings[],
 ///         resident, sidecarPid?, sidecarReused?, sidecarFallback?,
 ///         blockModelAssetId?, elapsedMs, renderMs, encodeMs }
@@ -265,8 +266,11 @@ pub(crate) fn run_prerender(
     docling_json_path: Option<&Path>,
     pdf_path: Option<&Path>,
     scope: PrerenderScope,
+    batch_id: Option<&str>,
+    expected_batch_id: Option<&str>,
+    overwrite_confirmed: bool,
 ) {
-    match prerender_once(ctx, paper_id, docling_json_path, pdf_path, scope) {
+    match prerender_once(ctx, paper_id, docling_json_path, pdf_path, scope, batch_id, expected_batch_id, overwrite_confirmed) {
         Ok(()) => {}
         Err(error) if error.code == CANCEL_SENTINEL => ctx.cancel_now(),
         Err(error) => ctx.fail(error),
@@ -279,6 +283,9 @@ fn prerender_once(
     docling_json_path: Option<&Path>,
     pdf_path: Option<&Path>,
     scope: PrerenderScope,
+    batch_id: Option<&str>,
+    expected_batch_id: Option<&str>,
+    overwrite_confirmed: bool,
 ) -> Result<(), BridgeError> {
     let started = Instant::now();
     ctx.cancel_checkpoint()?;
@@ -290,7 +297,18 @@ fn prerender_once(
         }
     }
 
-    let mapped = resolve_mapped(&ctx.library, paper_id, docling_json_path, scope)?;
+    let parent = if batch_id.is_some() || ctx.library.current_parse_batch_id(paper_id)?.is_some()
+        || ctx.library.get_attachment(paper_id, BLOCKMODEL_ATTACHMENT_ID).is_ok() {
+        let snapshot = ctx.library.pin_parse_batch(paper_id,batch_id)?;
+        Some(if snapshot.manifest.batch_id.starts_with("legacy-") { ctx.library.freeze_legacy_parse_batch(paper_id)? } else { snapshot })
+    } else { None };
+    if parent.as_ref().is_some_and(|snapshot| snapshot.manifest.provider != "docling") {
+        return Err(BridgeError::invalid_input("本地渲染仅接受本地解析候选"));
+    }
+    let mapped = if let Some(parent) = &parent {
+        let (_,bytes) = ctx.library.read_parse_batch_attachment(parent,BLOCKMODEL_ATTACHMENT_ID)?;
+        Some(serde_json::from_slice(&bytes).map_err(|_| BridgeError::invalid_input("候选块模型无效"))?)
+    } else { resolve_mapped(&ctx.library, paper_id, docling_json_path, scope)? };
     let job = match scope {
         PrerenderScope::Pages => pages_only_job(),
         PrerenderScope::Crops => {
@@ -307,9 +325,16 @@ fn prerender_once(
         }
     };
 
-    // PDF 路径：显式参数优先，缺省取论文的 pdf 附件。
+    // PDF 路径：批次上下文以批次封存的 PDF 为准（显式 pdfPath 被忽略，保证与批次身份一致）；
+    // 无批次上下文时显式参数优先，缺省取论文的 pdf 附件。
     let default_pdf;
     let pdf_path = match pdf_path {
+        _ if parent.is_some() => {
+            let parent = parent.as_ref().unwrap();
+            let resource = parent.manifest.attachments.get("pdf").ok_or_else(|| BridgeError::invalid_input("候选缺少 PDF"))?;
+            default_pdf = files::attachment_path(ctx.library.root(),paper_id,&resource.attachment_id)?;
+            &default_pdf
+        }
         Some(path) => path,
         None => {
             default_pdf = files::attachment_path(ctx.library.root(), paper_id, "pdf")?;
@@ -336,6 +361,7 @@ fn prerender_once(
     let out_dir = ctx.library.root().join("pdfassets").join(&ctx.task_id);
     std::fs::create_dir_all(&out_dir)
         .map_err(|err| BridgeError::internal(format!("渲染工作目录创建失败: {err}")))?;
+    let _output_cleanup = RenderOutputCleanup(out_dir.clone());
     let job_path = out_dir.join("job.json");
     let job_json = serde_json::to_vec(&job)
         .map_err(|err| BridgeError::internal(format!("渲染作业序列化失败: {err}")))?;
@@ -379,9 +405,8 @@ fn prerender_once(
         )
     })?;
 
-    // 渲染全部成功后才进入落库阶段（渲染阶段取消/失败不落任何附件）；
-    // 落库逐件提交，中断留下的部分附件由重跑幂等覆盖 + 深挖 preflight 齐备性兜底。
-    let blockmodel_id = if let Some(mapped) = mapped.as_ref() {
+    // 候选逐文件校验和封存，只有完整清单才能发布当前指针。
+    let blockmodel_id = if parent.is_some() { None } else if let Some(mapped) = mapped.as_ref() {
         if scope != PrerenderScope::Pages {
             Some(persist_block_model(&ctx.library, paper_id, mapped)?.id)
         } else {
@@ -392,6 +417,41 @@ fn prerender_once(
     };
 
     let mut page_assets = Vec::with_capacity(payload.pages.len());
+    let mut staged_resources = std::collections::BTreeMap::new();
+    let mut staged_attachments = std::collections::BTreeMap::new();
+    let mut visual_resources = serde_json::Map::new();
+    if let Some(parent) = &parent {
+        for (logical, attachment) in &parent.manifest.attachments {
+            if logical != "local-visual-assets.json" {
+                ctx.cancel_checkpoint()?;
+                ctx.library.read_parse_batch_attachment(parent,logical)?;
+                staged_resources.insert(logical.clone(),files::attachment_path(ctx.library.root(),paper_id,&attachment.attachment_id)?);
+                staged_attachments.insert(logical.clone(),attachment.clone());
+            }
+        }
+        if parent.manifest.attachments.contains_key("local-visual-assets.json") {
+            let (_,bytes) = ctx.library.read_parse_batch_attachment(parent,"local-visual-assets.json")?;
+            let visual: Value = serde_json::from_slice(&bytes).map_err(|_| BridgeError::invalid_input("候选视觉清单无效"))?;
+            visual_resources = visual["resources"].as_object().cloned().ok_or_else(|| BridgeError::invalid_input("候选视觉清单无效"))?;
+        }
+        // Initial page rendering can finish before the first model is published.
+        let page_evidence = ctx.library.get_attachment(paper_id,"local-page-evidence.json").ok().and_then(|meta|
+            ctx.library.read_range(paper_id,&meta.id,0,meta.size as u64).ok().and_then(|(_,bytes)| serde_json::from_slice::<Value>(&bytes).ok()));
+        if page_evidence.as_ref().is_some_and(|evidence| evidence["pdfSha256"] == parent.manifest.pdf_sha256) {
+            for attachment in ctx.library.list_attachments(paper_id)? {
+                if !attachment.id.starts_with(PAGE_ID_PREFIX) || staged_resources.contains_key(&attachment.id) { continue; }
+                let (_,bytes) = ctx.library.read_range(paper_id,&attachment.id,0,attachment.size as u64)?;
+                if files::sha256_hex(&bytes) != attachment.sha256 { return Err(BridgeError::invalid_input("页图摘要无效")); }
+                let path = files::attachment_path(ctx.library.root(),paper_id,&attachment.id)?;
+                let (width,height) = webp_dimensions(&bytes).ok_or_else(|| BridgeError::invalid_input("页图格式无效"))?;
+                if page_evidence.as_ref().unwrap()["resources"][&attachment.id]["sha256"] != attachment.sha256 { continue; }
+                if !crate::pdfmap_evidence::safe_path(ctx.library.root(),&path) { return Err(BridgeError::invalid_input("页图路径无效")); }
+                visual_resources.insert(attachment.id.clone(),json!({"sha256":attachment.sha256,"bytes":attachment.size,"width":width,"height":height}));
+                staged_attachments.insert(attachment.id.clone(),crate::parsebatch::ParseBatchAttachment { attachment_id:attachment.id.clone(),sha256:attachment.sha256,size:attachment.size as u64,content_type:"image/webp".into() });
+                staged_resources.insert(attachment.id,path);
+            }
+        }
+    }
     let total = (payload.pages.len() + payload.crops.len()) as u64;
     for (index, item) in payload.pages.iter().enumerate() {
         ctx.cancel_checkpoint()?;
@@ -399,13 +459,13 @@ fn prerender_once(
             BridgeError::new("sidecar_result_invalid", "页图产物缺少 page 字段", true)
         })?;
         let asset_id = page_attachment_id(page);
-        let dto = ingest_rendered(
+        let dto = if parent.is_some() { stage_rendered(ctx.library.root(),&mut staged_resources,&mut staged_attachments,&mut visual_resources,paper_id,&asset_id,item)? } else { ingest_rendered(
             &ctx.library,
             paper_id,
             &asset_id,
             &format!("{asset_id}.webp"),
             item,
-        )?;
+        )? };
         ctx.push_progress(Progress {
             done: index as u64 + 1,
             total,
@@ -428,13 +488,13 @@ fn prerender_once(
             BridgeError::new("sidecar_result_invalid", "裁切产物缺少 id 字段", true)
         })?;
         let asset_id = crop_attachment_id(&id);
-        let dto = ingest_rendered(
+        let dto = if parent.is_some() { stage_rendered(ctx.library.root(),&mut staged_resources,&mut staged_attachments,&mut visual_resources,paper_id,&asset_id,item)? } else { ingest_rendered(
             &ctx.library,
             paper_id,
             &asset_id,
             &format!("{asset_id}.webp"),
             item,
-        )?;
+        )? };
         ctx.push_progress(Progress {
             done: payload.pages.len() as u64 + index as u64 + 1,
             total,
@@ -449,10 +509,6 @@ fn prerender_once(
             "sha256": dto.sha256,
         }));
     }
-
-    // 渲染输出已入附件库，清掉工作目录里的 webp 双份（保留 job/result 供诊断）。
-    let _ = std::fs::remove_dir_all(out_dir.join("pages"));
-    let _ = std::fs::remove_dir_all(out_dir.join("crops"));
 
     let mut warnings: Vec<String> = mapped
         .as_ref()
@@ -482,6 +538,42 @@ fn prerender_once(
     }
     if let Some(id) = blockmodel_id {
         result["blockModelAssetId"] = json!(id);
+    }
+    if parent.is_none() && !page_assets.is_empty() {
+        let pdf_meta = ctx.library.verify_attachment(paper_id,"pdf")?;
+        let resources: serde_json::Map<String,Value> = page_assets.iter().filter_map(|item| item["assetId"].as_str().map(|id| (id.into(),item.clone()))).collect();
+        ctx.library.put_attachment_bytes(paper_id,"local-page-evidence.json","local-page-evidence.json","application/json",
+            &serde_json::to_vec(&json!({"pdfSha256":pdf_meta.sha256,"resources":resources})).map_err(|_| BridgeError::internal("页图清单无法编码"))?)?;
+    }
+    if let Some(parent) = parent {
+        if scope != PrerenderScope::Pages {
+            result["blockModelAssetId"] = json!(BLOCKMODEL_ATTACHMENT_ID);
+        }
+        let mut manifest = parent.manifest.clone();
+        manifest.batch_id = format!("local-visual-{}",files::sha256_hex(format!("{}:{}:{}",parent.manifest.batch_id,ctx.task_id,crate::tasks::now_iso()).as_bytes()));
+        if !manifest.options.is_object() { manifest.options = json!({}); }
+        manifest.options["parentBatchId"] = json!(parent.manifest.batch_id);
+        let visual_bytes = serde_json::to_vec(&json!({"schemaVersion":1,"batchId":manifest.batch_id,"pdfSha256":manifest.pdf_sha256,"blockModelSha256":manifest.attachments[BLOCKMODEL_ATTACHMENT_ID].sha256,"resources":visual_resources})).map_err(|_| BridgeError::internal("视觉清单无法编码"))?;
+        let visual_path = out_dir.join("local-visual-assets.json");
+        std::fs::write(&visual_path,&visual_bytes).map_err(|_| BridgeError::internal("视觉清单无法暂存"))?;
+        staged_attachments.insert("local-visual-assets.json".into(),crate::parsebatch::ParseBatchAttachment { attachment_id:"local-visual-assets.json".into(),sha256:files::sha256_hex(&visual_bytes),size:visual_bytes.len() as u64,content_type:"application/json".into() });
+        staged_resources.insert("local-visual-assets.json".into(),visual_path);
+        manifest.attachments = staged_attachments;
+        ctx.cancel_checkpoint()?;
+        ctx.library.write_parse_batch_paths_with_checkpoint(manifest.clone(),staged_resources,|| ctx.cancel_checkpoint())?;
+        let snapshot = ctx.library.pin_parse_batch(paper_id,Some(&manifest.batch_id))?;
+        let complete = ctx.library.validate_parse_candidate(&snapshot,true).is_ok();
+        let published = if complete {
+            let current = ctx.library.current_parse_batch_id(paper_id)?;
+            let expected = if current.as_deref() == Some(parent.manifest.batch_id.as_str()) { current.as_deref() } else { expected_batch_id };
+            ctx.library.publish_parse_batch(&snapshot,expected,overwrite_confirmed,false,|| ctx.cancel_checkpoint())?;
+            true
+        } else { false };
+        result["batchId"] = json!(manifest.batch_id);
+        result["snapshot"] = json!(snapshot);
+        result["candidateReady"] = json!(true);
+        result["resultReady"] = json!(published);
+        result["visualReady"] = json!(complete);
     }
     ctx.succeed(Some(result));
     Ok(())
@@ -592,9 +684,74 @@ fn ingest_rendered(
             true,
         ));
     }
+    if webp_dimensions(&bytes) != Some((item.width,item.height)) {
+        return Err(BridgeError::new("sidecar_result_invalid", "渲染图像尺寸与文件不符", false));
+    }
     let dto = library.put_attachment_bytes(paper_id, asset_id, name, "image/webp", &bytes)?;
     library.verify_attachment(paper_id, &dto.id)?;
     Ok(dto)
+}
+
+struct RenderOutputCleanup(PathBuf);
+
+impl Drop for RenderOutputCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.0.join("pages"));
+        let _ = std::fs::remove_dir_all(self.0.join("crops"));
+    }
+}
+
+fn stage_rendered(root: &Path, resources: &mut std::collections::BTreeMap<String,PathBuf>, attachments: &mut std::collections::BTreeMap<String,crate::parsebatch::ParseBatchAttachment>, metadata: &mut serde_json::Map<String,Value>, paper_id: &str, id: &str, item: &RenderedItem) -> Result<files::AttachmentDto,BridgeError> {
+    let path = Path::new(&item.path);
+    if !crate::pdfmap_evidence::safe_path(root,path) { return Err(BridgeError::invalid_input("渲染资源路径无效")); }
+    let bytes = std::fs::read(path).map_err(|_| BridgeError::internal("渲染资源读取失败"))?;
+    if bytes.len() as u64 != item.bytes || webp_dimensions(&bytes) != Some((item.width,item.height)) {
+        return Err(BridgeError::invalid_input("渲染图像字节或尺寸不一致"));
+    }
+    let sha256 = files::sha256_hex(&bytes);
+    metadata.insert(id.into(),json!({"sha256":sha256,"bytes":bytes.len(),"width":item.width,"height":item.height}));
+    let dto = files::AttachmentDto { paper_id:paper_id.into(),id:id.into(),name:format!("{id}.webp"),content_type:"image/webp".into(),size:bytes.len() as i64,sha256,created_at:crate::tasks::now_iso() };
+    attachments.insert(id.into(),crate::parsebatch::ParseBatchAttachment { attachment_id:id.into(),sha256:dto.sha256.clone(),size:bytes.len() as u64,content_type:"image/webp".into() });
+    resources.insert(id.into(),path.to_path_buf());
+    Ok(dto)
+}
+
+pub(crate) fn webp_dimensions(bytes: &[u8]) -> Option<(u32,u32)> {
+    if bytes.len() < 20 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP"
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize + 8 != bytes.len() { return None; }
+    let mut offset = 12usize;
+    let mut canvas = None;
+    let mut image = None;
+    while offset < bytes.len() {
+        let header = bytes.get(offset..offset.checked_add(8)?)?;
+        let size = u32::from_le_bytes(header[4..8].try_into().ok()?) as usize;
+        let start = offset.checked_add(8)?;
+        let data = bytes.get(start..start.checked_add(size)?)?;
+        match &header[..4] {
+            b"VP8X" => {
+                if data.len() != 10 || data[0] & 2 != 0 { return None; }
+                let dim = |slice: &[u8]| 1 + slice[0] as u32 + ((slice[1] as u32) << 8) + ((slice[2] as u32) << 16);
+                canvas = Some((dim(&data[4..7]),dim(&data[7..10])));
+            },
+            b"VP8 " => {
+                if image.is_some() || data.len() < 10 || data[0] & 1 != 0 || &data[3..6] != b"\x9d\x01\x2a" { return None; }
+                image = Some(((u16::from_le_bytes(data[6..8].try_into().ok()?) & 0x3fff) as u32,(u16::from_le_bytes(data[8..10].try_into().ok()?) & 0x3fff) as u32));
+            },
+            b"VP8L" => {
+                if image.is_some() || data.len() < 5 || data[0] != 0x2f { return None; }
+                let bits = u32::from_le_bytes(data[1..5].try_into().ok()?);
+                if bits >> 29 != 0 { return None; }
+                image = Some(((bits & 0x3fff)+1,((bits >> 14) & 0x3fff)+1));
+            },
+            b"ANIM" | b"ANMF" => return None,
+            _ => {},
+        }
+        offset = start.checked_add(size)?.checked_add(size % 2)?;
+        if offset > bytes.len() { return None; }
+    }
+    let image = image?;
+    if image.0 == 0 || image.1 == 0 || canvas.is_some_and(|canvas| canvas != image) { return None; }
+    Some(image)
 }
 
 // ============================================================================
@@ -674,7 +831,7 @@ mod tests {
             number: id[4..].to_string(),
             caption: None,
             page,
-            bbox: [200.0, 384.0, 800.0, 400.0],
+            bbox: Some([200.0, 384.0, 800.0, 400.0]),
             section: None,
             references: Vec::new(),
         }
@@ -816,5 +973,145 @@ mod tests {
         assert_eq!(value["scale"], json!(2.0));
         assert_eq!(value["quality"], json!(86));
         assert_eq!(value["crops"][0]["bbox"], json!([1.0, 2.0, 3.0, 4.0]));
+    }
+
+    // ---- webp_dimensions：手写容器解析的表驱动直接单测 ----
+
+    fn riff(chunks: &[u8]) -> Vec<u8> {
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&((chunks.len() + 4) as u32).to_le_bytes());
+        out.extend_from_slice(b"WEBP");
+        out.extend_from_slice(chunks);
+        out
+    }
+    fn chunk(fourcc: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = fourcc.to_vec();
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            out.push(0);
+        }
+        out
+    }
+    fn vp8(width: u32, height: u32) -> Vec<u8> {
+        // VP8 关键帧：3 字节帧头 + 起始码 + 两个 14 位小端尺寸。
+        let mut data = vec![0u8; 10];
+        data[3..6].copy_from_slice(b"\x9d\x01\x2a");
+        data[6..8].copy_from_slice(&((width as u16) & 0x3fff).to_le_bytes());
+        data[8..10].copy_from_slice(&((height as u16) & 0x3fff).to_le_bytes());
+        chunk(b"VP8 ", &data)
+    }
+    fn vp8l(width: u32, height: u32) -> Vec<u8> {
+        // VP8L：0x2f 签名 + 28 位打包尺寸（宽、高各 14 位、减一编码），高 4 位须为零。
+        let bits = ((width - 1) & 0x3fff) | (((height - 1) & 0x3fff) << 14);
+        let mut data = vec![0x2f];
+        data.extend_from_slice(&bits.to_le_bytes());
+        chunk(b"VP8L", &data)
+    }
+    fn vp8x(width: u32, height: u32, flags: u8) -> Vec<u8> {
+        // VP8X：旗标 + 3 保留字节 + 两个 24 位小端画布尺寸（减一编码）。
+        let mut data = vec![0u8; 10];
+        data[0] = flags;
+        data[4..7].copy_from_slice(&(width - 1).to_le_bytes()[..3]);
+        data[7..10].copy_from_slice(&(height - 1).to_le_bytes()[..3]);
+        chunk(b"VP8X", &data)
+    }
+
+    #[test]
+    fn webp_dimensions_accepts_vp8_vp8l_and_vp8x_containers() {
+        let cases: [(&str, Vec<u8>, Option<(u32, u32)>); 4] = [
+            ("VP8 关键帧", riff(&vp8(800, 600)), Some((800, 600))),
+            ("VP8L 无损", riff(&vp8l(1024, 768)), Some((1024, 768))),
+            (
+                "VP8X 画布与图像一致",
+                riff(&[vp8x(800, 600, 0), vp8(800, 600)].concat()),
+                Some((800, 600)),
+            ),
+            (
+                "未知块跳过且奇数尺寸块带填充字节",
+                riff(&[chunk(b"ICCP", &[1, 2, 3]), vp8(64, 48)].concat()),
+                Some((64, 48)),
+            ),
+        ];
+        for (name, bytes, expected) in cases {
+            assert_eq!(webp_dimensions(&bytes), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn webp_dimensions_rejects_every_invalid_branch() {
+        let mut bad_riff_magic = riff(&vp8(2, 2));
+        bad_riff_magic[0] = b'X';
+        let mut bad_webp_magic = riff(&vp8(2, 2));
+        bad_webp_magic[8] = b'X';
+        let mut size_mismatch = riff(&vp8(2, 2));
+        size_mismatch.push(0);
+        let mut vp8_not_keyframe_data = vec![0u8; 10];
+        vp8_not_keyframe_data[0] = 1;
+        vp8_not_keyframe_data[3..6].copy_from_slice(b"\x9d\x01\x2a");
+        let mut vp8_bad_signature_data = vec![0u8; 10];
+        vp8_bad_signature_data[3..6].copy_from_slice(b"\x9d\x01\x2b");
+        let mut vp8l_reserved_bits = vec![0x2f];
+        vp8l_reserved_bits.extend_from_slice(&(1u32 << 29).to_le_bytes());
+        let cases: [(&str, Vec<u8>); 23] = [
+            ("不足最小长度", vec![0u8; 19]),
+            ("RIFF 魔数错误", bad_riff_magic),
+            ("WEBP 魔数错误", bad_webp_magic),
+            ("RIFF 长度字段与文件长不一致", size_mismatch),
+            (
+                "块头截断",
+                riff(&[chunk(b"EXIF", &[]), vec![1, 2, 3, 4]].concat()),
+            ),
+            (
+                "块声明长度超出剩余字节",
+                riff(&[b"VP8 ".to_vec(), 10u32.to_le_bytes().to_vec(), vec![0u8; 4]].concat()),
+            ),
+            (
+                "VP8X 数据长度非 10",
+                riff(&[chunk(b"VP8X", &[0u8; 9]), vp8(2, 2)].concat()),
+            ),
+            (
+                "VP8X 动画旗标",
+                riff(&[vp8x(2, 2, 2), vp8(2, 2)].concat()),
+            ),
+            (
+                "VP8X 画布与图像尺寸不一致",
+                riff(&[vp8x(800, 600, 0), vp8(800, 601)].concat()),
+            ),
+            (
+                "VP8 重复图像块",
+                riff(&[vp8(2, 2), vp8(2, 2)].concat()),
+            ),
+            ("VP8 数据不足 10 字节", riff(&chunk(b"VP8 ", &[0u8; 9]))),
+            ("VP8 非关键帧", riff(&chunk(b"VP8 ", &vp8_not_keyframe_data))),
+            ("VP8 起始码错误", riff(&chunk(b"VP8 ", &vp8_bad_signature_data))),
+            (
+                "VP8L 重复图像块",
+                riff(&[vp8l(2, 2), vp8l(2, 2)].concat()),
+            ),
+            ("VP8L 数据不足 5 字节", riff(&chunk(b"VP8L", &[0x2f, 0, 0, 0]))),
+            ("VP8L 签名非 0x2f", riff(&chunk(b"VP8L", &[0x30, 0, 0, 0, 0]))),
+            ("VP8L 保留位非零", riff(&chunk(b"VP8L", &vp8l_reserved_bits))),
+            (
+                "ANIM 动画块",
+                riff(&[chunk(b"ANIM", &[0u8; 6]), vp8(2, 2)].concat()),
+            ),
+            (
+                "ANMF 动画帧块",
+                riff(&[vp8(2, 2), chunk(b"ANMF", &[0u8; 16])].concat()),
+            ),
+            ("无图像块", riff(&chunk(b"EXIF", &[1, 2]))),
+            ("VP8 零宽", riff(&vp8(0, 600))),
+            ("VP8 零高", riff(&vp8(800, 0))),
+            (
+                "末块奇数尺寸缺填充字节",
+                // chunk() 恒补填充字节，此分支须手工构造：有效图像块之后，EXIF 声明
+                // 奇数尺寸而文件缺填充字节，推进后 offset 越过文件尾；缺该守卫会误接受 (2,2)。
+                riff(&[vp8(2, 2), [b"EXIF".as_slice(), &3u32.to_le_bytes(), &[7, 8, 9]].concat()].concat()),
+            ),
+        ];
+        for (name, bytes) in cases {
+            assert_eq!(webp_dimensions(&bytes), None, "{name}");
+        }
     }
 }

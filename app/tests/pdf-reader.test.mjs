@@ -45,7 +45,7 @@ function readerFixture(options = {}) {
   globalThis.window = {
     devicePixelRatio: 1,
     document: {
-      createElement: makeElement,
+      createElement: tag => Object.assign(makeElement(), { tagName: tag.toUpperCase() }),
       createDocumentFragment: () => ({ fragment: true, children: [], appendChild(node) { this.children.push(node); } }),
     },
   };
@@ -63,17 +63,127 @@ function readerFixture(options = {}) {
       return {
         getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
         render: () => ({ promise: Promise.resolve(), cancel() {} }),
+        cleanup() {},
       };
     },
   });
   async function flush() {
-    for (let round = 0; round < 5; round++) {
+    for (let round = 0; round < 30; round++) {
       await Promise.resolve();
       for (const callback of frames.splice(0)) callback();
     }
   }
   return { reader, scroll, pages, seen, errors, evidenceStates, doc, flush };
 }
+
+test('large PDF pages bound raster pixels without changing text or page geometry', async () => {
+  let textViewport, raster;
+  const f = readerFixture({ renderTextLayer: ({ viewport }) => {
+    textViewport = viewport;
+    return { promise: Promise.resolve(), cancel() {} };
+  } });
+  window.devicePixelRatio = 2;
+  const doc = { numPages: 1, async getPage() { return {
+    getViewport: ({ scale }) => ({ width: 1200 * scale, height: 1800 * scale, scale }),
+    getTextContent: async () => ({ items: [] }),
+    cleanup() {},
+    render(options) { raster = options; return { promise: Promise.resolve(), cancel() {} }; },
+  }; } };
+  await f.reader.open(doc, 1, 3); await f.flush();
+  const slot = f.pages.children[0], canvas = slot.children[0];
+  assert.ok(canvas.width * canvas.height <= 4 * 1024 * 1024);
+  assert.equal(slot.style.width, '3600px');
+  assert.equal(slot.style.height, '5400px');
+  assert.equal(textViewport.scale, 3);
+  assert.equal(raster.viewport, textViewport);
+  assert.ok(raster.transform[0] < 1);
+  f.reader.clear();
+});
+
+test('raster queue paints the visible page before neighbors and runs one task at a time', async () => {
+  const f = readerFixture(), doc = f.doc(5), original = doc.getPage;
+  const started = [], finish = [];
+  doc.getPage = async number => ({ ...await original(number), render() {
+    started.push(number);
+    let resolve;
+    const promise = new Promise(done => { resolve = done; finish.push(done); });
+    return { promise, cancel: resolve };
+  } });
+  await f.reader.open(doc, 3, 1); await f.flush();
+  assert.deepEqual(started, [3]);
+  finish.shift()(); await f.flush();
+  assert.equal(started.length, 2);
+  finish.shift()(); await f.flush();
+  assert.equal(started.length, 3);
+  f.reader.clear(); await f.flush();
+});
+
+test('evicted PDF pages release their raster and page cache; zoom retires the old preview', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture(), doc = f.doc(12), original = doc.getPage;
+  const cleaned = [];
+  doc.getPage = async number => ({ ...await original(number), cleanup() { cleaned.push(number); } });
+  await f.reader.open(doc, 1, 1); await f.flush();
+  const preview = f.pages.children[0].children[0];
+  f.reader.resize(2);
+  assert.ok(preview.width > 0, 'immediate zoom preview must remain usable');
+  t.mock.timers.tick(120); await f.flush();
+  assert.equal(preview.width, 0);
+  assert.equal(preview.height, 0);
+  const evicted = f.pages.children[0].children[0];
+  f.reader.jump(8); await f.flush();
+  assert.equal(evicted.width, 0);
+  assert.ok(cleaned.includes(1));
+  const last = f.pages.children[7].children[0];
+  f.reader.clear();
+  assert.equal(last.width, 0);
+  assert.ok(cleaned.includes(8));
+});
+
+test('canceling during text fetch releases the unpublished canvas and does not block a new paper', async () => {
+  const f = readerFixture({ renderTextLayer: () => ({ promise: Promise.resolve(), cancel() {} }) });
+  const canvases = [], create = window.document.createElement;
+  window.document.createElement = tag => {
+    const element = create(tag);
+    if (tag === 'canvas') canvases.push(element);
+    return element;
+  };
+  let finishText;
+  const doc = f.doc(1), original = doc.getPage;
+  doc.getPage = async number => ({ ...await original(number),
+    getTextContent: () => new Promise(resolve => { finishText = resolve; }) });
+  await f.reader.open(doc, 1, 1); await f.flush();
+  assert.ok(canvases[0].width > 0);
+  f.reader.clear();
+  assert.equal(canvases[0].width, 0);
+  const next = f.doc(1), nextGetPage = next.getPage;
+  next.getPage = async number => ({ ...await nextGetPage(number), getTextContent: async () => ({ items: [] }) });
+  await f.reader.open(next, 1, 1); await f.flush();
+  assert.ok(f.pages.children[0].children[0].width > 0);
+  finishText({ items: [] }); await f.flush();
+  assert.ok(f.pages.children[0].children[0].width > 0);
+  f.reader.clear();
+});
+
+test('jumping during zoom delay cleans both retained previews and unfinished page caches', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const finished of [true, false]) {
+    const f = readerFixture(), doc = f.doc(12), original = doc.getPage;
+    const cleaned = [];
+    doc.getPage = async number => ({ ...await original(number), cleanup() { cleaned.push(number); },
+      render() {
+        let resolve;
+        const promise = finished ? Promise.resolve() : new Promise(done => { resolve = done; });
+        return { promise, cancel() { resolve?.(); } };
+      },
+    });
+    await f.reader.open(doc, 1, 1); await f.flush();
+    f.reader.resize(2);
+    f.reader.jump(8); await f.flush();
+    assert.ok(cleaned.includes(1), `${finished ? 'preview' : 'unfinished page'} must release its cache`);
+    f.reader.clear(); await f.flush();
+  }
+});
 
 test('PDF text layers publish with their canvas and selected pages remain pinned', async () => {
   let invalidations = 0;
@@ -466,6 +576,40 @@ test('continuous zoom coalesces renders and rejects an obsolete completed frame'
   t.mock.timers.tick(120);
   await f.flush();
   assert.equal(f.pages.children.length, 0);
+});
+
+test('zoom hands an unfinished PDF instruction stream to the replacement render', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = readerFixture();
+  let ready, abortTimer, aborted = false;
+  const instructions = new Promise(resolve => { ready = resolve; });
+  const page = {
+    getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
+    cleanup() {},
+    render() {
+      clearTimeout(abortTimer);
+      let cancel;
+      const cancellation = new Promise((_, reject) => { cancel = reject; });
+      return { promise: Promise.race([instructions, cancellation]), cancel(extraDelay = 0) {
+        cancel(Object.assign(new Error('cancelled'), { name: 'RenderingCancelledException' }));
+        // PDF.js gives a replacement render 100 ms plus extraDelay to reuse the stream.
+        abortTimer = setTimeout(() => { aborted = true; }, 100 + extraDelay);
+      } };
+    },
+  };
+  setTimeout(() => { if (!aborted) ready(); }, 200);
+  await f.reader.open({ numPages: 1, getPage: async () => page }, 1, 1);
+  await f.flush();
+  t.mock.timers.tick(40);
+  f.reader.resize(1.5);
+  await f.flush();
+  t.mock.timers.tick(120);
+  await f.flush();
+  t.mock.timers.tick(40);
+  await f.flush();
+  assert.equal(f.pages.children[0].children[0]?.width, 900);
+  assert.deepEqual(f.errors, []);
+  f.reader.clear();
 });
 
 test('initial rendering never exposes an unfinished opaque canvas', async () => {

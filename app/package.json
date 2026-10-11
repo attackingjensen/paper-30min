@@ -1,7 +1,7 @@
 {
   "name": "paper30min-app",
   "private": true,
-  "version": "1.3.0",
+  "version": "1.4.0",
   "type": "module",
   "description": "论文精读 Windows 正式客户端（Tauri 外壳、桥接、SQLite 书库、附件/PDF 与浏览器迁移，issue #30）",
   "scripts": {
@@ -10,8 +10,11 @@
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "smoke": "cargo run --manifest-path src-tauri/Cargo.toml -- --bridge-smoke",
     "test:pdf-webview": "node tests/integration/pdf-webview.mjs",
+    "test:installed-webview": "node tests/integration/installed-webview.mjs",
+    "test:layout-webview": "node tests/integration/layout-webview.mjs",
     "test:updater-webview": "node tests/integration/updater-webview.mjs",
-    "test:network-webview": "node tests/integration/network-webview.mjs"
+    "test:network-webview": "node tests/integration/network-webview.mjs",
+    "test:cloudparse-webview": "node tests/integration/cloudparse-webview.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

@@ -281,7 +281,7 @@ fn engine_violations(paper: &MappedPaper) -> Vec<String> {
 
     // prov 覆盖（User Story 13）：清单条目与引用处的坐标指针必须可用。
     for entry in paper.figures.iter().chain(paper.tables.iter()) {
-        if entry.page < 1 || entry.bbox[2] <= 0.0 || entry.bbox[3] <= 0.0 {
+        if entry.page < 1 || entry.bbox.is_none_or(|bbox| bbox[2] <= 0.0 || bbox[3] <= 0.0) {
             violations.push(format!("清单条目 {} prov 无效: page={} bbox={:?}", entry.id, entry.page, entry.bbox));
         }
     }

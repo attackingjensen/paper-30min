@@ -271,6 +271,19 @@ test('该节图表取自清单归属，不把别节的表算进来', () => {
   assert.equal(sectionFigures(mapped, 'abstract').length, 0);
 });
 
+test('cloud gallery retains every region and unnumbered formula in its section', () => {
+  const cloud = structuredClone(mapped);
+  cloud.visualAssets = { assets: [
+    { id: 'fig_1', secId: 'sec_2_introduction', resources: [{ attachmentId: 'crop-fig_1-r1', page: 1 }, { attachmentId: 'crop-fig_1-r2', page: 2 }] },
+    { id: 'fml-1', secId: 'sec_2_introduction', resources: [{ attachmentId: 'pageimg-0002', page: 2, evidence: 'page' }] },
+    { id: 'tbl_1', secId: 'sec_3_method', resources: [] },
+  ] };
+  const entries = sectionFigures(cloud, 'part-1');
+  assert.deepEqual(entries.map(entry => entry.id), ['fig_1', 'fml-1']);
+  assert.equal(entries[0].resources.length, 2);
+  assert.equal(entries[1].resources[0].evidence, 'page');
+});
+
 test('出处分段：文本块 / 图表 / 页码统一进入 PDF', () => {
   const parts = citeSegments('方法见 (sec_3:L1-3) 与 (fig_1)，对照 (p2)。');
   assert.deepEqual(parts.map(part => part.type), ['text', 'ref', 'text', 'ref', 'text', 'ref', 'text']);

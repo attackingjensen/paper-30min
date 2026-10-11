@@ -332,6 +332,17 @@ impl Library {
                 }
             }
         }
+        let history: Option<String> = conn.query_row("SELECT history_json FROM parse_states WHERE paper_id=?1", params![paper_id], |row| row.get(0)).optional().map_err(sqlite_error)?;
+        if let Some(history) = history {
+            let history: serde_json::Value = serde_json::from_str(&history).map_err(|_| BridgeError::internal("解析历史无法读取"))?;
+            for entry in history.as_array().into_iter().flatten() {
+                for message in entry.pointer("/paper/chat").and_then(|v| v.as_array()).into_iter().flatten() {
+                    for image in message.pointer("/pdfSelection/images").and_then(|v| v.as_array()).into_iter().flatten() {
+                        if let Some(id) = image["attachmentId"].as_str() { referenced.insert(id.to_string()); }
+                    }
+                }
+            }
+        }
         for id in ids {
             if referenced.contains(id) { continue; }
             let path = attachment_path(self.root(), paper_id, id)?;
@@ -397,6 +408,22 @@ impl Library {
         let mut conn = self.lock_conn()?;
         if !Self::paper_exists(&conn, paper_id)? {
             return Err(BridgeError::paper_not_found(paper_id));
+        }
+        if id.starts_with("parseasset-") || id.starts_with("parsebatch-") {
+            match load_attachment(&conn, paper_id, id) {
+                Ok(existing) => {
+                    if existing.sha256 != dto.sha256 || existing.size != dto.size || existing.content_type != dto.content_type {
+                        return Err(BridgeError::new("parse_batch_immutable", "已封存解析附件不可修改", false));
+                    }
+                    let stored = fs::read(&dest).map_err(io_error)?;
+                    if sha256_hex(&stored) != dto.sha256 || stored.len() as i64 != dto.size {
+                        return Err(BridgeError::integrity_failed(paper_id, id, "封存附件完整性校验失败"));
+                    }
+                    return Ok(existing);
+                }
+                Err(error) if error.code == "not_found" => {},
+                Err(error) => return Err(error),
+            }
         }
         write_atomic(&dest, bytes)?;
         let tx = conn.transaction().map_err(sqlite_error)?;
@@ -590,6 +617,11 @@ impl Library {
         let dir = paper_dir(self.root(), paper_id)?;
         if dir.exists() {
             fs::remove_dir_all(&dir).map_err(io_error)?;
+        }
+        // 云端任务运行目录含任务记录与全文结果，随论文一并删除。
+        let runs = self.root().join("operations/cloudparse").join(paper_id);
+        if runs.exists() {
+            fs::remove_dir_all(&runs).map_err(io_error)?;
         }
         Ok(())
     }

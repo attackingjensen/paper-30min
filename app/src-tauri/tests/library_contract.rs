@@ -122,7 +122,7 @@ fn first_launch_creates_versioned_database_and_partitions() {
     let (registry, library, dir) = common::env();
     let info = invoke(&registry, &library, "library.info@1", json!({}));
     assert_eq!(info["schemaVersion"], json!(1));
-    assert_eq!(info["databaseVersion"], json!(8));
+    assert_eq!(info["databaseVersion"], json!(9));
     let root = info["dataRoot"].as_str().expect("dataRoot");
     assert_eq!(root, dir.path().to_string_lossy().as_ref());
     let partitions = info["partitions"].as_array().expect("partitions");
@@ -154,7 +154,7 @@ fn existing_library_copy_opens_and_attachments_verify() {
         }
     }
     assert!(!summaries.is_empty(), "兼容性样本应包含论文");
-    assert_eq!(library.info().database_version, 8);
+    assert_eq!(library.info().database_version, 9);
 }
 
 #[test]
@@ -266,6 +266,28 @@ fn put_paper_replaces_nested_records_in_one_transaction() {
     assert_eq!(loaded["paper"]["analyses"].as_array().unwrap().len(), 1);
     assert_eq!(loaded["paper"]["analyses"][0]["sectionId"], json!("part-1"));
     assert_eq!(loaded["paper"]["translations"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn delete_paper_clears_cloudparse_run_directory() {
+    let (registry, library, dir) = common::env();
+    invoke(
+        &registry,
+        &library,
+        "library.putPaper@1",
+        sample_paper("paper-a", "云端解析论文"),
+    );
+    let run_dir = dir.path().join("operations/cloudparse/paper-a/batch-1");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    std::fs::write(run_dir.join("run.json"), b"{}").unwrap();
+    std::fs::write(run_dir.join("result.jsonl"), b"full text residue").unwrap();
+    invoke(
+        &registry,
+        &library,
+        "library.deletePaper@1",
+        json!({ "paperId": "paper-a" }),
+    );
+    assert!(!dir.path().join("operations/cloudparse/paper-a").exists());
 }
 
 #[test]

@@ -72,6 +72,21 @@ fn seed(registry: &Arc<TaskRegistry>, library: &Library) -> String {
     .sha256
 }
 
+#[test]
+fn pinned_bridge_source_retains_legacy_identity_and_rejects_changed_model() {
+    let (registry, library, _dir) = common::env();
+    let hash = seed(&registry, &library);
+    put(&library, "docling-source.json", document().to_string().as_bytes());
+    let pinned = bridge::invoke(&registry, &library, "parsebatch.pin@1", &json!({"paperId":"p"})).unwrap();
+    let snapshot = &pinned["snapshot"];
+    let batch = &snapshot["manifest"]["batchId"];
+    let evidence = bridge::invoke(&registry, &library, COMMAND, &json!({"paperId":"p","batchId":batch,"blockModelSha256":hash})).unwrap();
+    assert_eq!(&evidence["batchId"], batch);
+    assert_eq!(evidence["blocks"].as_array().unwrap().len(), 1);
+    put(&library, "blockmodel.json", b"changed");
+    assert!(bridge::invoke(&registry, &library, "parsebatch.read@1", &json!({"snapshot":snapshot,"attachmentId":"blockmodel.json"})).is_err());
+}
+
 fn cache(root: &std::path::Path, task: &str, doc: &Value) {
     let dir = root.join("pdfparse").join(task);
     fs::create_dir_all(&dir).unwrap();

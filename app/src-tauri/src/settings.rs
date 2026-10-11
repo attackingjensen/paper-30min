@@ -21,6 +21,39 @@ const UI_KEY: &str = "ui";
 /// 协议编排设置（JSON 对象）：concurrency 为节薄摘要 / 批量深挖的有界并发上限（#79 / #83）。
 const PROTOCOL_KEY: &str = "protocol";
 const NETWORK_KEY: &str = "network";
+const CLOUDPARSE_KEY: &str = "cloudparse";
+
+pub(crate) fn cloudparse_config(library: &Library) -> Result<Value, BridgeError> {
+    Ok(Value::Object(load_object(library, CLOUDPARSE_KEY,
+        json!({ "defaultProvider": null, "accessToken": "", "uploadConfirmed": false })
+            .as_object().expect("默认云端设置是对象").clone())?))
+}
+
+pub fn put_cloudparse(library: &Library, input: &Value) -> Result<Value, BridgeError> {
+    let settings = input.get("settings").and_then(Value::as_object)
+        .ok_or_else(|| BridgeError::invalid_input("settings.putCloudparse@1 需要对象参数 settings"))?;
+    let current = cloudparse_config(library)?;
+    let mut merged = current.as_object().expect("云端设置是对象").clone();
+    for (field, value) in settings {
+        match field.as_str() {
+            "defaultProvider" if value.is_null() || matches!(value.as_str(), Some("local" | "baidu")) => {},
+            "accessToken" if value.is_string() => {},
+            "uploadConfirmed" if value.is_boolean() => {},
+            "defaultProvider" | "accessToken" | "uploadConfirmed" => return Err(BridgeError::invalid_input(format!("{field} 格式无效"))),
+            _ => continue,
+        }
+        let value = if field == "accessToken" { json!(value.as_str().unwrap().trim()) } else { value.clone() };
+        merged.insert(field.clone(), value);
+    }
+    if merged.get("accessToken") != current.get("accessToken") && settings.get("uploadConfirmed") != Some(&Value::Bool(true)) {
+        merged.insert("uploadConfirmed".into(), Value::Bool(false));
+    }
+    if merged.get("accessToken").and_then(Value::as_str).unwrap_or("").is_empty() {
+        merged.insert("uploadConfirmed".into(), Value::Bool(false));
+    }
+    library.put_setting(CLOUDPARSE_KEY, &Value::Object(merged.clone()).to_string())?;
+    Ok(json!({ "schemaVersion": BRIDGE_SCHEMA_VERSION, "settings": merged }))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProxyMode {
@@ -220,6 +253,7 @@ pub fn get(library: &Library) -> Result<Value, BridgeError> {
         "pdfparse": Value::Object(load_pdfparse(library)?),
         "ui": Value::Object(load_ui(library)?),
         "protocol": Value::Object(load_protocol(library)?),
+        "cloudparse": cloudparse_config(library)?,
         "network": { "proxyMode": if proxy_mode(library)? == ProxyMode::Direct { "direct" } else { "system" } },
     }))
 }

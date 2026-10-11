@@ -9,6 +9,13 @@
 - 下一版本起，从 `main` 创建版本分支；同一分支可由多个对话串行实施多份 plan，最终集中在一个面向 `main` 的版本 PR。v1.2.0 的 `steven123397/dev` 属于历史开发分支，不再作为长期开发入口。
 - `steven123397` 独立承担全部开发和维护；仓库持有者 [attackingjensen](https://github.com/attackingjensen) 仅作为产品体验者，不参与开发或 PR。
 
+## 快速导航
+
+- 术语表：[CONCEPTS.md](CONCEPTS.md)
+- 关键决策：[docs/adr/](docs/adr/)
+- Issue 跟踪配置（Linear / GitHub）：[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)
+- 版本交付约定：[docs/release-workflow.md](docs/release-workflow.md)
+
 ## 验证入口
 
 - Windows JavaScript：`cd app` 后 `node --test`。
@@ -26,13 +33,12 @@ GitHub CI 因账户问题暂不可用。恢复前以本机检查记录验证结�
 - 技能不可用时说明情况，不谎称已调用。
 - 无法运行的检查说明原因，不标为通过。
 - 小型明确修复不为凑流程创建计划或额外产物。
-- 每次提交前核对 [docs/current.md](docs/current.md)，按实际进度更新；不记流水账，也不记录 PR 操作状态。
-- 版本开发、审查、合并、发布和状态交接的顺序见 [版本交付约定](docs/release-workflow.md)。
+- 开发通过 Orca 托管对话与工作树进行，用法见 `nk-orca-guide`；`/.orca/` 已列入 `.gitignore`。
+- 任务与进度由 Linear 承接（配置见 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)），仓库不维护进度状态文档。
+- 版本开发、审查、合并和发布的顺序见 [版本交付约定](docs/release-workflow.md)。
 
 ## 项目知识
 
-`STRATEGY.md` 承接已确认的产品定位、用户、边界和方向，供探索与规划使用。[CONCEPTS.md](CONCEPTS.md) 提供阅读模型、关键术语与既有取舍。接手前先读 [docs/current.md](docs/current.md)，历史资料索引见 [docs/README.md](docs/README.md)。
+产品定位、边界与关键决策见 [docs/adr/](docs/adr/)；[CONCEPTS.md](CONCEPTS.md) 提供阅读模型与领域术语。历史资料索引见 [docs/README.md](docs/README.md)。
 
-`docs/solutions/` 是长期经验库。涉及设计取舍、非琐碎实现或排障时，按主题、模块或症状定向检索标题、`module`、`tags`、`problem_type` 等元数据，精读并复用匹配条目；无匹配时照常推进。
-
-经验沉淀按 `nk-compound` 的准入与授权边界执行，不因完成普通任务自动建档。所有本地提交通过 `nk-commit`，按实际变化维护 `docs/current.md`；`nk-handoff` 仅在明确要求时调用。
+经验与排障沉淀存放于 OpenViking（含原 `docs/solutions/` 迁入的条目）。涉及设计取舍、非琐碎实现或排障时，先语义检索复用既有结论，无匹配时照常推进；日常蒸馏自动进行，复盘与记忆修订按 `nk-retro` 由用户触发，不因完成普通任务自动建档。所有本地提交通过 `nk-commit`。

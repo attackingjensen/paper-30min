@@ -1,66 +1,68 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
-import http from 'node:http';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { chromium } from 'playwright';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createHash } from 'node:crypto';
+import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPort, tauriConfig, run,
+  buildHost, launchWebView, stopWebView, closeServers, restoreLibraryBuild } from './webview-host.mjs';
 
-assert.equal(process.platform, 'win32', 'This suite requires Windows WebView2');
-const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+assertWindowsHost();
 const runId = `pdf-webview-${Date.now()}`;
 const identifier = `com.paper30min.${runId}`;
 const output = path.resolve(app, '../tmp', runId);
 await mkdir(output, { recursive: true });
 const report = { runId, identifier, platform: process.platform, node: process.version,
   input: 'CDP synthesized events; physical mouse/trackpad are separate manual checks', checks: [] };
+const checkFilter = process.env.PAPER30MIN_PDF_CHECK_FILTER;
+if (checkFilter) report.checkFilter = checkFilter;
+const memIdleMs = Number(process.env.PAPER30MIN_PDF_MEM_IDLE_MS) || 5000;
+const memTeardown = process.env.PAPER30MIN_PDF_MEM_TEARDOWN === '1';
 const requests = [];
 let responseMode = 'success';
-const server = http.createServer(async (req, res) => {
+let baselineReader = false;
+const baselineRef = process.env.PAPER30MIN_PDF_BASELINE_REF;
+const baselineCommit = baselineRef ? execFileSync('git', ['rev-parse', baselineRef], { cwd: app, encoding: 'utf8' }).trim() : null;
+const originalReader = baselineCommit ? execFileSync('git', ['show', `${baselineCommit}:app/ui/js/pdf-reader.js`],
+  { cwd: app, encoding: 'utf8' }) : null;
+const server = createUiServer(async (req, res) => {
+  if (baselineReader && req.url === '/js/pdf-reader.js') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' });
+    res.end(originalReader);
+    return true;
+  }
   if (req.url === '/v1/chat/completions' && req.method === 'POST') {
     let body = '';
     for await (const chunk of req) body += chunk;
     requests.push(JSON.parse(body));
-    if (responseMode === 'fail') { res.writeHead(400); res.end('fixture rejection'); return; }
+    if (responseMode === 'fail') { res.writeHead(400); res.end('fixture rejection'); return true; }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Native fixture response.' }, finish_reason: null }] })}\n\n`);
     if (responseMode === 'slow') {
       const timer = setInterval(() => res.write(': heartbeat\n\n'), 100);
       res.on('close', () => clearInterval(timer));
-      return;
+      return true;
     }
     res.end(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
-    return;
+    return true;
   }
-  try {
-    const relative = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).replace(/^\/+/, '') || 'index.html';
-    const target = path.resolve(app, 'ui', relative);
-    if (!target.startsWith(path.resolve(app, 'ui') + path.sep)) throw new Error('outside UI');
-    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.pdf': 'application/pdf' };
-    res.writeHead(200, { 'Content-Type': types[path.extname(target)] || 'application/octet-stream' });
-    res.end(await readFile(target));
-  } catch { res.writeHead(404); res.end(); }
+  return false;
 });
-server.listen(0, '127.0.0.1');
-await once(server, 'listening');
-const url = `http://127.0.0.1:${server.address().port}`;
-const portProbe = http.createServer();
-portProbe.listen(0, '127.0.0.1');
-await once(portProbe, 'listening');
-const debugPort = portProbe.address().port;
-await new Promise(resolve => portProbe.close(resolve));
-const config = JSON.stringify({ identifier, build: { devUrl: url }, app: { security: { capabilities: [
+const url = `http://127.0.0.1:${await listen(server)}`;
+const debugPort = await claimDebugPort();
+const config = tauriConfig({ identifier, url, title: 'Paper30Min PDF integration', app: { security: { capabilities: [
   'default', { identifier: 'pdf-test-resize', windows: ['main'], permissions: ['core:window:allow-set-size'] },
-] }, windows: [{
-  label: 'main', title: 'Paper30Min PDF integration', width: 1280, height: 900,
-}] } });
+] } } });
 let child, browser, page;
 const errors = [];
 const invoke = (command, input = {}) => page.evaluate(({ command, input }) =>
   window.__TAURI__.core.invoke('bridge_invoke', { command, input }), { command, input });
 async function check(name, fn) {
+  if (checkFilter && !new RegExp(checkFilter).test(name)) {
+    (report.skippedChecks ??= []).push(name);
+    return;
+  }
   const start = Date.now();
   const details = await fn();
   report.checks.push({ name, elapsedMs: Date.now() - start, details });
@@ -70,7 +72,7 @@ async function openPaper(id) {
   const previous = await page.$('#pdf-pages canvas');
   const previousTitle = await page.locator('#reader-title').textContent();
   await page.locator('#nav-library').click();
-  await page.locator('.paper-card').filter({ hasText: `U5 ${id}` }).click();
+  await page.locator('.paper-card').filter({ has: page.getByText(`U5 ${id}`, { exact: true }) }).click();
   if (previous && previousTitle !== `U5 ${id}`) {
     await page.waitForFunction(canvas => !canvas.isConnected, previous);
     await previous.dispose();
@@ -85,8 +87,11 @@ async function jump(number) {
 async function painted() {
   await page.waitForFunction(() => {
     const canvases = [...document.querySelectorAll('#pdf-pages canvas')];
-    return canvases.length && canvases.every(canvas => Math.abs(canvas.width -
-      Math.ceil(canvas.parentElement.getBoundingClientRect().width * Math.min(devicePixelRatio, 2))) <= 2);
+    return canvases.length && canvases.every(canvas => {
+      const { width, height } = canvas.parentElement.getBoundingClientRect();
+      const ratio = Math.min(devicePixelRatio, 2, Math.sqrt(4 * 1024 * 1024 / (width * height)));
+      return Math.abs(canvas.width - Math.floor(width * ratio)) <= 2;
+    });
   });
 }
 async function savedChats(count) {
@@ -96,12 +101,6 @@ async function savedChats(count) {
     });
     return paper.chat.length === count;
   }, count);
-}
-async function run(command, args, env = process.env) {
-  const processHandle = spawn(command, args, { cwd: app, env, stdio: 'inherit', windowsHide: true });
-  const completion = once(processHandle, 'exit');
-  const [code] = await completion;
-  assert.equal(code, 0, `${command} ${args.join(' ')}`);
 }
 async function enter() {
   await page.locator('#su-enter').click();
@@ -136,45 +135,24 @@ async function inkRegion(rect) {
   }, rect);
 }
 async function launch(executable) {
-  child = spawn(executable, [], {
-    cwd: app, env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1` },
-    stdio: 'ignore', windowsHide: true,
-  });
-  await Promise.race([once(child, 'error').then(([error]) => { throw error; }), (async () => {
-    const deadline = Date.now() + 45000;
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`Native host exited with code ${child.exitCode}`);
-      try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`); return; }
-      catch { await new Promise(resolve => setTimeout(resolve, 200)); }
-    }
-    throw new Error('WebView2 CDP did not start');
-  })()]);
-  page = browser.contexts()[0].pages()[0];
-  page.setDefaultTimeout(20000);
-  page.on('pageerror', error => errors.push(error.message));
-  await page.waitForFunction(() => window.__TAURI__?.core);
+  ({ child, browser, page } = await launchWebView({ executable, cwd: app, debugPort, pageTimeout: 20000,
+    onPageError: error => errors.push(error.message) }));
 }
 async function stopHost() {
-  if (browser) { await browser.close(); browser = null; }
-  if (child && child.exitCode === null) {
-    const stopped = once(child, 'exit');
-    child.kill();
-    await stopped;
-  }
+  await stopWebView({ child, browser });
+  child = browser = page = null;
 }
 const scrollState = () => page.locator('#pdf-canvas-wrap').evaluate(node => ({ top: node.scrollTop, left: node.scrollLeft }));
 try {
   await run('python', [path.join(app, 'tests/integration/make_pdf_fixtures.py'), output]);
+  await run('python', [path.join(app, 'tests/integration/make_scanned_paper.py'), path.join(output, 'scan-paper.pdf')]);
   await run('cargo', ['run', '--manifest-path', 'src-tauri/Cargo.toml', '--example', 'pdf_webview_fixtures', '--',
     path.join(app, 'src-tauri/tests/fixtures/docling/1512.03385.json.gz'), path.join(output, 'blockmodel.json')],
   { ...process.env, TAURI_CONFIG: config });
   // Cargo examples do not inherit Tauri's executable manifest; dialogs require Common Controls v6.
-  await run('cargo', ['rustc', '--manifest-path', 'src-tauri/Cargo.toml', '--example', 'pdf_webview_host', '--',
-    '-C', 'link-arg=/MANIFEST:EMBED', '-C', "link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"],
-  { ...process.env, TAURI_CONFIG: config });
   // Launch away from target/debug/sidecar so startup cannot migrate a developer's legacy parser.
-  const executable = path.join(output, 'paper30min.exe');
-  await copyFile(path.join(app, 'src-tauri/target/debug/examples/pdf_webview_host.exe'), executable);
+  const executable = await buildHost({ config, output, extraLinkArgs: ['-C',
+    "link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"] });
   await launch(executable);
   report.build = 'debug; unchanged UI served from loopback devUrl; isolated Tauri identifier';
   report.browser = await browser.version();
@@ -190,6 +168,7 @@ try {
     ['formula', path.join(fixtureRoot, 'pdfparse_formula_graphics.pdf'), 1],
     ['long', path.join(output, 'long.pdf'), 150],
     ['mixed', path.join(output, 'mixed.pdf'), 3],
+    ['scan-paper', path.join(output, 'scan-paper.pdf'), 12],
   ];
   for (const [id, file, pages] of fixtures) {
     await invoke('library.putPaper@1', { paper: { id, title: `U5 ${id}`, numPages: pages,
@@ -439,17 +418,101 @@ try {
     return sizes;
   });
   await check('actual native narrow window remains readable in full PDF mode', async () => {
+    await openPaper('mixed');
     await page.evaluate(async () => {
       await window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(430, 760));
     });
     report.narrowNative = await page.evaluate(async () => ({ viewport: [innerWidth, innerHeight],
       native: await window.__TAURI__.window.getCurrentWindow().innerSize(),
       dpi: await window.__TAURI__.window.getCurrentWindow().scaleFactor() }));
-    await page.waitForFunction(() => innerWidth === 430);
+    // Native physical pixels round at fractional Windows display scaling.
+    await page.waitForFunction(() => Math.abs(innerWidth - 430) <= 1);
     await page.locator('#btn-pdf-mode').click();
     await painted();
     await page.screenshot({ path: path.join(output, 'narrow.png') });
     return page.evaluate(() => ({ viewport: [innerWidth, innerHeight], documentWidth: document.documentElement.scrollWidth }));
+  });
+  await check('reader raster budget and optional cold-host memory comparison', async () => {
+    const runs = [];
+    await invoke('settings.putPdfparse@1', { settings: { warmStart: false } });
+    const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+    const sources = { baselineCommit, baselineSha256: originalReader && sha256(originalReader),
+      worktreeSha256: sha256(await readFile(path.join(app, 'ui/js/pdf-reader.js'))) };
+    for (const baseline of baselineCommit ? [true, false] : [false]) {
+      await stopHost();
+      baselineReader = baseline;
+      await launch(executable);
+      await enter();
+      const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio }));
+      const file = path.join(output, baseline ? 'memory-before.jsonl' : 'memory-after.jsonl');
+      const sampler = spawn('powershell.exe', ['-NoProfile', '-File', path.join(app, 'tests/integration/installed-memory.ps1'),
+        '-RootPid', String(child.pid), '-OutputPath', file], { windowsHide: true, stdio: 'ignore' });
+      const samplerExit = once(sampler, 'exit');
+      const stages = [];
+      try {
+        for (const id of ['long', 'scan-paper', 'mixed', 'scan-paper']) {
+          await openPaper(id);
+          await jump(1);
+          await page.locator('#btn-pdf-fit').click();
+          for (let i = 0; i < 10; i++) await page.locator('#btn-pdf-zoom-in').click();
+          await page.waitForTimeout(600);
+          for (let i = 0; i < 12; i++) {
+            await page.locator(i % 4 < 2 ? '#btn-pdf-zoom-out' : '#btn-pdf-zoom-in').click();
+          }
+          await page.waitForTimeout(600);
+          await jump(id === 'mixed' ? 3 : 8);
+          await jump(1);
+          if (!baseline) await painted();
+          const surfaces = await page.locator('#pdf-pages canvas').evaluateAll(nodes => nodes.map(canvas => ({
+            width: canvas.width, height: canvas.height, pixels: canvas.width * canvas.height,
+          })));
+          if (!baseline) assert.ok(surfaces.every(surface => surface.pixels <= 4 * 1024 * 1024));
+          stages.push({ id, time: Date.now(), surfaces });
+        }
+        await page.screenshot({ path: path.join(output, baseline ? 'memory-before.png' : 'memory-after.png') });
+        if (memTeardown) {
+          // 返回书库（产品行为：保留 viewer 与文档，仅切换视图），观察长 idle 归还。
+          await page.locator('#nav-library').click();
+          await page.locator('.paper-card').first().waitFor({ state: 'visible' });
+          await page.waitForTimeout(2000);
+        }
+        const idleStarted = Date.now();
+        await page.waitForTimeout(memIdleMs);
+        await stopHost();
+        await samplerExit;
+        const samples = (await readFile(file, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+        assert.ok(samples.length >= 5);
+        assert.ok(samples.every(sample => !sample.processes.some(process => /python|docling/i.test(process.name))),
+          'reader memory probe must exclude parser warm-start processes');
+        // 归因摘要：perProcess 按进程角色聚合，idle 后半段最小值作为 settled 稳态。
+        const processPrivateBytes = {};
+        for (const sample of samples) {
+          for (const proc of sample.perProcess ?? []) {
+            const key = proc.name === 'msedgewebview2' ? `webview2:${proc.type || 'browser'}` : proc.name;
+            processPrivateBytes[key] ??= { peakBytes: 0, endBytes: proc.privateBytes };
+            processPrivateBytes[key].peakBytes = Math.max(processPrivateBytes[key].peakBytes, proc.privateBytes);
+            processPrivateBytes[key].endBytes = proc.privateBytes;
+          }
+        }
+        const idleSamples = samples.filter(sample => sample.time >= idleStarted);
+        const settledHalf = idleSamples.slice(Math.floor(idleSamples.length / 2));
+        runs.push({ baseline, stages, idleStarted, samples: samples.length,
+          teardown: memTeardown, idleMs: memIdleMs,
+          viewport,
+          peakWorkingSetBytes: Math.max(...samples.map(sample => sample.workingSetBytes)),
+          peakPrivateBytes: Math.max(...samples.map(sample => sample.privateBytes)),
+          settledPrivateBytes: settledHalf.length ? Math.min(...settledHalf.map(sample => sample.privateBytes)) : null,
+          processPrivateBytes,
+          idle: idleSamples,
+          sampleIntervalsMs: samples.slice(1).map((sample, index) => sample.time - samples[index].time),
+        });
+      } finally {
+        await stopHost();
+        await samplerExit;
+      }
+    }
+    baselineReader = false;
+    return { runs, sources, boundary: 'debug native host, cold process per version, 48 zoom inputs plus initial zooms; 5-second idle; no installed-release or 1 GiB acceptance claim' };
   });
   assert.deepEqual(errors, []);
   report.result = 'passed';
@@ -466,9 +529,8 @@ try {
 } finally {
   report.pageErrors = errors;
   await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
-  await stopHost();
-  server.closeAllConnections();
-  await new Promise(resolve => server.close(resolve));
-  await run('cargo', ['build', '--manifest-path', 'src-tauri/Cargo.toml', '--lib']);
+  await stopWebView({ child, browser });
+  await closeServers(server);
+  await restoreLibraryBuild();
   console.log(`Report: ${output}`);
 }

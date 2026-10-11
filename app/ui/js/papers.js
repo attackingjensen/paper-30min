@@ -234,7 +234,7 @@ async function saveChatMessage(paper, message) {
   await store.put({ ...paper, chat: next, updatedAt });
   paper.chat = next;
   paper.updatedAt = updatedAt;
-  const retained = new Set(selectionAttachmentIds(next));
+  const retained = new Set([selectionAttachmentIds(next), ...(paper.parseHistory || []).map(entry => selectionAttachmentIds(entry.paper.chat))].flat());
   const removed = selectionAttachmentIds(previous).filter(id => !retained.has(id));
   if (removed.length && store.selectionAttachments) {
     await store.selectionAttachments.cleanup(paper.id, removed).catch(err => console.warn('选区附件清理失败', err));
@@ -244,6 +244,12 @@ async function saveChatMessage(paper, message) {
 function selectionAttachmentIds(chat) {
   return [...new Set((chat || []).flatMap(message => message.pdfSelection?.images || [])
     .map(image => image.attachmentId).filter(id => typeof id === 'string' && id.startsWith('pdf-selection-')))];
+}
+
+function recallAttachmentIds(paper) {
+  return [...new Set([paper, ...(paper.parseHistory || []).map(entry => entry.paper)]
+    .flatMap(state => state.recallCard?.images || []).map(image => image.attachmentId)
+    .filter(id => typeof id === 'string' && id))];
 }
 
 /** 评分、分类与标签写入。 */
@@ -267,6 +273,25 @@ export async function attachPdf(paper, file) {
 export async function setNumPages(paper, numPages) {
   if (paper.numPages === numPages) return false;
   paper.numPages = numPages;
+  paper.updatedAt = Date.now();
+  await store.put(paper);
+  return true;
+}
+
+/** 占位标题识别：云端导入先用文件名 / arXiv 编号占位（真实标题发布后由 backfillParsedTitle 回填）。 */
+function isPlaceholderTitle(paper) {
+  const title = paper?.title?.trim() || '';
+  if (!title) return false;
+  if (paper.arxivId && title === `arXiv ${paper.arxivId}`) return true;
+  const name = paper.pdfName?.replace(/\.pdf$/i, '');
+  return Boolean(name) && title === name;
+}
+
+/** 发布后回填真实标题：占位标题换成块模型识别的标题；未占位或无变化时不写入，返回是否发生了变化。 */
+export async function backfillParsedTitle(paper, parsedTitle) {
+  const title = String(parsedTitle ?? '').trim();
+  if (!title || title === paper.title || !isPlaceholderTitle(paper)) return false;
+  paper.title = title;
   paper.updatedAt = Date.now();
   await store.put(paper);
   return true;
@@ -383,7 +408,7 @@ export async function listPapers() {
 // ---------------- 整库导出 / 导入 ----------------
 
 const LIBRARY_FORMAT = 'paper-30min-library';
-const LIBRARY_VERSION = 1;
+const LIBRARY_VERSION = 2;
 
 function bytesToBase64(bytes) {
   let binary = '';
@@ -402,16 +427,22 @@ function base64ToBytes(base64) {
 }
 
 async function serializePaper(paper) {
-  const copy = { ...paper };
+  const dependencies = store.parseBatchExport ? await store.parseBatchExport(paper) : null;
+  const copy = { ...(dependencies?.paper || paper) };
   // pdfAttachment 是运行时的附件句柄，不进导出信封；
   // PDF base64 经注入缝获取（Tauri 端从附件存储读，缺省从瞬时 pdfBlob 读）。
   delete copy.pdfAttachment;
-  const base64 = await pdfHelpers.pdfBase64(paper);
+  delete copy.parseBatchSnapshot;
+  const pdfSource = dependencies?.paper ? { ...paper, parseBatchId: copy.parseBatchId, parseBatchSnapshot: null } : paper;
+  const base64 = await pdfHelpers.pdfBase64(pdfSource);
   copy.pdfBlob = base64
     ? { base64, type: paper.pdfBlob?.type || paper.pdfAttachment?.contentType || 'application/pdf' }
     : null;
-  const ids = selectionAttachmentIds(paper.chat);
+  const ids = [...new Set([selectionAttachmentIds(copy.chat), ...(copy.parseHistory || []).map(entry => selectionAttachmentIds(entry.paper.chat))].flat())];
   if (ids.length) copy.selectionAttachments = await Promise.all(ids.map(id => store.selectionAttachments.read(paper.id, id)));
+  const recallIds = recallAttachmentIds(copy);
+  if (recallIds.length) copy.recallAttachments = await Promise.all(recallIds.map(id => store.selectionAttachments.read(paper.id, id)));
+  if (dependencies) copy.parseBatchExport = { batches: dependencies.batches };
   return copy;
 }
 
@@ -455,7 +486,7 @@ export function parseLibraryFile(text) {
   if (!payload || payload.format !== LIBRARY_FORMAT) {
     throw new Error('这不是 Paper30Min 书库导出文件');
   }
-  if (payload.version !== LIBRARY_VERSION) {
+  if (![1, LIBRARY_VERSION].includes(payload.version)) {
     throw new Error(`不支持的导出版本 ${payload.version}（当前支持 ${LIBRARY_VERSION}）`);
   }
   if (!Array.isArray(payload.papers)) {
@@ -472,21 +503,34 @@ export async function importLibrary(payload) {
     if (!raw || typeof raw.id !== 'string' || !raw.id) { skipped++; continue; }
     const existing = await store.get(raw.id);
     if (existing) { skipped++; continue; }
+    if (raw.parseBatchId || raw.parseHistory?.length || raw.parseBatchExport?.batches?.length) {
+      throw new Error('含解析版本的书库请通过客户端迁入，浏览器导入无法恢复完整批次');
+    }
     const paper = deserializePaper(raw);
     delete paper.selectionAttachments;
+    delete paper.recallAttachments;
+    delete paper.parseBatchExport;
     const ids = selectionAttachmentIds(paper.chat);
     const attachments = ids.map(id => {
       const attachment = raw.selectionAttachments?.find(item => item.id === id);
       if (!attachment || typeof attachment.contentBase64 !== 'string') throw new Error('导入文件缺少选区截图');
       return attachment;
     });
+    for (const id of recallAttachmentIds(paper)) {
+      const matches = (raw.recallAttachments || []).filter(item => item.id === id);
+      if (matches.length !== 1 || typeof matches[0].contentBase64 !== 'string') throw new Error('导入文件缺少回想卡片图片或图片重复');
+      attachments.push(matches[0]);
+    }
     // Publish chat only after every referenced image has been restored.
     const chat = paper.chat;
+    const recallCard = paper.recallCard;
     paper.chat = [];
+    if (recallCard) paper.recallCard = { ...recallCard, images: [] };
     try {
       await store.put(paper);
       for (const attachment of attachments) await store.selectionAttachments.write(paper.id, attachment);
       paper.chat = chat;
+      paper.recallCard = recallCard;
       await store.put(paper);
     } catch (err) {
       await store.delete(paper.id).catch(cleanupError => console.warn('导入记录清理失败', cleanupError));

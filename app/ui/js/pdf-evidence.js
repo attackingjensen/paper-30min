@@ -1,3 +1,36 @@
+import { base64ToBytes } from './store.js';
+
+export async function readBatchAttachment(bridge, snapshot, attachmentId) {
+  return bridge.invoke('parsebatch.read@1', { snapshot, attachmentId });
+}
+
+export async function loadBatchModel(bridge, paperId, { recoverSource = true, batchId, snapshot: pinnedSnapshot } = {}) {
+  const snapshot = pinnedSnapshot || (await bridge.invoke('parsebatch.pin@1', { paperId, ...(batchId ? { batchId } : {}) })).snapshot;
+  const manifest = snapshot.manifest;
+  const range = await readBatchAttachment(bridge, snapshot, 'blockmodel.json');
+  const mapped = JSON.parse(new TextDecoder().decode(base64ToBytes(range.contentBase64)));
+  for (const section of mapped.sections || []) for (const block of section.blocks || []) delete block.sourceRegions;
+  mapped.parseBatch = snapshot;
+  if (manifest.attachments?.['visual-assets.json']) {
+    mapped.visualAssets = (await bridge.invoke('cloudassets.manifest@1', { snapshot })).visualAssets;
+  }
+  if (recoverSource) {
+    try {
+      const evidence = await bridge.invoke('pdfmap.getSourceRegions@1', {
+        paperId, batchId: manifest.batchId, blockModelSha256: range.attachment.sha256,
+      });
+      if (evidence.batchId === manifest.batchId && evidence.pdfSha256 === manifest.pdfSha256
+        && evidence.blockModelSha256 === range.attachment.sha256) {
+        for (const entry of evidence.blocks || []) {
+          const block = mapped.sections?.find(section => section.id === entry.secId)?.blocks?.find(block => block.id === entry.blockId);
+          if (block) block.sourceRegions = entry.sourceRegions;
+        }
+      }
+    } catch { /* Source recovery is optional; the pinned model remains usable. */ }
+  }
+  return mapped;
+}
+
 // Book-library asset boxes are PDF.js viewport coordinates at scale=2.
 export function evidenceTarget(pointer, mapped, currentSecId = null) {
   const validPage = page => Number.isInteger(page) && page >= 1 && (!mapped?.pageCount || page <= mapped.pageCount);

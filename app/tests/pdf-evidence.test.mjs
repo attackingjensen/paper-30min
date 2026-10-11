@@ -1,11 +1,60 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evidenceTarget, evidenceRects, evidenceRangeRects } from '../ui/js/pdf-evidence.js';
+import { evidenceTarget, evidenceRects, evidenceRangeRects, loadBatchModel, readBatchAttachment } from '../ui/js/pdf-evidence.js';
 import { parseRefs } from '../ui/js/protocol.js';
 
 const viewport = { width: 600, height: 800, rotation: 0, transform: [1, 0, 0, -1, 0, 800] };
 const item = (str, x = 20, y = 700) => ({ str, width: 120, height: 12, transform: [12, 0, 0, 12, x, y], dir: 'ltr', fontName: 'font' });
 const styles = { font: { ascent: 1, descent: 0 } };
+test('model, provenance and later image reads retain the pinned batch', async () => {
+  const snapshot = { manifest: { paperId: 'paper', batchId: 'old', pdfSha256: 'pdf-old' } };
+  const model = { sections: [{ id: 'sec_1', blocks: [{ id: 1, sourceRegions: [{ untrusted: true }] }] }] };
+  const calls = [];
+  const bridge = { async invoke(command, input) {
+    calls.push([command, input]);
+    if (command === 'parsebatch.pin@1') return { snapshot };
+    if (command === 'parsebatch.read@1') return {
+      attachment: { sha256: 'model-old', contentType: 'application/json' },
+      contentBase64: Buffer.from(input.attachmentId === 'blockmodel.json' ? JSON.stringify(model) : 'old image').toString('base64'),
+    };
+    if (command === 'pdfmap.getSourceRegions@1') return {
+      batchId: 'old', pdfSha256: 'pdf-old', blockModelSha256: 'model-old',
+      blocks: [{ secId: 'sec_1', blockId: 1, sourceRegions: [{ page: 1 }] }],
+    };
+    throw new Error(command);
+  } };
+  const mapped = await loadBatchModel(bridge, 'paper');
+  assert.deepEqual(mapped.sections[0].blocks[0].sourceRegions, [{ page: 1 }]);
+  await readBatchAttachment(bridge, mapped.parseBatch, 'page_1.webp');
+  assert.equal(calls.filter(([command]) => command === 'parsebatch.pin@1').length, 1);
+  assert.ok(calls.filter(([command]) => command === 'parsebatch.read@1').every(([, input]) => input.snapshot === snapshot));
+  assert.equal(calls.find(([command]) => command === 'pdfmap.getSourceRegions@1')[1].batchId, 'old');
+});
+test('sealed cloud models load their native-validated visual manifest even without source recovery', async () => {
+  const snapshot = { manifest: { attachments: { 'visual-assets.json': {} } } };
+  const visualAssets = { assets: [{ id: 'f', resources: [{ attachmentId: 'crop-f-r1' }] }] };
+  const calls = [];
+  const bridge = { async invoke(command, input) {
+    calls.push(command);
+    if (command === 'parsebatch.read@1') return { contentBase64: Buffer.from('{"sections":[]}').toString('base64') };
+    assert.equal(command, 'cloudassets.manifest@1');
+    assert.equal(input.snapshot, snapshot);
+    return { visualAssets };
+  } };
+  const mapped = await loadBatchModel(bridge, 'p', { snapshot, recoverSource: false });
+  assert.equal(mapped.visualAssets, visualAssets);
+  assert.deepEqual(calls, ['parsebatch.read@1', 'cloudassets.manifest@1']);
+});
+
+test('unverified or different-batch source geometry never enters a mapped model', async () => {
+  const bridge = { async invoke(command) {
+    if (command === 'parsebatch.pin@1') return { snapshot: { manifest: { paperId: 'p', batchId: 'a', pdfSha256: 'pdf' } } };
+    if (command === 'parsebatch.read@1') return { attachment: { sha256: 'model' }, contentBase64: Buffer.from(JSON.stringify({ sections: [{ id: 'sec_1', blocks: [{ id: 1, sourceRegions: [{ bad: true }] }] }] })).toString('base64') };
+    return { batchId: 'b', pdfSha256: 'pdf', blockModelSha256: 'model', blocks: [{ secId: 'sec_1', blockId: 1, sourceRegions: [{ bad: true }] }] };
+  } };
+  const mapped = await loadBatchModel(bridge, 'p');
+  assert.equal(mapped.sections[0].blocks[0].sourceRegions, undefined);
+});
 test('source regions preserve columns and pages without matching PDF text', () => {
   const sourceRegions = [
     { page: 1, bbox: [40, 1400, 500, 80], pageSize: [600, 800] },

@@ -494,8 +494,10 @@ pub(crate) fn run_convert(
     work_dir: Option<&Path>,
     formula_enrichment: bool,
     paper_id: Option<&str>,
+    expected_batch_id: Option<&str>,
+    overwrite_confirmed: bool,
 ) {
-    match convert_once(ctx, pdf_path, work_dir, formula_enrichment, paper_id) {
+    match convert_once(ctx, pdf_path, work_dir, formula_enrichment, paper_id, expected_batch_id, overwrite_confirmed) {
         Ok(()) => {}
         Err(error) if error.code == CANCEL_SENTINEL => ctx.cancel_now(),
         Err(error) => ctx.fail(error),
@@ -508,6 +510,8 @@ fn convert_once(
     work_dir: Option<&Path>,
     formula_enrichment: bool,
     paper_id: Option<&str>,
+    expected_batch_id: Option<&str>,
+    overwrite_confirmed: bool,
 ) -> Result<(), BridgeError> {
     ctx.cancel_checkpoint()?;
     if !pdf_path.is_file() {
@@ -563,7 +567,7 @@ fn convert_once(
                 Some((pid, reused)),
             );
             if let Some(paper_id) = paper_id {
-                persist_convert_block_model(ctx, paper_id, &mut payload)?;
+                persist_convert_block_model(ctx, paper_id, &mut payload, pdf_path, expected_batch_id, overwrite_confirmed)?;
             }
             ctx.succeed(Some(payload));
             Ok(())
@@ -580,6 +584,8 @@ fn convert_once(
             table_mode,
             started,
             &fallback,
+            expected_batch_id,
+            overwrite_confirmed,
         ),
     }
 }
@@ -597,6 +603,8 @@ fn convert_oneshot(
     table_mode: &str,
     started: Instant,
     fallback: &crate::pdfpool::FallbackInfo,
+    expected_batch_id: Option<&str>,
+    overwrite_confirmed: bool,
 ) -> Result<(), BridgeError> {
     let mut command = base_command(layout, configured_hf_endpoint(ctx).as_deref());
     command
@@ -630,7 +638,7 @@ fn convert_oneshot(
             );
             fallback.apply_to_payload(&mut payload);
             if let Some(paper_id) = paper_id {
-                persist_convert_block_model(ctx, paper_id, &mut payload)?;
+                persist_convert_block_model(ctx, paper_id, &mut payload, pdf_path, expected_batch_id, overwrite_confirmed)?;
             }
             ctx.succeed(Some(payload));
             Ok(())
@@ -710,6 +718,9 @@ fn persist_convert_block_model(
     ctx: &RunContext,
     paper_id: &str,
     payload: &mut Value,
+    pdf_path: &Path,
+    expected_batch_id: Option<&str>,
+    overwrite_confirmed: bool,
 ) -> Result<(), BridgeError> {
     ctx.cancel_checkpoint()?;
     let docling_path = payload
@@ -723,15 +734,41 @@ fn persist_convert_block_model(
             false,
         )
     })?;
-    let dto = crate::pdfassets::persist_block_model(&ctx.library, paper_id, &mapped)?;
     let source = std::fs::read(docling_path)
         .map_err(|err| BridgeError::internal(format!("读取解析来源失败: {err}")))?;
-    ctx.library.put_attachment_bytes(
-        paper_id, "docling-source.json", "docling-source.json", "application/json", &source,
-    )?;
+    let pdf = std::fs::read(pdf_path).map_err(|_| BridgeError::internal("原 PDF 无法读取"))?;
+    let pdf_sha256 = crate::files::sha256_hex(&pdf);
+    let raw_sha256 = crate::files::sha256_hex(&source);
+    let batch_id = format!("local-{}", crate::files::sha256_hex(format!("{}:{}:{}",paper_id,ctx.task_id,crate::tasks::now_iso()).as_bytes()));
+    let resources: std::collections::BTreeMap<String,Vec<u8>> = std::collections::BTreeMap::from([
+        ("pdf".into(),pdf),
+        ("blockmodel.json".into(),serde_json::to_vec_pretty(&mapped).map_err(|_| BridgeError::internal("模型无法序列化"))?),
+        ("docling-source.json".into(),source),
+    ]);
+    let attachments = resources.iter().map(|(id,bytes)| (id.clone(), crate::parsebatch::ParseBatchAttachment {
+        attachment_id:id.clone(),sha256:crate::files::sha256_hex(bytes),size:bytes.len() as u64,
+        content_type:if id == "pdf" { "application/pdf" } else { "application/json" }.into(),
+    })).collect();
+    let manifest = crate::parsebatch::ParseBatchManifest {
+        schema_version:1,paper_id:paper_id.into(),batch_id:batch_id.clone(),pdf_sha256,provider:"docling".into(),model:"local".into(),
+        options:json!({"parseGeneration":batch_id}),raw_sha256,attachments,
+    };
+    ctx.cancel_checkpoint()?;
+    ctx.library.write_parse_batch(manifest,resources)?;
+    let snapshot = ctx.library.pin_parse_batch(paper_id,Some(&batch_id))?;
+    ctx.library.validate_parse_candidate(&snapshot,false)?;
+    if ctx.library.current_parse_batch_id(paper_id)?.as_deref() != expected_batch_id {
+        return Err(crate::library::parse_state_stale());
+    }
+    let initial = expected_batch_id.is_none() && ctx.library.get_attachment(paper_id,"blockmodel.json").is_err();
+    if initial { ctx.library.publish_parse_batch(&snapshot,expected_batch_id,overwrite_confirmed,true,|| ctx.cancel_checkpoint())?; }
     if let Value::Object(map) = payload {
-        map.insert("blockModelAssetId".to_string(), json!(dto.id));
+        map.insert("blockModelAssetId".to_string(), json!(snapshot.manifest.attachments["blockmodel.json"].attachment_id));
         map.insert("mappingWarnings".to_string(), json!(mapped.warnings));
+        map.insert("batchId".into(),json!(batch_id));
+        map.insert("snapshot".into(),json!(snapshot));
+        map.insert("candidateReady".into(),json!(true));
+        map.insert("resultReady".into(),json!(initial));
     }
     Ok(())
 }

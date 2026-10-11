@@ -275,10 +275,23 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .pdf-task-row { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 
 /* ---------- 阅读视图 ---------- */
-.reader-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
-.reader-title-wrap { flex: 1; min-width: 0; }
+.reader-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.reader-title-wrap { flex: 1; min-width: min(180px, 100%); }
 #reader-title { margin: 0; font-size: 17px; line-height: 1.4; }
 .reader-meta { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.reader-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; max-width: 100%; }
+.reader-actions .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; padding: 0 9px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--muted); font: inherit; font-size: 13px; line-height: 1;
+  white-space: nowrap; flex-shrink: 0; box-shadow: none; transform: none;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.reader-actions .btn:hover:not(:disabled) { background: var(--card); border-color: var(--border); color: var(--text); }
+.reader-actions .btn:active:not(:disabled) { background: var(--border); }
+.reader-actions .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reader-actions .btn img { width: 16px; height: 16px; opacity: .65; }
+.reader-actions .pdf-toggle.active { background: var(--accent-soft); border-color: #dce2ff; color: var(--accent); }
 
 .tabs {
   display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin: 0 0 16px;
@@ -336,6 +349,7 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 }
 .tree-fold:hover { background: var(--accent-soft); color: var(--accent); }
 .tree-foot { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.reader-rebuild-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .tree-resizer, .pdf-resizer {
   position: absolute; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 5;
   touch-action: none;
@@ -728,10 +742,15 @@ code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; fon
 .settings-actions { padding-top: 14px; border-top: 1px solid var(--border); }
 .service-card { border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px 18px; margin: 8px 0 14px; background: var(--card); }
 .service-card h4 { margin: 0 0 14px; font-size: 15px; }
-.service-entry { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 66px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text); text-align: left; font: inherit; }
-button.service-entry { cursor: pointer; }
-button.service-entry:hover { border-color: var(--accent); background: #f8faff; }
-button.service-entry:focus-visible, .settings-detail-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.service-entry { display: flex; align-items: center; gap: 12px; width: 100%; height: 76px; box-sizing: border-box; padding: 10px 14px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text); text-align: left; font: inherit; }
+.parser-service-entry { padding-left: 0; gap: 0; }
+.parser-service-entry:has([aria-pressed="true"]) { border-left-color: #2563eb; box-shadow: inset 1px 0 #2563eb; }
+.parser-service-entry:has(.service-entry-select:hover:not(:disabled)) { background: #fafbfc; }
+.service-entry-select { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; height: 100%; padding: 0 14px; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.service-entry-select:disabled { cursor: wait; }
+.service-entry-arrow { display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--muted); font-size: 24px; line-height: 1; cursor: pointer; }
+.service-entry-arrow:hover { color: var(--accent); border-color: var(--accent); }
+.service-entry-select:focus-visible, .service-entry-arrow:focus-visible, .settings-detail-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .service-entry + .service-entry { margin-top: 8px; }
 .service-entry-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .service-entry-copy strong { font-size: 14px; font-weight: 600; }
@@ -794,8 +813,11 @@ button.service-entry:focus-visible, .settings-detail-close:focus-visible { outli
   .settings-detail-head { padding: 14px 18px 10px; }
   .settings-detail-scroll { padding: 12px 18px 18px; }
   .service-card { padding: 14px; }
-  .service-entry { flex-wrap: wrap; }
+  .service-entry-select { flex-wrap: wrap; align-content: center; gap: 4px; }
+  .service-entry-select .service-entry-status { width: 100%; }
 }
+
+.task-row p { overflow-wrap: anywhere; }
 
 /* 整理弹窗 */
 .organize-modal { width: 560px; }
@@ -877,11 +899,13 @@ button.service-entry:focus-visible, .settings-detail-close:focus-visible { outli
 /* ---------- 窄窗口兜底（客户端按 ≥900px 设计，以下为基本可用性） ---------- */
 @media (max-width: 900px) {
   .reader-workspace { grid-template-columns: minmax(0, 1fr); }
+  .reader-primary { flex-direction: column; }
+  .reader-primary > .tab-panel { width: 100%; }
   .pdf-sidebar { position: static; height: 72vh; min-height: 480px; }
   .library-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 34px; }
   .library-filters input { grid-column: 1 / -1; }
   .map-split { flex-direction: column; }
-  .map-tree { width: 100%; position: static; }
+  .map-tree { max-width: 100%; position: static; }
   .tree-resizer, .pdf-resizer { display: none; }
   .map-content { padding: 12px 0 0; }
   .recall-surface { grid-template-columns: 1fr; min-height: 0; }
@@ -890,6 +914,14 @@ button.service-entry:focus-visible, .settings-detail-close:focus-visible { outli
   .skills-layout { flex-direction: column; }
   .skill-list { width: 100%; }
   .streak-badge { max-width: 180px; }
+}
+
+@media (max-width: 600px) {
+  .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+  .topbar-right { flex-shrink: 0; }
+  .main-nav { order: 1; width: 100%; margin-left: 0; }
+  .nav-btn { white-space: nowrap; }
+  #reader-title { overflow-wrap: anywhere; }
 }
 
 /* ---------- 启动页：左动效场景 + 右进入栏（js/startup.js） ---------- */

@@ -54,8 +54,19 @@ export function cropImagesReady(mapped, attachmentIds) {
   return true;
 }
 
+/**
+ * 深挖预渲染门禁。云端批次带视觉资产清单（visualAssets）：按清单判定，每件资产的
+ * 全部资源 attachmentId 均在批次内即齐备——区域裁切（crop-{id}-r{n}）与合法的页级
+ * 降级（pageimg-*）都放行。本地批次保持页图逐页 + 图表裁切逐件检查。
+ */
 export function prerenderAssetsReady(mapped, attachmentIds) {
-  return pageImagesReady(mapped, attachmentIds) && cropImagesReady(mapped, attachmentIds);
+  const ids = attachmentIds instanceof Set ? attachmentIds : new Set(attachmentIds ?? []);
+  if (mapped?.visualAssets) {
+    return (mapped.visualAssets.assets ?? []).every(asset =>
+      (asset.resources ?? []).length > 0
+      && asset.resources.every(resource => ids.has(resource?.attachmentId)));
+  }
+  return pageImagesReady(mapped, ids) && cropImagesReady(mapped, ids);
 }
 
 function qaError(code, message, details) {
@@ -167,6 +178,11 @@ function knownAssetIds(mapped) {
 
 /** 覆盖块中的图/表占位 → 裁切图附件 id（清单内、覆盖即附、不设数量帽、阅读序去重）。 */
 function cropAssetIdsForBlocks(items, mapped) {
+  if (mapped?.visualAssets) {
+    return [...new Set(items.flatMap(({ section, block }) =>
+      mapped.visualAssets.assets.filter(asset => asset.secId === section.id && asset.blockId === block.id)
+        .flatMap(asset => asset.resources.map(resource => resource.attachmentId))))];
+  }
   const known = knownAssetIds(mapped);
   const ids = [];
   const seen = new Set();

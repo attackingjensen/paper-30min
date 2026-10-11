@@ -1,5 +1,9 @@
 import { evidenceRects, evidenceRangeRects } from './pdf-evidence.js';
 
+// Bound a full-page RGBA surface to 16 MiB, independently of zoom and display DPI.
+const MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
+const ZOOM_RENDER_DELAY_MS = 120;
+
 // Page indices are zero-based inside the renderer; the toolbar uses one-based page numbers.
 export function pageAtOffset(bottoms, offset) {
   let low = 0;
@@ -28,6 +32,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
   let document = null;
   let slots = [];
   let tasks = new Map();
+  let rendering = null;
   let epoch = 0;
   let scale = 1;
   let frame = 0;
@@ -37,21 +42,35 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
   let evidenceRevision = 0;
   let evidence = null;
   let pendingEvidence = null;
-  const paintedPages = new Set();
+  const loadedPages = new Map();
   const failedPages = new Set();
   const positions = {
     get length() { return slots.length; },
     at(index) { return slots[index].offsetTop + slots[index].offsetHeight; },
   };
 
+  function clearCanvases(slot) {
+    for (const node of slot?.children || []) {
+      if (node.tagName === 'CANVAS') node.width = node.height = 0;
+    }
+  }
+
   function release(index, keepPreview = false) {
-    tasks.get(index)?.task?.cancel();
+    const entry = tasks.get(index);
+    // PDF.js otherwise aborts an unfinished operator stream before the zoom debounce expires.
+    entry?.task?.cancel(keepPreview ? ZOOM_RENDER_DELAY_MS : 0);
+    if (entry) {
+      if (entry.canvas && (!keepPreview || !entry.published)) entry.canvas.width = entry.canvas.height = 0;
+    }
+    if (rendering === entry) rendering = null;
     tasks.delete(index);
     failedPages.delete(index);
     const slot = slots[index];
     if (slot && !keepPreview) {
+      clearCanvases(slot);
       slot.replaceChildren();
-      paintedPages.delete(index);
+      loadedPages.get(index)?.cleanup();
+      loadedPages.delete(index);
     }
   }
 
@@ -63,7 +82,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
     zoomTimer = null;
     cancelAnimationFrame(frame);
     frame = 0;
-    for (const index of new Set([...tasks.keys(), ...paintedPages])) release(index);
+    for (const index of new Set([...tasks.keys(), ...loadedPages.keys()])) release(index);
     tasks = new Map();
     failedPages.clear();
     slots = [];
@@ -80,6 +99,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
     try {
       page = await doc.getPage(index + 1);
       if (generation !== epoch || tasks.get(index) !== entry) return;
+      loadedPages.set(index, page);
       const viewport = page.getViewport({ scale });
       const slot = slots[index];
       const previousHeight = slot.offsetHeight;
@@ -93,9 +113,11 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
         if (pendingEvidence) pendingEvidence.top = scroll.scrollTop;
       }
       const canvas = window.document.createElement('canvas');
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.ceil(viewport.width * ratio);
-      canvas.height = Math.ceil(viewport.height * ratio);
+      entry.canvas = canvas;
+      const ratio = Math.min(window.devicePixelRatio || 1, 2,
+        Math.sqrt(MAX_CANVAS_PIXELS / (viewport.width * viewport.height)));
+      canvas.width = Math.max(1, Math.floor(viewport.width * ratio));
+      canvas.height = Math.max(1, Math.floor(viewport.height * ratio));
       canvas.style.width = '100%';
       canvas.style.height = '100%';
       const task = page.render({
@@ -105,6 +127,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
       });
       entry.task = task;
       await task.promise;
+      entry.task = null;
       // Publish only a complete frame; canceled or obsolete renders stay offscreen.
       if (generation !== epoch || tasks.get(index) !== entry) return;
       let layer = null;
@@ -117,10 +140,12 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
         const textTask = renderTextLayer({ textContentSource: content, container: layer, viewport });
         entry.task = textTask;
         await textTask.promise;
+        entry.task = null;
         if (generation !== epoch || tasks.get(index) !== entry) return;
       }
+      clearCanvases(slot);
       slot.replaceChildren(...(layer ? [canvas, layer] : [canvas]));
-      paintedPages.add(index);
+      entry.published = true;
       paintEvidence(index);
       onPaint();
       schedule();
@@ -131,6 +156,11 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
         failedPages.add(index);
         onError(error);
       }
+    } finally {
+      if (!entry.published && entry.canvas) entry.canvas.width = entry.canvas.height = 0;
+      if (tasks.get(index) !== entry && loadedPages.get(index) !== page) page?.cleanup();
+      if (rendering === entry) rendering = null;
+      schedule();
     }
   }
 
@@ -138,13 +168,18 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
     frame = 0;
     if (!document || !slots.length || !scroll.clientHeight) return;
     reflow();
-    const wanted = new Set(pageWindow(positions, scroll.scrollTop, scroll.clientHeight));
+    const top = scroll.getBoundingClientRect().top + scroll.clientTop - pages.getBoundingClientRect().top;
+    const first = pageAtOffset(positions, top);
+    const last = pageAtOffset(positions, top + scroll.clientHeight);
+    const wanted = new Set(pageWindow(positions, top, scroll.clientHeight));
     for (const page of getPinnedPages()) if (Number.isInteger(page) && page >= 1 && page <= slots.length) wanted.add(page - 1);
-    for (const index of new Set([...tasks.keys(), ...paintedPages])) if (!wanted.has(index)) release(index);
-    for (const index of wanted) {
-      if (!zoomTimer && !tasks.has(index) && !failedPages.has(index)) {
+    for (const index of new Set([...tasks.keys(), ...loadedPages.keys()])) if (!wanted.has(index)) release(index);
+    const priority = index => index >= first && index <= last ? 0 : 1;
+    for (const index of [...wanted].sort((a, b) => priority(a) - priority(b) || Math.abs(a - first) - Math.abs(b - first))) {
+      if (!rendering && !zoomTimer && !tasks.has(index) && !failedPages.has(index)) {
         const entry = { task: null };
         tasks.set(index, entry);
+        rendering = entry;
         void render(index, epoch, entry);
       }
     }
@@ -253,7 +288,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
     zoomTimer = setTimeout(() => {
       zoomTimer = null;
       schedule();
-    }, 120);
+    }, ZOOM_RENDER_DELAY_MS);
     for (const slot of slots) {
       for (const node of [...slot.children]) if (node.className === 'pdf-text-layer') node.remove();
       slot.style.width = `${Math.ceil(Number(slot.dataset.baseWidth) * scale)}px`;
@@ -301,7 +336,7 @@ export function createPdfReader({ scroll, pages, loading, onPageChange, onError,
     const slot = slots[index];
     if (!slot) return;
     for (const node of [...slot.children]) if (node.className === 'pdf-evidence-highlight') node.remove();
-    if (!evidence?.has(index + 1) || !paintedPages.has(index)) return;
+    if (!evidence?.has(index + 1) || ![...slot.children].some(node => node.tagName === 'CANVAS' && node.width > 0)) return;
     for (const [x, y, width, height] of evidence.get(index + 1)) {
       const node = window.document.createElement('div');
       node.className = 'pdf-evidence-highlight';

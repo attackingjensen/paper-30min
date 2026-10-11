@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 
 use crate::error::BridgeError;
 
-pub const DATABASE_VERSION: i32 = 8;
+pub const DATABASE_VERSION: i32 = 9;
 pub const LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 /// activity_days.kind 的合法取值：导入论文 / 精读结果 / 中断保留的部分结果 / 设置已读完标记。
@@ -235,6 +235,10 @@ pub struct PaperDto {
     pub activity_days: Vec<ActivityDayDto>,
     #[serde(default)]
     pub products: Vec<ProductDto>,
+    #[serde(default)]
+    pub parse_batch_id: Option<String>,
+    #[serde(default)]
+    pub parse_history: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -408,6 +412,15 @@ impl Library {
             self.remove_paper_files(&paper_id)?;
         }
         let tx = conn.transaction().map_err(sqlite_error)?;
+        if Self::paper_exists(&tx, &paper_id)? {
+            let existing = load_paper(&tx, &paper_id)?;
+            if existing.parse_batch_id != paper.parse_batch_id {
+                return Err(parse_state_stale());
+            }
+            paper.parse_history = existing.parse_history;
+        } else if paper.parse_batch_id.is_some() || !paper.parse_history.is_empty() {
+            return Err(BridgeError::invalid_input("解析版本只能通过校验后的发布或导入写入"));
+        }
         tx.execute(
             "DELETE FROM pending_file_cleanup WHERE paper_id = ?1",
             params![paper_id],
@@ -416,6 +429,17 @@ impl Library {
         upsert_paper(&tx, &paper)?;
         tx.commit().map_err(sqlite_error)?;
         load_paper(&conn, &paper_id)
+    }
+
+    pub fn current_parse_batch_id(&self, paper_id: &str) -> Result<Option<String>, BridgeError> {
+        Ok(self.get_paper(paper_id)?.parse_batch_id)
+    }
+
+    pub fn put_paper_for_batch(&self, paper: PaperDto, expected_batch_id: Option<&str>) -> Result<PaperDto, BridgeError> {
+        if paper.parse_batch_id.as_deref() != expected_batch_id {
+            return Err(parse_state_stale());
+        }
+        self.put_paper(paper)
     }
 
     pub fn delete_paper(&self, paper_id: &str) -> Result<bool, BridgeError> {
@@ -745,7 +769,25 @@ fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     migrate_chat_bindings(conn)?;
     migrate_pending_file_cleanup(conn)?;
     migrate_pdf_selections(conn)?;
+    migrate_parse_states(conn)?;
     Ok(())
+}
+
+fn migrate_parse_states(conn: &mut Connection) -> Result<(), BridgeError> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).map_err(sqlite_error)?;
+    if version >= 9 { return Ok(()); }
+    let tx = conn.transaction().map_err(sqlite_error)?;
+    tx.execute_batch("CREATE TABLE parse_states (
+        paper_id TEXT PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
+        current_batch_id TEXT,
+        history_json TEXT NOT NULL DEFAULT '[]'
+    );").map_err(sqlite_error)?;
+    tx.pragma_update(None, "user_version", 9).map_err(sqlite_error)?;
+    tx.commit().map_err(sqlite_error)
+}
+
+pub(crate) fn parse_state_stale() -> BridgeError {
+    BridgeError::new("parse_batch_stale", "论文解析版本已变化，请重新加载后再操作", false)
 }
 
 fn migrate_pdf_selections(conn: &mut Connection) -> Result<(), BridgeError> {
@@ -1293,6 +1335,10 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
     )
     .map_err(sqlite_error)?;
 
+    tx.execute("INSERT INTO parse_states(paper_id,current_batch_id,history_json) VALUES(?1,?2,?3)
+        ON CONFLICT(paper_id) DO UPDATE SET current_batch_id=excluded.current_batch_id,history_json=excluded.history_json",
+        params![paper.id,paper.parse_batch_id,json_text(&paper.parse_history)?]).map_err(sqlite_error)?;
+
     tx.execute(
         "DELETE FROM sections WHERE paper_id = ?1",
         params![paper.id],
@@ -1460,7 +1506,7 @@ pub(crate) fn upsert_paper(tx: &Transaction, paper: &PaperDto) -> Result<(), Bri
     Ok(())
 }
 
-fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError> {
+pub(crate) fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError> {
     let paper = conn
         .query_row(
             "SELECT id, title, source_type, arxiv_id, pdf_name, num_pages, full_text, rating,
@@ -1700,6 +1746,12 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
         })
         .collect::<Result<Vec<_>, BridgeError>>()?;
 
+    let parse_state = conn.query_row("SELECT current_batch_id,history_json FROM parse_states WHERE paper_id=?1", params![paper_id],
+        |row| Ok((row.get::<_, Option<String>>(0)?,row.get::<_,String>(1)?))).optional().map_err(sqlite_error)?;
+    let (parse_batch_id, parse_history) = match parse_state {
+        Some((id, history)) => (id, serde_json::from_str(&history).map_err(|_| BridgeError::internal("解析历史无法读取"))?),
+        None => (None, Vec::new()),
+    };
     Ok(PaperDto {
         id: paper.0,
         title: paper.1,
@@ -1722,6 +1774,8 @@ fn load_paper(conn: &Connection, paper_id: &str) -> Result<PaperDto, BridgeError
         read_marks,
         activity_days,
         products,
+        parse_batch_id,
+        parse_history,
     })
 }
 
