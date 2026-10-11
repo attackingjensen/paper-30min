@@ -179,6 +179,7 @@ try {
     // Missing consent routes to settings before any task or network request.
     await page.getByRole('button', { name: '恢复查询 / 取回', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some(node => node.textContent.includes('确认上传与费用')));
+    await page.locator('#close-service-detail').click();
     await page.locator('#modal-settings [data-close]').click();
     assert.deepEqual((await bridge('tasks.list@1')).tasks, []);
     await page.screenshot({ path: path.join(output, 'cloudparse-recovery.png') });
