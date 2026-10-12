@@ -47,6 +47,16 @@
 
 阅读协议的实现见 [protocol.rs](app/src-tauri/src/protocol.rs)，分层产物、文本协议工具调用与按实际结构组织精读的决策见 [ADR-0002](docs/adr/0002-follow-paper-structure.md) 与 [ADR-0003](docs/adr/0003-three-layer-reading-protocol.md)。阅读契约的历史规格见 [#48](https://github.com/attackingjensen/paper-30min/issues/48)、[#51](https://github.com/attackingjensen/paper-30min/issues/51)、[#52](https://github.com/attackingjensen/paper-30min/issues/52)、[#55](https://github.com/attackingjensen/paper-30min/issues/55)、[#56](https://github.com/attackingjensen/paper-30min/issues/56) 及 [#74](https://github.com/attackingjensen/paper-30min/issues/74) 修订；旧术语中「建图须备齐页图」的表述已被性能调整替代。
 
+## v2.0 规划中的阅读模型
+
+以下是已确认的产品方向，当前客户端仍使用上文的节薄摘要协议。
+
+### 论文精解
+一篇论文中按精读部分组织的可编辑讲解的整体，帮助读者比通读原文更快理解论文。各节讲解解释论点、方法和证据，并提供原文回查入口；论文精解不包含独立的阅读地图，也不是全文译文。
+*Avoid: 把节薄摘要或逐段改写称为论文精解*
+
+v2.0 的建图生成阅读地图与论文精解，不另产节薄摘要。两类成果分别归入工程的 `map/` 与 `explanations/`；「30 分钟」不是讲解的时长或字数上限。见 [ADR-0007](docs/adr/0007-paper-explanations.md)。
+
 ## 解析方式
 
 以下概念表达已确认的扩展方向，不代表当前客户端已全部实现。
