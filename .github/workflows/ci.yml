@@ -26,23 +26,23 @@ jobs:
 
       - name: Run tests
         run: npm test
-        working-directory: app
+        working-directory: legacy/v1/app
 
       # 内存编译检查，不生成 __pycache__ 等缓存文件。
       - name: Python compile check
         run: >-
           python -c "import pathlib; files = ['tools/mock_llm.py', 'tools/make_sample_pdf.py']; [compile(pathlib.Path(f).read_text(encoding='utf-8'), f, 'exec') for f in files]; print('python compile check passed: ' + str(len(files)) + ' files')"
 
-      # 纯语法检查，不执行代码；覆盖未被测试导入的入口文件，排除 app/ui/vendor/。
+      # 纯语法检查，不执行代码；覆盖未被测试导入的入口文件，排除 legacy/v1/app/ui/vendor/。
       - name: JavaScript syntax check
         run: node tools/check_syntax.mjs
 
       - name: Rust contract tests
         if: runner.os == 'Windows'
         run: cargo test
-        working-directory: app/src-tauri
+        working-directory: legacy/v1/app/src-tauri
 
       - name: Native bridge smoke
         if: runner.os == 'Windows'
         run: npm run smoke
-        working-directory: app
+        working-directory: legacy/v1/app

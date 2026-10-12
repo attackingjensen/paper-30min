@@ -1,11 +1,11 @@
 # Paper30Min
 
-论文精读应用：Windows Tauri 客户端。开发使用已安装的 NexusKit 技能；项目特有的版本与发布边界见下文，不另建竞争的阶段或审批链。
+论文精读应用：v2.0.0 使用 Electron + React/TypeScript + Node + Pi SDK；旧 Windows Tauri 客户端已归档。开发使用已安装的 NexusKit 技能；项目特有的版本与发布边界见下文，不另建竞争的阶段或审批链。
 
 ## 项目事实
 
-- Windows 本地书库是论文内容权威来源；Rust 负责存储、文件、网络、模型和阅读协议运行，JavaScript 负责界面与前端状态。
-- `app/` 是 Windows 客户端，`skills/` 是产品阅读提示词，不能与 NexusKit 开发技能混用。
+- v2 使用本地开放工程：正文文件、相对路径清单与 Pi 会话为权威，无 SQLite；Node 负责工程与 Agent 运行，React 负责界面。旧版 Rust/SQLite 书库仅供迁移与行为参考。
+- 根目录 `app/` 留给新版 Electron 客户端，由 STE-76 建立；`legacy/v1/app/` 是旧客户端，只读参考，不在其中开发新版。`skills/` 是产品阅读提示词，不能与 NexusKit 开发技能混用。
 - 下一版本起，从 `main` 创建版本分支；同一分支可由多个对话串行实施多份 plan，最终集中在一个面向 `main` 的版本 PR。v1.2.0 的 `steven123397/dev` 属于历史开发分支，不再作为长期开发入口。
 - `steven123397` 独立承担全部开发和维护；仓库持有者 [attackingjensen](https://github.com/attackingjensen) 仅作为产品体验者，不参与开发或 PR。
 
@@ -18,12 +18,14 @@
 
 ## 验证入口
 
-- Windows JavaScript：`cd app` 后 `node --test`。
-- Rust：`cd app/src-tauri` 后 `cargo test`。
-- 桌面集成：`cd app` 后 `npm run smoke`；JavaScript 单测不能替代 Tauri 原生桥和窗口验证。
+以下为归档旧客户端的检查，不代表新版 Electron 已通过验证。新版入口由 STE-76 建立并更新本文。
+
+- Windows JavaScript：`cd legacy/v1/app` 后 `node --test`。
+- Rust：`cd legacy/v1/app/src-tauri` 后 `cargo test`。
+- 桌面集成：`cd legacy/v1/app` 后 `npm run smoke`；JavaScript 单测不能替代 Tauri 原生桥和窗口验证。
 - JavaScript 语法：仓库根目录 `node tools/check_syntax.mjs`。
 
-按改动范围选择检查；构建与运行细节见 `app/README.md`。
+按改动范围选择检查；构建与运行细节见 `legacy/v1/app/README.md`。
 
 GitHub CI 因账户问题暂不可用。恢复前以本机检查记录验证结果，不把未运行的 CI 标为通过；恢复后再核对工作流实际结果。
 

@@ -6,10 +6,10 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { appDir, assertWindowsHost, claimDebugPort, launchWebView, stopWebView } from './webview-host.mjs';
-import { parseUpdaterPublicKey, verifyInstallerSignature } from '../../../tools/release_manifest.mjs';
+import { parseUpdaterPublicKey, verifyInstallerSignature } from '../../../../../tools/release_manifest.mjs';
 
 assertWindowsHost();
-const root = path.resolve(appDir, '..');
+const root = path.resolve(appDir, '../../..');
 const runId = `installed-${Date.now()}`;
 const output = path.join(root, 'tmp', runId);
 const readingOnly = Boolean(process.env.PAPER30MIN_READING_REPORT);

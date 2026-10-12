@@ -6,7 +6,7 @@
 - `releases/`：发布说明与安装版验收范围；当前见 [v1.4.0](releases/v1.4.0.md)，解析组件说明见 [v1.2.0-beta.1](releases/v1.2.0-beta.1.md)。
 - 其他产物目录由相应技能按需创建；不预建完整目录树或空白模板。
 
-项目介绍见 [README](../README.md)，关键决策见 [adr/](adr/)，业务概念见 [CONCEPTS.md](../CONCEPTS.md)，运行和测试见 [客户端 README](../app/README.md)，issue 跟踪见 [agents/issue-tracker.md](agents/issue-tracker.md)。工作上下文来自当前任务、相关计划、代码、测试和必要的 Issue；任务与进度由 Linear 承接。
+项目介绍见 [README](../README.md)，关键决策见 [adr/](adr/)，业务概念见 [CONCEPTS.md](../CONCEPTS.md)，运行和测试见 [归档客户端 README](../legacy/v1/app/README.md)，issue 跟踪见 [agents/issue-tracker.md](agents/issue-tracker.md)。工作上下文来自当前任务、相关计划、代码、测试和必要的 Issue；任务与进度由 Linear 承接。
 
 每版一个版本分支和一个代码 PR；合并与正式发布的顺序见[版本交付约定](release-workflow.md)。
 

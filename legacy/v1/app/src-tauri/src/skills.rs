@@ -11,16 +11,16 @@ use serde_json::{json, Value};
 
 /// 编译期内嵌的技能文件清单；新增技能文件时在仓库根 skills/ 放文件并登记到这里。
 const SKILLS: &[(&str, &str)] = &[
-    ("deep-dive.md", include_str!("../../../skills/deep-dive.md")),
-    ("map-l1.md", include_str!("../../../skills/map-l1.md")),
-    ("map-l2.md", include_str!("../../../skills/map-l2.md")),
-    ("synthesize.md", include_str!("../../../skills/synthesize.md")),
-    ("section-focus.json", include_str!("../../../skills/section-focus.json")),
-    ("legacy/abstract-translation.md", include_str!("../../../skills/legacy/abstract-translation.md")),
-    ("legacy/experiment-analysis.md", include_str!("../../../skills/legacy/experiment-analysis.md")),
-    ("legacy/introduction-analysis.md", include_str!("../../../skills/legacy/introduction-analysis.md")),
-    ("legacy/method-deep-dive.md", include_str!("../../../skills/legacy/method-deep-dive.md")),
-    ("legacy/part-analysis.md", include_str!("../../../skills/legacy/part-analysis.md")),
+    ("deep-dive.md", include_str!("../../../../../skills/deep-dive.md")),
+    ("map-l1.md", include_str!("../../../../../skills/map-l1.md")),
+    ("map-l2.md", include_str!("../../../../../skills/map-l2.md")),
+    ("synthesize.md", include_str!("../../../../../skills/synthesize.md")),
+    ("section-focus.json", include_str!("../../../../../skills/section-focus.json")),
+    ("legacy/abstract-translation.md", include_str!("../../../../../skills/legacy/abstract-translation.md")),
+    ("legacy/experiment-analysis.md", include_str!("../../../../../skills/legacy/experiment-analysis.md")),
+    ("legacy/introduction-analysis.md", include_str!("../../../../../skills/legacy/introduction-analysis.md")),
+    ("legacy/method-deep-dive.md", include_str!("../../../../../skills/legacy/method-deep-dive.md")),
+    ("legacy/part-analysis.md", include_str!("../../../../../skills/legacy/part-analysis.md")),
 ];
 
 /// 按文件名排序返回 [{file, text}]，frontmatter / JSON 解析由前端完成。

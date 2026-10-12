@@ -7,7 +7,7 @@ import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPor
 
 assertWindowsHost();
 const identifier = `com.paper30min.cloudparse-webview-${Date.now()}`;
-const output = path.resolve(app, '../tmp', identifier);
+const output = path.resolve(app, '../../../tmp', identifier);
 await mkdir(output, { recursive: true });
 const report = { checks: [], errors: [] };
 const server = createUiServer();

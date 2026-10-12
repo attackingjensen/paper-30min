@@ -13,7 +13,7 @@ const readerReport = readerReportPath ? JSON.parse(await readFile(readerReportPa
 if (readerReport) assert.equal(readerReport.result, 'passed');
 const identifier = readerReport ? path.basename(path.dirname(readerReportPath)) : `com.paper30min.cloudassets-webview-${Date.now()}`;
 if (readerReport) assert.match(identifier, /^com\.paper30min\.cloudassets-webview-\d+$/);
-const output = path.resolve(app, '../tmp', readerReport ? `${identifier}-reader-${Date.now()}` : identifier);
+const output = path.resolve(app, '../../../tmp', readerReport ? `${identifier}-reader-${Date.now()}` : identifier);
 await mkdir(output, { recursive: true });
 const report = readerReport ? { ...readerReport, checks: [], errors: [], reusedReport: readerReportPath } : { checks: [], errors: [], sources: [], papers: [] };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -228,7 +228,7 @@ try {
     for (const [index, id] of ['1412.6980', '1503.02531', '1512.03385', '1603.02754'].entries()) {
       const paperId = `u5-${id}`, batchId = `u4-${id}`;
       const pdf = await readFile(path.join(app, `src-tauri/tests/fixtures/regression/corpus/${id}.pdf`));
-      let raw, source = path.resolve(app, `../tmp/aistudio-pilot-20261006/${id}/result.jsonl`);
+      let raw, source = path.resolve(app, `../../../tmp/aistudio-pilot-20261006/${id}/result.jsonl`);
       try { raw = await readFile(source); } catch { source = path.join(app, `src-tauri/tests/fixtures/aistudio/${id}.jsonl`); raw = await readFile(source); }
       report.sources.push({ id, source, pdfSha256: digest(pdf), rawSha256: digest(raw) });
       await seed(paperId, batchId, pdf, raw);

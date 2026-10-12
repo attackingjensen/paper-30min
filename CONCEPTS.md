@@ -45,7 +45,7 @@
 阅读阶段提示词与章节关注点，位于 `skills/`，客户端内可编辑。
 *Avoid: 与开发所用 NexusKit 技能混用*
 
-阅读协议的实现见 [protocol.rs](app/src-tauri/src/protocol.rs)，分层产物、文本协议工具调用与按实际结构组织精读的决策见 [ADR-0002](docs/adr/0002-follow-paper-structure.md) 与 [ADR-0003](docs/adr/0003-three-layer-reading-protocol.md)。阅读契约的历史规格见 [#48](https://github.com/attackingjensen/paper-30min/issues/48)、[#51](https://github.com/attackingjensen/paper-30min/issues/51)、[#52](https://github.com/attackingjensen/paper-30min/issues/52)、[#55](https://github.com/attackingjensen/paper-30min/issues/55)、[#56](https://github.com/attackingjensen/paper-30min/issues/56) 及 [#74](https://github.com/attackingjensen/paper-30min/issues/74) 修订；旧术语中「建图须备齐页图」的表述已被性能调整替代。
+阅读协议的实现见 [protocol.rs](legacy/v1/app/src-tauri/src/protocol.rs)，分层产物、文本协议工具调用与按实际结构组织精读的决策见 [ADR-0002](docs/adr/0002-follow-paper-structure.md) 与 [ADR-0003](docs/adr/0003-three-layer-reading-protocol.md)。阅读契约的历史规格见 [#48](https://github.com/attackingjensen/paper-30min/issues/48)、[#51](https://github.com/attackingjensen/paper-30min/issues/51)、[#52](https://github.com/attackingjensen/paper-30min/issues/52)、[#55](https://github.com/attackingjensen/paper-30min/issues/55)、[#56](https://github.com/attackingjensen/paper-30min/issues/56) 及 [#74](https://github.com/attackingjensen/paper-30min/issues/74) 修订；旧术语中「建图须备齐页图」的表述已被性能调整替代。
 
 ## v2.0 规划中的阅读模型
 
@@ -101,7 +101,7 @@ v2.0 的建图生成阅读地图与论文精解，不另产节薄摘要。两类
 ### 中断部分结果
 被中断生成中保留下来的不完整内容；不构成已读完标记或阅读进度。
 
-进度与产物的数据模型决策见 [ADR-0004](docs/adr/0004-progress-and-products-data-model.md)，实现见 [library.rs](app/src-tauri/src/library.rs) 与 [进度域修复 #92](https://github.com/attackingjensen/paper-30min/issues/92)。历史记录 parts、产物与标记可能存在迁移差异，改动时不要假设三者始终一一对应。
+进度与产物的数据模型决策见 [ADR-0004](docs/adr/0004-progress-and-products-data-model.md)，实现见 [library.rs](legacy/v1/app/src-tauri/src/library.rs) 与 [进度域修复 #92](https://github.com/attackingjensen/paper-30min/issues/92)。历史记录 parts、产物与标记可能存在迁移差异，改动时不要假设三者始终一一对应。
 
 ## 尚未实现的方向
 

@@ -1,3 +1,5 @@
+> 本文描述归档的 v1 客户端；仓库位置为 `legacy/v1/app/`，新版在根目录 `app/` 开发。旧版本号示例不作为 v2 发布指令。
+
 # 论文精读 Windows 正式客户端（`app/`）
 
 基于 Tauri 的 Windows 正式客户端。Rust 承担本地能力、模型请求与阅读协议运行，JavaScript 承担界面与前端状态。支持导入、建图、深挖、复述稿和论文问答。云端同步尚未实现，任务注册表为内存态。
@@ -35,7 +37,7 @@
 ## 运行与验证
 
 ```bash
-cd app
+cd legacy/v1/app
 npm install            # 安装 @tauri-apps/cli
 
 npm run tauri dev      # 开发模式（带控制台）
@@ -154,8 +156,8 @@ v1.4.0 正式版仅更新主程序；本地解析组件继续使用 v1.2.0-beta.
 4. 核对 `src-tauri/target/release/bundle/nsis/Paper30Min_<version>_x64-setup.exe` 与相邻 `.sig`。在仓库根目录运行以下检查；`verify` 会用更新器公钥核对安装包字节、签名注释中的文件名及清单一致性：
 
    ```powershell
-   node tools/release_manifest.mjs create --installer app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0_x64-setup.exe --component app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --component-manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json --tag v1.2.0 --manifest app/src-tauri/target/release/latest.json
-   node tools/release_manifest.mjs verify --installer app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0_x64-setup.exe --component app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --component-manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json --tag v1.2.0 --manifest app/src-tauri/target/release/latest.json
+   node tools/release_manifest.mjs create --installer legacy/v1/app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0_x64-setup.exe --component legacy/v1/app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --component-manifest legacy/v1/app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json --tag v1.2.0 --manifest legacy/v1/app/src-tauri/target/release/latest.json
+   node tools/release_manifest.mjs verify --installer legacy/v1/app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0_x64-setup.exe --component legacy/v1/app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --component-manifest legacy/v1/app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json --tag v1.2.0 --manifest legacy/v1/app/src-tauri/target/release/latest.json
    ```
 
 5. 用 `src-tauri/tauri.test-updater.conf.json` 构建隔离安装身份，并由本机测试端点 `127.0.0.1:18437` 提供较新版本的签名清单和安装包，实际走查下载、签名拒绝、安装及书库保留。正式构建不使用该测试配置。

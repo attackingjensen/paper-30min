@@ -20,7 +20,7 @@ import {
   importCustomSkills,
 } from '../ui/js/skills.js';
 
-const skillsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills');
+const skillsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'skills');
 const legacyDir = path.join(skillsDir, 'legacy');
 
 /** 读取仓库 skills/ 目录，模拟 skills.list@1 返回的文件清单（含 legacy/ 前缀与 json，按文件名排序）。 */

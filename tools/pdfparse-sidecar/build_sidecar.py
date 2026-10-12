@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """组装 Docling Windows 侧车（Issue #57，规格 #48 §实施决策 1–3）。
 
-产物目录（默认 app/src-tauri/sidecar/pdfparse/，随 Tauri resources 打包）：
+产物目录（默认 legacy/v1/app/src-tauri/sidecar/pdfparse/，随 Tauri resources 打包）：
 
     python/     嵌入式 Python 3.11.9（python.org 官方 embed 包，SHA256 钉版校验）
     app/        pdfparse_sidecar.py + requirements-sidecar.txt + 许可声明 + get-pip.py
@@ -41,7 +41,7 @@ GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT = REPO_ROOT / "app" / "src-tauri" / "sidecar" / "pdfparse"
+DEFAULT_OUTPUT = REPO_ROOT / "legacy" / "v1" / "app" / "src-tauri" / "sidecar" / "pdfparse"
 
 # 精简规则（#48 决策 2：精简 site-packages）：只删可再生/运行期不用的内容。
 PRUNE_DIR_NAMES = {"__pycache__", "tests", "test"}

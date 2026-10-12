@@ -10,7 +10,7 @@ Issue [#57](https://github.com/attackingjensen/paper-30min/issues/57) /
 （scale=2 webp），由 `pdfassets.prerender@1` 任务驱动。
 
 `serve` 子命令（Issue #84，规格 #74 §A3）是常驻模式：Rust 常驻侧车池
-（`app/src-tauri/src/pdfpool.rs`）懒启动单个 serve 进程，convert/prerender 优先
+（`legacy/v1/app/src-tauri/src/pdfpool.rs`）懒启动单个 serve 进程，convert/prerender 优先
 走池；应用启动时按设置 `pdfparse.warmStart`（默认开）预热模型；空闲超过
 `pdfparse.idleShutdownMinutes`（默认 10 分钟）自动释放；常驻不可用（spawn 失败 /
 READY 超时 / 协议破裂）自动回退一次一进程，任务结果 warnings 记
@@ -21,7 +21,7 @@ READY 超时 / 协议破裂）自动回退一次一进程，任务结果 warning
 - `pdfparse_sidecar.py` — 侧车程序（convert / render / bootstrap / prefetch-models / selfcheck / serve）。
 - `requirements-sidecar.txt` — 钉版依赖清单（与 #46 验证 venv 逐版一致；升级 Docling
   须回归夹具全绿，见 #60）。
-- `build_sidecar.py` — 构建脚本，产物落 `app/src-tauri/sidecar/pdfparse/`。
+- `build_sidecar.py` — 构建脚本，产物落 `legacy/v1/app/src-tauri/sidecar/pdfparse/`。
 - `THIRD_PARTY_NOTICES.md` — 随包分发的归属与许可声明（许可核实见 Git 历史 35324e7 的
   `docs/background/2026-09-10-docling-sidecar/model-license-review.md`）。
 
@@ -124,7 +124,7 @@ Rust 侧回退/测试钩子环境变量：`PAPER30MIN_PDFPARSE_SERVE`（serve �
 ## 契约测试
 
 ```
-cd app/src-tauri
+cd legacy/v1/app/src-tauri
 cargo test --test pdfparse_contract            # 常规（状态/成功/错误/取消，约 1 分钟）
 cargo test --test pdfassets_contract           # 页图/裁切预渲染（#59，约 5 秒）
 cargo test --test pdfparse_resident            # 常驻侧车（#84：serve 协议/二次免启动/回退/取消/空闲释放，约 3 分钟）
@@ -139,7 +139,7 @@ PAPER30MIN_PDFPARSE_FIXTURES=1 cargo test --test pdfparse_regression -- --nocapt
 
 Docling 版本锁定：侧车钉版 `requirements-sidecar.txt`（`docling==X.Y.Z` 等
 逐版钉死）+ 侧车程序 `pdfparse_sidecar.py` 的 `DOCLING_VERSION` + 回归基线
-`app/src-tauri/tests/fixtures/regression/manifest.json` 的 `doclingVersion`
+`legacy/v1/app/src-tauri/tests/fixtures/regression/manifest.json` 的 `doclingVersion`
 三处一致，测试交叉校验（不一致即失败）。升级流程：
 
 1. 改钉：`requirements-sidecar.txt` 目标版本 + `pdfparse_sidecar.py`
@@ -160,4 +160,4 @@ Docling 版本锁定：侧车钉版 `requirements-sidecar.txt`（`docling==X.Y.Z
    `pdfmap_fixtures.rs` 的公式图形断言。
 
 性能门禁的机器状态容差（`PAPER30MIN_PDFPARSE_PERF_FACTOR`）与断言基线判读，
-见 `app/src-tauri/tests/fixtures/regression/README.md`。
+见 `legacy/v1/app/src-tauri/tests/fixtures/regression/README.md`。

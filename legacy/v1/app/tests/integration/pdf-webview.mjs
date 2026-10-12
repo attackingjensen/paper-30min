@@ -11,7 +11,7 @@ import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPor
 assertWindowsHost();
 const runId = `pdf-webview-${Date.now()}`;
 const identifier = `com.paper30min.${runId}`;
-const output = path.resolve(app, '../tmp', runId);
+const output = path.resolve(app, '../../../tmp', runId);
 await mkdir(output, { recursive: true });
 const report = { runId, identifier, platform: process.platform, node: process.version,
   input: 'CDP synthesized events; physical mouse/trackpad are separate manual checks', checks: [] };

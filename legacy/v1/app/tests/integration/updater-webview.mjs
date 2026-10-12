@@ -7,7 +7,7 @@ import { assertWindowsHost, appDir as app, listen, createUiServer, claimDebugPor
 assertWindowsHost();
 const runId = `updater-webview-${Date.now()}`;
 const identifier = `com.paper30min.${runId}`;
-const output = path.resolve(app, '../tmp', runId);
+const output = path.resolve(app, '../../../tmp', runId);
 await mkdir(output, { recursive: true });
 const signed = JSON.parse(await readFile(path.join(app, 'src-tauri/tests/fixtures/updater/signed-bytes.json'), 'utf8'));
 // Every complete native download fails signature verification; never launch fixture bytes as an installer.

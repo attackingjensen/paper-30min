@@ -7,12 +7,12 @@
 复用已安装侧车的 Python、pypdfium2 和 Pillow，不新增依赖。在仓库根目录执行：
 
 ```powershell
-app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/pilot.py baseline --out tmp/parser-pilot-20261006
-app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/test_pilot.py
-app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/test_aistudio.py
+legacy/v1/app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/pilot.py baseline --out tmp/parser-pilot-20261006
+legacy/v1/app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/test_pilot.py
+legacy/v1/app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/test_aistudio.py
 
 # 取得真实百度结果后，用相同原始 PDF 检查；输出目录必须不存在。
-app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/pilot.py inspect --provider baidu --pdf app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf --raw tmp/baidu-resnet.json --out tmp/baidu-resnet-inspection
+legacy/v1/app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/pilot.py inspect --provider baidu --pdf legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf --raw tmp/baidu-resnet.json --out tmp/baidu-resnet-inspection
 ```
 
 基线固定为 Adam（15 页）、知识蒸馏（9 页）、ResNet（12 页）、XGBoost（13 页），共 49 页。每篇独立进程，FAST 表格模式，关闭公式增强，包含进程及模型加载时间；没有把历史 manifest 耗时当作新实测。输出目录防覆盖，失败留存日志和状态；进程异常终止留下的 `running` 不代表成功。
@@ -34,9 +34,9 @@ Docling 根据明确的坐标原点转换；文本、表格与图片集合顺序
 凭据仅从 `PADDLEOCR_ACCESS_TOKEN` 环境变量读取，不接受命令行 Token、不写入运行记录。设好环境变量后运行：
 
 ```powershell
-app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/aistudio.py submit --pdf app/src-tauri/tests/fixtures/regression/corpus/1503.02531.pdf --out tmp/aistudio-pilot-20261006/1503.02531
-app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/aistudio.py collect --out tmp/aistudio-pilot-20261006/1503.02531
-app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/pilot.py inspect --provider aistudio --pdf app/src-tauri/tests/fixtures/regression/corpus/1503.02531.pdf --raw tmp/aistudio-pilot-20261006/1503.02531/result.jsonl --out tmp/aistudio-pilot-20261006/1503.02531/inspection
+legacy/v1/app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/aistudio.py submit --pdf legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1503.02531.pdf --out tmp/aistudio-pilot-20261006/1503.02531
+legacy/v1/app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/aistudio.py collect --out tmp/aistudio-pilot-20261006/1503.02531
+legacy/v1/app/src-tauri/sidecar/pdfparse/python/python.exe tools/parser-pilot/pilot.py inspect --provider aistudio --pdf legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1503.02531.pdf --raw tmp/aistudio-pilot-20261006/1503.02531/result.jsonl --out tmp/aistudio-pilot-20261006/1503.02531/inspection
 ```
 
 固定 `model=PaddleOCR-VL-1.6`，关闭方向分类、扭曲矫正与统计图表内容解析。服务端实际模型版本无法确认，记录为未知；服务器模型设置随原始结果保留。只上传 PDF，每文件限制 49 页、50 MiB；这是单文件工具护栏，**不代表累计上传预算**。操作者另行累计实际提交页数，不能因单文件合规而无限提交。

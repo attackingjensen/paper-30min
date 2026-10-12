@@ -364,7 +364,7 @@ fn maps_all_four_complete_local_results() {
             read_pdf_identity(&root.join(format!("tests/fixtures/regression/corpus/{id}.pdf")))
                 .unwrap();
         let raw = std::fs::read_to_string(root.join(format!(
-            "../../tmp/aistudio-pilot-20261006/{id}/result.jsonl"
+            "../../../../tmp/aistudio-pilot-20261006/{id}/result.jsonl"
         )))
         .unwrap();
         let rows = raw

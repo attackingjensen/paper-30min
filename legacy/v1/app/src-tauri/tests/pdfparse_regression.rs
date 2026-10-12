@@ -115,8 +115,7 @@ fn formula_graphics_pdf() -> PathBuf {
 /// 注意排除 docling-slim/docling-core 等同前缀行）。
 fn requirements_docling_pin() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
+        .join("../../../..")
         .join("tools")
         .join("pdfparse-sidecar")
         .join("requirements-sidecar.txt");

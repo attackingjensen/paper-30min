@@ -1,5 +1,7 @@
 # Paper30Min
 
+> 当前分支用于 v2.0.0 开发：根目录 `app/` 留给新版 Electron 应用（STE-76 建立），旧客户端已移至 `legacy/v1/app/`，仅供迁移、升级兼容和行为参考。以下发布介绍描述 v1.4.0，不是新版功能规格。归档与开发入口见 [legacy/v1/README.md](legacy/v1/README.md)。
+
 论文精读专精 agent harness：用大模型把一篇完整论文压缩成约 30 分钟可读完的形态——先拿到一屏阅读地图，再定向深挖你关心的章节，最后让复述稿把全篇讲清楚。
 
 ## 下载安装（Windows）
@@ -57,7 +59,8 @@
 ```
 paper-30min/
 ├── skills/              # 技能库：顶层为新协议提示词与关注点数据，legacy/ 为旧五技能留档
-├── app/                 # Windows 正式客户端（Tauri 外壳 + Rust/JavaScript 桥接 + 可选 Docling 组件）
+├── app/                 # 新版 Electron 客户端预留位置（STE-76 建立）
+├── legacy/v1/app/       # 旧版 Tauri 客户端，只读参考
 ├── tools/               # 侧车构建、示例论文与 mock 模型等工具
 └── docs/                # 开发产物与文档
     ├── adr/             #   编号式关键决策记录
