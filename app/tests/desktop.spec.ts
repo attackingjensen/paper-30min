@@ -175,6 +175,19 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
         `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
       );
     await page.getByLabel("模型名称").fill("reading-model");
+    const budget = page.getByLabel("上下文预算", { exact: true });
+    const limit = page.getByLabel("输出上限", { exact: true });
+    await budget.fill("");
+    await expect(budget).toHaveValue("");
+    await budget.pressSequentially("64000");
+    await expect(budget).toHaveValue("64000");
+    await limit.fill("");
+    await expect(limit).toHaveValue("");
+    await page.getByRole("button", { name: "保存配置" }).click();
+    await expect(limit).toHaveValue("");
+    await expect(page.getByRole("status")).toHaveCount(0);
+    await limit.pressSequentially("2048");
+    await expect(limit).toHaveValue("2048");
     await page.getByLabel("API 密钥", { exact: true }).fill("ui-test-key");
     await page.getByRole("button", { name: "保存配置" }).click();
     await expect(page.getByRole("status")).toHaveText("已保存");
@@ -182,11 +195,29 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
       el.scrollTop = 0;
     });
     await page.screenshot({ path: "test-results/agent-settings.png" });
+    await expect(budget).toHaveValue("64000");
+    await expect(limit).toHaveValue("2048");
     await page.getByRole("button", { name: "返回工作台" }).click();
+    const composer = page.getByLabel("Agent 消息");
+    await composer.fill("第一行第二行");
+    await composer.press("Home");
+    await composer.press("ArrowRight");
+    await composer.press("ArrowRight");
+    await composer.press("ArrowRight");
+    await composer.press("Control+Enter");
+    await expect(composer).toHaveValue("第一行\n第二行");
+    await composer.pressSequentially("插入");
+    await expect(composer).toHaveValue("第一行\n插入第二行");
+    await composer.dispatchEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      isComposing: true,
+    });
+    await expect(page.locator(".chat-message")).toHaveCount(0);
     await page
       .getByLabel("Agent 消息")
       .fill("帮我梳理论文的核心思路。保留 **我的原始输入**。");
-    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await composer.press("Enter");
     await expect(page.locator(".chat-markdown h2")).toHaveText("先看核心思路");
     await expect(page.locator(".chat-markdown strong")).toHaveText("局部信息");
     await expect(page.locator(".chat-markdown .katex")).toHaveCount(1);

@@ -247,9 +247,31 @@ export function AgentPanel({
           <textarea
             aria-label="Agent 消息"
             placeholder="有什么想聊的？"
+            title="Enter 发送，Ctrl+Enter 换行"
             value={text}
             maxLength={100000}
             onChange={(e) => setText(e.target.value)}
+            onKeyDown={(event) => {
+              if (
+                event.key !== "Enter" ||
+                event.nativeEvent.isComposing ||
+                event.nativeEvent.keyCode === 229
+              )
+                return;
+              event.preventDefault();
+              if (event.ctrlKey) {
+                const input = event.currentTarget;
+                input.setRangeText(
+                  "\n",
+                  input.selectionStart,
+                  input.selectionEnd,
+                  "end",
+                );
+                setText(input.value);
+              } else if (!event.repeat) {
+                void send();
+              }
+            }}
             disabled={current?.stopping}
           />
           <div className="composer-foot">

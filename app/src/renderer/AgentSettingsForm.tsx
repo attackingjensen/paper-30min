@@ -3,8 +3,14 @@ import { Check, KeyRound, Save, SlidersHorizontal, Trash2 } from "lucide-react";
 import "./agent.css";
 import { defaultAgentSettings, type AgentSettings } from "../shared/contracts";
 
+// Keep numeric input drafts as text so clearing/replacing a value does not insert zero.
+type SettingsDraft = Omit<AgentSettings, "contextWindow" | "maxTokens"> & {
+  contextWindow: number | string;
+  maxTokens: number | string;
+};
+
 export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
-  const [settings, setSettings] = useState<AgentSettings>();
+  const [settings, setSettings] = useState<SettingsDraft>();
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -35,7 +41,11 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
       setSettings(
         await window.desktop.agent<AgentSettings>({
           type: "saveSettings",
-          settings,
+          settings: {
+            ...settings,
+            contextWindow: Number(settings.contextWindow),
+            maxTokens: Number(settings.maxTokens),
+          },
           apiKey: key || undefined,
           clearKey,
         }),
@@ -54,7 +64,7 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
     }
   }
   if (!settings) return <p role="status">{message || "正在读取配置…"}</p>;
-  const update = (value: Partial<AgentSettings>) => {
+  const update = (value: Partial<SettingsDraft>) => {
     setSettings({ ...settings, ...value });
     setMessage("");
   };
@@ -171,12 +181,11 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
                   <input
                     aria-label="上下文预算"
                     type="number"
+                    required
                     min="1024"
                     max="2000000"
                     value={settings.contextWindow}
-                    onChange={(e) =>
-                      update({ contextWindow: Number(e.target.value) })
-                    }
+                    onChange={(e) => update({ contextWindow: e.target.value })}
                   />
                 </label>
                 <label>
@@ -184,12 +193,11 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
                   <input
                     aria-label="输出上限"
                     type="number"
+                    required
                     min="1"
                     max={settings.contextWindow}
                     value={settings.maxTokens}
-                    onChange={(e) =>
-                      update({ maxTokens: Number(e.target.value) })
-                    }
+                    onChange={(e) => update({ maxTokens: e.target.value })}
                   />
                 </label>
               </div>
