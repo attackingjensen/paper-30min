@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ArrowLeft,
   ArrowUp,
@@ -30,6 +36,12 @@ import type {
 } from "../shared/contracts";
 import { usePanelLayout } from "./usePanelLayout";
 import { PdfReader } from "./PdfReader";
+import { MarkdownDocument } from "./MarkdownDocument";
+import {
+  useMarkdownDocuments,
+  isMarkdown,
+  isDirty,
+} from "./useMarkdownDocuments";
 
 const desktop = window.desktop;
 type Tab = DocumentTab;
@@ -41,6 +53,7 @@ type Dialog =
       name: string;
       makeDefault: boolean;
     }
+  | { type: "note"; name: string }
   | { type: "move"; path: string; destination: string }
   | { type: "trash"; id: string; name: string };
 
@@ -88,13 +101,30 @@ export function App() {
   const [content, setContent] = useState<string | null>(null);
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
+  const activeRoot = useRef(root);
+  activeRoot.current = root;
+  const documents = useMarkdownDocuments(root, tabs, project);
   const positions = useRef<Record<string, Record<string, PdfPosition>>>({});
   useEffect(() => {
-    if (root) void desktop.invoke({ type: "saveWorkspace", root, tabs, active }).catch((e) => setError((e as Error).message));
+    if (root)
+      void desktop
+        .invoke({ type: "saveWorkspace", root, tabs, active })
+        .catch((e) => setError((e as Error).message));
   }, [root, tabs, active]);
-  function savePosition(projectRoot: string, file: string, position: PdfPosition) {
+  function savePosition(
+    projectRoot: string,
+    file: string,
+    position: PdfPosition,
+  ) {
     (positions.current[projectRoot] ??= {})[file] = position;
-    void desktop.invoke({ type: "savePdfPosition", root: projectRoot, path: file, position }).catch((e) => setError((e as Error).message));
+    void desktop
+      .invoke({
+        type: "savePdfPosition",
+        root: projectRoot,
+        path: file,
+        position,
+      })
+      .catch((e) => setError((e as Error).message));
   }
 
   const run = useCallback(
@@ -132,7 +162,7 @@ export function App() {
   useEffect(() => {
     let disposed = false;
     setContent(null);
-    if (root && current?.path) {
+    if (root && current?.path && !isMarkdown(current.path)) {
       desktop
         .invoke<string | null>({ type: "read", root, path: current.path })
         .then((value) => {
@@ -146,6 +176,29 @@ export function App() {
       disposed = true;
     };
   }, [root, current?.path, project]);
+
+  useEffect(() => {
+    if (!root) return;
+    let disposed = false;
+    const stop = desktop.watchProject(root, (watchError) => {
+      if (watchError) {
+        setError(watchError);
+        return;
+      }
+      void desktop
+        .invoke<Project>({ type: "refresh", root })
+        .then((p) => {
+          if (!disposed) setProject((old) => (old?.root === root ? p : old));
+        })
+        .catch((e) => {
+          if (!disposed) setError(e.message);
+        });
+    });
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, [root]);
 
   const refresh = useCallback(() => {
     if (root)
@@ -182,17 +235,27 @@ export function App() {
       title: p.manifest.paper.path.split("/").at(-1)!,
     };
     positions.current[p.root] = p.reading.pdf;
-    const restored = p.reading.tabs.filter((t) => !t.path || p.files.some((f) => f.path === t.path && !f.directory));
+    const restored = p.reading.tabs.filter(
+      (t) => !t.path || p.files.some((f) => f.path === t.path && !f.directory),
+    );
     setTabs(restored.length ? restored : [tab]);
-    setActive(restored.some((t) => t.key === p.reading.active) ? p.reading.active : restored[0]?.key ?? tab.key);
+    setActive(
+      restored.some((t) => t.key === p.reading.active)
+        ? p.reading.active
+        : (restored[0]?.key ?? tab.key),
+    );
     setSettings(null);
   }
   function closeTab(key: string) {
+    const path = tabs.find((t) => t.key === key)?.path;
+    if (path && !documents.mayLeave(path)) return;
+    if (path) documents.forget(path);
     const remaining = tabs.filter((t) => t.key !== key);
     setTabs(remaining);
     if (active === key) setActive(remaining.at(-1)?.key ?? "");
   }
   async function openProject(folder?: string) {
+    if (!documents.mayLeave()) return;
     await run(async () => {
       const selected = folder ?? (await desktop.choose("folder"));
       if (!selected) return;
@@ -202,6 +265,7 @@ export function App() {
     });
   }
   async function newProject() {
+    if (!documents.mayLeave()) return;
     await run(async () => {
       const source = await desktop.choose("pdf");
       if (!source) return;
@@ -270,12 +334,16 @@ export function App() {
     });
   }
   function retargetTabs(from: string, to: string) {
+    documents.retarget(from, to);
     const saved = positions.current[root!];
-    if (saved?.[from]) { saved[to] = saved[from]; delete saved[from]; }
+    if (saved?.[from]) {
+      saved[to] = saved[from];
+      delete saved[from];
+    }
     setTabs((old) =>
       old.map((t) =>
         t.path === from
-          ? { key: to, path: to, title: to.split("/").at(-1)! }
+          ? { ...t, key: to, path: to, title: to.split("/").at(-1)! }
           : t,
       ),
     );
@@ -360,6 +428,43 @@ export function App() {
           {materialList()}
         </article>
       );
+    if (current.path && isMarkdown(current.path)) {
+      const draft = documents.drafts.get(current.path);
+      return draft ? (
+        <MarkdownDocument
+          key={root + "/" + current.path}
+          root={root!}
+          draft={draft}
+          onChange={documents.notify}
+          onSave={() => void documents.save(draft)}
+          onOpen={openPath}
+          onPosition={(position) => {
+            const updatePosition = (items: Tab[]) =>
+              items.map((t) =>
+                t.path === draft.path &&
+                JSON.stringify(t.markdown) !== JSON.stringify(position)
+                  ? { ...t, markdown: position }
+                  : t,
+              );
+            if (activeRoot.current !== root) {
+              // Unmount flush belongs to the old project, never its successor's tabs.
+              void desktop
+                .invoke({
+                  type: "saveWorkspace",
+                  root: root!,
+                  tabs: updatePosition(tabs),
+                  active,
+                })
+                .catch((e) => setError(e.message));
+              return;
+            }
+            setTabs(updatePosition);
+          }}
+        />
+      ) : (
+        <div className="empty">正在读取文档…</div>
+      );
+    }
     if (missingCurrent)
       return (
         <article className="article">
@@ -378,8 +483,15 @@ export function App() {
         </article>
       );
     if (current.path && /\.pdf$/i.test(current.path))
-      return <PdfReader key={root + "/" + current.path} root={root!} path={current.path}
-        position={positions.current[root!]?.[current.path]} onPosition={(p) => savePosition(root!, current.path!, p)} />;
+      return (
+        <PdfReader
+          key={root + "/" + current.path}
+          root={root!}
+          path={current.path}
+          position={positions.current[root!]?.[current.path]}
+          onPosition={(p) => savePosition(root!, current.path!, p)}
+        />
+      );
     if (current.path)
       return (
         <article className="article">
@@ -620,6 +732,7 @@ export function App() {
                 className="nav"
                 disabled={busy}
                 onClick={() => {
+                  if (!documents.mayLeave()) return;
                   setProject(null);
                   setTabs([]);
                   setActive("");
@@ -733,7 +846,14 @@ export function App() {
                       onClick={() => setActive(t.key)}
                     >
                       <FileText />
-                      <span>{t.title}</span>
+                      <span>
+                        {t.title}
+                        {t.path &&
+                        documents.drafts.get(t.path) &&
+                        isDirty(documents.drafts.get(t.path)!)
+                          ? " •"
+                          : ""}
+                      </span>
                     </button>
                     <IconButton
                       label={`关闭 ${t.title}`}
@@ -753,6 +873,15 @@ export function App() {
                     <span>{current?.title ?? "文档"}</span>
                   </div>
                   <div className="toolbar-actions">
+                    {current?.key === "notes" && (
+                      <button
+                        onClick={() =>
+                          setDialog({ type: "note", name: "新笔记.md" })
+                        }
+                      >
+                        <Plus /> 新建笔记
+                      </button>
+                    )}
                     {current?.key === "materials" ? (
                       <button
                         disabled={busy}
@@ -841,13 +970,28 @@ export function App() {
             aria-label={
               dialog.type === "create"
                 ? "新建工程"
-                : dialog.type === "move"
-                  ? "改名或移动"
-                  : "移出工程"
+                : dialog.type === "note"
+                  ? "新建笔记"
+                  : dialog.type === "move"
+                    ? "改名或移动"
+                    : "移出工程"
             }
             onSubmit={(event) => {
               event.preventDefault();
               if (dialog.type === "create") void createProject(dialog);
+              if (dialog.type === "note" && root)
+                void run(async () => {
+                  const path = await desktop.invoke<string>({
+                    type: "createNote",
+                    root,
+                    name: dialog.name,
+                  });
+                  setProject(
+                    await desktop.invoke<Project>({ type: "refresh", root }),
+                  );
+                  openPath(path);
+                  setDialog(null);
+                });
               if (dialog.type === "move" && root)
                 void update({
                   type: "move",
@@ -874,9 +1018,11 @@ export function App() {
             <h2>
               {dialog.type === "create"
                 ? "新建工程"
-                : dialog.type === "move"
-                  ? "改名或移动"
-                  : "移出工程"}
+                : dialog.type === "note"
+                  ? "新建笔记"
+                  : dialog.type === "move"
+                    ? "改名或移动"
+                    : "移出工程"}
             </h2>
             {dialog.type === "create" ? (
               <>
@@ -932,6 +1078,20 @@ export function App() {
                   将此位置设为默认工程文件夹
                 </label>
               </>
+            ) : dialog.type === "note" ? (
+              <>
+                <label htmlFor="note-name">笔记名称</label>
+                <input
+                  id="note-name"
+                  autoFocus
+                  value={dialog.name}
+                  onChange={(e) =>
+                    setDialog({ ...dialog, name: e.target.value })
+                  }
+                  required
+                  disabled={busy}
+                />
+              </>
             ) : dialog.type === "move" ? (
               <>
                 <label htmlFor="destination">工程内相对路径</label>
@@ -982,9 +1142,11 @@ export function App() {
                   ? "处理中…"
                   : dialog.type === "create"
                     ? "创建工程"
-                    : dialog.type === "move"
-                      ? "保存"
-                      : "移入回收站"}
+                    : dialog.type === "note"
+                      ? "创建笔记"
+                      : dialog.type === "move"
+                        ? "保存"
+                        : "移入回收站"}
               </button>
             </div>
           </form>

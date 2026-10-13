@@ -11,6 +11,8 @@ import type {
   Preferences,
   Project,
   ReadingState,
+  MarkdownFile,
+  MarkdownSave,
 } from "../shared/contracts.js";
 
 const manifestName = "paper30min.json";
@@ -19,22 +21,54 @@ const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
 const readingName = ".paper30min-reading.json";
 
 function validateReading(value: ReadingState): ReadingState {
-  if (!value || !Array.isArray(value.tabs) || value.tabs.length > 100 ||
-      typeof value.active !== "string" || !value.pdf || typeof value.pdf !== "object" || Array.isArray(value.pdf))
+  if (
+    !value ||
+    !Array.isArray(value.tabs) ||
+    value.tabs.length > 100 ||
+    typeof value.active !== "string" ||
+    !value.pdf ||
+    typeof value.pdf !== "object" ||
+    Array.isArray(value.pdf)
+  )
     throw new Error("阅读位置文件已损坏。");
   for (const tab of value.tabs) {
     if (!tab || typeof tab.key !== "string" || typeof tab.title !== "string")
       throw new Error("文档标签无效。");
     if (tab.path) relativePath(tab.path);
+    if (
+      tab.markdown &&
+      (!["read", "edit", "split"].includes(tab.markdown.mode) ||
+        !Number.isFinite(tab.markdown.scroll) ||
+        tab.markdown.scroll < 0 ||
+        (tab.markdown.readScroll !== undefined &&
+          (!Number.isFinite(tab.markdown.readScroll) ||
+            tab.markdown.readScroll < 0)) ||
+        !Number.isInteger(tab.markdown.cursor) ||
+        tab.markdown.cursor < 0)
+    )
+      throw new Error("Markdown 阅读位置无效。");
   }
   for (const [file, p] of Object.entries(value.pdf)) {
     relativePath(file);
-    if (!p || !/^[a-f0-9]{64}$/.test(p.sha256) || !Number.isInteger(p.page) || p.page < 1 ||
-        !Number.isFinite(p.x) || p.x < 0 || !Number.isFinite(p.y) || p.y < 0 ||
-        !Number.isFinite(p.zoom) || p.zoom < 0.2 || p.zoom > 60 ||
-        (p.scrollStrategy !== undefined && !["vertical", "horizontal"].includes(p.scrollStrategy)) ||
-        (p.spreadMode !== undefined && !["none", "odd", "even"].includes(p.spreadMode)) ||
-        (p.rotation !== undefined && (!Number.isInteger(p.rotation) || p.rotation < 0 || p.rotation > 3)))
+    if (
+      !p ||
+      !/^[a-f0-9]{64}$/.test(p.sha256) ||
+      !Number.isInteger(p.page) ||
+      p.page < 1 ||
+      !Number.isFinite(p.x) ||
+      p.x < 0 ||
+      !Number.isFinite(p.y) ||
+      p.y < 0 ||
+      !Number.isFinite(p.zoom) ||
+      p.zoom < 0.2 ||
+      p.zoom > 60 ||
+      (p.scrollStrategy !== undefined &&
+        !["vertical", "horizontal"].includes(p.scrollStrategy)) ||
+      (p.spreadMode !== undefined &&
+        !["none", "odd", "even"].includes(p.spreadMode)) ||
+      (p.rotation !== undefined &&
+        (!Number.isInteger(p.rotation) || p.rotation < 0 || p.rotation > 3))
+    )
       throw new Error("PDF 阅读位置无效。");
   }
   return value;
@@ -225,11 +259,14 @@ export class ProjectService {
   private async reading(root: string): Promise<ReadingState> {
     const file = path.join(root, readingName);
     try {
-      if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("阅读位置文件不能为符号链接。");
-      if ((await fs.stat(file)).size > 1024 * 1024) throw new Error("阅读位置文件过大。");
+      if ((await fs.lstat(file)).isSymbolicLink())
+        throw new Error("阅读位置文件不能为符号链接。");
+      if ((await fs.stat(file)).size > 1024 * 1024)
+        throw new Error("阅读位置文件过大。");
       return validateReading(JSON.parse(await fs.readFile(file, "utf8")));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { tabs: [], active: "", pdf: {} };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        return { tabs: [], active: "", pdf: {} };
       throw error;
     }
   }
@@ -365,7 +402,13 @@ export class ProjectService {
     const missing = [manifest.paper, ...manifest.materials]
       .filter((r) => !files.some((f) => !f.directory && f.path === r.path))
       .map((r) => r.id);
-    return { root, manifest, files, missing, reading: await this.reading(root) };
+    return {
+      root,
+      manifest,
+      files,
+      missing,
+      reading: await this.reading(root),
+    };
   }
 
   private async copyMaterial(
@@ -396,6 +439,93 @@ export class ProjectService {
     }
   }
 
+  private async markdown(
+    root: string,
+    relative: string,
+  ): Promise<MarkdownFile> {
+    if (!/\.(md|markdown)$/i.test(relative))
+      throw new Error("请选择 Markdown 文档。");
+    const file = await this.resolve(root, relative);
+    const handle = await fs.open(file, "r");
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > 2 * 1024 * 1024)
+        throw new Error(
+          "Markdown 超过 2 MiB 编辑预算或不是文件，请在外部应用中打开。",
+        );
+      const bytes = await handle.readFile();
+      if (bytes.length > 2 * 1024 * 1024)
+        throw new Error("Markdown 超过编辑预算。");
+      // Keep a UTF-8 BOM in the text so saving does not silently remove it.
+      const text = new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: true,
+      }).decode(bytes);
+      return {
+        text,
+        version: createHash("sha256").update(bytes).digest("hex"),
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async saveMarkdown(
+    root: string,
+    relative: string,
+    text: string,
+    version: string,
+  ): Promise<MarkdownSave> {
+    if (
+      typeof text !== "string" ||
+      Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024 ||
+      !/^[a-f0-9]{64}$/.test(version)
+    )
+      throw new Error("正文或保存基线无效，正文上限为 2 MiB。");
+    const readCurrent = async () => {
+      try {
+        return await this.markdown(root, relative);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+    };
+    const current = await readCurrent();
+    if (!current || current.version !== version)
+      return { saved: false, file: current };
+    if (text === current.text) return { saved: true, file: current };
+    const file = await this.resolve(root, relative);
+    await fs.access(file, constants.W_OK);
+    const temporary = path.join(
+      path.dirname(file),
+      ".paper30min-" + randomUUID() + ".tmp",
+    );
+    try {
+      const handle = await fs.open(temporary, "wx", (await fs.stat(file)).mode);
+      try {
+        await handle.writeFile(text, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const latest = await readCurrent();
+      if (!latest || latest.version !== version)
+        return { saved: false, file: latest };
+      // Recheck the path after staging; ordinary external edits are detected before replacement.
+      await this.resolve(root, relative);
+      await fs.rename(temporary, file);
+      return {
+        saved: true,
+        file: {
+          text,
+          version: createHash("sha256").update(text, "utf8").digest("hex"),
+        },
+      };
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+  }
+
   private async execute(
     command: Exclude<Command, { type: "create" | "cancelCreate" }>,
   ): Promise<unknown> {
@@ -409,7 +539,10 @@ export class ProjectService {
     }
     const root = await fs.realpath(command.root);
     const m = await this.manifest(root);
-    if (command.type === "saveWorkspace" || command.type === "savePdfPosition") {
+    if (
+      command.type === "saveWorkspace" ||
+      command.type === "savePdfPosition"
+    ) {
       const state = await this.reading(root);
       if (command.type === "saveWorkspace") {
         state.tabs = command.tabs;
@@ -421,17 +554,65 @@ export class ProjectService {
       await atomicJson(path.join(root, readingName), validateReading(state));
       return;
     }
+    if (command.type === "readMarkdown")
+      return this.markdown(root, command.path);
+    if (command.type === "saveMarkdown")
+      return this.saveMarkdown(
+        root,
+        command.path,
+        command.text,
+        command.version,
+      );
+    if (command.type === "createNote") {
+      validName(command.name);
+      const name = /\.(md|markdown)$/i.test(command.name)
+        ? command.name
+        : command.name + ".md";
+      const directory = await this.resolve(root, "notes");
+      await fs.writeFile(path.join(directory, name), "", { flag: "wx" });
+      return "notes/" + name;
+    }
+    if (command.type === "readAsset") {
+      const mime = (
+        {
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".gif": "image/gif",
+          ".webp": "image/webp",
+          ".svg": "image/svg+xml",
+          ".avif": "image/avif",
+        } as Record<string, string>
+      )[path.extname(command.path).toLowerCase()];
+      if (!mime) throw new Error("不支持的图片格式。");
+      const file = await this.resolve(root, command.path);
+      const stat = await fs.stat(file);
+      if (!stat.isFile() || stat.size > 20 * 1024 * 1024)
+        throw new Error("图片超过 20 MiB 或不是文件。");
+      const bytes = await fs.readFile(file);
+      if (bytes.length > 20 * 1024 * 1024)
+        throw new Error("图片超过读取预算。");
+      return { bytes: new Uint8Array(bytes), mime };
+    }
     if (command.type === "readPdf") {
       const file = await this.resolve(root, command.path);
       const handle = await fs.open(file, "r");
       try {
         const stat = await handle.stat();
-        if (!stat.isFile() || !/\.pdf$/i.test(file)) throw new Error("请选择 PDF 文件。");
-        if (stat.size > 128 * 1024 * 1024) throw new Error("PDF 超过 128 MiB 阅读预算，请在外部应用中打开。");
+        if (!stat.isFile() || !/\.pdf$/i.test(file))
+          throw new Error("请选择 PDF 文件。");
+        if (stat.size > 128 * 1024 * 1024)
+          throw new Error("PDF 超过 128 MiB 阅读预算，请在外部应用中打开。");
         const bytes = await handle.readFile();
-        if (bytes.length > 128 * 1024 * 1024) throw new Error("PDF 超过阅读预算。");
-        return { bytes: new Uint8Array(bytes), sha256: createHash("sha256").update(bytes).digest("hex") };
-      } finally { await handle.close(); }
+        if (bytes.length > 128 * 1024 * 1024)
+          throw new Error("PDF 超过阅读预算。");
+        return {
+          bytes: new Uint8Array(bytes),
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        };
+      } finally {
+        await handle.close();
+      }
     }
     if (command.type === "open") {
       const project = await this.snapshot(root);

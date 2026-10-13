@@ -1,0 +1,139 @@
+.main:has(.markdown-document) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.main:has(.markdown-document) > .toolbar {
+  flex-shrink: 0;
+}
+.markdown-document {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.markdown-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  border-bottom: 1px solid #e8e8ec;
+  flex-shrink: 0;
+}
+.markdown-actions .switch {
+  margin: 0;
+  width: auto;
+  min-width: 180px;
+}
+.markdown-save-state {
+  margin-left: auto;
+  font-size: 12px;
+}
+.markdown-panes {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.markdown-editor,
+.markdown-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+.markdown-editor {
+  height: 100%;
+}
+.markdown-panes.split > .markdown-editor {
+  border-right: 1px solid #e4e2e8;
+}
+.markdown-preview {
+  padding: 24px 32px;
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+.markdown-preview h1 {
+  font-size: 27px;
+}
+.markdown-preview h2 {
+  font-size: 22px;
+}
+.markdown-preview img {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-preview pre {
+  white-space: pre;
+  overflow: auto;
+  background: #f5f4f8;
+  padding: 14px;
+  border-radius: 10px;
+}
+.markdown-preview code {
+  font-family: Consolas, monospace;
+}
+.markdown-preview table {
+  border-collapse: collapse;
+  display: block;
+  overflow: auto;
+}
+.markdown-preview th,
+.markdown-preview td {
+  padding: 8px 12px;
+  border: 1px solid #dedce4;
+}
+.markdown-preview blockquote {
+  border-left: 3px solid #c4bedb;
+  margin-left: 0;
+  padding-left: 18px;
+  color: #666;
+}
+.markdown-preview .katex-display {
+  overflow: auto;
+  padding: 8px 0;
+}
+.markdown-preview a {
+  color: #70619b;
+}
+.markdown-conflict {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  background: #fff4d9;
+}
+.markdown-conflict small {
+  width: 100%;
+  color: #665b43;
+}
+.markdown-conflict-inputs {
+  display: flex;
+  gap: 12px;
+  max-height: 240px;
+  padding: 12px;
+  overflow: auto;
+}
+.markdown-conflict-inputs label {
+  flex: 1;
+  min-width: 0;
+}
+.markdown-conflict-inputs textarea {
+  display: block;
+  width: 100%;
+  height: 170px;
+  resize: vertical;
+  font:
+    12px/1.6 Consolas,
+    monospace;
+}
+.markdown-document .notice {
+  flex-shrink: 0;
+}
+.cm-editor .cm-search input {
+  min-width: 60px;
+}
+.cm-editor .cm-panel {
+  font-size: 12px;
+}

@@ -10,11 +10,17 @@ import {
   utilityProcess,
 } from "electron";
 import path from "node:path";
+import { watch, type FSWatcher } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { Command } from "../shared/contracts.js";
+import type { Command, Project, ProjectAsset } from "../shared/contracts.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-protocol.registerSchemesAsPrivileged([{ scheme: "paper30min", privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "paper30min",
+    privileges: { standard: true, secure: true, supportFetchAPI: true },
+  },
+]);
 const profile = process.env.PAPER30MIN_PROFILE;
 if (profile) app.setPath("userData", path.resolve(profile));
 let window: BrowserWindow;
@@ -38,11 +44,31 @@ function request(command: Command | null): Promise<unknown> {
 
 async function start() {
   await app.whenReady();
-  protocol.handle("paper30min", (request) => {
-    const url = new URL(request.url);
+  protocol.handle("paper30min", async (incoming) => {
+    const url = new URL(incoming.url);
+    if (url.hostname === "project") {
+      try {
+        const asset = (await request({
+          type: "readAsset",
+          root: url.searchParams.get("root") ?? "",
+          path: url.searchParams.get("path") ?? "",
+        })) as ProjectAsset;
+        return new Response(new Uint8Array(asset.bytes).buffer, {
+          headers: {
+            "Content-Type": asset.mime,
+            "Content-Security-Policy":
+              "default-src 'none'; style-src 'unsafe-inline'",
+            "Cache-Control": "no-store",
+          },
+        });
+      } catch {
+        return new Response("Image unavailable", { status: 404 });
+      }
+    }
     const base = path.resolve(here, "../renderer");
     const file = path.resolve(base, "." + decodeURIComponent(url.pathname));
-    if (url.hostname !== "app" || !file.startsWith(base + path.sep)) return new Response("Not found", { status: 404 });
+    if (url.hostname !== "app" || !file.startsWith(base + path.sep))
+      return new Response("Not found", { status: 404 });
     return net.fetch(pathToFileURL(file).href);
   });
   Menu.setApplicationMenu(null);
@@ -83,6 +109,52 @@ async function start() {
     )
       throw new Error("无效的窗口请求。");
   };
+  let watcher: FSWatcher | undefined;
+  let watchGeneration = 0;
+  let watchTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopWatching = () => {
+    watcher?.close();
+    watcher = undefined;
+    clearTimeout(watchTimer);
+  };
+  ipcMain.handle("project:watch", async (event, root: string | null) => {
+    trusted(event);
+    const generation = ++watchGeneration;
+    stopWatching();
+    if (!root) return;
+    const project = (await request({ type: "refresh", root })) as Project;
+    if (generation !== watchGeneration) return;
+    watcher = watch(project.root, { recursive: true }, (_event, filename) => {
+      if (
+        filename &&
+        filename
+          .toString()
+          .split(/[\\/]/)
+          .some((part) => part.startsWith(".") || part === "node_modules")
+      )
+        return;
+      clearTimeout(watchTimer);
+      watchTimer = setTimeout(() => {
+        if (!window.isDestroyed())
+          window.webContents.send("project:changed", root);
+      }, 120);
+    });
+    window.webContents.send("project:changed", root);
+    watcher.on("error", (error) => {
+      if (!window.isDestroyed())
+        window.webContents.send(
+          "project:changed",
+          root,
+          "文件监听失败：" + error.message,
+        );
+    });
+  });
+  ipcMain.handle("project:openLink", async (event, url: string) => {
+    trusted(event);
+    if (!/^https?:\/\//i.test(url))
+      throw new Error("仅支持打开 HTTP/HTTPS 链接。");
+    await shell.openExternal(url);
+  });
   ipcMain.handle("project:command", (event, command: Command) => {
     trusted(event);
     return request(command);
@@ -138,16 +210,38 @@ async function start() {
         sandbox: true,
       },
     });
+    window.webContents.on("will-prevent-unload", (event) => {
+      const choice = dialog.showMessageBoxSync(window, {
+        type: "warning",
+        message: "有未保存的文档，确定放弃编辑并关闭吗？",
+        buttons: ["继续编辑", "放弃并关闭"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (choice === 1) event.preventDefault();
+    });
+    window.on("closed", () => {
+      ++watchGeneration;
+      stopWatching();
+    });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());
     const devUrl = process.env.PAPER30MIN_DEV_URL;
     const appUrl = devUrl ?? "paper30min://app/index.html";
     // The native Viewer copies selections through the browser clipboard API.
-    const canWriteClipboard = (contents: Electron.WebContents | null, permission: string, url: string) =>
-      contents === window.webContents && permission === "clipboard-sanitized-write" && url === appUrl;
+    const canWriteClipboard = (
+      contents: Electron.WebContents | null,
+      permission: string,
+      url: string,
+    ) =>
+      contents === window.webContents &&
+      permission === "clipboard-sanitized-write" &&
+      url === appUrl;
     window.webContents.session.setPermissionRequestHandler(
       (contents, permission, callback, details) =>
-        callback(canWriteClipboard(contents, permission, details.requestingUrl)),
+        callback(
+          canWriteClipboard(contents, permission, details.requestingUrl),
+        ),
     );
     window.webContents.session.setPermissionCheckHandler(
       (contents, permission, _origin, details) =>
@@ -165,7 +259,7 @@ async function start() {
     if (process.platform !== "darwin") app.quit();
   });
   let shuttingDown = false;
-  app.on("before-quit", (event) => {
+  app.on("will-quit", (event) => {
     if (shuttingDown) return;
     event.preventDefault();
     shuttingDown = true;

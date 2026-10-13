@@ -26,7 +26,28 @@ export interface Project {
   missing: string[];
   reading: ReadingState;
 }
-export interface DocumentTab { key: string; title: string; path?: string }
+export interface DocumentTab {
+  key: string;
+  title: string;
+  path?: string;
+  markdown?: {
+    mode: "read" | "edit" | "split";
+    scroll: number;
+    readScroll?: number;
+    cursor: number;
+  };
+}
+export interface MarkdownFile {
+  text: string;
+  version: string;
+}
+export type MarkdownSave =
+  | { saved: true; file: MarkdownFile }
+  | { saved: false; file: MarkdownFile | null };
+export interface ProjectAsset {
+  bytes: Uint8Array;
+  mime: string;
+}
 export interface PdfPosition {
   sha256: string;
   page: number;
@@ -42,7 +63,10 @@ export interface ReadingState {
   active: string;
   pdf: Record<string, PdfPosition>;
 }
-export interface PdfSource { bytes: Uint8Array; sha256: string }
+export interface PdfSource {
+  bytes: Uint8Array;
+  sha256: string;
+}
 export interface Preferences {
   defaultFolder: string | null;
   recent: { root: string; name: string }[];
@@ -66,13 +90,30 @@ export type Command =
   | { type: "relink"; root: string; id: string; source: string }
   | { type: "trash"; root: string; id: string }
   | { type: "read"; root: string; path: string }
+  | { type: "readMarkdown"; root: string; path: string }
+  | {
+      type: "saveMarkdown";
+      root: string;
+      path: string;
+      text: string;
+      version: string;
+    }
+  | { type: "createNote"; root: string; name: string }
+  | { type: "readAsset"; root: string; path: string }
   | { type: "readPdf"; root: string; path: string }
   | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
-  | { type: "savePdfPosition"; root: string; path: string; position: PdfPosition }
+  | {
+      type: "savePdfPosition";
+      root: string;
+      path: string;
+      position: PdfPosition;
+    }
   | { type: "resolveFile"; root: string; path: string };
 
 export interface Desktop {
   invoke<T>(command: Command): Promise<T>;
   choose(kind: "pdf" | "folder" | "material"): Promise<string | null>;
+  watchProject(root: string, listener: (error?: string) => void): () => void;
+  openLink(url: string): Promise<void>;
   openFile(root: string, path: string): Promise<void>;
 }
