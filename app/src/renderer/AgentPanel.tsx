@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUp, GitBranch, Plus, Sparkles, Square } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  GitBranch,
+  Plus,
+  Settings2,
+  Sparkles,
+  Square,
+} from "lucide-react";
+import { AgentMessage } from "./AgentMessage";
+import "./agent.css";
 import type { AgentCommand, ChatSession } from "../shared/contracts";
 
 export function AgentPanel({
@@ -19,6 +30,8 @@ export function AgentPanel({
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
   useEffect(() => {
     onViewChange({ active, text });
   }, [active, text, onViewChange]);
@@ -58,7 +71,7 @@ export function AgentPanel({
   const current = sessions.find((s) => s.id === active);
   useEffect(() => {
     const el = scroll.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && follow.current) el.scrollTop = el.scrollHeight;
   }, [active, current?.revision]);
   async function command(command: AgentCommand, select = false) {
     setPending(true);
@@ -66,7 +79,11 @@ export function AgentPanel({
     try {
       const state = await window.desktop.agent<ChatSession>(command);
       update(state);
-      if (select) setActive(state.id);
+      if (select) {
+        follow.current = true;
+        setAwayFromBottom(false);
+        setActive(state.id);
+      }
       return state;
     } catch (e) {
       setError(
@@ -81,6 +98,8 @@ export function AgentPanel({
   }
   async function send() {
     if (!text.trim() || pending) return;
+    follow.current = true;
+    setAwayFromBottom(false);
     const conversation =
       current ?? (await command({ type: "create", root }, true));
     if (!conversation) return;
@@ -92,7 +111,32 @@ export function AgentPanel({
       <div className="agent-head">
         <Sparkles />
         <span>Agent</span>
-        <span className="spacer" />
+        <div className="session-switch">
+          {sessions.length > 0 && (
+            <>
+              <select
+                aria-label="会话"
+                value={active}
+                onChange={(e) => {
+                  follow.current = true;
+                  setAwayFromBottom(false);
+                  setActive(e.target.value);
+                  setText("");
+                  setError("");
+                }}
+              >
+                {!active && <option value="">选择会话</option>}
+                {sessions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.title}
+                    {s.busy ? " · 运行中" : ""}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown />
+            </>
+          )}
+        </div>
         <button
           className="icon"
           title="新会话"
@@ -106,37 +150,38 @@ export function AgentPanel({
           <Plus />
         </button>
       </div>
-      {sessions.length > 0 && (
-        <select
-          className="session-select"
-          aria-label="会话"
-          value={active}
-          onChange={(e) => {
-            setActive(e.target.value);
-            setText("");
-            setError("");
-          }}
-        >
-          {!active && <option value="">选择会话</option>}
-          {sessions.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.title}
-              {s.busy ? " · 运行中" : ""}
-            </option>
-          ))}
-        </select>
-      )}
-      <div className="chat" ref={scroll}>
+      <div
+        className="chat"
+        ref={scroll}
+        onScroll={() => {
+          const el = scroll.current;
+          if (!el) return;
+          follow.current =
+            el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+          setAwayFromBottom(!follow.current);
+        }}
+      >
         {!current?.messages.length && (
-          <>
-            <Sparkles className="agent-symbol" />
-            <h3>尚无消息</h3>
-          </>
+          <div className="agent-welcome">
+            <div className="agent-welcome-mark">
+              <Sparkles />
+            </div>
+            <h3>从一个问题开始</h3>
+            <p>聊聊你的想法，或继续探索阅读中遇到的问题。</p>
+          </div>
         )}
         {current?.messages.map((m) => (
           <div className={`chat-message ${m.role}`} key={m.id}>
             <div className="message-head">
-              <span>{m.role === "user" ? "你" : "Agent"}</span>
+              <span>
+                {m.role === "user" ? (
+                  "你"
+                ) : (
+                  <>
+                    <Sparkles /> Agent
+                  </>
+                )}
+              </span>
               {m.id !== "streaming" &&
                 m.id !== "pending-user" &&
                 !current.busy && (
@@ -161,7 +206,7 @@ export function AgentPanel({
                   </button>
                 )}
             </div>
-            <div className="message-text">{m.text}</div>
+            <AgentMessage text={m.text} role={m.role} onError={setError} />
             {m.status && (
               <small>{m.status === "aborted" ? "已停止" : "请求失败"}</small>
             )}
@@ -179,10 +224,29 @@ export function AgentPanel({
         )}
       </div>
       <div className="composer-wrap">
+        {awayFromBottom && (
+          <button
+            className="latest-message"
+            onClick={() => {
+              follow.current = true;
+              setAwayFromBottom(false);
+              if (scroll.current)
+                scroll.current.scrollTop = scroll.current.scrollHeight;
+            }}
+          >
+            <ArrowDown /> 回到最新消息
+          </button>
+        )}
+        {current?.busy && (
+          <div className="agent-activity" role="status">
+            <span />
+            {current.stopping ? "正在停止…" : "正在回复…"}
+          </div>
+        )}
         <div className="composer">
           <textarea
             aria-label="Agent 消息"
-            placeholder="发送消息…"
+            placeholder="有什么想聊的？"
             value={text}
             maxLength={100000}
             onChange={(e) => setText(e.target.value)}
@@ -194,16 +258,12 @@ export function AgentPanel({
               onClick={onSettings}
               title="Agent 模型设置"
             >
-              {current?.stopping
-                ? "正在停止"
-                : current?.busy
-                  ? "回复中"
-                  : "模型设置"}
+              <Settings2 /> 模型设置
             </button>
             <div className="row">
               {current?.busy && (
                 <button
-                  className="icon"
+                  className="icon stop-response"
                   title="停止回复"
                   aria-label="停止回复"
                   disabled={current.stopping}

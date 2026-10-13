@@ -128,6 +128,115 @@ test.afterEach(async () => {
   }
 });
 
+test("Agent 回复排版、链接与历史阅读不被流式更新打断", async () => {
+  let release: () => void = () => {};
+  const continued = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const answer = [
+    "## 先看核心思路",
+    "论文把 **局部信息** 与全局上下文结合起来。",
+    "- 保留原始证据\n- 再比较实验结果",
+    "公式为 $E = mc^2$。",
+    "```python\nprint('paper')\n```",
+    "| 方法 | 结果 |\n| --- | --- |\n| 基线 | 82.1 |",
+    "[论文网页](https://example.org/paper)",
+    "![不加载远程图片](https://example.org/tracker.png)",
+    "<script>window.injected = true</script>",
+    ...Array.from(
+      { length: 20 },
+      (_, i) =>
+        `第 ${i + 1} 段：先定位证据，再核对原文，区分论文结论与自己的推测。`,
+    ),
+  ].join("\n\n");
+  const server = createServer(async (_request, response) => {
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const chunk = (text: string | null) =>
+      response.write(
+        `data: ${JSON.stringify({ id: "ui", choices: [{ index: 0, delta: text ? { content: text } : {}, finish_reason: text ? null : "stop" }] })}\n\n`,
+      );
+    chunk(answer);
+    await continued;
+    chunk("\n\n核查完成。");
+    chunk(null);
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "阅读与思考");
+    await expect(
+      page.getByRole("heading", { name: "从一个问题开始" }),
+    ).toBeVisible();
+    await page.screenshot({ path: "test-results/agent-empty.png" });
+    await page.getByRole("button", { name: "模型设置", exact: true }).click();
+    await page
+      .getByLabel("模型端点")
+      .fill(
+        `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+      );
+    await page.getByLabel("模型名称").fill("reading-model");
+    await page.getByLabel("API 密钥", { exact: true }).fill("ui-test-key");
+    await page.getByRole("button", { name: "保存配置" }).click();
+    await expect(page.getByRole("status")).toHaveText("已保存");
+    await page.locator(".settings-canvas").evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    await page.screenshot({ path: "test-results/agent-settings.png" });
+    await page.getByRole("button", { name: "返回工作台" }).click();
+    await page
+      .getByLabel("Agent 消息")
+      .fill("帮我梳理论文的核心思路。保留 **我的原始输入**。");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".chat-markdown h2")).toHaveText("先看核心思路");
+    await expect(page.locator(".chat-markdown strong")).toHaveText("局部信息");
+    await expect(page.locator(".chat-markdown .katex")).toHaveCount(1);
+    await expect(page.locator(".chat-markdown table")).toHaveCount(1);
+    await expect(page.locator(".chat-markdown pre code")).toHaveText(
+      "print('paper')\n",
+    );
+    await expect(
+      page.locator(".chat-markdown img, .chat-markdown script"),
+    ).toHaveCount(0);
+    await expect(
+      page.locator(".chat-message.user .message-text"),
+    ).toContainText("**我的原始输入**");
+    const chat = page.locator(".chat");
+    await chat.evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    await expect(
+      page.getByRole("button", { name: "回到最新消息" }),
+    ).toBeVisible();
+    release();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    expect(await chat.evaluate((el) => el.scrollTop)).toBe(0);
+    await page.screenshot({ path: "test-results/agent-conversation.png" });
+    await desktop.evaluate(({ shell }) => {
+      shell.openExternal = async (url: string) => {
+        (globalThis as any).__openedLink = url;
+      };
+    });
+    await page.getByRole("link", { name: "论文网页" }).click();
+    expect(await desktop.evaluate(() => (globalThis as any).__openedLink)).toBe(
+      "https://example.org/paper",
+    );
+    await page.getByRole("button", { name: "回到最新消息" }).click();
+    await expect
+      .poll(() =>
+        chat.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight),
+      )
+      .toBeLessThan(2);
+    await page.getByRole("button", { name: "新会话", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "从一个问题开始" }),
+    ).toBeVisible();
+  } finally {
+    release();
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
 test("Pi 原生对话流式回复、补充、分支及搬迁重开，密钥留本机", async () => {
   const secret = "controlled-test-key-STE79";
   const requests: { messages: { role: string; content: unknown }[] }[] = [];
@@ -1341,7 +1450,9 @@ test("侧栏拖拽跟手、限制中栏宽度并在收放和重启后恢复", as
     ),
   ).toBe(true);
   await page.getByRole("button", { name: "展开 Agent", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "尚无消息" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "从一个问题开始" }),
+  ).toBeVisible();
   await expect(page.locator(".right-slot")).toHaveCSS("opacity", "1");
   await page.screenshot({ path: "test-results/workbench-resized-narrow.png" });
 });
