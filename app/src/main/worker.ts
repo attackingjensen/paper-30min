@@ -1,5 +1,7 @@
 import { ProjectService } from "./project-service.js";
-import type { Command } from "../shared/contracts.js";
+import { AgentService } from "./agent-service.js";
+import type { ModelConfig } from "./agent-settings.js";
+import type { AgentCommand, Command } from "../shared/contracts.js";
 
 const port = process.parentPort!;
 let nextId = 0;
@@ -16,6 +18,9 @@ const service = new ProjectService(
       port.postMessage({ trash: { id, file } });
     }),
 );
+const agent = new AgentService((state) =>
+  port.postMessage({ agentState: state }),
+);
 
 port.on(
   "message",
@@ -24,7 +29,9 @@ port.on(
   }: {
     data: {
       id: number;
-      command?: Command;
+      command?:
+        | Command
+        | { type: "agent"; command: AgentCommand; config: ModelConfig };
       shutdown?: boolean;
       trashResult?: boolean;
       error?: string;
@@ -38,14 +45,35 @@ port.on(
       return;
     }
     try {
+      const command = data.command;
+      let value: unknown;
+      if (data.shutdown) {
+        await Promise.all([agent.close(), service.close()]);
+      } else if (command?.type === "agent") {
+        if (
+          command.command.type === "settings" ||
+          command.command.type === "saveSettings"
+        )
+          throw new Error("无效的模型命令。");
+        const project =
+          command.command.type === "stop"
+            ? { root: command.command.root }
+            : ((await service.dispatch({
+                type: "refresh",
+                root: command.command.root,
+              })) as { root: string });
+        value = await agent.dispatch(
+          { ...command.command, root: project.root },
+          command.config,
+        );
+      } else value = await service.dispatch(command!);
       port.postMessage({
         id: data.id,
-        value: data.shutdown
-          ? await service.close()
-          : await service.dispatch(data.command!),
+        value,
       });
     } catch (error) {
       port.postMessage({ id: data.id, error: (error as Error).message });
     }
   },
 );
+port.postMessage({ ready: true });

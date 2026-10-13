@@ -607,6 +607,81 @@ button.primary:hover {
   font-weight: 550;
   color: #85858f;
 }
+.agent-settings label {
+  display: block;
+  margin: 20px 0;
+  font-size: 12px;
+}
+.agent-settings input,
+.agent-settings select {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  color: #36363f;
+}
+.agent-settings .row label {
+  flex: 1;
+  min-width: 0;
+}
+.session-select {
+  margin: 8px 14px;
+  width: calc(100% - 28px);
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+}
+.chat-message {
+  margin-bottom: 24px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.message-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  color: var(--muted);
+}
+.message-head .icon {
+  width: 24px;
+  height: 24px;
+}
+.message-head svg {
+  width: 14px;
+  height: 14px;
+}
+.message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-message.user .message-text {
+  padding: 8px 10px;
+  background: #f0f0f3;
+  border-radius: 6px;
+}
+.chat-message small,
+.queued-message {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.agent-error {
+  color: #9c413a;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.model-settings-link {
+  color: #767680;
+  padding: 0;
+  font-size: 11px;
+}
 .composer-wrap {
   padding: 14px 14px 12px;
 }

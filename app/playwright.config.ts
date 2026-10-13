@@ -6,5 +6,12 @@ export default defineConfig({
   timeout: 90_000,
   expect: { timeout: 10_000 },
   reporter: "list",
-  use: { trace: "retain-on-failure" },
+  outputDir:
+    process.env.PAPER30MIN_REAL_MODEL === "1"
+      ? "test-results/real-model"
+      : "test-results",
+  use: {
+    trace:
+      process.env.PAPER30MIN_REAL_MODEL === "1" ? "off" : "retain-on-failure",
+  },
 });

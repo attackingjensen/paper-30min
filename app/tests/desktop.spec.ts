@@ -8,6 +8,9 @@ import {
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { createServer } from "node:http";
+import { connect } from "node:net";
+import type { AgentSettings, ChatSession } from "../src/shared/contracts";
 
 let sandbox: string;
 let desktop: ElectronApplication;
@@ -123,6 +126,534 @@ test.afterEach(async () => {
     // The sandbox is an exclusively created test directory, never a user-selected path.
     await fs.rm(sandbox, { recursive: true, force: true });
   }
+});
+
+test("Pi 原生对话流式回复、补充、分支及搬迁重开，密钥留本机", async () => {
+  const secret = "controlled-test-key-STE79";
+  const requests: { messages: { role: string; content: unknown }[] }[] = [];
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const payload = JSON.parse(body);
+    requests.push(payload);
+    expect(request.headers.authorization).toBe("Bearer " + secret);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const chunk = (text: string | null) =>
+      response.write(
+        `data: ${JSON.stringify({ id: "controlled", object: "chat.completion.chunk", model: "controlled-model", choices: [{ index: 0, delta: text ? { content: text } : {}, finish_reason: text ? null : "stop" }] })}\n\n`,
+      );
+    chunk("真实流式");
+    await new Promise((r) => setTimeout(r, 1000));
+    chunk("回复完成。");
+    chunk(null);
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const address = server.address() as { port: number };
+  try {
+    const parent = path.join(sandbox, "projects");
+    await create(fixture, parent, "Pi 论文工程");
+    const root = path.join(parent, "Pi 论文工程");
+    await page.getByLabel("Agent 消息").fill("不附加论文，只问你好");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("请先在设置中配置");
+    await page.getByRole("button", { name: "模型设置", exact: true }).click();
+    await page
+      .getByLabel("模型端点")
+      .fill(`http://127.0.0.1:${address.port}/v1`);
+    await page.getByLabel("模型名称").fill("controlled-model");
+    await page.getByLabel("API 密钥", { exact: true }).fill(secret);
+    await page.getByRole("button", { name: "保存配置" }).click();
+    await expect(page.getByRole("status")).toHaveText("已保存");
+    await expect(page.getByLabel("API 密钥", { exact: true })).toHaveValue("");
+    await page.getByRole("button", { name: "返回工作台" }).click();
+    await expect(page.getByLabel("Agent 消息")).toHaveValue(
+      "不附加论文，只问你好",
+    );
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText("真实流式");
+    await page.getByLabel("Agent 消息").fill("补充一个问题");
+    await page.getByRole("button", { name: "补充消息", exact: true }).click();
+    await expect(page.locator(".queued-message")).toContainText("补充一个问题");
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await expect(page.locator(".chat-message")).toHaveCount(4);
+    expect(requests).toHaveLength(2);
+    expect(JSON.stringify(requests)).not.toContain("paper.pdf");
+    const originalId = await page
+      .getByLabel("会话", { exact: true })
+      .inputValue();
+    await page.getByRole("button", { name: "从此消息分支" }).nth(1).click();
+    await expect(page.locator(".chat-message")).toHaveCount(2);
+    await expect(page.getByLabel("会话").locator("option")).toHaveCount(2);
+    const branchId = await page
+      .getByLabel("会话", { exact: true })
+      .inputValue();
+    await page.getByLabel("Agent 消息").fill("分支继续");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "真实流式回复完成。",
+    );
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await expect(page.locator(".chat-message")).toHaveCount(4);
+    await page.getByLabel("会话", { exact: true }).selectOption(originalId);
+    await page.getByLabel("Agent 消息").fill("回到原会话继续");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "真实流式回复完成。",
+    );
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await expect(page.locator(".chat-message")).toHaveCount(6);
+    await page.getByLabel("会话", { exact: true }).selectOption(branchId);
+    const sessionDir = path.join(root, ".pi", "sessions");
+    const files = await fs.readdir(sessionDir);
+    expect(files).toHaveLength(2);
+    for (const file of files) {
+      const raw = await fs.readFile(path.join(sessionDir, file), "utf8");
+      expect(raw).not.toContain(secret);
+      expect(JSON.parse(raw.split("\n")[0]).type).toBe("session");
+    }
+    expect(
+      await fs.readFile(
+        path.join(sandbox, "profile", "agent-settings.json"),
+        "utf8",
+      ),
+    ).not.toContain(secret);
+    const moved = path.join(parent, "搬迁后 Pi 工程");
+    await desktop.close();
+    await fs.rename(root, moved);
+    await launch();
+    await page.getByRole("button", { name: "设置", exact: true }).click();
+    await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+    await expect(page.getByLabel("API 密钥", { exact: true })).toHaveAttribute(
+      "placeholder",
+      "已保存在本机，留空保留",
+    );
+    await page.getByRole("button", { name: "返回工程" }).click();
+    await choose(moved);
+    await page
+      .getByRole("button", { name: "打开工程文件夹", exact: true })
+      .click();
+    await page.getByLabel("会话", { exact: true }).selectOption(branchId);
+    await expect(page.locator(".chat-message")).toHaveCount(4);
+    await page.getByLabel("Agent 消息").fill("重开后继续");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "真实流式回复完成。",
+    );
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await expect(page.locator(".chat-message")).toHaveCount(6);
+    await page.screenshot({ path: "test-results/ste79-agent-desktop.png" });
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setSize(560, 760),
+    );
+    await page.getByRole("button", { name: "展开 Agent", exact: true }).click();
+    await expect(page.getByLabel("Agent 消息")).toBeVisible();
+    await expect(page.locator(".right-slot")).toHaveCSS("opacity", "1");
+    await page.screenshot({ path: "test-results/ste79-agent-narrow.png" });
+    await page.getByRole("button", { name: "模型设置", exact: true }).click();
+    await expect(page.getByLabel("模型端点")).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({ path: "test-results/ste79-settings-narrow.png" });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖住退出", async () => {
+  const secret = "controlled-private-key";
+  let tunneled = 0;
+  let failNext = true;
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const payload = JSON.parse(body);
+    const content = payload.messages
+      .filter((m: { role: string }) => m.role === "user")
+      .at(-1).content;
+    const last =
+      typeof content === "string"
+        ? content
+        : content
+            .filter((c: { type: string }) => c.type === "text")
+            .map((c: { text: string }) => c.text)
+            .join("");
+    if (last === "触发失败" && failNext) {
+      failNext = false;
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: {
+            message: "Invalid key " + secret,
+            type: "authentication_error",
+          },
+        }),
+      );
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const chunk = (text: string | null) =>
+      response.write(
+        `data: ${JSON.stringify({ id: "controlled", choices: [{ index: 0, delta: text ? { content: text } : {}, finish_reason: text ? null : "stop" }] })}\n\n`,
+      );
+    chunk(last.includes("停滞") ? "等待中的片段" : "独立回复");
+    const timer = setTimeout(
+      () => {
+        chunk(last.includes("停滞") ? "迟到内容不得落盘" : "已完成");
+        chunk(null);
+        response.end("data: [DONE]\n\n");
+        timers.delete(timer);
+      },
+      last.includes("停滞") ? 3000 : 500,
+    );
+    timers.add(timer);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  const proxy = createServer();
+  const sockets = new Set<import("node:stream").Duplex>();
+  proxy.on("connect", (_request, client, head) => {
+    tunneled++;
+    const upstream = connect(port, "127.0.0.1", () => {
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) upstream.write(head);
+      client.pipe(upstream);
+      upstream.pipe(client);
+    });
+    sockets.add(upstream);
+    sockets.add(client);
+    upstream.on("error", () => client.destroy());
+    client.on("error", () => upstream.destroy());
+    client.on("close", () => {
+      upstream.destroy();
+      sockets.delete(client);
+      sockets.delete(upstream);
+    });
+  });
+  await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+  const proxyPort = (proxy.address() as { port: number }).port;
+  try {
+    const parent = path.join(sandbox, "projects");
+    await create(fixture, parent, "并发会话工程");
+    const root = path.join(parent, "并发会话工程");
+    await page.evaluate(
+      async ({ port, proxyPort, secret }) => {
+        const settings = await window.desktop.agent<AgentSettings>({
+          type: "settings",
+        });
+        await window.desktop.agent({
+          type: "saveSettings",
+          apiKey: secret,
+          settings: {
+            ...settings,
+            baseUrl: `http://127.0.0.1:${port}/v1`,
+            model: "controlled",
+            proxy: "custom",
+            proxyUrl: `http://127.0.0.1:${proxyPort}`,
+          },
+        });
+      },
+      { port, proxyPort, secret },
+    );
+    await page.getByLabel("Agent 消息").fill("触发失败");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".agent-error")).toContainText("模型认证失败");
+    expect(tunneled).toBeGreaterThan(0);
+    await desktop.close();
+    await launch();
+    await page.getByRole("button", { name: /并发会话工程/ }).click();
+    await expect(page.locator(".chat-message small")).toHaveText("请求失败");
+    await page.getByLabel("Agent 消息").fill("失败后继续");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "独立回复已完成",
+    );
+    await page.getByRole("button", { name: "新会话", exact: true }).click();
+    await page.getByLabel("Agent 消息").fill("会话 A 停滞");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "等待中的片段",
+    );
+    const a = await page.getByLabel("会话", { exact: true }).inputValue();
+    await page.getByRole("button", { name: "新会话", exact: true }).click();
+    await page.getByLabel("Agent 消息").fill("会话 B 正常");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    const b = await page.getByLabel("会话", { exact: true }).inputValue();
+    await page.getByLabel("会话", { exact: true }).selectOption(a);
+    await page.getByRole("button", { name: "停止回复" }).click();
+    await expect(page.locator(".chat-message small")).toHaveText("已停止");
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await page.getByLabel("会话", { exact: true }).selectOption(b);
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "独立回复已完成",
+    );
+    await page.waitForTimeout(3100);
+    const all = await page.evaluate(
+      (root) => window.desktop.agent<ChatSession[]>({ type: "list", root }),
+      root,
+    );
+    expect(all.find((s) => s.id === a)?.messages.at(-1)?.text).toBe(
+      "等待中的片段",
+    );
+    for (const file of await fs.readdir(path.join(root, ".pi", "sessions"))) {
+      const raw = await fs.readFile(
+        path.join(root, ".pi", "sessions", file),
+        "utf8",
+      );
+      expect(raw).not.toContain(secret);
+      expect(raw).not.toContain("迟到内容不得落盘");
+    }
+    await page.getByRole("button", { name: "新会话", exact: true }).click();
+    await page.getByLabel("Agent 消息").fill("关闭期间停滞");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "等待中的片段",
+    );
+    await page.getByRole("button", { name: "所有工程", exact: true }).click();
+    await create(fixture, undefined, "另一工程");
+    await expect(page.locator(".chat-message")).toHaveCount(0);
+    await page.getByLabel("Agent 消息").fill("另一工程正常回复");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "独立回复已完成",
+    );
+    await page.getByRole("button", { name: "新会话", exact: true }).click();
+    await page.getByLabel("Agent 消息").fill("窗口退出时停滞");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "等待中的片段",
+    );
+    const started = Date.now();
+    await desktop.close();
+    expect(Date.now() - started).toBeLessThan(4000);
+    await launch();
+    await page.getByRole("button", { name: /^另一工程/ }).click();
+    await page.getByRole("button", { name: "新会话", exact: true }).click();
+    await page.getByLabel("Agent 消息").fill("进程异常停滞");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText(
+      "等待中的片段",
+    );
+    await desktop.evaluate(({ app }) => {
+      const target = app
+        .getAppMetrics()
+        .find((m) => m.name === "Paper30Min Project");
+      if (!target) throw new Error("找不到测试工程进程");
+      process.kill(target.pid);
+    });
+    await expect(page.locator(".agent-error")).toContainText("工程进程已退出");
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    for (const socket of sockets) socket.destroy();
+    server.closeAllConnections();
+    proxy.closeAllConnections();
+    await Promise.all([
+      new Promise<void>((r) => server.close(() => r())),
+      new Promise<void>((r) => proxy.close(() => r())),
+    ]);
+  }
+});
+
+test("Responses 与 Anthropic 文本协议及损坏配置恢复通过真实 Electron 接线", async () => {
+  const routes: string[] = [];
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      /* Drain the provider request. */
+    }
+    routes.push(request.url!);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const event = (value: { type: string; [key: string]: unknown }) =>
+      response.write(
+        `event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`,
+      );
+    if (request.url === "/v1/responses") {
+      event({ type: "response.created", response: { id: "resp-test" } });
+      event({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: {
+          type: "message",
+          id: "msg-test",
+          role: "assistant",
+          content: [],
+        },
+      });
+      event({
+        type: "response.output_text.delta",
+        output_index: 0,
+        content_index: 0,
+        delta: "Responses 回复",
+      });
+      event({
+        type: "response.completed",
+        response: {
+          id: "resp-test",
+          status: "completed",
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      });
+    } else {
+      event({
+        type: "message_start",
+        message: {
+          id: "msg-test",
+          type: "message",
+          role: "assistant",
+          model: "controlled",
+          content: [],
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      });
+      event({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      });
+      event({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Anthropic 回复" },
+      });
+      event({ type: "content_block_stop", index: 0 });
+      event({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { output_tokens: 1 },
+      });
+      event({ type: "message_stop" });
+    }
+    response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    await create(fixture, path.join(sandbox, "projects"));
+    await fs.writeFile(
+      path.join(sandbox, "profile", "agent-settings.json"),
+      "{invalid",
+    );
+    for (const api of ["openai-responses", "anthropic-messages"] as const) {
+      await page.getByRole("button", { name: "模型设置", exact: true }).click();
+      if (api === "openai-responses")
+        await expect(page.getByRole("status")).toContainText(
+          "模型配置无法读取",
+        );
+      await page.getByLabel("接口协议").selectOption(api);
+      await page
+        .getByLabel("模型端点")
+        .fill(
+          `http://127.0.0.1:${port}${api === "anthropic-messages" ? "" : "/v1"}`,
+        );
+      await page.getByLabel("模型名称").fill("controlled");
+      await page
+        .getByLabel("API 密钥", { exact: true })
+        .fill("controlled-protocol-key");
+      await page.getByRole("button", { name: "保存配置" }).click();
+      await expect(page.getByRole("status")).toHaveText("已保存");
+      await page.getByRole("button", { name: "返回工作台" }).click();
+      await page.getByRole("button", { name: "新会话", exact: true }).click();
+      await page.getByLabel("Agent 消息").fill("基础文本");
+      await page.getByRole("button", { name: "发送消息", exact: true }).click();
+      await expect(page.locator(".message-text").last()).toHaveText(
+        api === "openai-responses" ? "Responses 回复" : "Anthropic 回复",
+      );
+      await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(
+        0,
+      );
+      await expect(page.locator(".agent-error")).toHaveCount(0);
+    }
+    expect(
+      routes.map((route) => new URL(route, "http://localhost").pathname),
+    ).toEqual(["/v1/responses", "/v1/messages"]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test.describe("真实模型验证", () => {
+  test("用本机旧配置运行真实 Pi 基础消息并重开", async () => {
+    test.skip(
+      process.env.PAPER30MIN_REAL_MODEL !== "1",
+      "需用户授权复用本机旧模型配置后显式运行。",
+    );
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(
+      path.join(
+        os.homedir(),
+        "AppData/Roaming/com.paper30min.reader/database/library.sqlite",
+      ),
+      { readOnly: true },
+    );
+    let model: { baseUrl: string; model: string; apiKey: string };
+    try {
+      model = JSON.parse(
+        (
+          db
+            .prepare("SELECT value FROM settings WHERE key = 'model'")
+            .get() as { value: string }
+        ).value,
+      );
+    } finally {
+      db.close();
+    }
+    expect(!!model.apiKey).toBe(true);
+    await create(fixture, path.join(sandbox, "projects"), "真实模型工程");
+    await page.evaluate(async (model) => {
+      const settings = await window.desktop.agent<AgentSettings>({
+        type: "settings",
+      });
+      await window.desktop.agent({
+        type: "saveSettings",
+        apiKey: model.apiKey,
+        settings: {
+          ...settings,
+          baseUrl: model.baseUrl,
+          model: model.model,
+          maxTokens: 256,
+          proxy: "direct",
+        },
+      });
+    }, model);
+    await page
+      .getByLabel("Agent 消息")
+      .fill("只用一句中文回答：你好。不要读取文件或调用工具。");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(
+      page.locator(".chat-message.assistant .message-text"),
+    ).not.toHaveText("", { timeout: 60000 });
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(
+      0,
+      { timeout: 60000 },
+    );
+    await expect(page.locator(".agent-error")).toHaveCount(0);
+    const reply = await page
+      .locator(".chat-message.assistant .message-text")
+      .innerText();
+    const root = path.join(sandbox, "projects", "真实模型工程");
+    for (const file of await fs.readdir(path.join(root, ".pi", "sessions")))
+      expect(
+        (
+          await fs.readFile(path.join(root, ".pi", "sessions", file), "utf8")
+        ).includes(model.apiKey),
+      ).toBe(false);
+    await desktop.close();
+    await launch();
+    await page.getByRole("button", { name: /真实模型工程/ }).click();
+    await expect(
+      page.locator(".chat-message.assistant .message-text"),
+    ).toHaveText(reply);
+  });
 });
 
 test("从真实创建入口保存默认位置、复制 PDF，重启与搬迁后重开", async () => {
@@ -810,7 +1341,7 @@ test("侧栏拖拽跟手、限制中栏宽度并在收放和重启后恢复", as
     ),
   ).toBe(true);
   await page.getByRole("button", { name: "展开 Agent", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "尚无会话" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "尚无消息" })).toBeVisible();
   await expect(page.locator(".right-slot")).toHaveCSS("opacity", "1");
   await page.screenshot({ path: "test-results/workbench-resized-narrow.png" });
 });

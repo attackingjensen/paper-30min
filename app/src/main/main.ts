@@ -12,7 +12,15 @@ import {
 import path from "node:path";
 import { watch, type FSWatcher } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { Command, Project, ProjectAsset } from "../shared/contracts.js";
+import type {
+  AgentCommand,
+  ChatSession,
+  Command,
+  Project,
+  ProjectAsset,
+} from "../shared/contracts.js";
+import { defaultAgentSettings } from "../shared/contracts.js";
+import { AgentSettingsStore, type ModelConfig } from "./agent-settings.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 protocol.registerSchemesAsPrivileged([
@@ -25,14 +33,20 @@ const profile = process.env.PAPER30MIN_PROFILE;
 if (profile) app.setPath("userData", path.resolve(profile));
 let window: BrowserWindow;
 let worker: Electron.UtilityProcess;
+let workerExited = false;
 let nextId = 0;
 const pending = new Map<
   number,
   { resolve: (value: unknown) => void; reject: (error: Error) => void }
 >();
-function request(command: Command | null): Promise<unknown> {
+function request(
+  command:
+    | Command
+    | { type: "agent"; command: AgentCommand; config: ModelConfig }
+    | null,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    if (!worker?.pid) {
+    if (workerExited || !worker?.pid) {
       reject(new Error("工程进程不可用，请重启应用。"));
       return;
     }
@@ -72,12 +86,43 @@ async function start() {
     return net.fetch(pathToFileURL(file).href);
   });
   Menu.setApplicationMenu(null);
+  const agentSettings = new AgentSettingsStore(
+    path.join(app.getPath("userData"), "agent-settings.json"),
+  );
+  let settingsWrite: Promise<unknown> = Promise.resolve();
+  const running = new Map<string, ChatSession>();
   worker = utilityProcess.fork(
     path.join(here, "worker.js"),
     [path.join(app.getPath("userData"), "preferences.json")],
     { serviceName: "Paper30Min Project" },
   );
+  const ready = new Promise<void>((resolve, reject) => {
+    const deadline = setTimeout(
+      () => reject(new Error("工程进程启动超时。")),
+      10000,
+    );
+    worker.once("exit", () => {
+      clearTimeout(deadline);
+      reject(new Error("工程进程启动失败。"));
+    });
+    worker.on("message", (message) => {
+      if (message.ready) {
+        clearTimeout(deadline);
+        resolve();
+      }
+    });
+  });
   worker.on("message", async (message) => {
+    if (message.ready) return;
+    if (message.agentState) {
+      const state: ChatSession = message.agentState;
+      const key = state.root + "\0" + state.id;
+      if (state.busy) running.set(key, state);
+      else running.delete(key);
+      if (window && !window.isDestroyed())
+        window.webContents.send("agent:changed", message.agentState);
+      return;
+    }
     if (message.trash) {
       try {
         await shell.trashItem(message.trash.file);
@@ -97,6 +142,19 @@ async function start() {
     else p?.resolve(message.value);
   });
   worker.on("exit", () => {
+    workerExited = true;
+    for (const state of running.values()) {
+      if (window && !window.isDestroyed())
+        window.webContents.send("agent:changed", {
+          ...state,
+          busy: false,
+          stopping: false,
+          queued: [],
+          revision: state.revision + 1,
+          error: "工程进程已退出，请重启应用后继续会话。",
+        });
+    }
+    running.clear();
     for (const p of pending.values())
       p.reject(new Error("工程进程已退出，请重启应用。"));
     pending.clear();
@@ -158,6 +216,27 @@ async function start() {
   ipcMain.handle("project:command", (event, command: Command) => {
     trusted(event);
     return request(command);
+  });
+  ipcMain.handle("agent:command", async (event, command: AgentCommand) => {
+    trusted(event);
+    if (command.type === "saveSettings") {
+      const result = settingsWrite.then(() =>
+        agentSettings.save(command.settings, command.apiKey, command.clearKey),
+      );
+      settingsWrite = result.catch(() => undefined);
+      return result;
+    }
+    if (command.type === "settings" || command.type === "send")
+      await settingsWrite;
+    if (command.type === "settings") return agentSettings.publicSettings();
+    return request({
+      type: "agent",
+      command,
+      config:
+        command.type === "send"
+          ? await agentSettings.read()
+          : { ...defaultAgentSettings, apiKey: "" },
+    });
   });
   ipcMain.handle("project:choose", async (event, kind: string) => {
     trusted(event);
@@ -250,7 +329,7 @@ async function start() {
     if (devUrl) void window.loadURL(devUrl);
     else void window.loadURL("paper30min://app/index.html");
   }
-  await new Promise<void>((resolve) => worker.once("spawn", resolve));
+  await ready;
   createWindow();
   app.on("activate", () => {
     if (!BrowserWindow.getAllWindows().length) createWindow();
@@ -263,11 +342,16 @@ async function start() {
     if (shuttingDown) return;
     event.preventDefault();
     shuttingDown = true;
+    const deadline = setTimeout(() => {
+      if (!workerExited) worker.kill();
+      app.exit(0);
+    }, 2000);
     void request(null)
       .catch((error) => console.error(error))
       .finally(() => {
-        worker.kill();
-        app.quit();
+        clearTimeout(deadline);
+        if (!workerExited) worker.kill();
+        app.exit(0);
       });
   });
 }

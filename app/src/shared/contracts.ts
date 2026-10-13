@@ -111,9 +111,63 @@ export type Command =
   | { type: "resolveFile"; root: string; path: string };
 
 export interface Desktop {
+  agent<T>(command: AgentCommand): Promise<T>;
+  watchAgent(listener: (state: ChatSession) => void): () => void;
   invoke<T>(command: Command): Promise<T>;
   choose(kind: "pdf" | "folder" | "material"): Promise<string | null>;
   watchProject(root: string, listener: (error?: string) => void): () => void;
   openLink(url: string): Promise<void>;
   openFile(root: string, path: string): Promise<void>;
 }
+
+export interface AgentSettings {
+  api: "openai-completions" | "openai-responses" | "anthropic-messages";
+  baseUrl: string;
+  model: string;
+  contextWindow: number;
+  maxTokens: number;
+  proxy: "direct" | "environment" | "custom";
+  proxyUrl: string;
+  hasKey: boolean;
+}
+export const defaultAgentSettings: AgentSettings = {
+  api: "openai-completions",
+  baseUrl: "",
+  model: "",
+  contextWindow: 128000,
+  maxTokens: 4096,
+  proxy: "direct",
+  proxyUrl: "",
+  hasKey: false,
+};
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  status?: "error" | "aborted";
+}
+export interface ChatSession {
+  root: string;
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  busy: boolean;
+  stopping: boolean;
+  queued: string[];
+  error?: string;
+  revision: number;
+}
+export type AgentCommand =
+  | { type: "settings" }
+  | {
+      type: "saveSettings";
+      settings: AgentSettings;
+      apiKey?: string;
+      clearKey?: boolean;
+    }
+  | { type: "list"; root: string }
+  | { type: "create"; root: string }
+  | { type: "open"; root: string; id: string }
+  | { type: "branch"; root: string; id: string; messageId: string }
+  | { type: "send"; root: string; id: string; text: string }
+  | { type: "stop"; root: string; id: string };

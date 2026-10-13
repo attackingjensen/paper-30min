@@ -1,0 +1,232 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowUp, GitBranch, Plus, Sparkles, Square } from "lucide-react";
+import type { AgentCommand, ChatSession } from "../shared/contracts";
+
+export function AgentPanel({
+  root,
+  onSettings,
+  initialView,
+  onViewChange,
+}: {
+  root: string;
+  onSettings: () => void;
+  initialView?: { active: string; text: string };
+  onViewChange: (view: { active: string; text: string }) => void;
+}) {
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [active, setActive] = useState(initialView?.active ?? "");
+  const [text, setText] = useState(initialView?.text ?? "");
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const scroll = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    onViewChange({ active, text });
+  }, [active, text, onViewChange]);
+  const update = useCallback(
+    (state: ChatSession) => {
+      if (state.root !== root) return;
+      setSessions((old) => {
+        const previous = old.find((s) => s.id === state.id);
+        if (previous && previous.revision > state.revision) return old;
+        return previous
+          ? old.map((s) => (s.id === state.id ? state : s))
+          : [...old, state];
+      });
+    },
+    [root],
+  );
+  useEffect(() => {
+    let disposed = false;
+    const unsubscribe = window.desktop.watchAgent((state) => {
+      if (!disposed) update(state);
+    });
+    void window.desktop
+      .agent<ChatSession[]>({ type: "list", root })
+      .then((items) => {
+        if (disposed) return;
+        for (const item of items) update(item);
+        setActive((id) => id || items[0]?.id || "");
+      })
+      .catch((e) => {
+        if (!disposed) setError(e.message);
+      });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [root, update]);
+  const current = sessions.find((s) => s.id === active);
+  useEffect(() => {
+    const el = scroll.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [active, current?.revision]);
+  async function command(command: AgentCommand, select = false) {
+    setPending(true);
+    setError("");
+    try {
+      const state = await window.desktop.agent<ChatSession>(command);
+      update(state);
+      if (select) setActive(state.id);
+      return state;
+    } catch (e) {
+      setError(
+        (e as Error).message.replace(
+          /^Error invoking remote method '[^']+': Error: /,
+          "",
+        ),
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+  async function send() {
+    if (!text.trim() || pending) return;
+    const conversation =
+      current ?? (await command({ type: "create", root }, true));
+    if (!conversation) return;
+    if (await command({ type: "send", root, id: conversation.id, text }))
+      setText("");
+  }
+  return (
+    <aside className="right">
+      <div className="agent-head">
+        <Sparkles />
+        <span>Agent</span>
+        <span className="spacer" />
+        <button
+          className="icon"
+          title="新会话"
+          aria-label="新会话"
+          disabled={pending}
+          onClick={() => {
+            setText("");
+            void command({ type: "create", root }, true);
+          }}
+        >
+          <Plus />
+        </button>
+      </div>
+      {sessions.length > 0 && (
+        <select
+          className="session-select"
+          aria-label="会话"
+          value={active}
+          onChange={(e) => {
+            setActive(e.target.value);
+            setText("");
+            setError("");
+          }}
+        >
+          {!active && <option value="">选择会话</option>}
+          {sessions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.title}
+              {s.busy ? " · 运行中" : ""}
+            </option>
+          ))}
+        </select>
+      )}
+      <div className="chat" ref={scroll}>
+        {!current?.messages.length && (
+          <>
+            <Sparkles className="agent-symbol" />
+            <h3>尚无消息</h3>
+          </>
+        )}
+        {current?.messages.map((m) => (
+          <div className={`chat-message ${m.role}`} key={m.id}>
+            <div className="message-head">
+              <span>{m.role === "user" ? "你" : "Agent"}</span>
+              {m.id !== "streaming" &&
+                m.id !== "pending-user" &&
+                !current.busy && (
+                  <button
+                    className="icon"
+                    title="从此消息分支"
+                    aria-label="从此消息分支"
+                    disabled={pending}
+                    onClick={() =>
+                      void command(
+                        {
+                          type: "branch",
+                          root,
+                          id: current.id,
+                          messageId: m.id,
+                        },
+                        true,
+                      )
+                    }
+                  >
+                    <GitBranch />
+                  </button>
+                )}
+            </div>
+            <div className="message-text">{m.text}</div>
+            {m.status && (
+              <small>{m.status === "aborted" ? "已停止" : "请求失败"}</small>
+            )}
+          </div>
+        ))}
+        {current?.queued.map((message, i) => (
+          <div className="queued-message" key={i}>
+            待补充：{message}
+          </div>
+        ))}
+        {(error || current?.error) && (
+          <p className="agent-error" role="alert">
+            {error || current?.error}
+          </p>
+        )}
+      </div>
+      <div className="composer-wrap">
+        <div className="composer">
+          <textarea
+            aria-label="Agent 消息"
+            placeholder="发送消息…"
+            value={text}
+            maxLength={100000}
+            onChange={(e) => setText(e.target.value)}
+            disabled={current?.stopping}
+          />
+          <div className="composer-foot">
+            <button
+              className="model-settings-link"
+              onClick={onSettings}
+              title="Agent 模型设置"
+            >
+              {current?.stopping
+                ? "正在停止"
+                : current?.busy
+                  ? "回复中"
+                  : "模型设置"}
+            </button>
+            <div className="row">
+              {current?.busy && (
+                <button
+                  className="icon"
+                  title="停止回复"
+                  aria-label="停止回复"
+                  disabled={current.stopping}
+                  onClick={() =>
+                    void command({ type: "stop", root, id: current.id })
+                  }
+                >
+                  <Square />
+                </button>
+              )}
+              <button
+                className="icon"
+                title={current?.busy ? "补充消息" : "发送消息"}
+                aria-label={current?.busy ? "补充消息" : "发送消息"}
+                disabled={pending || !text.trim() || current?.stopping}
+                onClick={() => void send()}
+              >
+                <ArrowUp />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+}

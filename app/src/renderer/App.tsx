@@ -7,7 +7,6 @@ import {
 } from "react";
 import {
   ArrowLeft,
-  ArrowUp,
   BookOpen,
   ChevronDown,
   File,
@@ -37,6 +36,8 @@ import type {
 import { usePanelLayout } from "./usePanelLayout";
 import { PdfReader } from "./PdfReader";
 import { MarkdownDocument } from "./MarkdownDocument";
+import { AgentPanel } from "./AgentPanel";
+import { AgentSettingsForm } from "./AgentSettingsForm";
 import {
   useMarkdownDocuments,
   isMarkdown,
@@ -105,6 +106,9 @@ export function App() {
   activeRoot.current = root;
   const documents = useMarkdownDocuments(root, tabs, project);
   const positions = useRef<Record<string, Record<string, PdfPosition>>>({});
+  const agentViews = useRef<Record<string, { active: string; text: string }>>(
+    {},
+  );
   useEffect(() => {
     if (root)
       void desktop
@@ -663,6 +667,8 @@ export function App() {
                     )}
                   </div>
                 </>
+              ) : settings === "agent" || settings === "proxy" ? (
+                <AgentSettingsForm key={settings} section={settings} />
               ) : (
                 <p className="empty">尚未接入</p>
               )}
@@ -931,31 +937,15 @@ export function App() {
                 />
               )}
               <div className="right-slot" inert={!right} aria-hidden={!right}>
-                <aside className="right">
-                  <div className="agent-head">
-                    <Sparkles />
-                    <span>Agent</span>
-                  </div>
-                  <div className="chat">
-                    <Sparkles className="agent-symbol" />
-                    <h3>尚无会话</h3>
-                  </div>
-                  <div className="composer-wrap">
-                    <div className="composer">
-                      <textarea
-                        disabled
-                        aria-label="Agent 消息"
-                        placeholder="Agent 尚未接入"
-                      />
-                      <div className="composer-foot">
-                        <span>未连接</span>
-                        <IconButton label="发送消息" disabled>
-                          <ArrowUp />
-                        </IconButton>
-                      </div>
-                    </div>
-                  </div>
-                </aside>
+                <AgentPanel
+                  key={root}
+                  root={root!}
+                  onSettings={() => setSettings("agent")}
+                  initialView={agentViews.current[root!]}
+                  onViewChange={(view) => {
+                    agentViews.current[root!] = view;
+                  }}
+                />
               </div>
             </div>
           </div>

@@ -1,7 +1,20 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { Command, Desktop } from "../shared/contracts.js";
+import type {
+  AgentCommand,
+  ChatSession,
+  Command,
+  Desktop,
+} from "../shared/contracts.js";
 
 const desktop: Desktop = {
+  agent: <T,>(command: AgentCommand) =>
+    ipcRenderer.invoke("agent:command", command) as Promise<T>,
+  watchAgent: (listener) => {
+    const changed = (_event: Electron.IpcRendererEvent, state: ChatSession) =>
+      listener(state);
+    ipcRenderer.on("agent:changed", changed);
+    return () => ipcRenderer.removeListener("agent:changed", changed);
+  },
   invoke: <T,>(command: Command) =>
     ipcRenderer.invoke("project:command", command) as Promise<T>,
   watchProject: (root, listener) => {
