@@ -1,0 +1,493 @@
+import * as fs from "node:fs/promises";
+import { createReadStream, createWriteStream, constants } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
+import type {
+  Command,
+  CreateInput,
+  DocumentRecord,
+  Manifest,
+  Preferences,
+  Project,
+} from "../shared/contracts.js";
+
+const manifestName = "paper30min.json";
+const directories = ["map", "explanations", "text", "notes", "memories", "tmp"];
+const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
+
+function validName(name: string) {
+  if (
+    !name ||
+    name !== name.trim() ||
+    invalidName.test(name) ||
+    /[. ]$/.test(name) ||
+    /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ||
+    name === "." ||
+    name === ".."
+  ) {
+    throw new Error("名称不可为空，也不能包含路径分隔符或 Windows 保留字符。");
+  }
+}
+
+function relativePath(value: string) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.includes("\\") ||
+    path.posix.isAbsolute(value)
+  )
+    throw new Error("需要工程内相对路径。");
+  const parts = value.split("/");
+  parts.forEach(validName);
+  if (
+    parts[0].toLowerCase() === manifestName ||
+    parts[0].startsWith(".paper30min-")
+  )
+    throw new Error("不能操作工程清单或内部临时文件。");
+  return value;
+}
+
+async function atomicJson(file: string, value: unknown) {
+  const temporary = path.join(
+    path.dirname(file),
+    `.paper30min-${randomUUID()}.tmp`,
+  );
+  try {
+    await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", {
+      flag: "wx",
+    });
+    await fs.rename(temporary, file);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+}
+
+async function digest(file: string, signal?: AbortSignal) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file, { signal }))
+    hash.update(chunk);
+  return hash.digest("hex");
+}
+
+async function checkPdf(file: string) {
+  const handle = await fs.open(file, "r");
+  try {
+    const bytes = Buffer.alloc(5);
+    await handle.read(bytes, 0, 5, 0);
+    if (bytes.toString() !== "%PDF-") throw new Error("所选文件不是 PDF。");
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseManifest(value: unknown): Manifest {
+  const m = value as Manifest;
+  const record = (r: DocumentRecord) => {
+    if (
+      !r ||
+      typeof r.id !== "string" ||
+      !r.id ||
+      !/^[a-f0-9]{64}$/.test(r.sha256)
+    )
+      throw new Error("工程文档身份无效。");
+    relativePath(r.path);
+  };
+  if (
+    !m ||
+    m.formatVersion !== 1 ||
+    typeof m.id !== "string" ||
+    !m.id ||
+    typeof m.name !== "string" ||
+    !Array.isArray(m.materials) ||
+    !Array.isArray(m.explanations) ||
+    !m.translations ||
+    typeof m.translations !== "object" ||
+    Array.isArray(m.translations)
+  )
+    throw new Error("工程清单格式不支持或已损坏。");
+  record(m.paper);
+  m.materials.forEach(record);
+  if (
+    new Set([m.paper, ...m.materials].map((r) => r.id)).size !==
+    m.materials.length + 1
+  )
+    throw new Error("工程文档身份重复。");
+  if (
+    new Set([m.paper, ...m.materials].map((r) => r.path.toLowerCase())).size !==
+    m.materials.length + 1
+  )
+    throw new Error("工程文档路径重复。");
+  if (m.map !== null) relativePath(m.map);
+  m.explanations.forEach(relativePath);
+  Object.values(m.translations).forEach(relativePath);
+  return m;
+}
+
+function ensureAvailablePath(
+  manifest: Manifest,
+  relative: string,
+  ownId?: string,
+) {
+  if (
+    [manifest.paper, ...manifest.materials].some(
+      (record) =>
+        record.id !== ownId &&
+        record.path.toLowerCase() === relative.toLowerCase(),
+    )
+  ) {
+    throw new Error("此路径已关联另一份文档，请选择该文档自己的文件。");
+  }
+}
+
+export class ProjectService {
+  private creation = new Map<string, AbortController>();
+  private queue: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    private configFile: string,
+    private trashFile: (file: string) => Promise<void>,
+  ) {}
+
+  async close() {
+    for (const controller of this.creation.values()) controller.abort();
+    await this.queue;
+  }
+
+  dispatch(command: Command): Promise<unknown> {
+    if (command.type === "cancelCreate") {
+      this.creation.get(command.operationId)?.abort();
+      return Promise.resolve();
+    }
+    if (command.type === "create") {
+      if (this.creation.has(command.input.operationId))
+        return Promise.reject(new Error("创建任务已存在。"));
+      const controller = new AbortController();
+      this.creation.set(command.input.operationId, controller);
+      return this.serialize(() =>
+        this.create(command.input, controller.signal),
+      ).finally(() => this.creation.delete(command.input.operationId));
+    }
+    return this.serialize(() => this.execute(command));
+  }
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(operation);
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  private async preferences(): Promise<Preferences> {
+    try {
+      const p = JSON.parse(
+        await fs.readFile(this.configFile, "utf8"),
+      ) as Preferences;
+      if (
+        (p.defaultFolder !== null && typeof p.defaultFolder !== "string") ||
+        !Array.isArray(p.recent) ||
+        p.recent.some(
+          (r) => typeof r.root !== "string" || typeof r.name !== "string",
+        )
+      )
+        throw new Error("本机配置已损坏。");
+      return p;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        return { defaultFolder: null, recent: [] };
+      throw error;
+    }
+  }
+
+  private async savePreferences(p: Preferences) {
+    await fs.mkdir(path.dirname(this.configFile), { recursive: true });
+    await atomicJson(this.configFile, p);
+  }
+
+  private async writableFolder(folder: string) {
+    try {
+      if (!path.isAbsolute(folder) || !(await fs.stat(folder)).isDirectory())
+        throw new Error();
+      await fs.access(folder, constants.W_OK);
+      const probe = path.join(folder, `.paper30min-${randomUUID()}.tmp`);
+      await fs.writeFile(probe, "", { flag: "wx" });
+      await fs.unlink(probe);
+    } catch {
+      throw new Error("工程文件夹不存在或不可写，请重新选择保存位置。");
+    }
+  }
+
+  private async remember(project: Project, defaultFolder?: string) {
+    const p = await this.preferences();
+    p.recent = [
+      { root: project.root, name: project.manifest.name },
+      ...p.recent.filter((r) => r.root !== project.root),
+    ].slice(0, 20);
+    if (defaultFolder !== undefined) p.defaultFolder = defaultFolder;
+    await this.savePreferences(p);
+  }
+
+  private async create(
+    input: CreateInput,
+    signal: AbortSignal,
+  ): Promise<Project> {
+    validName(input.name);
+    await this.writableFolder(input.parent);
+    await checkPdf(input.source);
+    signal.throwIfAborted();
+    const root = path.join(input.parent, input.name);
+    // An exclusive mkdir establishes ownership: cleanup can never delete an existing project.
+    try {
+      await fs.mkdir(root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST")
+        throw new Error("同名工程文件夹已存在，请修改名称或位置。");
+      throw error;
+    }
+    try {
+      for (const directory of directories)
+        await fs.mkdir(path.join(root, directory));
+      await fs.mkdir(path.join(root, ".pi", "sessions"), { recursive: true });
+      const paperPath = "text/paper.pdf";
+      const target = path.join(root, paperPath);
+      await pipeline(
+        createReadStream(input.source),
+        createWriteStream(target, { flags: "wx" }),
+        { signal },
+      );
+      const sha256 = await digest(target, signal);
+      const manifest: Manifest = {
+        formatVersion: 1,
+        id: randomUUID(),
+        name: input.name,
+        paper: { id: randomUUID(), path: paperPath, sha256 },
+        materials: [],
+        map: null,
+        explanations: [],
+        translations: {},
+      };
+      signal.throwIfAborted();
+      await atomicJson(path.join(root, manifestName), manifest);
+      const project = await this.snapshot(root);
+      signal.throwIfAborted();
+      // Registration is the commit point. Late cancellation cannot undo a committed project.
+      await this.remember(
+        project,
+        input.makeDefault ? input.parent : undefined,
+      );
+      return project;
+    } catch (error) {
+      await fs.rm(root, { recursive: true, force: true });
+      if (signal.aborted) throw new Error("已取消创建工程。");
+      throw error;
+    }
+  }
+
+  private async manifest(root: string) {
+    if (!path.isAbsolute(root)) throw new Error("需要完整工程路径。");
+    const file = path.join(root, manifestName);
+    if ((await fs.lstat(file)).isSymbolicLink())
+      throw new Error("工程清单不能是符号链接。");
+    return parseManifest(JSON.parse(await fs.readFile(file, "utf8")));
+  }
+
+  private async resolve(root: string, relative: string) {
+    relativePath(relative);
+    const realRoot = await fs.realpath(root);
+    let cursor = realRoot;
+    for (const part of relative.split("/")) {
+      cursor = path.join(cursor, part);
+      const entry = await fs.lstat(cursor);
+      if (entry.isSymbolicLink())
+        throw new Error("工程文件不能通过链接指向其他位置。");
+    }
+    return cursor;
+  }
+
+  private async snapshot(root: string): Promise<Project> {
+    root = await fs.realpath(root);
+    const manifest = await this.manifest(root);
+    const files: Project["files"] = [];
+    const walk = async (directory: string, prefix: string) => {
+      for (const entry of await fs.readdir(directory, {
+        withFileTypes: true,
+      })) {
+        if (
+          entry.isSymbolicLink() ||
+          entry.name === manifestName ||
+          entry.name.startsWith(".") ||
+          entry.name === "node_modules"
+        )
+          continue;
+        const relative = prefix + entry.name;
+        files.push({ path: relative, directory: entry.isDirectory() });
+        if (entry.isDirectory())
+          await walk(path.join(directory, entry.name), relative + "/");
+      }
+    };
+    await walk(root, "");
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    const missing = [manifest.paper, ...manifest.materials]
+      .filter((r) => !files.some((f) => !f.directory && f.path === r.path))
+      .map((r) => r.id);
+    return { root, manifest, files, missing };
+  }
+
+  private async copyMaterial(
+    root: string,
+    source: string,
+  ): Promise<DocumentRecord> {
+    const name = path.basename(source);
+    validName(name);
+    const relative = "text/" + name;
+    await this.resolve(root, "text");
+    const destination = path.join(root, relative);
+    // Stream into a private temporary file before publishing; partial copies never become materials.
+    const temporary = path.join(
+      root,
+      "text",
+      `.paper30min-${randomUUID()}.tmp`,
+    );
+    try {
+      await pipeline(
+        createReadStream(source),
+        createWriteStream(temporary, { flags: "wx" }),
+      );
+      const sha256 = await digest(temporary);
+      await fs.link(temporary, destination);
+      return { id: randomUUID(), path: relative, sha256 };
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+  }
+
+  private async execute(
+    command: Exclude<Command, { type: "create" | "cancelCreate" }>,
+  ): Promise<unknown> {
+    if (command.type === "preferences") return this.preferences();
+    if (command.type === "setDefault") {
+      if (command.folder !== null) await this.writableFolder(command.folder);
+      const p = await this.preferences();
+      p.defaultFolder = command.folder;
+      await this.savePreferences(p);
+      return p;
+    }
+    const root = await fs.realpath(command.root);
+    const m = await this.manifest(root);
+    if (command.type === "open") {
+      const project = await this.snapshot(root);
+      await this.remember(project);
+      return project;
+    }
+    if (command.type === "refresh") return this.snapshot(root);
+    if (command.type === "resolveFile" || command.type === "read") {
+      const file = await this.resolve(root, command.path);
+      if (!(await fs.stat(file)).isFile()) throw new Error("请选择文件。");
+      if (command.type === "resolveFile") return file;
+      if (!/\.(md|txt|json|csv|tsv|py|js|ts|yaml|yml)$/i.test(file))
+        return null;
+      if ((await fs.stat(file)).size > 2 * 1024 * 1024)
+        throw new Error("文件过大，请在外部应用中打开。");
+      return fs.readFile(file, "utf8");
+    }
+    if (command.type === "addMaterial") {
+      ensureAvailablePath(m, "text/" + path.basename(command.source));
+      const record = await this.copyMaterial(root, command.source);
+      m.materials.push(record);
+      try {
+        await atomicJson(path.join(root, manifestName), m);
+      } catch (error) {
+        await fs.unlink(path.join(root, record.path));
+        throw error;
+      }
+    }
+    if (command.type === "move") {
+      const source = await this.resolve(root, command.path);
+      if (!(await fs.stat(source)).isFile())
+        throw new Error("请选择需要改名或移动的文件。");
+      relativePath(command.destination);
+      if (command.path === command.destination) return this.snapshot(root);
+      const ownId = [m.paper, ...m.materials].find(
+        (record) => record.path === command.path,
+      )?.id;
+      ensureAvailablePath(m, command.destination, ownId);
+      const parent = path.posix.dirname(command.destination);
+      if (parent !== ".") await this.resolve(root, parent);
+      const destination = path.join(root, command.destination);
+      await fs.link(source, destination);
+      try {
+        await fs.unlink(source);
+      } catch (error) {
+        await fs.unlink(destination);
+        throw error;
+      }
+      const replace = (p: string) =>
+        p === command.path ? command.destination : p;
+      m.paper.path = replace(m.paper.path);
+      m.materials.forEach((r) => (r.path = replace(r.path)));
+      if (m.map) m.map = replace(m.map);
+      m.explanations = m.explanations.map(replace);
+      Object.keys(m.translations).forEach(
+        (k) => (m.translations[k] = replace(m.translations[k])),
+      );
+      try {
+        await atomicJson(path.join(root, manifestName), m);
+      } catch (error) {
+        await fs.link(destination, source);
+        await fs.unlink(destination);
+        throw error;
+      }
+    }
+    if (command.type === "relink") {
+      const record = [m.paper, ...m.materials].find((r) => r.id === command.id);
+      if (!record) throw new Error("找不到文档身份。");
+      if (!(await this.snapshot(root)).missing.includes(record.id))
+        throw new Error("文档仍存在，无需重新关联。");
+      const sha256 = await digest(command.source);
+      if (sha256 !== record.sha256)
+        throw new Error("文件内容与原文档不同，不能将其他文件关联为同一文档。");
+      const relative = path
+        .relative(root, await fs.realpath(command.source))
+        .split(path.sep)
+        .join("/");
+      if (
+        relative &&
+        !relative.startsWith("../") &&
+        !path.isAbsolute(relative)
+      ) {
+        await this.resolve(root, relative);
+        ensureAvailablePath(m, relative, record.id);
+        record.path = relative;
+        await atomicJson(path.join(root, manifestName), m);
+      } else {
+        ensureAvailablePath(
+          m,
+          "text/" + path.basename(command.source),
+          record.id,
+        );
+        const copied = await this.copyMaterial(root, command.source);
+        record.path = copied.path;
+        try {
+          await atomicJson(path.join(root, manifestName), m);
+        } catch (error) {
+          await fs.unlink(path.join(root, copied.path));
+          throw error;
+        }
+      }
+    }
+    if (command.type === "trash") {
+      const record = m.materials.find((r) => r.id === command.id);
+      if (!record) throw new Error("只能移出附加参考材料，工程论文不能移出。");
+      const file = await this.resolve(root, record.path);
+      await this.trashFile(file);
+      m.materials = m.materials.filter((r) => r.id !== command.id);
+      try {
+        await atomicJson(path.join(root, manifestName), m);
+      } catch {
+        throw new Error(
+          "文件已移入回收站，但清单保存失败。请从回收站恢复文件后刷新工程。",
+        );
+      }
+    }
+    return this.snapshot(root);
+  }
+}

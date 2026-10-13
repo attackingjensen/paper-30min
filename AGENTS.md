@@ -5,7 +5,7 @@
 ## 项目事实
 
 - v2 使用本地开放工程：正文文件、相对路径清单与 Pi 会话为权威，无 SQLite；Node 负责工程与 Agent 运行，React 负责界面。旧版 Rust/SQLite 书库仅供迁移与行为参考。
-- 根目录 `app/` 留给新版 Electron 客户端，由 STE-76 建立；`legacy/v1/app/` 是旧客户端，只读参考，不在其中开发新版。`skills/` 是产品阅读提示词，不能与 NexusKit 开发技能混用。
+- 根目录 `app/` 是新版 Electron 客户端；`legacy/v1/app/` 是旧客户端，只读参考，不在其中开发新版。`skills/` 是产品阅读提示词，不能与 NexusKit 开发技能混用。
 - 下一版本起，从 `main` 创建版本分支；同一分支可由多个对话串行实施多份 plan，最终集中在一个面向 `main` 的版本 PR。v1.2.0 的 `steven123397/dev` 属于历史开发分支，不再作为长期开发入口。
 - `steven123397` 独立承担全部开发和维护；仓库持有者 [attackingjensen](https://github.com/attackingjensen) 仅作为产品体验者，不参与开发或 PR。
 
@@ -18,7 +18,14 @@
 
 ## 验证入口
 
-以下为归档旧客户端的检查，不代表新版 Electron 已通过验证。新版入口由 STE-76 建立并更新本文。
+新版在 `app/` 中运行：
+
+- 类型检查：`npm run typecheck`。
+- 生产运行目录构建：`npm run build`，不等同于安装包。
+- 真实 Electron 高层集成：`npm test`（或 `npm run test:desktop`），覆盖窗口操作、工程文件结果与重开。
+- 开发窗口：`npm run dev`；详细入口见 [app/README.md](app/README.md)，工程契约见 [docs/project-format.md](docs/project-format.md)。
+
+以下为归档旧客户端的检查，不代表新版 Electron 已通过验证：
 
 - Windows JavaScript：`cd legacy/v1/app` 后 `node --test`。
 - Rust：`cd legacy/v1/app/src-tauri` 后 `cargo test`。

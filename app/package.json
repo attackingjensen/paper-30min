@@ -1,0 +1,29 @@
+{
+  "name": "paper30min",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && tsc -p tsconfig.node.json && vite build",
+    "dev": "node scripts/dev.mjs",
+    "start": "node scripts/start.mjs",
+    "test": "npm run build && playwright test",
+    "test:desktop": "npm test"
+  },
+  "dependencies": {
+    "lucide-react": "1.55.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "electron": "44.7.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  }
+}
