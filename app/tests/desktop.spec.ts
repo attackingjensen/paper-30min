@@ -397,6 +397,73 @@ test("重新关联拒绝其他文档已占用的路径，失败后工程仍可�
   expect(after.materials[0].path).toBe("text/相同内容参考.pdf");
 });
 
+test("侧栏拖拽跟手、限制中栏宽度并在收放和重启后恢复", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  let left = page.getByRole("separator", { name: "调整左侧栏宽度" });
+  let right = page.getByRole("separator", { name: "调整 Agent 宽度" });
+  async function drag(handle: typeof left, distance: number) {
+    const box = (await handle.boundingBox())!;
+    const x = box.x + box.width / 2;
+    const y = box.y + 100;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + distance, y, { steps: 6 });
+  }
+  await drag(left, 60);
+  // Observe the layout while the pointer is still held, before any animation could finish.
+  await expect(left).toHaveAttribute("aria-valuenow", "292");
+  expect((await page.locator(".sidebar-slot").boundingBox())!.width).toBe(292);
+  await page.mouse.up();
+  await drag(right, -120);
+  await expect(right).toHaveAttribute("aria-valuenow", "456");
+  expect((await page.locator(".right-slot").boundingBox())!.width).toBe(456);
+  await page.mouse.up();
+  await page.screenshot({ path: "test-results/workbench-resized.png" });
+  await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
+  await page.getByRole("button", { name: "展开左侧栏", exact: true }).click();
+  await expect(left).toHaveAttribute("aria-valuenow", "292");
+  await page.getByRole("button", { name: "收起 Agent", exact: true }).click();
+  await page.getByRole("button", { name: "展开 Agent", exact: true }).click();
+  await expect(right).toHaveAttribute("aria-valuenow", "456");
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: /^研究工程/ }).click();
+  left = page.getByRole("separator", { name: "调整左侧栏宽度" });
+  right = page.getByRole("separator", { name: "调整 Agent 宽度" });
+  await expect(left).toHaveAttribute("aria-valuenow", "292");
+  await expect(right).toHaveAttribute("aria-valuenow", "456");
+  await desktop.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].setBounds({ width: 1000, height: 780 }),
+  );
+  await expect
+    .poll(async () => (await page.locator(".main").boundingBox())!.width)
+    .toBeGreaterThanOrEqual(360);
+  await desktop.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].setBounds({ width: 1440, height: 940 }),
+  );
+  await expect(left).toHaveAttribute("aria-valuenow", "292");
+  await expect(right).toHaveAttribute("aria-valuenow", "456");
+  await left.focus();
+  await page.keyboard.press("Home");
+  await expect(left).toHaveAttribute("aria-valuenow", "155");
+  await drag(right, -1000);
+  await page.mouse.up();
+  await expect(right).toHaveAttribute("aria-valuenow", "560");
+  await desktop.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].setBounds({ width: 560, height: 780 }),
+  );
+  await expect(right).not.toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.getByRole("button", { name: "展开 Agent", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "尚无会话" })).toBeVisible();
+  await expect(page.locator(".right-slot")).toHaveCSS("opacity", "1");
+  await page.screenshot({ path: "test-results/workbench-resized-narrow.png" });
+});
+
 test("工作台真实文件树、标签复用与设置返回，桌面和窄窗口布局", async () => {
   await create(fixture, path.join(sandbox, "projects"));
   const root = path.join(sandbox, "projects/研究工程");

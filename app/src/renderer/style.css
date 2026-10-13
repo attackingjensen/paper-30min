@@ -145,9 +145,66 @@ button.primary:hover {
   color: #b7b8bf;
 }
 .shell {
+  position: relative;
   display: flex;
   height: calc(100dvh - 42px);
   padding: 0 9px 9px 0;
+}
+.panel-resizer {
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 2;
+  flex-shrink: 0;
+  position: relative;
+  outline: none;
+}
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  left: calc(50% - 1px);
+  background: transparent;
+  clip-path: polygon(
+    50% 0,
+    75% 15%,
+    100% 40%,
+    100% 60%,
+    75% 85%,
+    50% 100%,
+    25% 85%,
+    0 60%,
+    0 40%,
+    25% 15%
+  );
+}
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after,
+.resizing .panel-resizer:focus::after {
+  background: #85858b;
+}
+.resizing .panel-resizer:focus::after {
+  background: #55555b;
+}
+.left-resizer {
+  width: 8px;
+  margin-left: -8px;
+  margin-top: 38px;
+}
+.right-resizer {
+  width: 8px;
+  margin-right: -8px;
+}
+.resizing,
+.resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+.resizing .sidebar-slot,
+.resizing .right-slot,
+.resizing .frame {
+  transition: none;
 }
 .sidebar-slot {
   width: var(--sidebar);
@@ -793,10 +850,13 @@ body:has(.notice) .settings-workspace {
   }
 }
 @media (max-width: 900px) {
+  .right-resizer {
+    display: none;
+  }
   .right-slot {
     position: absolute;
     right: 9px;
-    top: 80px;
+    top: 38px;
     bottom: 10px;
     width: 300px;
     margin-left: 0;

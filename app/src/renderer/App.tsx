@@ -26,6 +26,7 @@ import type {
   Preferences,
   Project,
 } from "../shared/contracts";
+import { usePanelLayout } from "./usePanelLayout";
 
 const desktop = window.desktop;
 type Tab = { key: string; title: string; path?: string };
@@ -75,6 +76,7 @@ export function App() {
   const [navigation, setNavigation] = useState<"reading" | "files">("reading");
   const [left, setLeft] = useState(true);
   const [right, setRight] = useState(window.innerWidth >= 900);
+  const layout = usePanelLayout(left, right);
   const [settings, setSettings] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [error, setError] = useState("");
@@ -584,7 +586,8 @@ export function App() {
         </main>
       ) : (
         <div
-          className={`shell ${!left ? "left-collapsed" : ""} ${!right ? "right-collapsed" : ""}`}
+          className={`shell ${!left ? "left-collapsed" : ""} ${!right ? "right-collapsed" : ""} ${layout.resizing ? "resizing" : ""}`}
+          style={layout.style}
         >
           <div className="sidebar-slot" inert={!left} aria-hidden={!left}>
             <aside className="sidebar">
@@ -691,6 +694,12 @@ export function App() {
               </footer>
             </aside>
           </div>
+          {left && (
+            <div
+              className="panel-resizer left-resizer"
+              {...layout.separator("left")}
+            />
+          )}
           <div className="frame">
             <nav className="tabs" aria-label="文档标签">
               <div className="file-tabs" role="tablist">
@@ -768,6 +777,12 @@ export function App() {
                 </div>
                 {contentView()}
               </main>
+              {right && (
+                <div
+                  className="panel-resizer right-resizer"
+                  {...layout.separator("right")}
+                />
+              )}
               <div className="right-slot" inert={!right} aria-hidden={!right}>
                 <aside className="right">
                   <div className="agent-head">
