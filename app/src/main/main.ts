@@ -4,14 +4,17 @@ import {
   dialog,
   ipcMain,
   Menu,
+  net,
+  protocol,
   shell,
   utilityProcess,
 } from "electron";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command } from "../shared/contracts.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+protocol.registerSchemesAsPrivileged([{ scheme: "paper30min", privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const profile = process.env.PAPER30MIN_PROFILE;
 if (profile) app.setPath("userData", path.resolve(profile));
 let window: BrowserWindow;
@@ -35,6 +38,13 @@ function request(command: Command | null): Promise<unknown> {
 
 async function start() {
   await app.whenReady();
+  protocol.handle("paper30min", (request) => {
+    const url = new URL(request.url);
+    const base = path.resolve(here, "../renderer");
+    const file = path.resolve(base, "." + decodeURIComponent(url.pathname));
+    if (url.hostname !== "app" || !file.startsWith(base + path.sep)) return new Response("Not found", { status: 404 });
+    return net.fetch(pathToFileURL(file).href);
+  });
   Menu.setApplicationMenu(null);
   worker = utilityProcess.fork(
     path.join(here, "worker.js"),
@@ -130,12 +140,21 @@ async function start() {
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());
-    window.webContents.session.setPermissionRequestHandler(
-      (_contents, _permission, callback) => callback(false),
-    );
     const devUrl = process.env.PAPER30MIN_DEV_URL;
+    const appUrl = devUrl ?? "paper30min://app/index.html";
+    // The native Viewer copies selections through the browser clipboard API.
+    const canWriteClipboard = (contents: Electron.WebContents | null, permission: string, url: string) =>
+      contents === window.webContents && permission === "clipboard-sanitized-write" && url === appUrl;
+    window.webContents.session.setPermissionRequestHandler(
+      (contents, permission, callback, details) =>
+        callback(canWriteClipboard(contents, permission, details.requestingUrl)),
+    );
+    window.webContents.session.setPermissionCheckHandler(
+      (contents, permission, _origin, details) =>
+        canWriteClipboard(contents, permission, details.requestingUrl ?? ""),
+    );
     if (devUrl) void window.loadURL(devUrl);
-    else void window.loadFile(path.join(here, "../renderer/index.html"));
+    else void window.loadURL("paper30min://app/index.html");
   }
   await new Promise<void>((resolve) => worker.once("spawn", resolve));
   createWindow();

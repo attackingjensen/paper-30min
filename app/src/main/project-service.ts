@@ -10,11 +10,35 @@ import type {
   Manifest,
   Preferences,
   Project,
+  ReadingState,
 } from "../shared/contracts.js";
 
 const manifestName = "paper30min.json";
 const directories = ["map", "explanations", "text", "notes", "memories", "tmp"];
 const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
+const readingName = ".paper30min-reading.json";
+
+function validateReading(value: ReadingState): ReadingState {
+  if (!value || !Array.isArray(value.tabs) || value.tabs.length > 100 ||
+      typeof value.active !== "string" || !value.pdf || typeof value.pdf !== "object" || Array.isArray(value.pdf))
+    throw new Error("阅读位置文件已损坏。");
+  for (const tab of value.tabs) {
+    if (!tab || typeof tab.key !== "string" || typeof tab.title !== "string")
+      throw new Error("文档标签无效。");
+    if (tab.path) relativePath(tab.path);
+  }
+  for (const [file, p] of Object.entries(value.pdf)) {
+    relativePath(file);
+    if (!p || !/^[a-f0-9]{64}$/.test(p.sha256) || !Number.isInteger(p.page) || p.page < 1 ||
+        !Number.isFinite(p.x) || p.x < 0 || !Number.isFinite(p.y) || p.y < 0 ||
+        !Number.isFinite(p.zoom) || p.zoom < 0.2 || p.zoom > 60 ||
+        (p.scrollStrategy !== undefined && !["vertical", "horizontal"].includes(p.scrollStrategy)) ||
+        (p.spreadMode !== undefined && !["none", "odd", "even"].includes(p.spreadMode)) ||
+        (p.rotation !== undefined && (!Number.isInteger(p.rotation) || p.rotation < 0 || p.rotation > 3)))
+      throw new Error("PDF 阅读位置无效。");
+  }
+  return value;
+}
 
 function validName(name: string) {
   if (
@@ -198,6 +222,18 @@ export class ProjectService {
     }
   }
 
+  private async reading(root: string): Promise<ReadingState> {
+    const file = path.join(root, readingName);
+    try {
+      if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("阅读位置文件不能为符号链接。");
+      if ((await fs.stat(file)).size > 1024 * 1024) throw new Error("阅读位置文件过大。");
+      return validateReading(JSON.parse(await fs.readFile(file, "utf8")));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { tabs: [], active: "", pdf: {} };
+      throw error;
+    }
+  }
+
   private async savePreferences(p: Preferences) {
     await fs.mkdir(path.dirname(this.configFile), { recursive: true });
     await atomicJson(this.configFile, p);
@@ -329,7 +365,7 @@ export class ProjectService {
     const missing = [manifest.paper, ...manifest.materials]
       .filter((r) => !files.some((f) => !f.directory && f.path === r.path))
       .map((r) => r.id);
-    return { root, manifest, files, missing };
+    return { root, manifest, files, missing, reading: await this.reading(root) };
   }
 
   private async copyMaterial(
@@ -373,6 +409,30 @@ export class ProjectService {
     }
     const root = await fs.realpath(command.root);
     const m = await this.manifest(root);
+    if (command.type === "saveWorkspace" || command.type === "savePdfPosition") {
+      const state = await this.reading(root);
+      if (command.type === "saveWorkspace") {
+        state.tabs = command.tabs;
+        state.active = command.active;
+      } else {
+        relativePath(command.path);
+        state.pdf[command.path] = command.position;
+      }
+      await atomicJson(path.join(root, readingName), validateReading(state));
+      return;
+    }
+    if (command.type === "readPdf") {
+      const file = await this.resolve(root, command.path);
+      const handle = await fs.open(file, "r");
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile() || !/\.pdf$/i.test(file)) throw new Error("请选择 PDF 文件。");
+        if (stat.size > 128 * 1024 * 1024) throw new Error("PDF 超过 128 MiB 阅读预算，请在外部应用中打开。");
+        const bytes = await handle.readFile();
+        if (bytes.length > 128 * 1024 * 1024) throw new Error("PDF 超过阅读预算。");
+        return { bytes: new Uint8Array(bytes), sha256: createHash("sha256").update(bytes).digest("hex") };
+      } finally { await handle.close(); }
+    }
     if (command.type === "open") {
       const project = await this.snapshot(root);
       await this.remember(project);

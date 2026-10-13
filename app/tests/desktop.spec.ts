@@ -15,6 +15,37 @@ let page: Page;
 let errors: string[];
 const fixture = path.resolve("../legacy/v1/app/ui/samples/sample_paper.pdf");
 
+// Playwright pierces the complete viewer's open shadow root through its public UI.
+const pdfViewport = () => page.locator('.pdf-reader .bg-bg-app[style*="overflow: auto"]');
+const pdfImage = () => pdfViewport().locator('img[style*="pointer-events: none"]').first();
+const pdfPages = () => page.locator('[data-overlay-id="page-controls"]');
+const pdfPage = () => pdfPages().locator("input");
+const pdfZoom = () => page.getByRole("textbox", { name: "Set zoom", exact: true });
+
+async function setPdfZoom(percent: string) {
+  await pdfZoom().fill(percent);
+  await pdfZoom().press("Enter");
+  await expect(pdfZoom()).toHaveValue(percent);
+}
+
+async function jumpPdfPage(number: number) {
+  await pdfPages().hover();
+  await pdfPage().fill(String(number));
+  await pdfPage().press("Enter");
+  await expect(pdfPage()).toHaveValue(String(number));
+  await expect.poll(async () => {
+    const before = await pdfViewport().evaluate((e) => e.scrollTop);
+    await page.waitForTimeout(100);
+    return Math.abs(before - await pdfViewport().evaluate((e) => e.scrollTop));
+  }).toBe(0);
+  await expect(pdfPage()).toHaveValue(String(number));
+}
+
+async function expectPdfRendered() {
+  await expect(pdfImage()).toBeVisible();
+  await expect.poll(() => pdfImage().evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(100);
+}
+
 async function launch() {
   const env: Record<string, string> = {
     ...Object.fromEntries(
@@ -104,6 +135,7 @@ test("从真实创建入口保存默认位置、复制 PDF，重启与搬迁后�
   expect(await fs.readFile(source)).toEqual(original);
   expect(JSON.stringify(manifest)).not.toContain(parent);
   expect((await fs.readdir(root)).sort()).toEqual([
+    ".paper30min-reading.json",
     ".pi",
     "explanations",
     "map",
@@ -153,6 +185,187 @@ test("从真实创建入口保存默认位置、复制 PDF，重启与搬迁后�
   await expect(page.getByTestId("project-preview")).toHaveText(
     path.join(parent, "重启后新建"),
   );
+});
+
+test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  const root = path.join(parent, "研究工程");
+  await expect(pdfPages()).toContainText("2");
+  await expectPdfRendered();
+  await setPdfZoom("100");
+  await page.screenshot({ path: "test-results/pdf-desktop.png" });
+  for (const offset of [300, 620]) {
+    await pdfViewport().evaluate((e, y) => { e.scrollTop = y; }, offset);
+    await expect.poll(async () => JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf["text/paper.pdf"]?.y).toBe(offset);
+    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+    await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
+    await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBe(offset);
+  }
+  await jumpPdfPage(1);
+  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeLessThan(20);
+  await page.getByRole("button", { name: "光标模式", exact: true }).click();
+  const bounds = (await pdfImage().boundingBox())!;
+  await page.mouse.move(bounds.x + 75, bounds.y + 48);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 290, bounds.y + 48, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.getByRole("button", { name: "复制", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "复制", exact: true }).click();
+  await expect.poll(() => desktop.evaluate(({ clipboard }) => clipboard.readText())).toContain("SampleNet");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+Shift+S");
+  await page.mouse.move(bounds.x + 72, bounds.y + 140);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 290, bounds.y + 240, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.getByText("截取的PDF区域", { exact: true })).toBeVisible();
+  const region = page.getByRole("img", { name: "Captured PDF area", exact: true });
+  await expect(region).toBeVisible();
+  await expect.poll(() => region.evaluate((e: HTMLImageElement) => e.naturalWidth)).toBeGreaterThanOrEqual(218);
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await jumpPdfPage(2);
+  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeGreaterThan(700);
+  await setPdfZoom("150");
+  await expect(pdfPage()).toHaveValue("2");
+  await expect.poll(async () => JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf["text/paper.pdf"]?.zoom).toBe(1.5);
+  await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
+  await expect(pdfPage()).toHaveValue("2");
+  await expect(pdfZoom()).toHaveValue("150");
+  await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
+  await page.getByRole("button", { name: "原始论文", exact: true }).click();
+  await expect(pdfPage()).toHaveValue("2");
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: /研究工程/ }).click();
+  await expect(pdfPage()).toHaveValue("2");
+  await expect(pdfZoom()).toHaveValue("150");
+});
+
+test("真实 Ctrl+滚轮仅缩放 PDF，缩放和位置在重开后保留", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  await expectPdfRendered();
+  await setPdfZoom("100");
+  await jumpPdfPage(2);
+  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeGreaterThan(700);
+  const scale = await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getZoomFactor());
+  const viewport = pdfViewport();
+  await viewport.hover();
+  await page.keyboard.down("Control");
+  await page.mouse.wheel(0, -180);
+  await page.keyboard.up("Control");
+  await expect.poll(async () => Number(await pdfZoom().inputValue())).toBeGreaterThan(100);
+  expect(await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getZoomFactor())).toBe(scale);
+  const root = path.join(parent, "研究工程");
+  await expect.poll(async () => JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf["text/paper.pdf"]?.zoom).toBeGreaterThan(1);
+  const zoom = await pdfZoom().inputValue();
+  await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
+  await page.getByRole("button", { name: "原始论文", exact: true }).click();
+  await expect(pdfZoom()).toHaveValue(zoom);
+  await expect(pdfPage()).toHaveValue("2");
+});
+
+test("完整 Viewer 的 400% 缩放、水平滚动、双页与旋转在重开后恢复", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  await expectPdfRendered();
+  const root = path.join(parent, "研究工程");
+  const reading = async () => JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf["text/paper.pdf"];
+  await setPdfZoom("400");
+  await expect.poll(async () => (await reading())?.zoom).toBe(4);
+  await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
+  await page.getByRole("button", { name: "原始论文", exact: true }).click();
+  await expect(pdfZoom()).toHaveValue("400");
+  await setPdfZoom("100");
+  for (const name of ["水平滚动", "双页视图", "顺时针旋转"]) {
+    await page.getByRole("button", { name: "页面设置", exact: true }).click();
+    await page.getByRole("menuitem", { name, exact: true }).click();
+  }
+  await expect.poll(async () => {
+    const saved = await reading();
+    return { strategy: saved?.scrollStrategy, spread: saved?.spreadMode, rotation: saved?.rotation };
+  }).toEqual({ strategy: "horizontal", spread: "odd", rotation: 1 });
+  await pdfViewport().evaluate((e) => { e.scrollLeft = 300; });
+  await expect.poll(async () => (await reading())?.x).toBe(300);
+  await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
+  await page.getByRole("button", { name: "原始论文", exact: true }).click();
+  await expect(pdfZoom()).toHaveValue("100");
+  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollLeft)).toBe(300);
+  await expect.poll(async () => (await pdfImage().boundingBox())!.width).toBeGreaterThan(700);
+  await page.getByRole("button", { name: "页面设置", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "水平滚动", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.screenshot({ path: "test-results/pdf-horizontal-spread-rotated.png" });
+});
+
+test("中文参考 PDF、无文本层、加密和损坏文件显式反馈", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  await expect(pdfPages()).toContainText("2");
+  const add = async (file: string, name: string) => {
+    await page.getByRole("button", { name: "相关材料", exact: true }).click();
+    await choose(file);
+    await page.getByRole("button", { name: "添加材料", exact: true }).click();
+    await page.getByRole("button", { name: `${name} text/${name}`, exact: true }).click();
+  };
+  const chinese = path.join(sandbox, "扫描材料.pdf");
+  await fs.copyFile(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/pdfparse_scanned_blank.pdf"), chinese);
+  await add(chinese, "扫描材料.pdf");
+  await expectPdfRendered();
+  await add(path.resolve("tests/fixtures/encrypted.pdf"), "encrypted.pdf");
+  await expect(page.getByText("请输入密码", { exact: true })).toBeVisible();
+  await page.getByPlaceholder("请输入文件密码").fill("wrong");
+  await page.getByRole("button", { name: "打开", exact: true }).click();
+  await expect(page.getByText("密码错误，请检查后重新输入。", { exact: true })).toBeVisible();
+  await page.getByPlaceholder("请输入文件密码").fill("paper30min-test");
+  await page.getByRole("button", { name: "打开", exact: true }).click();
+  await expectPdfRendered();
+  await page.getByRole("button", { name: "所有工程", exact: true }).click();
+  const corrupt = path.join(sandbox, "损坏.pdf");
+  await fs.writeFile(corrupt, "%PDF-1.7\nbroken document\n");
+  await create(corrupt, parent, "损坏论文");
+  await expect(page.getByText("文件加载出错", { exact: true })).toBeVisible();
+  const large = path.join(parent, "损坏论文/text/paper.pdf");
+  const handle = await fs.open(large, "r+");
+  await handle.truncate(129 * 1024 * 1024);
+  await handle.close();
+  await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
+  await page.getByRole("button", { name: "原始论文", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("128 MiB");
+});
+
+test("150 页文档按视口渲染，反复关闭释放并在窄窗口阅读", async () => {
+  await create(path.resolve("tests/fixtures/long-150.pdf"), path.join(sandbox, "projects"));
+  await expect(pdfPages()).toContainText("150");
+  const viewport = pdfViewport();
+  await expectPdfRendered();
+  await setPdfZoom("100");
+  const client = await page.context().newCDPSession(page);
+  await client.send("HeapProfiler.collectGarbage");
+  const before = await desktop.evaluate(async ({ app }) => app.getAppMetrics().filter((m) => m.type === "Tab").map((m) => m.memory.workingSetSize));
+  for (let cycle = 0; cycle < 6; cycle++) {
+    await jumpPdfPage(145 - cycle);
+    await expect.poll(() => viewport.evaluate((e) => e.scrollTop)).toBeGreaterThan(100_000);
+    await expect.poll(() => viewport.locator('img[style*="pointer-events: none"]').count()).toBeLessThanOrEqual(10);
+    await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
+    await expect(viewport).toHaveCount(0);
+    await expect.poll(() => page.workers().length).toBe(0);
+    await page.getByRole("button", { name: "原始论文", exact: true }).click();
+    await expect(pdfPages()).toContainText("150");
+    await expectPdfRendered();
+    await expect(pdfPage()).toHaveValue(String(145 - cycle));
+  }
+  await client.send("HeapProfiler.collectGarbage");
+  const after = await desktop.evaluate(async ({ app }) => app.getAppMetrics().filter((m) => m.type === "Tab").map((m) => m.memory.workingSetSize));
+  console.log("PDF renderer working set KiB", { before, after });
+  await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(560, 760));
+  await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
+  await expect.poll(() => page.locator(".sidebar-slot").evaluate((e) => e.getBoundingClientRect().width)).toBe(0);
+  await expect(viewport).toBeVisible();
+  await expectPdfRendered();
+  await page.screenshot({ path: "test-results/pdf-narrow.png" });
 });
 
 test("默认位置与单次位置独立，同名目录和不可用默认位置明确失败", async () => {
@@ -386,12 +599,15 @@ test("重新关联拒绝其他文档已占用的路径，失败后工程仍可�
   await page
     .getByRole("button", { name: "打开工程文件夹", exact: true })
     .click();
+  await expect(page.getByRole("tab", { name: "相关材料", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: "原始论文", exact: true }).click();
   await expect(page.getByRole("heading", { name: "找不到文件" })).toBeVisible();
   await choose(path.join(root, "text/外部改名.pdf"));
   await page.getByRole("button", { name: "重新关联", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "外部改名.pdf" }),
+    page.getByRole("tab", { name: "外部改名.pdf" }),
   ).toBeVisible();
+  await expect(pdfPages()).toContainText("2");
   const after = await readManifest(root);
   expect(after.paper.id).toBe(JSON.parse(before).paper.id);
   expect(after.materials[0].path).toBe("text/相同内容参考.pdf");

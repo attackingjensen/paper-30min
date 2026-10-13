@@ -24,7 +24,25 @@ export interface Project {
   manifest: Manifest;
   files: FileEntry[];
   missing: string[];
+  reading: ReadingState;
 }
+export interface DocumentTab { key: string; title: string; path?: string }
+export interface PdfPosition {
+  sha256: string;
+  page: number;
+  x: number;
+  y: number;
+  zoom: number;
+  scrollStrategy?: "vertical" | "horizontal";
+  spreadMode?: "none" | "odd" | "even";
+  rotation?: 0 | 1 | 2 | 3;
+}
+export interface ReadingState {
+  tabs: DocumentTab[];
+  active: string;
+  pdf: Record<string, PdfPosition>;
+}
+export interface PdfSource { bytes: Uint8Array; sha256: string }
 export interface Preferences {
   defaultFolder: string | null;
   recent: { root: string; name: string }[];
@@ -48,6 +66,9 @@ export type Command =
   | { type: "relink"; root: string; id: string; source: string }
   | { type: "trash"; root: string; id: string }
   | { type: "read"; root: string; path: string }
+  | { type: "readPdf"; root: string; path: string }
+  | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
+  | { type: "savePdfPosition"; root: string; path: string; position: PdfPosition }
   | { type: "resolveFile"; root: string; path: string };
 
 export interface Desktop {

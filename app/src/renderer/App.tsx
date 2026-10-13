@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowUp,
@@ -25,11 +25,14 @@ import type {
   CreateInput,
   Preferences,
   Project,
+  DocumentTab,
+  PdfPosition,
 } from "../shared/contracts";
 import { usePanelLayout } from "./usePanelLayout";
+import { PdfReader } from "./PdfReader";
 
 const desktop = window.desktop;
-type Tab = { key: string; title: string; path?: string };
+type Tab = DocumentTab;
 type Dialog =
   | {
       type: "create";
@@ -85,6 +88,14 @@ export function App() {
   const [content, setContent] = useState<string | null>(null);
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
+  const positions = useRef<Record<string, Record<string, PdfPosition>>>({});
+  useEffect(() => {
+    if (root) void desktop.invoke({ type: "saveWorkspace", root, tabs, active }).catch((e) => setError((e as Error).message));
+  }, [root, tabs, active]);
+  function savePosition(projectRoot: string, file: string, position: PdfPosition) {
+    (positions.current[projectRoot] ??= {})[file] = position;
+    void desktop.invoke({ type: "savePdfPosition", root: projectRoot, path: file, position }).catch((e) => setError((e as Error).message));
+  }
 
   const run = useCallback(
     async <T,>(operation: () => Promise<T>): Promise<T | undefined> => {
@@ -170,8 +181,10 @@ export function App() {
       path: p.manifest.paper.path,
       title: p.manifest.paper.path.split("/").at(-1)!,
     };
-    setTabs([tab]);
-    setActive(tab.key);
+    positions.current[p.root] = p.reading.pdf;
+    const restored = p.reading.tabs.filter((t) => !t.path || p.files.some((f) => f.path === t.path && !f.directory));
+    setTabs(restored.length ? restored : [tab]);
+    setActive(restored.some((t) => t.key === p.reading.active) ? p.reading.active : restored[0]?.key ?? tab.key);
     setSettings(null);
   }
   function closeTab(key: string) {
@@ -257,6 +270,8 @@ export function App() {
     });
   }
   function retargetTabs(from: string, to: string) {
+    const saved = positions.current[root!];
+    if (saved?.[from]) { saved[to] = saved[from]; delete saved[from]; }
     setTabs((old) =>
       old.map((t) =>
         t.path === from
@@ -362,6 +377,9 @@ export function App() {
           )}
         </article>
       );
+    if (current.path && /\.pdf$/i.test(current.path))
+      return <PdfReader key={root + "/" + current.path} root={root!} path={current.path}
+        position={positions.current[root!]?.[current.path]} onPosition={(p) => savePosition(root!, current.path!, p)} />;
     if (current.path)
       return (
         <article className="article">
