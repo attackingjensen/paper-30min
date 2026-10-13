@@ -28,6 +28,7 @@ import type {
   AgentCommand,
   ChatMessage,
   ChatSession,
+  ThinkingLevel,
 } from "../shared/contracts.js";
 import type { ModelConfig } from "./agent-settings.js";
 
@@ -39,6 +40,7 @@ interface Conversation {
   unsubscribe?: () => void;
   run?: Promise<void>;
   initializing?: boolean;
+  activeModelId?: string;
 }
 
 function textOf(message: { content: unknown }) {
@@ -51,6 +53,14 @@ function textOf(message: { content: unknown }) {
           .join("")
       : "";
 }
+function thinkingOf(message: { content: unknown }) {
+  return Array.isArray(message.content)
+    ? message.content
+        .filter((c) => c.type === "thinking")
+        .map((c) => c.thinking)
+        .join("")
+    : "";
+}
 function failure(message?: string) {
   if (/401|403|authentication|api.key|模型认证失败/i.test(message ?? ""))
     return "模型认证失败，请检查 API 密钥与端点。";
@@ -62,7 +72,7 @@ function failure(message?: string) {
 // Bound cancellation independently of provider stream progress, and sanitize failures before Pi persists them.
 function guardedStream(
   stream: StreamFunction,
-  config: ModelConfig,
+  config: { apiKey: string; maxTokens: number },
   network: Dispatcher,
 ): StreamFunction {
   return (model, context, options) => {
@@ -186,6 +196,7 @@ export class AgentService {
           id: entry.id,
           role: m.role as "user" | "assistant",
           text: textOf(m),
+          thinking: m.role === "assistant" ? thinkingOf(m) : undefined,
           status,
         },
       ];
@@ -240,7 +251,12 @@ export class AgentService {
     return this.add(root, SessionManager.open(file, dir, root));
   }
   private async prepare(c: Conversation, config: ModelConfig) {
-    if (!config.baseUrl || !config.model || !config.apiKey)
+    const selected = config.models.find((m) => m.id === config.selectedModelId);
+    const service = config.services.find((s) => s.id === selected?.serviceId);
+    if (service && config.unreadableKeys.includes(service.id))
+      throw new Error("此服务的 API 密钥无法读取，请在设置中替换或移除。");
+    const apiKey = service ? config.keys[service.id] : undefined;
+    if (!selected?.model || !service?.baseUrl || !apiKey)
       throw new Error("请先在设置中配置 Agent 模型与 API 密钥。");
     c.unsubscribe?.();
     c.session?.dispose();
@@ -258,29 +274,64 @@ export class AgentService {
       refreshOnCreate: false,
     });
     const stream =
-      config.api === "openai-completions"
+      service.api === "openai-completions"
         ? completions
-        : config.api === "openai-responses"
+        : service.api === "openai-responses"
           ? responses
           : anthropic;
+    const piLevels: Exclude<ThinkingLevel, "ultra">[] = [
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ];
+    const thinkingLevelMap = Object.fromEntries(
+      piLevels.map((level) => [
+        level,
+        level === "max" && selected.thinking === "ultra"
+          ? "ultra"
+          : selected.availableThinking.includes(level)
+            ? level
+            : null,
+      ]),
+    );
     runtime.registerProvider("paper30min", {
-      baseUrl: config.baseUrl,
-      api: config.api,
-      streamSimple: guardedStream(stream as StreamFunction, config, network),
+      baseUrl: service.baseUrl,
+      api: service.api,
+      streamSimple: guardedStream(
+        stream as StreamFunction,
+        { apiKey, maxTokens: selected.maxTokens },
+        network,
+      ),
       models: [
         {
-          id: config.model,
-          name: config.model,
-          api: config.api,
-          reasoning: false,
+          id: selected.model,
+          name: selected.name || selected.model,
+          api: service.api,
+          reasoning: selected.availableThinking.some(
+            (level) => level !== "off",
+          ),
+          thinkingLevelMap,
+          ...(service.api === "openai-completions" &&
+          new URL(service.baseUrl).hostname === "dashscope.aliyuncs.com"
+            ? {
+                compat: {
+                  thinkingFormat: "qwen",
+                  supportsReasoningEffort: true,
+                },
+              }
+            : {}),
           input: ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: config.contextWindow,
-          maxTokens: config.maxTokens,
+          contextWindow: selected.contextWindow,
+          maxTokens: selected.maxTokens,
         },
       ],
     });
-    await runtime.setRuntimeApiKey("paper30min", config.apiKey);
+    await runtime.setRuntimeApiKey("paper30min", apiKey);
     const settingsManager = SettingsManager.inMemory({
       retry: { enabled: false },
       compaction: { enabled: false },
@@ -304,8 +355,8 @@ export class AgentService {
       cwd: c.state.root,
       agentDir: path.join(c.state.root, ".pi"),
       modelRuntime: runtime,
-      model: runtime.getModel("paper30min", config.model)!,
-      thinkingLevel: "off",
+      model: runtime.getModel("paper30min", selected.model)!,
+      thinkingLevel: selected.thinking === "ultra" ? "max" : selected.thinking,
       settingsManager,
       resourceLoader,
       sessionManager: c.manager,
@@ -334,7 +385,12 @@ export class AgentService {
           const messages = c.state.messages.filter((m) => m.id !== "streaming");
           c.state.messages = [
             ...messages,
-            { id: "streaming", role: "assistant", text: textOf(m) },
+            {
+              id: "streaming",
+              role: "assistant",
+              text: textOf(m),
+              thinking: thinkingOf(m),
+            },
           ];
           this.emit(c);
         }
@@ -348,7 +404,10 @@ export class AgentService {
     });
   }
   async dispatch(
-    command: Exclude<AgentCommand, { type: "settings" | "saveSettings" }>,
+    command: Exclude<
+      AgentCommand,
+      { type: "settings" | "saveSettings" | "selectModel" }
+    >,
     config: ModelConfig,
   ) {
     if (this.closing) throw new Error("应用正在退出。");
@@ -407,14 +466,25 @@ export class AgentService {
     if (c.state.stopping || c.initializing)
       throw new Error("会话正在准备或停止，请稍后再试。");
     if (c.state.busy) {
+      if (c.activeModelId !== config.selectedModelId)
+        throw new Error("已切换模型，请等待当前回复完成后再发送。");
       await c.session!.followUp(command.text);
       c.state.queued = c.session!.getFollowUpMessages().slice();
       this.emit(c);
       return c.state;
     }
-    if (!config.baseUrl || !config.model || !config.apiKey)
+    const model = config.models.find(
+      (item) => item.id === config.selectedModelId,
+    );
+    const service = config.services.find(
+      (item) => item.id === model?.serviceId,
+    );
+    if (service && config.unreadableKeys.includes(service.id))
+      throw new Error("此服务的 API 密钥无法读取，请在设置中替换或移除。");
+    if (!model?.model || !service?.baseUrl || !config.keys[service.id])
       throw new Error("请先在设置中配置 Agent 模型与 API 密钥。");
     c.initializing = true;
+    c.activeModelId = config.selectedModelId;
     c.state.busy = true;
     c.state.error = undefined;
     c.state.stopping = false;
@@ -441,6 +511,7 @@ export class AgentService {
         void c.network?.destroy();
         c.network = undefined;
         c.initializing = false;
+        c.activeModelId = undefined;
         this.sync(c);
         c.state.busy = false;
         c.state.stopping = false;

@@ -128,6 +128,441 @@ test.afterEach(async () => {
   }
 });
 
+test("多服务模型选择、思考流与会话恢复", async () => {
+  const requests: { path: string; key: string; model: string; body: any }[] =
+    [];
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const server = createServer(async (request, response) => {
+    let raw = "";
+    for await (const part of request) raw += part;
+    const body = JSON.parse(raw);
+    requests.push({
+      path: request.url ?? "",
+      key: request.headers.authorization ?? "",
+      model: body.model,
+      body,
+    });
+    if (body.model === "ultra-d") {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: { message: "unsupported reasoning_effort ultra" },
+        }),
+      );
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const emit = (delta: object, finish_reason: string | null = null) =>
+      response.write(
+        `data: ${JSON.stringify({
+          id: "multi",
+          object: "chat.completion.chunk",
+          model: body.model,
+          choices: [{ index: 0, delta, finish_reason }],
+        })}\n\n`,
+      );
+    if (body.model === "reasoning-b") {
+      emit({ reasoning_content: "先核对证据。" });
+      await held;
+    } else if (body.enable_thinking) emit({ reasoning_content: "继续分析。" });
+    emit({ content: `来自 ${body.model}` });
+    emit({}, "stop");
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    await create(fixture, path.join(sandbox, "projects"), "多模型工程");
+    await page.evaluate(
+      async ({ address }) => {
+        const settings = await window.desktop.agent<AgentSettings>({
+          type: "settings",
+        });
+        await window.desktop.agent({
+          type: "saveSettings",
+          settings: {
+            ...settings,
+            services: [
+              {
+                id: "one",
+                name: "共享服务",
+                api: "openai-completions",
+                baseUrl: `${address}/one`,
+                hasKey: false,
+              },
+              {
+                id: "two",
+                name: "独立服务",
+                api: "openai-completions",
+                baseUrl: `${address}/two`,
+                hasKey: false,
+              },
+            ],
+            models: [
+              {
+                id: "a",
+                serviceId: "one",
+                name: "模型 A",
+                model: "answer-a",
+                contextWindow: 64000,
+                maxTokens: 1024,
+                availableThinking: ["off", "low"],
+                thinking: "off",
+              },
+              {
+                id: "b",
+                serviceId: "one",
+                name: "模型 B",
+                model: "reasoning-b",
+                contextWindow: 64000,
+                maxTokens: 1024,
+                availableThinking: ["off", "low"],
+                thinking: "low",
+              },
+              {
+                id: "c",
+                serviceId: "two",
+                name: "模型 C",
+                model: "answer-c",
+                contextWindow: 64000,
+                maxTokens: 1024,
+                availableThinking: ["off"],
+                thinking: "off",
+              },
+              {
+                id: "d",
+                serviceId: "one",
+                name: "模型 D",
+                model: "ultra-d",
+                contextWindow: 64000,
+                maxTokens: 1024,
+                availableThinking: ["off", "ultra"],
+                thinking: "ultra",
+              },
+              {
+                id: "e",
+                serviceId: "one",
+                name: "模型 E",
+                model: "xhigh-e",
+                contextWindow: 64000,
+                maxTokens: 1024,
+                availableThinking: ["off", "xhigh"],
+                thinking: "xhigh",
+              },
+              {
+                id: "f",
+                serviceId: "one",
+                name: "模型 F",
+                model: "max-f",
+                contextWindow: 64000,
+                maxTokens: 1024,
+                availableThinking: ["off", "max"],
+                thinking: "max",
+              },
+            ],
+            selectedModelId: "a",
+          },
+          apiKeys: { one: "shared-secret", two: "isolated-secret" },
+        });
+      },
+      { address },
+    );
+    await page.getByRole("button", { name: "模型设置", exact: true }).click();
+    await expect(page.getByLabel("选择服务").locator("option")).toHaveCount(2);
+    await expect(page.getByLabel("选择模型配置").locator("option")).toHaveCount(
+      5,
+    );
+    await page.getByRole("button", { name: "返回工作台" }).click();
+    await page.getByRole("button", { name: "选择模型" }).click();
+    await page.getByLabel("搜索模型").fill("模型 B");
+    await page.screenshot({ path: "test-results/models-menu.png" });
+    await page.getByRole("button", { name: /模型 B.*共享服务/ }).click();
+    await expect(page.getByLabel("思考等级")).toHaveValue("low");
+    await page.getByLabel("Agent 消息").fill("第一轮");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.locator(".thinking-card")).toBeVisible();
+    await page.locator(".thinking-card summary").click();
+    await expect(page.locator(".thinking-content")).toHaveText("先核对证据。");
+    await page.screenshot({ path: "test-results/thinking-expanded.png" });
+    await page.getByRole("button", { name: "选择模型" }).click();
+    await page.getByLabel("搜索模型").fill("模型 A");
+    await page.getByRole("button", { name: /模型 A.*共享服务/ }).click();
+    await page.getByLabel("Agent 消息").fill("切换期间补充");
+    await page.getByRole("button", { name: "补充消息" }).click();
+    await expect(page.getByRole("alert")).toContainText("等待当前回复完成");
+    release();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await page.getByLabel("Agent 消息").fill("第二轮");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.locator(".chat-message.assistant")).toHaveCount(2);
+    expect(requests.slice(0, 2).map((r) => [r.path, r.key, r.model])).toEqual([
+      ["/one/chat/completions", "Bearer shared-secret", "reasoning-b"],
+      ["/one/chat/completions", "Bearer shared-secret", "answer-a"],
+    ]);
+    expect(requests[0].body.reasoning_effort).toBe("low");
+    await page.getByRole("button", { name: "选择模型" }).click();
+    await page.getByLabel("搜索模型").fill("模型 C");
+    await page.getByRole("button", { name: /模型 C.*独立服务/ }).click();
+    await page.getByLabel("Agent 消息").fill("第三轮");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.locator(".chat-message.assistant")).toHaveCount(3);
+    expect(requests[2].key).toBe("Bearer isolated-secret");
+    expect(requests[2].path).toBe("/two/chat/completions");
+    expect(page.locator(".thinking-card")).toHaveCount(1);
+    await page.getByRole("button", { name: "选择模型" }).click();
+    await page.getByLabel("搜索模型").fill("模型 D");
+    await page.getByRole("button", { name: /模型 D.*共享服务/ }).click();
+    await page.getByLabel("Agent 消息").fill("测试 ultra");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.getByRole("alert")).toContainText("模型请求失败");
+    expect(requests[3].body.reasoning_effort).toBe("ultra");
+    expect(requests).toHaveLength(4);
+    for (const [name, level] of [
+      ["模型 E", "xhigh"],
+      ["模型 F", "max"],
+    ]) {
+      await page.getByRole("button", { name: "选择模型" }).click();
+      await page.getByLabel("搜索模型").fill(name);
+      await page
+        .getByRole("button", { name: new RegExp(`${name}.*共享服务`) })
+        .click();
+      await page.getByLabel("Agent 消息").fill(`测试 ${level}`);
+      await page.getByRole("button", { name: "发送消息" }).click();
+      await expect(
+        page.locator(".chat-message.assistant").last(),
+      ).toContainText(`来自 ${level}-`);
+      expect(requests.at(-1)?.body.reasoning_effort).toBe(level);
+    }
+    const sessionId = await page
+      .getByLabel("会话", { exact: true })
+      .inputValue();
+    await desktop.close();
+    await launch();
+    const sessions = await page.evaluate(
+      async ({ root, sessionId }) =>
+        window.desktop.agent<ChatSession>({
+          type: "open",
+          root,
+          id: sessionId,
+        }),
+      { root: path.join(sandbox, "projects", "多模型工程"), sessionId },
+    );
+    expect(
+      sessions.messages.some((message) => message.thinking === "先核对证据。"),
+    ).toBe(true);
+    const firstReply = sessions.messages.find(
+      (message) => message.thinking === "先核对证据。",
+    )!;
+    const branch = await page.evaluate(
+      async ({ root, sessionId, messageId }) =>
+        window.desktop.agent<ChatSession>({
+          type: "branch",
+          root,
+          id: sessionId,
+          messageId,
+        }),
+      {
+        root: path.join(sandbox, "projects", "多模型工程"),
+        sessionId,
+        messageId: firstReply.id,
+      },
+    );
+    expect(
+      branch.messages.some((message) => message.thinking === "先核对证据。"),
+    ).toBe(true);
+  } finally {
+    release();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("旧单模型配置读取后保留加密密钥", async () => {
+  const encryptedKey = await desktop.evaluate(({ safeStorage }) =>
+    safeStorage.encryptString("legacy-secret").toString("base64"),
+  );
+  await desktop.close();
+  const file = path.join(sandbox, "profile", "agent-settings.json");
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      api: "openai-completions",
+      baseUrl: "https://example.com/v1",
+      model: "legacy-model",
+      contextWindow: 32000,
+      maxTokens: 1024,
+      proxy: "direct",
+      proxyUrl: "",
+      encryptedKey,
+    }),
+  );
+  await launch();
+  const before = await page.evaluate(() =>
+    window.desktop.agent<AgentSettings>({ type: "settings" }),
+  );
+  expect(before.services[0].hasKey).toBe(true);
+  expect(before.models[0].model).toBe("legacy-model");
+  expect(
+    JSON.parse(await fs.readFile(file, "utf8")).formatVersion,
+  ).toBeUndefined();
+  await page.evaluate(
+    async (settings) =>
+      window.desktop.agent({ type: "saveSettings", settings }),
+    before,
+  );
+  const stored = JSON.parse(await fs.readFile(file, "utf8"));
+  expect(stored.formatVersion).toBe(2);
+  expect(stored.encryptedKeys.default).toBeTruthy();
+  expect(JSON.stringify(stored)).not.toContain("legacy-secret");
+});
+
+test("单服务密钥损坏可独立恢复，协议切换校正该服务模型等级", async () => {
+  const received: { path: string; key: string }[] = [];
+  const server = createServer(async (request, response) => {
+    for await (const _part of request) {
+      /* consume request */
+    }
+    received.push({
+      path: request.url ?? "",
+      key: request.headers.authorization ?? "",
+    });
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(
+      `data: ${JSON.stringify({
+        id: "key",
+        object: "chat.completion.chunk",
+        choices: [
+          { index: 0, delta: { content: "完成" }, finish_reason: null },
+        ],
+      })}\n\n` +
+        `data: ${JSON.stringify({ id: "key", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
+        "data: [DONE]\n\n",
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    await create(fixture, path.join(sandbox, "projects"), "密钥恢复工程");
+    await page.evaluate(
+      async ({ base }) => {
+        const original = await window.desktop.agent<AgentSettings>({
+          type: "settings",
+        });
+        await window.desktop.agent({
+          type: "saveSettings",
+          settings: {
+            ...original,
+            services: [
+              {
+                id: "a",
+                name: "服务 A",
+                api: "openai-completions",
+                baseUrl: `${base}/a`,
+                hasKey: false,
+              },
+              {
+                id: "b",
+                name: "服务 B",
+                api: "openai-completions",
+                baseUrl: `${base}/b`,
+                hasKey: false,
+              },
+            ],
+            models: [
+              {
+                id: "a1",
+                serviceId: "a",
+                name: "A1",
+                model: "a1",
+                contextWindow: 32000,
+                maxTokens: 1024,
+                availableThinking: ["off", "ultra"],
+                thinking: "ultra",
+              },
+              {
+                id: "a2",
+                serviceId: "a",
+                name: "A2",
+                model: "a2",
+                contextWindow: 32000,
+                maxTokens: 1024,
+                availableThinking: ["high", "ultra"],
+                thinking: "ultra",
+              },
+              {
+                id: "b1",
+                serviceId: "b",
+                name: "B1",
+                model: "b1",
+                contextWindow: 32000,
+                maxTokens: 1024,
+                availableThinking: ["off"],
+                thinking: "off",
+              },
+            ],
+            selectedModelId: "b1",
+          },
+          apiKeys: { a: "old-a", b: "valid-b" },
+        });
+      },
+      { base },
+    );
+    const file = path.join(sandbox, "profile", "agent-settings.json");
+    const stored = JSON.parse(await fs.readFile(file, "utf8"));
+    const retained = stored.encryptedKeys.b;
+    stored.encryptedKeys.a = "broken-key";
+    await fs.writeFile(file, JSON.stringify(stored));
+    await page.getByRole("button", { name: "模型设置", exact: true }).click();
+    await page.getByLabel("选择服务").selectOption("a");
+    await expect(
+      page.getByText("此密钥无法读取，请替换或移除。"),
+    ).toBeVisible();
+    await page.getByLabel("API 密钥", { exact: true }).fill("new-a");
+    await page.getByRole("button", { name: "保存配置" }).click();
+    await expect(page.getByRole("status")).toHaveText("已保存");
+    expect(JSON.parse(await fs.readFile(file, "utf8")).encryptedKeys.b).toBe(
+      retained,
+    );
+    await page.getByRole("button", { name: "返回工作台" }).click();
+    await page.getByLabel("Agent 消息").fill("服务 B");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.locator(".chat-message.assistant")).toHaveCount(1);
+    await page.getByRole("button", { name: "选择模型" }).click();
+    await page.getByLabel("搜索模型").fill("A1");
+    await page.getByRole("button", { name: /A1.*服务 A/ }).click();
+    await page.getByLabel("思考等级").selectOption("off");
+    await page.getByLabel("Agent 消息").fill("服务 A");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.locator(".chat-message.assistant")).toHaveCount(2);
+    expect(received.map((item) => [item.path, item.key])).toEqual([
+      ["/b/chat/completions", "Bearer valid-b"],
+      ["/a/chat/completions", "Bearer new-a"],
+    ]);
+    await page.getByRole("button", { name: "模型设置", exact: true }).click();
+    await page.getByLabel("选择服务").selectOption("a");
+    await page.getByLabel("接口协议").selectOption("openai-responses");
+    await page.getByRole("button", { name: "保存配置" }).click();
+    await expect(page.getByRole("status")).toHaveText("已保存");
+    const final = await page.evaluate(() =>
+      window.desktop.agent<AgentSettings>({ type: "settings" }),
+    );
+    const adjusted = final.models.filter((model) => model.serviceId === "a");
+    expect(adjusted.map((model) => [model.id, model.thinking])).toEqual([
+      ["a1", "off"],
+      ["a2", "high"],
+    ]);
+    expect(
+      adjusted.every((model) => !model.availableThinking.includes("ultra")),
+    ).toBe(true);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("Agent 回复排版、链接与历史阅读不被流式更新打断", async () => {
   let release: () => void = () => {};
   const continued = new Promise<void>((resolve) => {
@@ -494,8 +929,14 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
           apiKey: secret,
           settings: {
             ...settings,
-            baseUrl: `http://127.0.0.1:${port}/v1`,
-            model: "controlled",
+            services: settings.services.map((service) => ({
+              ...service,
+              baseUrl: `http://127.0.0.1:${port}/v1`,
+            })),
+            models: settings.models.map((model) => ({
+              ...model,
+              model: "controlled",
+            })),
             proxy: "custom",
             proxyUrl: `http://127.0.0.1:${proxyPort}`,
           },
@@ -758,9 +1199,15 @@ test.describe("真实模型验证", () => {
         apiKey: model.apiKey,
         settings: {
           ...settings,
-          baseUrl: model.baseUrl,
-          model: model.model,
-          maxTokens: 256,
+          services: settings.services.map((service) => ({
+            ...service,
+            baseUrl: model.baseUrl,
+          })),
+          models: settings.models.map((entry) => ({
+            ...entry,
+            model: model.model,
+            maxTokens: 256,
+          })),
           proxy: "direct",
         },
       });

@@ -221,7 +221,19 @@ async function start() {
     trusted(event);
     if (command.type === "saveSettings") {
       const result = settingsWrite.then(() =>
-        agentSettings.save(command.settings, command.apiKey, command.clearKey),
+        agentSettings.save(
+          command.settings,
+          command.apiKeys ??
+            (command.apiKey ? { default: command.apiKey } : {}),
+          command.clearKeyIds ?? (command.clearKey ? ["default"] : []),
+        ),
+      );
+      settingsWrite = result.catch(() => undefined);
+      return result;
+    }
+    if (command.type === "selectModel") {
+      const result = settingsWrite.then(() =>
+        agentSettings.select(command.modelId, command.thinking),
       );
       settingsWrite = result.catch(() => undefined);
       return result;
@@ -235,7 +247,7 @@ async function start() {
       config:
         command.type === "send"
           ? await agentSettings.read()
-          : { ...defaultAgentSettings, apiKey: "" },
+          : { ...defaultAgentSettings, keys: {}, unreadableKeys: [] },
     });
   });
   ipcMain.handle("project:choose", async (event, kind: string) => {

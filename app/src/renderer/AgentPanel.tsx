@@ -11,7 +11,12 @@ import {
 } from "lucide-react";
 import { AgentMessage } from "./AgentMessage";
 import "./agent.css";
-import type { AgentCommand, ChatSession } from "../shared/contracts";
+import type {
+  AgentCommand,
+  AgentSettings,
+  ChatSession,
+  ThinkingLevel,
+} from "../shared/contracts";
 
 export function AgentPanel({
   root,
@@ -29,6 +34,9 @@ export function AgentPanel({
   const [text, setText] = useState(initialView?.text ?? "");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [catalog, setCatalog] = useState<AgentSettings>();
+  const [modelOpen, setModelOpen] = useState(false);
+  const [modelQuery, setModelQuery] = useState("");
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
@@ -68,7 +76,39 @@ export function AgentPanel({
       unsubscribe();
     };
   }, [root, update]);
+  useEffect(() => {
+    let disposed = false;
+    void window.desktop
+      .agent<AgentSettings>({ type: "settings" })
+      .then((value) => {
+        if (!disposed) setCatalog(value);
+      })
+      .catch((e) => {
+        if (!disposed) setError(e.message);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
   const current = sessions.find((s) => s.id === active);
+  const selectedModel = catalog?.models.find(
+    (model) => model.id === catalog.selectedModelId,
+  );
+  async function selectModel(modelId: string, thinking?: ThinkingLevel) {
+    try {
+      setCatalog(
+        await window.desktop.agent<AgentSettings>({
+          type: "selectModel",
+          modelId,
+          thinking,
+        }),
+      );
+      setModelOpen(false);
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   useEffect(() => {
     const el = scroll.current;
     if (el && follow.current) el.scrollTop = el.scrollHeight;
@@ -206,6 +246,14 @@ export function AgentPanel({
                   </button>
                 )}
             </div>
+            {m.role === "assistant" && m.thinking && (
+              <details className="thinking-card">
+                <summary>
+                  Thinking <ChevronDown />
+                </summary>
+                <div className="thinking-content">{m.thinking}</div>
+              </details>
+            )}
             <AgentMessage text={m.text} role={m.role} onError={setError} />
             {m.status && (
               <small>{m.status === "aborted" ? "已停止" : "请求失败"}</small>
@@ -275,13 +323,105 @@ export function AgentPanel({
             disabled={current?.stopping}
           />
           <div className="composer-foot">
-            <button
-              className="model-settings-link"
-              onClick={onSettings}
-              title="Agent 模型设置"
-            >
-              <Settings2 /> 模型设置
-            </button>
+            <div className="composer-config">
+              <div
+                className="model-picker"
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget))
+                    setModelOpen(false);
+                }}
+              >
+                <button
+                  className="model-picker-trigger"
+                  type="button"
+                  title="选择模型"
+                  aria-label="选择模型"
+                  aria-expanded={modelOpen}
+                  onClick={() => {
+                    setModelOpen(!modelOpen);
+                    setModelQuery("");
+                  }}
+                >
+                  <span>
+                    {selectedModel?.name || selectedModel?.model || "选择模型"}
+                  </span>
+                  <ChevronDown />
+                </button>
+                {modelOpen && (
+                  <div className="model-picker-menu">
+                    <input
+                      autoFocus
+                      aria-label="搜索模型"
+                      placeholder="搜索模型或服务"
+                      value={modelQuery}
+                      onChange={(e) => setModelQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") setModelOpen(false);
+                      }}
+                    />
+                    <div className="model-picker-options">
+                      {catalog?.models
+                        .filter((model) => {
+                          const service = catalog.services.find(
+                            (item) => item.id === model.serviceId,
+                          );
+                          return `${model.name} ${model.model} ${service?.name}`
+                            .toLowerCase()
+                            .includes(modelQuery.toLowerCase());
+                        })
+                        .map((model) => {
+                          const service = catalog.services.find(
+                            (item) => item.id === model.serviceId,
+                          );
+                          return (
+                            <button
+                              type="button"
+                              key={model.id}
+                              className={
+                                model.id === catalog.selectedModelId
+                                  ? "active"
+                                  : ""
+                              }
+                              onClick={() => void selectModel(model.id)}
+                            >
+                              <span>
+                                {model.name || model.model || "未命名模型"}
+                              </span>
+                              <small>{service?.name}</small>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {selectedModel && selectedModel.availableThinking.length > 1 && (
+                <select
+                  aria-label="思考等级"
+                  value={selectedModel.thinking}
+                  onChange={(e) =>
+                    void selectModel(
+                      selectedModel.id,
+                      e.target.value as ThinkingLevel,
+                    )
+                  }
+                >
+                  {selectedModel.availableThinking.map((level) => (
+                    <option key={level} value={level}>
+                      {level === "off" ? "无思考" : level}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                className="model-settings-link"
+                onClick={onSettings}
+                title="Agent 模型设置"
+                aria-label="模型设置"
+              >
+                <Settings2 />
+              </button>
+            </div>
             <div className="row">
               {current?.busy && (
                 <button

@@ -156,6 +156,42 @@
   font-size: 11px;
   overflow-wrap: anywhere;
 }
+.thinking-card {
+  border: 1px solid #e6e0ed;
+  border-radius: 6px;
+  margin: 0 0 10px;
+  color: #746a7e;
+  background: #fcfbfd;
+}
+.thinking-card summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 11px;
+}
+.thinking-card summary::-webkit-details-marker {
+  display: none;
+}
+.thinking-card summary svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 0.15s;
+}
+.thinking-card[open] summary svg {
+  transform: rotate(180deg);
+}
+.thinking-content {
+  border-top: 1px solid #eee9f1;
+  padding: 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.7;
+}
 .queued-message {
   border-left: 2px solid #c4b4da;
   padding: 6px 10px;
@@ -302,6 +338,90 @@
   margin-top: 10px;
   gap: 6px;
 }
+.composer-config {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.model-picker {
+  position: relative;
+  min-width: 0;
+}
+.model-picker-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 118px;
+  padding: 4px 5px;
+  color: #766782;
+  font-size: 11px;
+}
+.model-picker-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-picker-trigger svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+.model-picker-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: -4px;
+  z-index: 20;
+  width: min(240px, calc(100vw - 44px));
+  padding: 7px;
+  border: 1px solid var(--select-border, #d9cfe5);
+  border-radius: 8px;
+  background: var(--select-surface, #fff);
+  box-shadow: 0 10px 26px #49395120;
+}
+.model-picker-menu input {
+  width: 100%;
+  height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--select-border, #d9cfe5);
+  border-radius: 5px;
+  background: #fff;
+  font-size: 12px;
+}
+.model-picker-options {
+  max-height: 210px;
+  overflow: auto;
+  padding-top: 5px;
+}
+.model-picker-options button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--select-ink, #54465f);
+}
+.model-picker-options button:hover {
+  background: var(--select-hover, #f1ebf7);
+}
+.model-picker-options button.active {
+  background: var(--select-chosen, #ebe3f3);
+}
+.model-picker-options small {
+  color: #a295ac;
+  font-size: 10px;
+}
+.composer-config select {
+  max-width: 92px;
+  border: 0;
+  background: transparent;
+  padding: 4px;
+  color: #766782;
+  font-size: 11px;
+}
 .model-settings-link {
   display: inline-flex;
   align-items: center;
@@ -394,10 +514,10 @@
   min-width: 0;
 }
 .settings-group {
-  padding: 18px 22px;
-  margin-bottom: 16px;
+  padding: 16px 20px;
+  margin-bottom: 12px;
   border: 1px solid #e8e4ec;
-  border-radius: 12px;
+  border-radius: 8px;
   background: #fff;
   min-width: 0;
 }
@@ -459,6 +579,70 @@
 }
 .settings-grid label {
   margin-top: 0;
+}
+.settings-picker-row {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+.settings-key-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #eee9f1;
+  color: #675b70;
+  font-size: 12px;
+}
+.settings-key-heading > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-key-heading svg {
+  width: 13px;
+  height: 13px;
+  color: #9786a7;
+}
+.settings-picker-row select {
+  flex: 1;
+}
+.settings-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: #857492;
+}
+.settings-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.settings-icon:disabled {
+  opacity: 0.35;
+}
+.settings-thinking {
+  margin-top: 18px;
+  font-size: 12px;
+}
+.thinking-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 8px;
+}
+.agent-settings .thinking-levels label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+}
+.agent-settings .thinking-levels input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #8e78aa;
 }
 .field-help,
 .key-help p {

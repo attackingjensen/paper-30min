@@ -120,30 +120,85 @@ export interface Desktop {
   openFile(root: string, path: string): Promise<void>;
 }
 
-export interface AgentSettings {
-  api: "openai-completions" | "openai-responses" | "anthropic-messages";
+export type AgentApi =
+  | "openai-completions"
+  | "openai-responses"
+  | "anthropic-messages";
+export type ThinkingLevel =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
+export const thinkingLevels: ThinkingLevel[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+];
+export interface AgentServiceSettings {
+  id: string;
+  name: string;
+  api: AgentApi;
   baseUrl: string;
+  hasKey: boolean;
+  keyError?: boolean;
+}
+export interface AgentModelSettings {
+  id: string;
+  serviceId: string;
+  name: string;
   model: string;
   contextWindow: number;
   maxTokens: number;
+  availableThinking: ThinkingLevel[];
+  thinking: ThinkingLevel;
+}
+export interface AgentSettings {
+  services: AgentServiceSettings[];
+  models: AgentModelSettings[];
+  selectedModelId: string;
   proxy: "direct" | "environment" | "custom";
   proxyUrl: string;
-  hasKey: boolean;
 }
 export const defaultAgentSettings: AgentSettings = {
-  api: "openai-completions",
-  baseUrl: "",
-  model: "",
-  contextWindow: 128000,
-  maxTokens: 4096,
+  services: [
+    {
+      id: "default",
+      name: "默认服务",
+      api: "openai-completions",
+      baseUrl: "",
+      hasKey: false,
+    },
+  ],
+  models: [
+    {
+      id: "default",
+      serviceId: "default",
+      name: "",
+      model: "",
+      contextWindow: 128000,
+      maxTokens: 4096,
+      availableThinking: ["off"],
+      thinking: "off",
+    },
+  ],
+  selectedModelId: "default",
   proxy: "direct",
   proxyUrl: "",
-  hasKey: false,
 };
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  thinking?: string;
   status?: "error" | "aborted";
 }
 export interface ChatSession {
@@ -162,9 +217,12 @@ export type AgentCommand =
   | {
       type: "saveSettings";
       settings: AgentSettings;
+      apiKeys?: Record<string, string>;
+      clearKeyIds?: string[];
       apiKey?: string;
       clearKey?: boolean;
     }
+  | { type: "selectModel"; modelId: string; thinking?: ThinkingLevel }
   | { type: "list"; root: string }
   | { type: "create"; root: string }
   | { type: "open"; root: string; id: string }

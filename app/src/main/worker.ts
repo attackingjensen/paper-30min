@@ -52,7 +52,8 @@ port.on(
       } else if (command?.type === "agent") {
         if (
           command.command.type === "settings" ||
-          command.command.type === "saveSettings"
+          command.command.type === "saveSettings" ||
+          command.command.type === "selectModel"
         )
           throw new Error("无效的模型命令。");
         const project =
