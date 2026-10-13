@@ -271,10 +271,8 @@ test("多服务模型选择、思考流与会话恢复", async () => {
       { address },
     );
     await page.getByRole("button", { name: "模型设置", exact: true }).click();
-    await expect(page.getByLabel("选择服务").locator("option")).toHaveCount(2);
-    await expect(page.getByLabel("选择模型配置").locator("option")).toHaveCount(
-      5,
-    );
+    await expect(page.locator(".agent-service-choice")).toHaveCount(2);
+    await expect(page.locator(".agent-model-row")).toHaveCount(5);
     await page.getByRole("button", { name: "返回工作台" }).click();
     await page.getByRole("button", { name: "选择模型" }).click();
     await page.getByLabel("搜索模型").fill("模型 B");
@@ -516,7 +514,7 @@ test("单服务密钥损坏可独立恢复，协议切换校正该服务模型�
     stored.encryptedKeys.a = "broken-key";
     await fs.writeFile(file, JSON.stringify(stored));
     await page.getByRole("button", { name: "模型设置", exact: true }).click();
-    await page.getByLabel("选择服务").selectOption("a");
+    await page.getByRole("button", { name: "选择服务 服务 A" }).click();
     await expect(
       page.getByText("此密钥无法读取，请替换或移除。"),
     ).toBeVisible();
@@ -542,7 +540,7 @@ test("单服务密钥损坏可独立恢复，协议切换校正该服务模型�
       ["/a/chat/completions", "Bearer new-a"],
     ]);
     await page.getByRole("button", { name: "模型设置", exact: true }).click();
-    await page.getByLabel("选择服务").selectOption("a");
+    await page.getByRole("button", { name: "选择服务 服务 A" }).click();
     await page.getByLabel("接口协议").selectOption("openai-responses");
     await page.getByRole("button", { name: "保存配置" }).click();
     await expect(page.getByRole("status")).toHaveText("已保存");
@@ -561,6 +559,131 @@ test("单服务密钥损坏可独立恢复，协议切换校正该服务模型�
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test("模型设置在服务和模型间保留草稿并在重开后显示保存结果", async () => {
+  await page.evaluate(async () => {
+    const original = await window.desktop.agent<AgentSettings>({
+      type: "settings",
+    });
+    await window.desktop.agent({
+      type: "saveSettings",
+      settings: {
+        ...original,
+        services: [
+          {
+            id: "a",
+            name: "服务 A",
+            api: "openai-completions",
+            baseUrl: "https://a.example/v1",
+            hasKey: false,
+          },
+          {
+            id: "b",
+            name: "服务 B",
+            api: "openai-completions",
+            baseUrl: "https://b.example/v1",
+            hasKey: false,
+          },
+        ],
+        models: [
+          {
+            id: "a1",
+            serviceId: "a",
+            name: "模型 A",
+            model: "a-model",
+            contextWindow: 32000,
+            maxTokens: 1024,
+            availableThinking: ["off"],
+            thinking: "off",
+          },
+          {
+            id: "a2",
+            serviceId: "a",
+            name: "备用模型",
+            model: "spare-model",
+            contextWindow: 32000,
+            maxTokens: 1024,
+            availableThinking: ["off"],
+            thinking: "off",
+          },
+          {
+            id: "b1",
+            serviceId: "b",
+            name: "模型 B",
+            model: "b-model",
+            contextWindow: 64000,
+            maxTokens: 2048,
+            availableThinking: ["off"],
+            thinking: "off",
+          },
+        ],
+        selectedModelId: "a1",
+      },
+    });
+  });
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await page.getByLabel("模型端点").fill("https://a-updated.example/v1");
+  await page.getByLabel("API 密钥", { exact: true }).fill("secret-a");
+  await page.getByRole("button", { name: "编辑模型 模型 A" }).click();
+  await page.getByLabel("模型显示名称").fill("模型 A 已编辑");
+  await page.getByLabel("上下文预算", { exact: true }).fill("");
+
+  await page.getByRole("button", { name: "选择服务 服务 B" }).click();
+  await page.getByLabel("模型端点").fill("https://b-updated.example/v1");
+  await page.getByLabel("API 密钥", { exact: true }).fill("secret-b");
+  await page.getByRole("button", { name: "编辑模型 模型 B" }).click();
+  await page.getByLabel("模型名称").fill("b-model-updated");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "模型 A 已编辑 的预算无效",
+  );
+
+  await page.getByRole("button", { name: "选择服务 服务 A" }).click();
+  await expect(page.getByLabel("模型端点")).toHaveValue(
+    "https://a-updated.example/v1",
+  );
+  await expect(page.getByLabel("API 密钥", { exact: true })).toHaveValue(
+    "secret-a",
+  );
+  await page.getByRole("button", { name: "编辑模型 模型 A 已编辑" }).click();
+  await expect(page.getByLabel("模型显示名称")).toHaveValue("模型 A 已编辑");
+  await expect(page.getByLabel("上下文预算", { exact: true })).toHaveValue("");
+  await page.getByLabel("上下文预算", { exact: true }).fill("48000");
+  await page
+    .getByRole("button", { name: "删除模型 备用模型", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "编辑模型 模型 A 已编辑", exact: true })
+    .click();
+  await expect(page.getByLabel("上下文预算", { exact: true })).toHaveValue(
+    "48000",
+  );
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByRole("status")).toHaveText("已保存");
+
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByLabel("模型端点")).toHaveValue(
+    "https://a-updated.example/v1",
+  );
+  await page.getByRole("button", { name: "编辑模型 模型 A 已编辑" }).click();
+  await expect(page.getByLabel("上下文预算", { exact: true })).toHaveValue(
+    "48000",
+  );
+  await page.getByRole("button", { name: "选择服务 服务 B" }).click();
+  await expect(page.getByLabel("模型端点")).toHaveValue(
+    "https://b-updated.example/v1",
+  );
+  await page.getByRole("button", { name: "编辑模型 模型 B" }).click();
+  await expect(page.getByLabel("模型名称")).toHaveValue("b-model-updated");
+  const saved = await page.evaluate(() =>
+    window.desktop.agent<AgentSettings>({ type: "settings" }),
+  );
+  expect(saved.services.every((service) => service.hasKey)).toBe(true);
 });
 
 test("Agent 回复排版、链接与历史阅读不被流式更新打断", async () => {
@@ -605,6 +728,10 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
     await page.screenshot({ path: "test-results/agent-empty.png" });
     await page.getByRole("button", { name: "模型设置", exact: true }).click();
     await page
+      .locator(".agent-model-row button[aria-expanded]")
+      .first()
+      .click();
+    await page
       .getByLabel("模型端点")
       .fill(
         `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
@@ -630,6 +757,9 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
       el.scrollTop = 0;
     });
     await page.screenshot({ path: "test-results/agent-settings.png" });
+    await page
+      .getByRole("button", { name: "编辑模型 reading-model", exact: true })
+      .click();
     await expect(budget).toHaveValue("64000");
     await expect(limit).toHaveValue("2048");
     await page.getByRole("button", { name: "返回工作台" }).click();
@@ -736,6 +866,10 @@ test("Pi 原生对话流式回复、补充、分支及搬迁重开，密钥留�
     await page
       .getByLabel("模型端点")
       .fill(`http://127.0.0.1:${address.port}/v1`);
+    await page
+      .locator(".agent-model-row button[aria-expanded]")
+      .first()
+      .click();
     await page.getByLabel("模型名称").fill("controlled-model");
     await page.getByLabel("API 密钥", { exact: true }).fill(secret);
     await page.getByRole("button", { name: "保存配置" }).click();
@@ -1135,6 +1269,10 @@ test("Responses 与 Anthropic 文本协议及损坏配置恢复通过真实 Elec
         .fill(
           `http://127.0.0.1:${port}${api === "anthropic-messages" ? "" : "/v1"}`,
         );
+      await page
+        .locator(".agent-model-row button[aria-expanded]")
+        .first()
+        .click();
       await page.getByLabel("模型名称").fill("controlled");
       await page
         .getByLabel("API 密钥", { exact: true })
