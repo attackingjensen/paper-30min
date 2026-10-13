@@ -586,7 +586,7 @@ export function App() {
         <div
           className={`shell ${!left ? "left-collapsed" : ""} ${!right ? "right-collapsed" : ""}`}
         >
-          {left && (
+          <div className="sidebar-slot" inert={!left} aria-hidden={!left}>
             <aside className="sidebar">
               <div className="workspace">
                 <span className="avatar">
@@ -690,7 +690,7 @@ export function App() {
                 </IconButton>
               </footer>
             </aside>
-          )}
+          </div>
           <div className="frame">
             <nav className="tabs" aria-label="文档标签">
               <div className="file-tabs" role="tablist">
@@ -768,7 +768,7 @@ export function App() {
                 </div>
                 {contentView()}
               </main>
-              {right && (
+              <div className="right-slot" inert={!right} aria-hidden={!right}>
                 <aside className="right">
                   <div className="agent-head">
                     <Sparkles />
@@ -794,7 +794,7 @@ export function App() {
                     </div>
                   </div>
                 </aside>
-              )}
+              </div>
             </div>
           </div>
         </div>

@@ -9,6 +9,7 @@
   --sidebar: 232px;
   --aside: 336px;
   --radius: 10px;
+  --panel-motion: 350ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 * {
   box-sizing: border-box;
@@ -148,8 +149,18 @@ button.primary:hover {
   height: calc(100dvh - 42px);
   padding: 0 9px 9px 0;
 }
+.sidebar-slot {
+  width: var(--sidebar);
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: width var(--panel-motion);
+}
+.left-collapsed .sidebar-slot {
+  width: 0;
+}
 .sidebar {
   width: var(--sidebar);
+  height: 100%;
   flex-shrink: 0;
   padding: 10px 14px;
   display: flex;
@@ -288,6 +299,8 @@ button.primary:hover {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  margin-left: 0;
+  transition: margin-left var(--panel-motion);
 }
 .tabs {
   height: 38px;
@@ -372,16 +385,15 @@ button.primary:hover {
   display: flex;
   min-height: 0;
   flex: 1;
-  background: #fafafb;
-  border: 1px solid #e8e8ed;
-  border-radius: 10px;
-  overflow: hidden;
 }
 .main {
   flex: 1;
   min-width: 0;
   overflow: auto;
   position: relative;
+  background: #fafafb;
+  border: 1px solid #e8e8ed;
+  border-radius: var(--radius);
 }
 .toolbar {
   position: sticky;
@@ -490,10 +502,26 @@ button.primary:hover {
   margin-top: 6px;
   font-size: 11px;
 }
+.right-slot {
+  width: var(--aside);
+  margin-left: 8px;
+  flex-shrink: 0;
+  overflow: hidden;
+  transition:
+    width var(--panel-motion),
+    margin-left var(--panel-motion);
+}
+.right-collapsed .right-slot {
+  width: 0;
+  margin-left: 0;
+}
 .right {
   width: var(--aside);
+  height: 100%;
   flex-shrink: 0;
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: #fdfdfe;
@@ -765,18 +793,29 @@ body:has(.notice) .settings-workspace {
   }
 }
 @media (max-width: 900px) {
-  .right {
+  .right-slot {
     position: absolute;
     right: 9px;
     top: 80px;
     bottom: 10px;
     width: 300px;
+    margin-left: 0;
     box-shadow: -10px 0 30px #0001;
     z-index: 3;
     border-radius: 10px;
+    transition:
+      transform var(--panel-motion),
+      opacity var(--panel-motion),
+      visibility 350ms;
   }
-  .shell:not(.right-collapsed) .main {
-    padding-right: 0;
+  .right {
+    width: 300px;
+  }
+  .right-collapsed .right-slot {
+    width: 300px;
+    transform: translateX(8px);
+    opacity: 0;
+    visibility: hidden;
   }
   .article {
     padding: 30px 25px;
@@ -842,16 +881,22 @@ body:has(.notice) .settings-workspace {
   .start {
     margin: 35px auto;
   }
+  .right-slot,
+  .right-collapsed .right-slot,
   .right {
     width: 260px;
-  }
-  .shell:not(.right-collapsed) .right {
-    top: 80px;
   }
   .start-actions {
     align-items: stretch;
   }
   .start-actions button {
     justify-content: center;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-slot,
+  .right-slot,
+  .frame {
+    transition: none;
   }
 }
