@@ -453,6 +453,7 @@
   gap: 6px;
 }
 .composer-config {
+  font-size: 11px;
   display: flex;
   align-items: center;
   gap: 5px;

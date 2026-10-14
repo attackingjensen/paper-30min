@@ -432,6 +432,134 @@ test("多服务模型选择、思考流与会话恢复", async () => {
   }
 });
 
+test("百炼思考配置保持 system 角色，关闭档显式关闭且始终显示", async () => {
+  const requests: any[] = [];
+  const server = createServer(async (request, response) => {
+    let raw = "";
+    for await (const part of request) raw += part;
+    const body = JSON.parse(raw);
+    requests.push(body);
+    if (body.messages.some((message: any) => message.role === "developer")) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: {
+            message:
+              "developer is not one of ['system', 'assistant', 'user', 'tool', 'function']",
+          },
+        }),
+      );
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const delta = {
+      content: `完成 ${requests.length}`,
+      ...(body.enable_thinking ? { reasoning_content: "已核对。" } : {}),
+    };
+    response.end(
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const proxy = createServer();
+  const sockets = new Set<import("node:stream").Duplex>();
+  proxy.on("connect", (_request, client, head) => {
+    const upstream = connect(
+      (server.address() as { port: number }).port,
+      "127.0.0.1",
+      () => {
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head.length) upstream.write(head);
+        client.pipe(upstream);
+        upstream.pipe(client);
+      },
+    );
+    sockets.add(client);
+    sockets.add(upstream);
+    upstream.on("error", () => client.destroy());
+    client.on("error", () => upstream.destroy());
+    client.on("close", () => {
+      upstream.destroy();
+      sockets.delete(client);
+      sockets.delete(upstream);
+    });
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "思考协议工程");
+    await page.evaluate(
+      async (port) => {
+        const settings = await window.desktop.agent<AgentSettings>({
+          type: "settings",
+        });
+        settings.services[0].baseUrl =
+          "http://dashscope.aliyuncs.com/compatible-mode/v1";
+        settings.models[0] = {
+          ...settings.models[0],
+          model: "qwen3.8-max",
+          availableThinking: ["off", "low", "medium", "high", "xhigh"],
+          thinking: "high",
+        };
+        settings.proxy = "custom";
+        settings.proxyUrl = `http://127.0.0.1:${port}`;
+        await window.desktop.agent({
+          type: "saveSettings",
+          settings,
+          apiKey: "controlled-thinking-key",
+        });
+      },
+      (proxy.address() as { port: number }).port,
+    );
+    await page.getByLabel("Agent 消息").fill("你好");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText("完成 1");
+    expect(requests[0].messages[0].role).toBe("system");
+    expect(requests[0].enable_thinking).toBe(true);
+    expect(requests[0].reasoning_effort).toBe("high");
+    await expect(page.locator(".thinking-card")).toHaveCount(1);
+    await page.getByLabel("思考等级").selectOption("off");
+    await page.getByLabel("Agent 消息").fill("继续");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText("完成 2");
+    expect(requests[1].enable_thinking).toBe(false);
+    expect(requests[1].reasoning_effort).toBeUndefined();
+    await page.getByRole("button", { name: "模型设置", exact: true }).click();
+    await page
+      .locator(".agent-model-row button[aria-expanded]")
+      .first()
+      .click();
+    await expect(page.getByText("生成参数", { exact: true })).toHaveCount(0);
+    for (const level of ["low", "medium", "high", "xhigh"])
+      await page.getByRole("checkbox", { name: level, exact: true }).uncheck();
+    await page.getByRole("button", { name: "保存配置" }).click();
+    await expect(page.getByRole("status")).toHaveText("已保存");
+    await page.getByRole("button", { name: "返回工作台" }).click();
+    await expect(page.getByLabel("思考等级")).toBeVisible();
+    await expect(page.getByLabel("思考等级")).toHaveValue("off");
+    expect(
+      await page
+        .getByLabel("思考等级")
+        .evaluate((el) => getComputedStyle(el).fontSize),
+    ).toBe(
+      await page
+        .locator(".model-picker-trigger")
+        .evaluate((el) => getComputedStyle(el).fontSize),
+    );
+    await page.getByLabel("Agent 消息").fill("不启用思考");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText("完成 3");
+    expect(requests[2].enable_thinking).toBe(false);
+    await page.screenshot({ path: "test-results/thinking-off-control.png" });
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    server.closeAllConnections();
+    await Promise.all([
+      new Promise<void>((resolve) => server.close(() => resolve())),
+      new Promise<void>((resolve) => proxy.close(() => resolve())),
+    ]);
+  }
+});
+
 test("Exa 密钥设置支持加密保存、重开、独立恢复与清除", async () => {
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("button", { name: "Agent 模型", exact: true }).click();

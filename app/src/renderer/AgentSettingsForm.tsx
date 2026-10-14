@@ -602,11 +602,6 @@ export function AgentSettingsForm({
                                   }
                                 />
                               </label>
-                              <div className="settings-key-heading">
-                                <span>
-                                  <SlidersHorizontal /> 生成参数
-                                </span>
-                              </div>
                               <div className="settings-grid">
                                 <label>
                                   上下文预算

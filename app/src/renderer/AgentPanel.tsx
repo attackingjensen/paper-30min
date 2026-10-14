@@ -433,7 +433,7 @@ export function AgentPanel({
                   </div>
                 )}
               </div>
-              {selectedModel && selectedModel.availableThinking.length > 1 && (
+              {selectedModel && (
                 <select
                   aria-label="思考等级"
                   value={selectedModel.thinking}
@@ -446,7 +446,7 @@ export function AgentPanel({
                 >
                   {selectedModel.availableThinking.map((level) => (
                     <option key={level} value={level}>
-                      {level === "off" ? "无思考" : level}
+                      {level === "off" ? "不思考" : level}
                     </option>
                   ))}
                 </select>

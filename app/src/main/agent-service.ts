@@ -339,6 +339,9 @@ export class AgentService {
             : null,
       ]),
     );
+    const isDashScope =
+      service.api === "openai-completions" &&
+      new URL(service.baseUrl).hostname === "dashscope.aliyuncs.com";
     runtime.registerProvider("paper30min", {
       baseUrl: service.baseUrl,
       api: service.api,
@@ -356,14 +359,15 @@ export class AgentService {
           id: selected.model,
           name: selected.name || selected.model,
           api: service.api,
-          reasoning: selected.availableThinking.some(
-            (level) => level !== "off",
-          ),
+          reasoning:
+            isDashScope ||
+            selected.availableThinking.some((level) => level !== "off"),
           thinkingLevelMap,
-          ...(service.api === "openai-completions" &&
-          new URL(service.baseUrl).hostname === "dashscope.aliyuncs.com"
+          ...(isDashScope
             ? {
                 compat: {
+                  // DashScope rejects the developer role, even for reasoning models.
+                  supportsDeveloperRole: false,
                   thinkingFormat: "qwen",
                   supportsReasoningEffort: true,
                 },
