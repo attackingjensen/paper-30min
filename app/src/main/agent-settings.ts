@@ -12,6 +12,8 @@ import {
 export interface ModelConfig extends AgentSettings {
   keys: Record<string, string>;
   unreadableKeys: string[];
+  exaKey?: string;
+  exaKeyError?: boolean;
 }
 
 function validateUrl(value: string, label: string) {
@@ -105,15 +107,28 @@ export class AgentSettingsStore {
           }
         }
       }
-      return { ...settings, keys, unreadableKeys };
+      let exaKey: string | undefined;
+      let exaKeyError = false;
+      if (stored.encryptedExaKey) {
+        try {
+          exaKey = safeStorage.decryptString(
+            Buffer.from(stored.encryptedExaKey, "base64"),
+          );
+        } catch {
+          exaKeyError = true;
+        }
+      }
+      return { ...settings, keys, unreadableKeys, exaKey, exaKeyError };
     } catch {
       throw new Error("模型配置无法读取，请重新保存本机配置。");
     }
   }
   async publicSettings(): Promise<AgentSettings> {
-    const { keys, unreadableKeys, ...settings } = await this.read();
+    const { keys, unreadableKeys, exaKey, exaKeyError, ...settings } =
+      await this.read();
     return {
       ...settings,
+      search: { hasKey: !!exaKey || !!exaKeyError, keyError: exaKeyError },
       services: settings.services.map((service) => ({
         ...service,
         hasKey: !!keys[service.id] || unreadableKeys.includes(service.id),
@@ -216,8 +231,16 @@ export class AgentSettingsStore {
     settings: AgentSettings,
     apiKeys: Record<string, string> = {},
     clearKeyIds: string[] = [],
+    exaApiKey?: string,
+    clearExaKey = false,
   ) {
     const validated = this.validate(settings);
+    if (
+      (exaApiKey !== undefined &&
+        (typeof exaApiKey !== "string" || exaApiKey.length > 8192)) ||
+      typeof clearExaKey !== "boolean"
+    )
+      throw new Error("Exa API 密钥无效。");
     const ids = new Set(validated.services.map((s) => s.id));
     if (
       Object.entries(apiKeys).some(
@@ -268,7 +291,27 @@ export class AgentSettingsStore {
         if (encrypted) encryptedKeys[service.id] = encrypted;
       }
     }
-    const value = { formatVersion: 2, ...validated, encryptedKeys };
+    let encryptedExaKey = clearExaKey ? undefined : stored.encryptedExaKey;
+    if (!clearExaKey && exaApiKey?.trim()) {
+      if (!safeStorage.isEncryptionAvailable())
+        throw new Error("系统凭据加密不可用，无法保存 API 密钥。");
+      encryptedExaKey = safeStorage
+        .encryptString(exaApiKey.trim())
+        .toString("base64");
+    } else if (encryptedExaKey !== undefined) {
+      try {
+        if (typeof encryptedExaKey !== "string") throw new Error();
+        safeStorage.decryptString(Buffer.from(encryptedExaKey, "base64"));
+      } catch {
+        throw new Error("Exa 密钥无法读取，请替换或移除。");
+      }
+    }
+    const value = {
+      formatVersion: 2,
+      ...validated,
+      encryptedKeys,
+      encryptedExaKey,
+    };
     await this.write(value);
     return this.publicSettings();
   }
@@ -310,6 +353,7 @@ export class AgentSettingsStore {
       formatVersion: 2,
       ...this.validate(settings),
       encryptedKeys,
+      encryptedExaKey: stored.encryptedExaKey,
     });
     return this.publicSettings();
   }

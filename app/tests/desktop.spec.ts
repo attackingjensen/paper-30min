@@ -378,6 +378,65 @@ test("多服务模型选择、思考流与会话恢复", async () => {
   }
 });
 
+test("Exa 密钥设置支持加密保存、重开、独立恢复与清除", async () => {
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  const keyInput = page.getByLabel("Exa API key", { exact: true });
+  await expect(keyInput).toHaveAttribute("placeholder", "未配置，使用免费服务");
+  await keyInput.fill("exa-settings-secret");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByRole("status")).toHaveText("已保存");
+  await expect(keyInput).toHaveValue("");
+  const file = path.join(sandbox, "profile", "agent-settings.json");
+  expect(await fs.readFile(file, "utf8")).not.toContain("exa-settings-secret");
+  await page.evaluate(() =>
+    window.desktop.agent({ type: "selectModel", modelId: "default" }),
+  );
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByLabel("Exa API key", { exact: true })).toHaveAttribute(
+    "placeholder",
+    "已保存，留空保留",
+  );
+  const publicSettings = await page.evaluate(() =>
+    window.desktop.agent<AgentSettings>({ type: "settings" }),
+  );
+  expect(publicSettings.search?.hasKey).toBe(true);
+  expect(JSON.stringify(publicSettings)).not.toContain("exa-settings-secret");
+  await desktop.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].setSize(560, 760),
+  );
+  await page
+    .getByLabel("Exa API key", { exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "test-results/ste100-settings-narrow.png" });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await desktop.close();
+  const stored = JSON.parse(await fs.readFile(file, "utf8"));
+  stored.encryptedExaKey = "broken-key";
+  await fs.writeFile(file, JSON.stringify(stored));
+  await launch();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Exa 密钥无法读取");
+  await page.getByLabel("移除 Exa 密钥").check();
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByRole("status")).toHaveText("已保存");
+  await expect(page.getByLabel("Exa API key", { exact: true })).toHaveAttribute(
+    "placeholder",
+    "未配置，使用免费服务",
+  );
+  expect(
+    JSON.parse(await fs.readFile(file, "utf8")).encryptedExaKey,
+  ).toBeUndefined();
+});
+
 test("旧单模型配置读取后保留加密密钥", async () => {
   const encryptedKey = await desktop.evaluate(({ safeStorage }) =>
     safeStorage.encryptString("legacy-secret").toString("base64"),
@@ -899,7 +958,15 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
     if (index === 10)
       await fs.writeFile(path.join(root, "notes/input.md"), "score=9\n");
     expect(payload.tools.map((tool: any) => tool.function.name).sort()).toEqual(
-      ["bash", "edit", "read", "write"],
+      [
+        "bash",
+        "edit",
+        "fetch_content",
+        "get_search_content",
+        "read",
+        "web_search",
+        "write",
+      ],
     );
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     const action = actions[index++];
@@ -1035,6 +1102,7 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
     await desktop.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0].setSize(560, 760),
     );
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(900);
     await expect(
       page.getByRole("button", { name: "展开 Agent" }),
     ).toBeVisible();
@@ -1760,6 +1828,51 @@ test.describe("真实模型验证", () => {
     );
     await expect(page.locator(".agent-error")).toHaveCount(0);
     const root = path.join(sandbox, "projects", "真实模型工程");
+    if (process.env.PAPER30MIN_REAL_WEB === "1") {
+      await page
+        .getByLabel("Agent 消息")
+        .fill(
+          "请调研 Attention Is All You Need 的主要结果。使用 web_search 找到论文原始来源，再用 fetch_content 读取该网页，并用 get_search_content 在实际获取正文中查找 BLEU。用中文简短综合模型特点和 WMT 2014 英德 BLEU 结果，只引用你实际使用的一两个网页，不列出全部搜索结果。不要读取或修改工程文件。",
+        );
+      await page.getByRole("button", { name: "发送消息", exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: "停止回复" }),
+      ).toBeVisible();
+      await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(
+        0,
+        { timeout: 120000 },
+      );
+      await expect(page.locator(".agent-error")).toHaveCount(0);
+      const states = await page.evaluate(
+        (root) => window.desktop.agent<ChatSession[]>({ type: "list", root }),
+        root,
+      );
+      const tools = states.flatMap((state) =>
+        state.messages.flatMap((message) => message.tools ?? []),
+      );
+      for (const name of ["web_search", "fetch_content", "get_search_content"])
+        expect(
+          tools.some((tool) => tool.name === name && tool.status === "done"),
+        ).toBe(true);
+      await expect(
+        page.locator(".chat-message.assistant .message-text").last(),
+      ).toContainText("28.4");
+      await expect(
+        page.locator('.message-text a[href*="arxiv.org"]'),
+      ).toHaveCount(1);
+      const replies = await page
+        .locator(".chat-message.assistant .message-text")
+        .allTextContents();
+      await page.screenshot({ path: "test-results/real-model/ste100-web.png" });
+      await desktop.close();
+      await launch();
+      await page.getByRole("button", { name: /真实模型工程/ }).click();
+      await expect(
+        page.locator(".chat-message.assistant .message-text"),
+      ).toHaveText(replies);
+      expect(await fs.readdir(path.join(root, "notes"))).toEqual([]);
+      return;
+    }
     await fs.writeFile(
       path.join(root, "notes/numbers.csv"),
       "value\n1\n2\n3\n4\n",
@@ -1868,7 +1981,11 @@ test("从真实创建入口保存默认位置、复制 PDF，重启与搬迁后�
   await expect(page.getByRole("tab", { name: "paper.pdf" })).toBeVisible();
   expect((await readManifest(root)).paper.id).toBe(manifest.paper.id);
   const moved = path.join(sandbox, "搬迁后的工程");
-  await fs.cp(root, moved, { recursive: true });
+  // The open reader can atomically update its state while this fixture copies.
+  await fs.cp(root, moved, {
+    recursive: true,
+    filter: (source) => !/^\.paper30min-.*\.tmp$/.test(path.basename(source)),
+  });
   await page.getByRole("button", { name: "所有工程", exact: true }).click();
   await choose(moved);
   await page

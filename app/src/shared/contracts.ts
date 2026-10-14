@@ -158,6 +158,7 @@ export interface AgentSettings {
   selectedModelId: string;
   proxy: "direct" | "environment" | "custom";
   proxyUrl: string;
+  search?: { hasKey: boolean; keyError?: boolean };
 }
 export const defaultAgentSettings: AgentSettings = {
   services: [
@@ -222,6 +223,8 @@ export type AgentCommand =
       clearKeyIds?: string[];
       apiKey?: string;
       clearKey?: boolean;
+      exaApiKey?: string;
+      clearExaKey?: boolean;
     }
   | { type: "selectModel"; modelId: string; thinking?: ThinkingLevel }
   | { type: "list"; root: string }

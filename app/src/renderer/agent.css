@@ -800,6 +800,17 @@
 .agent-settings input::placeholder {
   color: #b0a7b7;
 }
+.agent-settings .settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-settings .settings-checkbox input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+}
 .agent-settings input:focus {
   background: #fff;
 }

@@ -11,6 +11,7 @@ import {
   FileCode,
   Terminal,
   FileOutput,
+  Globe,
 } from "lucide-react";
 import { AgentMessage } from "./AgentMessage";
 import "./agent.css";
@@ -512,13 +513,33 @@ function ToolProcess({
       }
     | undefined;
   const args = tool.arguments as
-    { path?: string; command?: string } | undefined;
+    | {
+        path?: string;
+        command?: string;
+        query?: string;
+        url?: string;
+        responseId?: string;
+      }
+    | undefined;
   return (
     <details className="tool-process" data-tool={tool.name}>
       <summary>
-        {tool.name === "bash" ? <Terminal /> : <FileCode />}
+        {["web_search", "fetch_content", "get_search_content"].includes(
+          tool.name,
+        ) ? (
+          <Globe />
+        ) : tool.name === "bash" ? (
+          <Terminal />
+        ) : (
+          <FileCode />
+        )}
         <span>
-          {tool.name} · {args?.path ?? "PowerShell"}
+          {tool.name} ·{" "}
+          {args?.query ??
+            args?.url ??
+            args?.responseId ??
+            args?.path ??
+            "PowerShell"}
         </span>
         <small>
           {
