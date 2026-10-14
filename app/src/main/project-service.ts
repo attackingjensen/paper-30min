@@ -692,40 +692,55 @@ export class ProjectService {
       let dictionary: CitationDictionary = { formatVersion: 1, projectId: m.id, citations: {} };
       try {
         const file = path.join(root, citationName);
-        if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("出处字典不能是符号链接。");
-        if ((await fs.stat(file)).size > 32 * 1024 * 1024) throw new Error("出处字典超过 32 MiB。");
+        if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("引用字典不能是符号链接。");
+        if ((await fs.stat(file)).size > 32 * 1024 * 1024) throw new Error("引用字典超过 32 MiB。");
         dictionary = JSON.parse(await fs.readFile(file, "utf8"));
         if (dictionary?.formatVersion !== 1 || dictionary.projectId !== m.id ||
             !dictionary.citations || typeof dictionary.citations !== "object" || Array.isArray(dictionary.citations))
-          throw new Error("出处字典格式或工程身份无效。");
+          throw new Error("引用字典格式或工程身份无效。");
         for (const [id, item] of Object.entries(dictionary.citations)) {
           if (!item || !/^[a-f0-9]{32}$/.test(id) || item.id !== id || typeof item.documentId !== "string")
-            throw new Error("出处字典已损坏。");
+            throw new Error("引用字典已损坏。");
           validateCitation(item);
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
       const existing = command.type === "resolveCitation" ? dictionary.citations[citationId(command.link)] : undefined;
-      if (command.type === "resolveCitation" && !existing) throw new Error("找不到此出处，可能属于其他工程或字典已缺失。");
+      if (command.type === "resolveCitation" && !existing) throw new Error("找不到此引用，可能属于其他工程或字典已缺失。");
       const record = [m.paper, ...m.materials].find((r) => existing ? r.id === existing.documentId : command.type === "createCitation" && r.path === command.path);
-      if (!record) throw new Error("出处对应的 PDF 身份不存在，请先将 PDF 加入工程材料。");
+      if (!record) throw new Error("引用对应的 PDF 身份不存在，请先将 PDF 加入工程材料。");
       const input = command.type === "createCitation" ? command.input : existing!;
       validateCitation(input);
-      if (record.sha256 !== input.sha256) throw new Error("PDF 版本不一致，出处已失效。");
+      if (record.sha256 !== input.sha256) throw new Error("PDF 版本不一致，引用已失效。");
       let file: string;
       try { file = await this.resolve(root, record.path); }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("出处 PDF 已缺失，请重新关联原文件。");
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("引用 PDF 已缺失，请重新关联原文件。");
         throw error;
       }
       if (!/\.pdf$/i.test(file) || await digest(file) !== input.sha256)
-        throw new Error("PDF 已被替换或版本无法确认，不能定位此出处。");
+        throw new Error("PDF 已被替换或版本无法确认，不能定位此引用。");
       if (existing) return { citation: existing, path: record.path };
+      // Compare evidence, not object serialization or approximate geometry. Reuse
+      // happens inside the project queue and only after verifying the current PDF.
+      const reusable = Object.values(dictionary.citations).find((item) =>
+        item.documentId === record.id && item.sha256 === input.sha256 &&
+        item.kind === input.kind && item.text === input.text &&
+        item.pages.length === input.pages.length && item.pages.every((p, i) => {
+          const other = input.pages[i];
+          return p.page === other.page && p.width === other.width && p.height === other.height &&
+            p.rects.length === other.rects.length && p.rects.every((rect, j) => {
+              const target = other.rects[j];
+              return rect.origin.x === target.origin.x && rect.origin.y === target.origin.y &&
+                rect.size.width === target.size.width && rect.size.height === target.size.height;
+            });
+        }));
+      if (reusable) return reusable;
       const citation: Citation = { ...input, id: randomUUID().replaceAll("-", ""), documentId: record.id };
       dictionary.citations[citation.id] = citation;
       if (Buffer.byteLength(JSON.stringify(dictionary, null, 2) + "\n") > 32 * 1024 * 1024)
-        throw new Error("出处字典超过 32 MiB，本次出处未保存。");
+        throw new Error("引用字典超过 32 MiB，本次引用未保存。");
       // The project command queue serializes additions; staging + sync + rename keeps old data intact on interruption.
       await atomicJson(path.join(root, citationName), dictionary);
       return citation;

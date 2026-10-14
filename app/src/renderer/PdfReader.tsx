@@ -34,7 +34,7 @@ export function PdfReader({ root, path, position, onPosition, citation }: {
   const saved = source?.sha256 === initialPosition.current?.sha256 ? initialPosition.current : undefined;
   if (error) return <div className="pdf-error" role="alert">PDF 打开失败：{error}</div>;
   if (!source) return <div className="empty">正在打开 PDF…</div>;
-  if (citation && citation.sha256 !== source.sha256) return <div role="alert">PDF 已被替换，出处已失效。</div>;
+  if (citation && citation.sha256 !== source.sha256) return <div role="alert">PDF 已被替换，引用已失效。</div>;
   return <PdfDocument root={root} source={source} path={path} saved={saved} onPosition={onPosition} citation={citation} />;
 }
 
@@ -136,15 +136,13 @@ function PdfDocument({ root, source, path, saved, onPosition, citation }: {
   }
 
   return <div className="pdf-reader" onClick={() => setContextMenu(null)}>
-    <div className="citation-actions">
-      <button onClick={() => void citations.current?.copy()}>复制出处</button>
-      <button onClick={() => citations.current?.selectRegion()}>框选出处</button>
-      <button onClick={() => void citations.current?.copy(true)}>复制整页出处</button>
-      <span role="status">{status}</span>
-    </div>
+    {status && <div className="citation-status" role="status">
+      <span>{status}</span>
+      <button aria-label="取消引用选择" onClick={() => citations.current?.cancel()}>×</button>
+    </div>}
     {contextMenu && <div className="citation-context" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
-      <button role="menuitem" onClick={() => void citations.current?.copy()}>复制出处</button>
-      <button role="menuitem" onClick={() => void citations.current?.copy(true)}>复制整页出处</button>
+      <button role="menuitem" onClick={() => void citations.current?.copy()}>复制引用链接</button>
+      <button role="menuitem" onClick={() => void citations.current?.copy(true)}>复制整页引用链接</button>
     </div>}
     <PDFViewer config={config} onReady={ready} onInit={(container) => {
     viewer.current = container;
