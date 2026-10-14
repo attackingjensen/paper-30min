@@ -18,8 +18,9 @@ const service = new ProjectService(
       port.postMessage({ trash: { id, file } });
     }),
 );
-const agent = new AgentService((state) =>
-  port.postMessage({ agentState: state }),
+const agent = new AgentService(
+  (state) => port.postMessage({ agentState: state }),
+  service,
 );
 
 port.on(
@@ -30,8 +31,7 @@ port.on(
     data: {
       id: number;
       command?:
-        | Command
-        | { type: "agent"; command: AgentCommand; config: ModelConfig };
+        Command | { type: "agent"; command: AgentCommand; config: ModelConfig };
       shutdown?: boolean;
       trashResult?: boolean;
       error?: string;

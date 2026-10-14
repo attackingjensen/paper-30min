@@ -121,18 +121,9 @@ export interface Desktop {
 }
 
 export type AgentApi =
-  | "openai-completions"
-  | "openai-responses"
-  | "anthropic-messages";
+  "openai-completions" | "openai-responses" | "anthropic-messages";
 export type ThinkingLevel =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max"
-  | "ultra";
+  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export const thinkingLevels: ThinkingLevel[] = [
   "off",
   "minimal",
@@ -200,6 +191,15 @@ export interface ChatMessage {
   text: string;
   thinking?: string;
   status?: "error" | "aborted";
+  tools?: ChatTool[];
+}
+export interface ChatTool {
+  id: string;
+  name: string;
+  arguments: unknown;
+  status: "running" | "done" | "error" | "aborted";
+  output: string;
+  details?: unknown;
 }
 export interface ChatSession {
   root: string;
@@ -211,6 +211,7 @@ export interface ChatSession {
   queued: string[];
   error?: string;
   revision: number;
+  allowChanges?: boolean;
 }
 export type AgentCommand =
   | { type: "settings" }
@@ -227,5 +228,11 @@ export type AgentCommand =
   | { type: "create"; root: string }
   | { type: "open"; root: string; id: string }
   | { type: "branch"; root: string; id: string; messageId: string }
-  | { type: "send"; root: string; id: string; text: string }
+  | {
+      type: "send";
+      root: string;
+      id: string;
+      text: string;
+      allowChanges?: boolean;
+    }
   | { type: "stop"; root: string; id: string };

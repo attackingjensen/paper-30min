@@ -3,6 +3,10 @@ import { createReadStream, createWriteStream, constants } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import {
+  prepareDocumentReferences,
+  type DocumentReferenceProcessor,
+} from "./document-references.js";
 import type {
   Command,
   CreateInput,
@@ -19,6 +23,11 @@ const manifestName = "paper30min.json";
 const directories = ["map", "explanations", "text", "notes", "memories", "tmp"];
 const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
 const readingName = ".paper30min-reading.json";
+export interface AgentFile {
+  bytes: Buffer;
+  version: string;
+}
+export type WriteScope = { candidateDirectory?: string };
 
 function validateReading(value: ReadingState): ReadingState {
   if (
@@ -205,6 +214,7 @@ export class ProjectService {
   constructor(
     private configFile: string,
     private trashFile: (file: string) => Promise<void>,
+    private references: DocumentReferenceProcessor = prepareDocumentReferences,
   ) {}
 
   async close() {
@@ -233,6 +243,89 @@ export class ProjectService {
     const result = this.queue.then(operation);
     this.queue = result.catch(() => undefined);
     return result;
+  }
+
+  private agentPath(root: string, absolute: string) {
+    const relative = path.relative(root, absolute).split(path.sep).join("/");
+    relativePath(relative);
+    if (relative.split("/").some((part) => part.startsWith(".")))
+      throw new Error("Agent 不能访问工程内部文件。");
+    return relative;
+  }
+
+  private async writablePath(
+    root: string,
+    relative: string,
+    scope: WriteScope = {},
+  ) {
+    relativePath(relative);
+    if (relative.split("/").some((part) => part.startsWith(".")))
+      throw new Error("不能写入工程内部文件。");
+    const lower = relative.toLowerCase();
+    if (scope.candidateDirectory) {
+      const candidate = relativePath(scope.candidateDirectory).toLowerCase();
+      if (
+        !candidate.startsWith("text/candidates/") ||
+        !lower.startsWith(candidate + "/") ||
+        /\.pdf$/i.test(lower)
+      )
+        throw new Error("审阅只能写入指定的候选目录。");
+    } else {
+      const manifest = await this.manifest(root);
+      if (
+        lower.startsWith("text/") ||
+        lower.startsWith("sources/") ||
+        /\.pdf$/i.test(lower) ||
+        [manifest.paper, ...manifest.materials].some(
+          (record) => record.path.toLowerCase() === lower,
+        )
+      )
+        throw new Error("原始材料、解析稿和出处字典不能作为自由成果覆盖。");
+    }
+  }
+
+  readAgentFile(root: string, absolute: string): Promise<AgentFile> {
+    return this.serialize(async () => {
+      const relative = this.agentPath(root, absolute);
+      const file = await this.resolve(root, relative);
+      const handle = await fs.open(file, "r");
+      try {
+        const stat = await handle.stat();
+        if (
+          !stat.isFile() ||
+          stat.size > 2 * 1024 * 1024 ||
+          /\.pdf$/i.test(relative)
+        )
+          throw new Error(
+            "read 支持 2 MiB 内普通文件；PDF 请使用论文读取工具。",
+          );
+        const bytes = await handle.readFile();
+        if (bytes.length > 2 * 1024 * 1024)
+          throw new Error("文件超过读取预算。");
+        return {
+          bytes,
+          version: createHash("sha256").update(bytes).digest("hex"),
+        };
+      } finally {
+        await handle.close();
+      }
+    });
+  }
+
+  writeAgentFile(
+    root: string,
+    absolute: string,
+    text: string,
+    version: string | null,
+    signal: AbortSignal,
+    scope: WriteScope = {},
+  ): Promise<MarkdownSave> {
+    return this.serialize(async () => {
+      signal.throwIfAborted();
+      const relative = this.agentPath(root, absolute);
+      await this.writablePath(root, relative, scope);
+      return this.saveText(root, relative, text, version, signal);
+    });
   }
 
   private async preferences(): Promise<Preferences> {
@@ -445,6 +538,13 @@ export class ProjectService {
   ): Promise<MarkdownFile> {
     if (!/\.(md|markdown)$/i.test(relative))
       throw new Error("请选择 Markdown 文档。");
+    return this.textFile(root, relative);
+  }
+
+  private async textFile(
+    root: string,
+    relative: string,
+  ): Promise<MarkdownFile> {
     const file = await this.resolve(root, relative);
     const handle = await fs.open(file, "r");
     try {
@@ -476,32 +576,67 @@ export class ProjectService {
     text: string,
     version: string,
   ): Promise<MarkdownSave> {
+    if (!/\.(md|markdown)$/i.test(relative))
+      throw new Error("请选择 Markdown 文档。");
+    await this.writablePath(root, relative);
+    return this.saveText(root, relative, text, version);
+  }
+
+  private async saveText(
+    root: string,
+    relative: string,
+    text: string,
+    version: string | null,
+    signal?: AbortSignal,
+  ): Promise<MarkdownSave> {
     if (
       typeof text !== "string" ||
       Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024 ||
-      !/^[a-f0-9]{64}$/.test(version)
+      (version !== null && !/^[a-f0-9]{64}$/.test(version))
     )
       throw new Error("正文或保存基线无效，正文上限为 2 MiB。");
+    if (/\.(md|markdown)$/i.test(relative))
+      text = await this.references(root, text);
+    if (Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024)
+      throw new Error("转换后的正文超过保存预算。");
     const readCurrent = async () => {
       try {
-        return await this.markdown(root, relative);
+        return await this.textFile(root, relative);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
       }
     };
     const current = await readCurrent();
-    if (!current || current.version !== version)
+    if ((current?.version ?? null) !== version)
       return { saved: false, file: current };
-    if (text === current.text) return { saved: true, file: current };
-    const file = await this.resolve(root, relative);
-    await fs.access(file, constants.W_OK);
+    if (current && text === current.text) return { saved: true, file: current };
+    let parent = root;
+    for (const part of path.posix.dirname(relative).split("/")) {
+      if (part === ".") continue;
+      parent = path.join(parent, part);
+      try {
+        await fs.mkdir(parent);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      if ((await fs.lstat(parent)).isSymbolicLink())
+        throw new Error("不能写入链接目录。");
+    }
+    const file = current
+      ? await this.resolve(root, relative)
+      : path.join(root, relative);
+    if (current) await fs.access(file, constants.W_OK);
     const temporary = path.join(
       path.dirname(file),
       ".paper30min-" + randomUUID() + ".tmp",
     );
     try {
-      const handle = await fs.open(temporary, "wx", (await fs.stat(file)).mode);
+      const handle = await fs.open(
+        temporary,
+        "wx",
+        current ? (await fs.stat(file)).mode : undefined,
+      );
       try {
         await handle.writeFile(text, "utf8");
         await handle.sync();
@@ -509,11 +644,21 @@ export class ProjectService {
         await handle.close();
       }
       const latest = await readCurrent();
-      if (!latest || latest.version !== version)
+      if ((latest?.version ?? null) !== version)
         return { saved: false, file: latest };
       // Recheck the path after staging; ordinary external edits are detected before replacement.
-      await this.resolve(root, relative);
-      await fs.rename(temporary, file);
+      if (current) await this.resolve(root, relative);
+      signal?.throwIfAborted();
+      if (current) await fs.rename(temporary, file);
+      else {
+        try {
+          await fs.link(temporary, file);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST")
+            return { saved: false, file: await readCurrent() };
+          throw error;
+        }
+      }
       return {
         saved: true,
         file: {
