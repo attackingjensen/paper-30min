@@ -2960,6 +2960,149 @@ test("引用字典并发新增、跨页区域、搬迁改名与明确失效", as
   expect(await fs.readFile(dictionaryPath(), "utf8")).toBe("{broken");
 });
 
+test("PDF 文档引用标记、重叠跨页反查、外部更新与重开", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  const root = path.join(parent, "研究工程");
+  await expectPdfRendered();
+  const manifest = await readManifest(root);
+  const pdfBefore = await fs.readFile(path.join(root, "text/paper.pdf"));
+  const input = { sha256: manifest.paper.sha256, kind: "text" as const, text: "两行跨页证据",
+    pages: [1, 2].map((page) => ({ page, width: 612, height: 792, rects: [
+      { origin: { x: 50, y: 160 }, size: { width: 180, height: 12 } },
+      { origin: { x: 50, y: 180 }, size: { width: 100, height: 12 } },
+    ] })) };
+  const citations = await page.evaluate(async ({ root, input }) => {
+    const make = (value: typeof input | { sha256: string; kind: "page" | "region"; text: string; pages: typeof input.pages }) =>
+      window.desktop.invoke<any>({ type: "createCitation", root, path: "text/paper.pdf", input: value });
+    return [await make(input), await make({ ...input, kind: "region", text: "", pages: [input.pages[0]] }),
+      await make({ ...input, kind: "page", text: "", pages: [{ ...input.pages[0], rects: [] }] })];
+  }, { root, input });
+  const [textCitation, regionCitation, unused] = citations;
+  const link = `paper://cite/${textCitation.id}`;
+  const regionLink = `paper://cite/${regionCitation.id}`;
+  const unusedLink = `paper://cite/${unused.id}`;
+  const uses = () => page.evaluate(({ root }) => window.desktop.invoke<any[]>({ type: "citationUses", root, path: "text/paper.pdf" }), { root });
+  await fs.mkdir(path.join(root, ".pi/sessions"), { recursive: true });
+  await fs.writeFile(path.join(root, ".pi/sessions/chat.jsonl"), JSON.stringify({ role: "user", content: unusedLink }));
+  await fs.writeFile(path.join(root, "text/parsed.md"), Array(100).fill(`[解析预建](${unusedLink})`).join("\n"));
+  await fs.writeFile(path.join(root, "notes/示例.md"), `代码 \`[不是使用](${unusedLink})\`\n\n\`\`\`md\n[也不是](${unusedLink})\n\`\`\`\n`);
+  expect(await uses()).toEqual([]);
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
+  const noteA = `# 第一篇\n\n${"填充段落。\n\n".repeat(35)}第一处 [证据](${link})\n\n第二处 [证据](${link})\n`;
+  await fs.writeFile(path.join(root, "notes/甲.md"), noteA);
+  await fs.writeFile(path.join(root, "notes/乙.md"), `# 第二篇\n\n[证据](${link}) 和 [重叠区域](${regionLink})\n`);
+  await expect.poll(async () => (await uses()).map((item) => item.uses.length).sort()).toEqual([1, 3]);
+  await expect(page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true })).toBeVisible();
+  const area = await page.locator(`[data-document-citation="${regionCitation.id}"]`).first().boundingBox();
+  await page.mouse.click(area!.x + 10, area!.y + 6);
+  const list = page.getByRole("complementary", { name: "文档引用使用位置" });
+  await expect(list.getByRole("button")).toHaveCount(5);
+  await expect(list).toContainText("第一篇");
+  await expect(list).toContainText("第二篇");
+  await page.screenshot({ path: "test-results/citation-uses.png" });
+  await page.getByRole("button", { name: "关闭文档引用列表", exact: true }).click();
+  await page.getByRole("button", { name: "引用", exact: true }).click();
+  await page.getByRole("button", { name: "框选引用", exact: true }).click();
+  const start = await page.locator(`[data-document-citation="${regionCitation.id}"]`).first().evaluate((element) => {
+    const { x, y } = element.getBoundingClientRect();
+    return { x, y };
+  });
+  await page.mouse.move(start.x + 5, start.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 90, start.y + 60, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator("[data-citation-page]")).toHaveCount(1);
+  await expect(list).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true }).click();
+  const position = await pdfViewport().evaluate((e) => e.scrollTop);
+  await list.getByRole("button").filter({ hasText: "第二处" }).click();
+  await expect(page.locator(".citation-use-target")).toHaveAttribute("data-citation-use", `${textCitation.id}:1`);
+  await expect(page.locator(".citation-use-target")).toBeInViewport();
+  // A second trip through the document's forward link must not replace the original PDF return point.
+  await page.locator(".citation-use-target").click();
+  await expectPdfRendered();
+  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await expectPdfRendered();
+  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeCloseTo(position, 0);
+  await page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true }).click();
+  await fs.copyFile(path.join(root, "notes/甲.md"), path.join(root, "notes/复制.md"));
+  await expect(list.getByRole("button")).toHaveCount(7);
+  await fs.unlink(path.join(root, "notes/复制.md"));
+  await expect(list.getByRole("button")).toHaveCount(5);
+  await list.getByRole("button").filter({ hasText: "第二处" }).click();
+  await page.getByRole("tab", { name: "paper.pdf" }).click();
+  await jumpPdfPage(2);
+  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await expectPdfRendered();
+  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeCloseTo(position, 0);
+  await jumpPdfPage(2);
+  await expect(page.getByRole("button", { name: "查看第 2 页的文档引用", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "查看第 2 页的文档引用", exact: true }).click();
+  await expect(list.getByRole("button")).toHaveCount(4);
+  await fs.rename(path.join(root, "notes/甲.md"), path.join(root, "map/移动.md"));
+  await expect(list).toContainText("map/移动.md");
+  await fs.writeFile(path.join(root, "notes/乙.md"), "# 第二篇\n\n删除所有引用\n");
+  await expect(list.getByRole("button")).toHaveCount(3);
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: /研究工程/ }).click();
+  await expectPdfRendered();
+  await expect(page.getByRole("button", { name: "查看第 2 页的文档引用", exact: true })).toBeVisible();
+  await fs.writeFile(path.join(root, "map/移动.md"), "# 无引用\n");
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
+  expect(await uses()).toEqual([]);
+  expect(Object.keys(JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8")).citations)).toHaveLength(3);
+  expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(pdfBefore);
+});
+
+test("文档反查保护未保存编辑，整页标记与失效字典明确处理", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  const root = path.join(parent, "研究工程");
+  const manifest = await readManifest(root);
+  const citation = await page.evaluate(({ root, sha256 }) => window.desktop.invoke<any>({
+    type: "createCitation", root, path: "text/paper.pdf", input: { sha256, kind: "page", text: "",
+      pages: [{ page: 1, width: 612, height: 792, rects: [] }] },
+  }), { root, sha256: manifest.paper.sha256 });
+  const link = `paper://cite/${citation.id}`;
+  await fs.writeFile(path.join(root, "notes/稿.md"), `\uFEFF# 我的文档\r\n\r\n[页证据][ref]\r\n\r\n[ref]: ${link}\r\n`);
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "稿.md", exact: true }).click();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("UNSAVED");
+  await page.getByRole("tab", { name: "paper.pdf" }).click();
+  await expectPdfRendered();
+  await expect(page.locator("[data-document-citation]")).toHaveCount(0);
+  await page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true }).click();
+  const list = page.getByRole("complementary", { name: "文档引用使用位置" });
+  await expect(list).toContainText("整页引用");
+  await list.getByRole("button").filter({ hasText: "我的文档" }).click();
+  await expect(page.getByRole("alert")).toContainText("未保存编辑");
+  await expect(editor).toContainText("UNSAVED");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true }).click();
+  await list.getByRole("button").filter({ hasText: "我的文档" }).click();
+  await expect(page.locator(".citation-use-target")).toHaveText("页证据");
+  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(1);
+  const dictionary = path.join(root, ".paper30min-citations.json");
+  const original = await fs.readFile(dictionary, "utf8");
+  await fs.writeFile(dictionary, "{broken");
+  await expect(page.getByRole("alert")).toContainText("文档引用加载失败");
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
+  await fs.writeFile(dictionary, original);
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(1);
+  await fs.appendFile(path.join(root, "text/paper.pdf"), "\nchanged");
+  await expect(page.getByRole("alert")).toContainText("PDF 已被替换");
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
+});
+
 test("Markdown 三种视图、真实文件保真、图片公式与多标签草稿", async () => {
   const parent = path.join(sandbox, "projects");
   await create(fixture, parent);

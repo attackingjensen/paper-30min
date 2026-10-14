@@ -105,6 +105,7 @@ export type Command =
   | { type: "readPdf"; root: string; path: string }
   | { type: "createCitation"; root: string; path: string; input: CitationInput }
   | { type: "resolveCitation"; root: string; link: string }
+  | { type: "citationUses"; root: string; path: string }
   | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
   | {
       type: "savePdfPosition";

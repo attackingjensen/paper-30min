@@ -38,7 +38,7 @@ import { PdfReader } from "./PdfReader";
 import { MarkdownDocument } from "./MarkdownDocument";
 import { AgentPanel } from "./AgentPanel";
 import { AgentSettingsForm } from "./AgentSettingsForm";
-import type { ResolvedCitation } from "../shared/citations";
+import type { ResolvedCitation, CitationUse } from "../shared/citations";
 import {
   useMarkdownDocuments,
   isMarkdown,
@@ -102,6 +102,8 @@ export function App() {
   const [creating, setCreating] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
   const [citationVisit, setCitationVisit] = useState<(ResolvedCitation & { from: string; nonce: string }) | null>(null);
+  const [usageVisit, setUsageVisit] = useState<{ use: CitationUse; from: string; pdfPath: string; position?: PdfPosition; nonce: string } | null>(null);
+  const [pdfRestore, setPdfRestore] = useState(0);
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
   const activeRoot = useRef(root);
@@ -244,6 +246,7 @@ export function App() {
     });
   }
   function enter(p: Project) {
+    setUsageVisit(null);
     setCitationVisit(null);
     setProject(p);
     const tab = {
@@ -452,6 +455,7 @@ export function App() {
           key={root + "/" + current.path}
           root={root!}
           draft={draft}
+          usageTarget={usageVisit?.use.path === current.path ? usageVisit : undefined}
           onChange={documents.notify}
           onSave={() => void documents.save(draft)}
           onOpen={openPath}
@@ -503,9 +507,15 @@ export function App() {
     if (current.path && /\.pdf$/i.test(current.path))
       return (
         <PdfReader
-          key={root + "/" + current.path + (citationVisit?.path === current.path ? citationVisit.nonce : "")}
+          key={root + "/" + current.path + (citationVisit?.path === current.path ? citationVisit.nonce : "") + ":" + pdfRestore}
           root={root!}
           path={current.path}
+          revision={project}
+          onUse={(use) => {
+            setCitationVisit(null);
+            setUsageVisit({ use, from: active, pdfPath: current.path!, position: positions.current[root!]?.[current.path!], nonce: crypto.randomUUID() });
+            openPath(use.path);
+          }}
           citation={citationVisit?.path === current.path ? citationVisit.citation : undefined}
           position={positions.current[root!]?.[current.path]}
           onPosition={(p) => savePosition(root!, current.path!, p)}
@@ -943,6 +953,15 @@ export function App() {
                     )}
                   </div>
                 </div>
+                {usageVisit && <div className="citation-return">
+                  <button onClick={() => {
+                    if (usageVisit.position) savePosition(root!, usageVisit.pdfPath, usageVisit.position);
+                    setPdfRestore((value) => value + 1);
+                    if (tabs.some((tab) => tab.key === usageVisit.from)) setActive(usageVisit.from);
+                    setCitationVisit(null);
+                    setUsageVisit(null);
+                  }}>返回 PDF 阅读位置</button>
+                </div>}
                 {citationVisit && <div className="citation-return">
                   <button onClick={() => {
                     if (tabs.some((tab) => tab.key === citationVisit.from)) setActive(citationVisit.from);

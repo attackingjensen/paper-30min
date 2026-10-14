@@ -3,7 +3,8 @@ import { createReadStream, createWriteStream, constants } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { citationId, validateCitation, type Citation, type CitationDictionary } from "../shared/citations.js";
+import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation } from "../shared/citations.js";
+import { markdownRenderer, markCitationUses } from "../shared/markdown-references.js";
 import {
   prepareDocumentReferences,
   type DocumentReferenceProcessor,
@@ -688,7 +689,7 @@ export class ProjectService {
     }
     const root = await fs.realpath(command.root);
     const m = await this.manifest(root);
-    if (command.type === "createCitation" || command.type === "resolveCitation") {
+    if (command.type === "createCitation" || command.type === "resolveCitation" || command.type === "citationUses") {
       let dictionary: CitationDictionary = { formatVersion: 1, projectId: m.id, citations: {} };
       try {
         const file = path.join(root, citationName);
@@ -705,6 +706,35 @@ export class ProjectService {
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (command.type === "citationUses") {
+        const record = [m.paper, ...m.materials].find((r) => r.path === command.path);
+        if (!record) return [];
+        const sha256 = await digest(await this.resolve(root, record.path));
+        if (sha256 !== record.sha256) throw new Error("PDF 已被替换，无法显示文档引用标记。");
+        const used = new Map<string, UsedCitation>();
+        const { files } = await this.snapshot(root);
+        for (const entry of files) {
+          // text/ owns originals, parsed drafts and review candidates; sources/ owns dictionaries.
+          if (entry.directory || !/\.(md|markdown)$/i.test(entry.path) || /^(text|sources)\//i.test(entry.path)) continue;
+          let file: MarkdownFile;
+          try { file = await this.markdown(root, entry.path); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw new Error(`无法读取引用使用位置（${entry.path}）：${(error as Error).message}`);
+          }
+          const tokens = markdownRenderer.parse(file.text.replace(/^\uFEFF/, ""), {});
+          const heading = tokens.findIndex((token) => token.type === "heading_open");
+          const title = heading >= 0 ? tokens[heading + 1].content : path.basename(entry.path);
+          for (const use of markCitationUses(tokens)) {
+            const citation = dictionary.citations[use.id];
+            if (!citation || citation.documentId !== record.id || citation.sha256 !== sha256) continue;
+            let item = used.get(use.id);
+            if (!item) { item = { citation, uses: [] }; used.set(use.id, item); }
+            item.uses.push({ ...use, path: entry.path, title, version: file.version });
+          }
+        }
+        return [...used.values()];
       }
       const existing = command.type === "resolveCitation" ? dictionary.citations[citationId(command.link)] : undefined;
       if (command.type === "resolveCitation" && !existing) throw new Error("找不到此引用，可能属于其他工程或字典已缺失。");

@@ -12,13 +12,13 @@ import wasmUrl from "@embedpdf/pdfium/pdfium.wasm?url";
 import stampManifest from "@embedpdf/default-stamps/zh-CN/manifest.json?raw";
 import stampsUrl from "@embedpdf/default-stamps/zh-CN/stamps.pdf?url";
 import type { PdfSource, PdfPosition } from "../shared/contracts";
-import type { Citation } from "../shared/citations";
+import type { Citation, CitationUse, UsedCitation } from "../shared/citations";
 import { connectPdfCitations } from "./pdf-citations";
 import type { EmbedPdfContainer } from "@embedpdf/react-pdf-viewer";
 
-export function PdfReader({ root, path, position, onPosition, citation }: {
+export function PdfReader({ root, path, position, onPosition, citation, revision, onUse }: {
   root: string; path: string; position?: PdfPosition;
-  citation?: Citation;
+  citation?: Citation; revision: unknown; onUse: (use: CitationUse) => void;
   onPosition: (position: PdfPosition) => void;
 }) {
   const [source, setSource] = useState<PdfSource | null>(null);
@@ -35,16 +35,39 @@ export function PdfReader({ root, path, position, onPosition, citation }: {
   if (error) return <div className="pdf-error" role="alert">PDF 打开失败：{error}</div>;
   if (!source) return <div className="empty">正在打开 PDF…</div>;
   if (citation && citation.sha256 !== source.sha256) return <div role="alert">PDF 已被替换，引用已失效。</div>;
-  return <PdfDocument root={root} source={source} path={path} saved={saved} onPosition={onPosition} citation={citation} />;
+  return <PdfDocument root={root} source={source} path={path} saved={saved} onPosition={onPosition} citation={citation} revision={revision} onUse={onUse} />;
 }
 
-function PdfDocument({ root, source, path, saved, onPosition, citation }: {
-  root: string; citation?: Citation;
+function PdfDocument({ root, source, path, saved, onPosition, citation, revision, onUse }: {
+  root: string; citation?: Citation; revision: unknown; onUse: (use: CitationUse) => void;
   source: PdfSource; path: string; saved?: PdfPosition; onPosition: (p: PdfPosition) => void;
 }) {
   const cleanup = useRef<(() => void) | null>(null);
   const viewer = useRef<EmbedPdfContainer | null>(null);
   const citations = useRef<ReturnType<typeof connectPdfCitations> | null>(null);
+  const flushPosition = useRef(() => {});
+  const [used, setUsed] = useState<UsedCitation[]>([]);
+  const usedRef = useRef(used);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [usageError, setUsageError] = useState("");
+  useEffect(() => {
+    let disposed = false;
+    void window.desktop.invoke<UsedCitation[]>({ type: "citationUses", root, path }).then((items) => {
+      if (disposed) return;
+      usedRef.current = items;
+      setUsed(items);
+      citations.current?.setUses(items);
+      setUsageError("");
+    }).catch((error: Error) => {
+      if (disposed) return;
+      usedRef.current = [];
+      setUsed([]);
+      citations.current?.setUses([]);
+      setUsageError(error.message);
+    });
+    return () => { disposed = true; };
+  }, [root, path, revision]);
+  const selected = used.filter((item) => selectedIds.includes(item.citation.id));
   const [status, setStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const onPositionRef = useRef(onPosition);
@@ -108,6 +131,7 @@ function PdfDocument({ root, source, path, saved, onPosition, citation }: {
         zoom.forDocument(documentId).requestZoom(saved!.zoom);
       }
     });
+    flushPosition.current = () => { save(); flush(); };
     const offReady = scroll.onLayoutReady((e) => {
       if (e.documentId !== documentId) return;
       if (restored) { save(); return; }
@@ -127,7 +151,8 @@ function PdfDocument({ root, source, path, saved, onPosition, citation }: {
       flush(); offResize(); offReady(); offScroll(); offZoom(); offLayout();
       window.removeEventListener("beforeunload", flush);
     };
-    citations.current = connectPdfCitations(registry, viewer.current!, { root, path, sha256: source.sha256, target: citation, onStatus: setStatus });
+    citations.current = connectPdfCitations(registry, viewer.current!, { root, path, sha256: source.sha256, target: citation, onStatus: setStatus, onUses: setSelectedIds });
+    citations.current.setUses(usedRef.current);
     // Let the native Viewer handle password prompts, malformed files, and retries.
     void manager.openDocumentBuffer({
       buffer: new Uint8Array(source.bytes).buffer, name: path, documentId, scale: saved?.zoom ?? 1,
@@ -136,6 +161,16 @@ function PdfDocument({ root, source, path, saved, onPosition, citation }: {
   }
 
   return <div className="pdf-reader" onClick={() => setContextMenu(null)}>
+    {usageError && <div className="citation-status" role="alert">文档引用加载失败：{usageError}</div>}
+    {selected.length > 0 && <aside className="citation-uses" aria-label="文档引用使用位置">
+      <header><strong>引用此处的文档</strong><button aria-label="关闭文档引用列表" onClick={() => setSelectedIds([])}>×</button></header>
+      {selected.map((item) => <section key={item.citation.id}>
+        <small>{item.citation.kind === "page" ? "整页引用" : item.citation.kind === "region" ? "区域引用" : "文字引用"} · 第 {item.citation.pages.map((p) => p.page).join("、")} 页</small>
+        {item.uses.map((use) => <button key={`${use.path}:${use.occurrence}`} onClick={() => { flushPosition.current(); onUse(use); }}>
+          <strong>{use.title}</strong><small>{use.path} · 第 {use.line} 行</small><span>{use.context}</span>
+        </button>)}
+      </section>)}
+    </aside>}
     {status && <div className="citation-status" role="status">
       <span>{status}</span>
       <button aria-label="取消引用选择" onClick={() => citations.current?.cancel()}>×</button>

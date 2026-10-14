@@ -913,3 +913,9 @@ body:has(.notice) .settings-workspace {
 .pdf-reader { position: relative; }
 .citation-status { position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 32px); padding: 8px 12px; border: 1px solid #e5e2ea; border-radius: 8px; background: #fff; box-shadow: 0 3px 12px #0002; font-size: 12px; }
 .citation-status button { font-size: 18px; flex-shrink: 0; }
+.citation-uses { position: absolute; right: 12px; top: 100px; z-index: 20; width: min(340px, 90%); max-height: 65%; overflow: auto; padding: 12px; background: #fff; border: 1px solid #cbc6e4; border-radius: 8px; box-shadow: 0 6px 24px #0002; }
+.citation-uses header { display: flex; align-items: center; justify-content: space-between; }
+.citation-uses section { margin-top: 12px; }
+.citation-uses section button { display: flex; flex-direction: column; gap: 5px; width: 100%; text-align: left; padding: 10px; margin-top: 6px; background: #f6f4fc; border: 1px solid #e3dff0; border-radius: 5px; cursor: pointer; overflow-wrap: anywhere; }
+.citation-uses small { color: #6c6483; }
+.citation-use-target { background: #e5dfff; outline: 2px solid #8674b6; border-radius: 3px; }

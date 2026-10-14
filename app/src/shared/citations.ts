@@ -23,6 +23,19 @@ export interface ResolvedCitation {
   citation: Citation;
   path: string;
 }
+export interface CitationUse {
+  id: string;
+  path: string;
+  title: string;
+  context: string;
+  line: number;
+  occurrence: number;
+  version: string;
+}
+export interface UsedCitation {
+  citation: Citation;
+  uses: CitationUse[];
+}
 export interface CitationDictionary {
   formatVersion: 1;
   projectId: string;

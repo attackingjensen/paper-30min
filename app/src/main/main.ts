@@ -184,7 +184,7 @@ async function start() {
     if (generation !== watchGeneration) return;
     watcher = watch(project.root, { recursive: true }, (_event, filename) => {
       if (
-        filename &&
+        filename && filename.toString() !== ".paper30min-citations.json" &&
         filename
           .toString()
           .split(/[\\/]/)

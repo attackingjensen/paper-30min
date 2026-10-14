@@ -5,20 +5,12 @@ import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxTree } from "@codemirror/language";
-import MarkdownIt from "markdown-it";
-import katex from "@vscode/markdown-it-katex";
+import { markdownRenderer as renderer, markCitationUses } from "../shared/markdown-references";
+import type { CitationUse } from "../shared/citations";
 import "katex/dist/katex.min.css";
 import { isDirty, type MarkdownDraft } from "./useMarkdownDocuments";
 import "./markdown.css";
 
-const mathPlugin =
-  typeof katex === "function"
-    ? katex
-    : (katex as { default: typeof katex }).default;
-const renderer = new MarkdownIt({ html: false, linkify: true }).use(
-  mathPlugin,
-  { throwOnError: false, trust: false },
-);
 const normalize = (text: string) => text.replace(/\r\n?|\n/g, "\n");
 // Keep original line endings in CM state, including the native undo/redo history.
 const restoreEndings = StateEffect.define<readonly string[]>();
@@ -66,9 +58,11 @@ export function MarkdownDocument({
   onSave,
   onOpen,
   onCitation,
+  usageTarget,
   onPosition,
 }: {
   root: string;
+  usageTarget?: { use: CitationUse; nonce: string };
   draft: MarkdownDraft;
   onChange: () => void;
   onSave: () => void;
@@ -226,6 +220,7 @@ export function MarkdownDocument({
 
   const html = useMemo(() => {
     const tokens = renderer.parse(draft.text.replace(/^\uFEFF/, ""), {});
+    markCitationUses(tokens);
     const visit = (list: typeof tokens) => {
       for (const token of list) {
         if (token.type === "image") {
@@ -254,6 +249,25 @@ export function MarkdownDocument({
     visit(tokens);
     return renderer.renderer.render(tokens, renderer.options, {});
   }, [draft.text, draft.path, root]);
+
+  const visited = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!usageTarget || draft.loading || !draft.file || visited.current === usageTarget.nonce) return;
+    const { use } = usageTarget;
+    if (draft.file.version !== use.version || isDirty(draft)) {
+      visited.current = usageTarget.nonce;
+      setLinkError("文档已变化或有未保存编辑，请保存后返回 PDF 刷新引用列表再定位。当前内容已保留。");
+      return;
+    }
+    if (draft.mode === "edit") { draft.mode = "read"; onChange(); return; }
+    const link = preview.current?.querySelector<HTMLElement>(`[data-citation-use="${use.id}:${use.occurrence}"]`);
+    visited.current = usageTarget.nonce;
+    if (!link) { setLinkError("引用使用位置已变化，请返回 PDF 刷新引用列表。"); return; }
+    setLinkError("");
+    preview.current?.querySelectorAll(".citation-use-target").forEach((node) => node.classList.remove("citation-use-target"));
+    link.classList.add("citation-use-target");
+    link.scrollIntoView({ block: "center" });
+  }, [usageTarget, draft.loading, draft.file, draft.mode, html]);
 
   function mode(value: MarkdownDraft["mode"]) {
     draft.mode = value;
