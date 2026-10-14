@@ -67,6 +67,8 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
   const [key, setKey] = useState("");
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [clearKeyIds, setClearKeyIds] = useState<string[]>([]);
+  const [exaKey, setExaKey] = useState("");
+  const [clearExaKey, setClearExaKey] = useState(false);
   const [editingServiceName, setEditingServiceName] = useState(false);
   const [expandedModelId, setExpandedModelId] = useState<string>();
   const [modelInputDrafts, setModelInputDrafts] = useState<
@@ -107,6 +109,8 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
     setApiKeys({});
     setClearKeyIds([]);
     setKey("");
+    setExaKey("");
+    setClearExaKey(false);
     setModelInputDrafts({});
     setExpandedModelId(undefined);
     setEditingServiceName(false);
@@ -213,6 +217,8 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
         settings: next,
         apiKeys: { ...apiKeys, ...(key ? { [serviceId]: key } : {}) },
         clearKeyIds: clearKey ? [...clearKeyIds, serviceId] : clearKeyIds,
+        exaApiKey: exaKey,
+        clearExaKey,
       });
       load(saved);
       setMessage("已保存");
@@ -750,6 +756,49 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
           </section>
         )}
       </fieldset>
+      {section === "agent" && (
+        <section className="settings-group">
+          <div className="settings-group-heading">
+            <h2>网络搜索</h2>
+          </div>
+          <label>
+            Exa API key
+            <input
+              aria-label="Exa API key"
+              type="password"
+              autoComplete="off"
+              disabled={busy}
+              value={exaKey}
+              placeholder={
+                catalog?.search?.hasKey && !clearExaKey
+                  ? "已保存，留空保留"
+                  : "未配置，使用免费服务"
+              }
+              onChange={(e) => {
+                setExaKey(e.target.value);
+                setClearExaKey(false);
+              }}
+            />
+          </label>
+          {catalog?.search?.keyError && !clearExaKey && (
+            <p role="alert">Exa 密钥无法读取，请替换或移除。</p>
+          )}
+          {catalog?.search?.hasKey && (
+            <label className="settings-checkbox">
+              <input
+                type="checkbox"
+                disabled={busy}
+                checked={clearExaKey}
+                onChange={(e) => {
+                  setClearExaKey(e.target.checked);
+                  if (e.target.checked) setExaKey("");
+                }}
+              />
+              移除 Exa 密钥
+            </label>
+          )}
+        </section>
+      )}
       <div className="settings-save-row">
         <button className="primary" type="submit" disabled={busy}>
           <Save /> {busy ? "正在保存…" : "保存配置"}

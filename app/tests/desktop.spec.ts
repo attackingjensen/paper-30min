@@ -378,6 +378,65 @@ test("多服务模型选择、思考流与会话恢复", async () => {
   }
 });
 
+test("Exa 密钥设置支持加密保存、重开、独立恢复与清除", async () => {
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  const keyInput = page.getByLabel("Exa API key", { exact: true });
+  await expect(keyInput).toHaveAttribute("placeholder", "未配置，使用免费服务");
+  await keyInput.fill("exa-settings-secret");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByRole("status")).toHaveText("已保存");
+  await expect(keyInput).toHaveValue("");
+  const file = path.join(sandbox, "profile", "agent-settings.json");
+  expect(await fs.readFile(file, "utf8")).not.toContain("exa-settings-secret");
+  await page.evaluate(() =>
+    window.desktop.agent({ type: "selectModel", modelId: "default" }),
+  );
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByLabel("Exa API key", { exact: true })).toHaveAttribute(
+    "placeholder",
+    "已保存，留空保留",
+  );
+  const publicSettings = await page.evaluate(() =>
+    window.desktop.agent<AgentSettings>({ type: "settings" }),
+  );
+  expect(publicSettings.search?.hasKey).toBe(true);
+  expect(JSON.stringify(publicSettings)).not.toContain("exa-settings-secret");
+  await desktop.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].setSize(560, 760),
+  );
+  await page
+    .getByLabel("Exa API key", { exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "test-results/ste100-settings-narrow.png" });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await desktop.close();
+  const stored = JSON.parse(await fs.readFile(file, "utf8"));
+  stored.encryptedExaKey = "broken-key";
+  await fs.writeFile(file, JSON.stringify(stored));
+  await launch();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Exa 密钥无法读取");
+  await page.getByLabel("移除 Exa 密钥").check();
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByRole("status")).toHaveText("已保存");
+  await expect(page.getByLabel("Exa API key", { exact: true })).toHaveAttribute(
+    "placeholder",
+    "未配置，使用免费服务",
+  );
+  expect(
+    JSON.parse(await fs.readFile(file, "utf8")).encryptedExaKey,
+  ).toBeUndefined();
+});
+
 test("旧单模型配置读取后保留加密密钥", async () => {
   const encryptedKey = await desktop.evaluate(({ safeStorage }) =>
     safeStorage.encryptString("legacy-secret").toString("base64"),
@@ -830,6 +889,411 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
     release();
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开", async () => {
+  test.setTimeout(120000);
+  const root = path.join(sandbox, "projects", "工具工程");
+  const secret = "controlled-tool-secret-STE81-controlled";
+  const plot =
+    "$values = 1..4 | ForEach-Object { $_ * $_ }; $sum = ($values | Measure-Object -Sum).Sum; " +
+    "Set-Content -LiteralPath notes/result.csv -Value ('sum,' + $sum); " +
+    'Set-Content -LiteralPath notes/result.svg -Value \'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="white"/><polyline points="10,90 60,75 110,45 160,10" fill="none" stroke="green" stroke-width="4"/></svg>\'; Write-Output (\'sum=\' + $sum); ' +
+    "$p = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 40' -PassThru; Write-Output ('finished-child=' + $p.Id)";
+  const actions = [
+    { name: "read", args: { path: "notes/input.md" } },
+    {
+      name: "edit",
+      args: {
+        path: "notes/input.md",
+        edits: [{ oldText: "score=2", newText: "score=3" }],
+      },
+    },
+    {
+      name: "write",
+      args: {
+        path: "notes/result.md",
+        content: "# 计算结果\n\n![平方序列](result.svg)\n\n总和：30。",
+      },
+    },
+    { name: "write", args: { path: "tmp/plot.ps1", content: plot } },
+    { name: "bash", args: { command: "& ./tmp/plot.ps1" } },
+    {
+      name: "bash",
+      args: {
+        command: `1..2100 | ForEach-Object { 'line-' + $_ }; Write-Output $env:OPENAI_API_KEY; [Console]::Write(('${secret.slice(0, 15)}' + '${secret.slice(15)}')); exit 7`,
+      },
+    },
+    { name: "write", args: { path: "text/paper.pdf", content: "bad" } },
+    {
+      name: "write",
+      args: { path: "sources/dictionary.json", content: "bad" },
+    },
+    { name: "write", args: { path: "../escape.md", content: "bad" } },
+    { name: "read", args: { path: "notes/input.md" } },
+    {
+      name: "edit",
+      args: {
+        path: "notes/input.md",
+        edits: [{ oldText: "score=3", newText: "score=4" }],
+      },
+    },
+    {
+      name: "bash",
+      args: {
+        command:
+          "$p = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 40' -PassThru; Write-Output ('child=' + $p.Id); Start-Sleep -Seconds 40",
+      },
+    },
+  ];
+  let index = 0;
+  const results: any[] = [];
+  const server = createServer(async (request, response) => {
+    let text = "";
+    for await (const part of request) text += part;
+    const payload = JSON.parse(text);
+    const last = payload.messages.at(-1);
+    if (last?.role === "tool") results.push(last);
+    if (index === 10)
+      await fs.writeFile(path.join(root, "notes/input.md"), "score=9\n");
+    expect(payload.tools.map((tool: any) => tool.function.name).sort()).toEqual(
+      [
+        "bash",
+        "edit",
+        "fetch_content",
+        "get_search_content",
+        "read",
+        "web_search",
+        "write",
+      ],
+    );
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const action = actions[index++];
+    const emit = (delta: unknown, finish_reason: string | null = null) =>
+      response.write(
+        `data: ${JSON.stringify({
+          id: "tools",
+          object: "chat.completion.chunk",
+          model: "tool-model",
+          choices: [{ index: 0, delta, finish_reason }],
+        })}\n\n`,
+      );
+    if (action) {
+      emit({
+        tool_calls: [
+          {
+            index: 0,
+            id: "reused-tool-id",
+            type: "function",
+            function: {
+              name: action.name,
+              arguments: JSON.stringify(action.args),
+            },
+          },
+        ],
+      });
+      emit({}, "tool_calls");
+    } else {
+      emit({ content: "任务完成" });
+      emit({}, "stop");
+    }
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "工具工程");
+    await fs.writeFile(path.join(root, "notes/input.md"), "score=2\n");
+    await page.evaluate(
+      async ({ endpoint, secret }) => {
+        const settings = await window.desktop.agent<AgentSettings>({
+          type: "settings",
+        });
+        settings.services[0].baseUrl = endpoint;
+        settings.models[0].model = "tool-model";
+        await window.desktop.agent({
+          type: "saveSettings",
+          settings,
+          apiKey: secret,
+        });
+      },
+      {
+        endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        secret,
+      },
+    );
+    await page.getByRole("button", { name: "任务", exact: true }).click();
+    await page
+      .getByLabel("Agent 消息")
+      .fill(
+        "读取并修改 input.md，计算平方总和、绘图；最后运行可停止的长任务。",
+      );
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    const shell = page
+      .locator('[data-tool="bash"]')
+      .filter({ has: page.locator(".tool-arguments", { hasText: "child=" }) });
+    await expect(shell).toContainText("运行中", { timeout: 60000 });
+    await shell.locator("summary").click();
+    await expect(shell.locator(".tool-output")).toContainText("child=", {
+      timeout: 60000,
+    });
+    const child = Number(
+      (await shell.locator(".tool-output").innerText()).match(
+        /child=(\d+)/,
+      )?.[1],
+    );
+    expect(child).toBeGreaterThan(0);
+    await page.getByRole("button", { name: "停止回复" }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await expect
+      .poll(() => {
+        try {
+          process.kill(child, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      })
+      .toBe(true);
+    expect(await fs.readFile(path.join(root, "notes/input.md"), "utf8")).toBe(
+      "score=9\n",
+    );
+    expect(
+      await fs.readFile(path.join(root, "notes/result.csv"), "utf8"),
+    ).toContain("sum,30");
+    expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(
+      await fs.readFile(fixture),
+    );
+    await expect(
+      fs.stat(path.join(sandbox, "projects/escape.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      results.find((result) => String(result.content).includes("sum=30")),
+    ).toBeTruthy();
+    const computeOutput = String(
+      results.find((result) => String(result.content).includes("sum=30"))
+        .content,
+    );
+    const finishedChild = Number(
+      computeOutput.match(/finished-child=(\d+)/)?.[1],
+    );
+    expect(finishedChild).toBeGreaterThan(0);
+    expect(() => process.kill(finishedChild, 0)).toThrow();
+    const truncated = page.locator('[data-tool="bash"]').nth(1);
+    await truncated.locator("summary").click();
+    await expect(truncated.locator(".tool-output")).toContainText(
+      "Command exited with code 7",
+    );
+    await expect(truncated.locator(".tool-output")).toContainText(
+      "Showing lines",
+    );
+    const conflict = page.locator('[data-tool="edit"]').last();
+    await conflict.locator("summary").click();
+    await expect(conflict.locator(".tool-conflict")).toContainText("score=9");
+    await expect(conflict.locator(".tool-conflict")).toContainText("score=4");
+    const created = page.locator('[data-tool="write"]').first();
+    await created.locator("summary").click();
+    await expect(created.locator(".tool-diff")).toContainText("+总和：30");
+    await created
+      .getByRole("button", { name: "notes/result.md", exact: true })
+      .click();
+    await expect(page.locator(".markdown-preview img")).toBeVisible();
+    await page.screenshot({ path: "test-results/pi-tools-desktop.png" });
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setSize(560, 760),
+    );
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(900);
+    await expect(
+      page.getByRole("button", { name: "展开 Agent" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "展开 Agent" }).click();
+    await expect(page.locator(".right-slot")).toHaveCSS("opacity", "1");
+    await page.screenshot({ path: "test-results/pi-tools-narrow.png" });
+    await desktop.close();
+    await launch();
+    await page.getByRole("button", { name: /工具工程/ }).click();
+    await expect(page.locator('[data-tool="read"]')).toHaveCount(2);
+    await page.locator('[data-tool="read"]').first().locator("summary").click();
+    await expect(page.locator('[data-tool="read"]').first()).toContainText(
+      "score=2",
+    );
+    await expect(page.locator('[data-tool="bash"]').last()).toContainText(
+      "已停止",
+    );
+    await expect(page.locator('[data-tool="edit"]').last()).toContainText(
+      "失败",
+    );
+    const sessions = path.join(root, ".pi/sessions");
+    for (const file of await fs.readdir(sessions)) {
+      const saved = await fs.readFile(path.join(sessions, file), "utf8");
+      expect(saved).not.toContain(secret);
+      for (const line of saved.trim().split("\n")) {
+        const output = JSON.parse(line).message?.details?.fullOutputPath;
+        if (output) {
+          const log = await fs.readFile(output, "utf8");
+          expect(log).not.toContain(secret);
+          expect(log).toContain("[已隐藏凭据]");
+        }
+      }
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("模型含凭据的流中止或异常后，终态与持久会话仍脱敏", async () => {
+  const secret = "controlled-terminal-secret-STE81";
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const part of request) body += part;
+    const payload = JSON.parse(body);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: `已返回 ${secret}` }, finish_reason: null }] })}\n\n`,
+    );
+    if (JSON.stringify(payload.messages.at(-1).content).includes("failure")) {
+      // An invalid provider chunk ends the stream after a sensitive partial reply.
+      response.end("data: {invalid-json}\n\n");
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "终态工程");
+    const root = path.join(sandbox, "projects", "终态工程");
+    await page.evaluate(
+      async ({ endpoint, secret }) => {
+        const settings = await window.desktop.agent<AgentSettings>({
+          type: "settings",
+        });
+        settings.services[0].baseUrl = endpoint;
+        settings.models[0].model = "terminal-model";
+        await window.desktop.agent({
+          type: "saveSettings",
+          settings,
+          apiKey: secret,
+        });
+      },
+      {
+        endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        secret,
+      },
+    );
+    for (const mode of ["cancel", "failure"]) {
+      if (mode === "failure")
+        await page.getByRole("button", { name: "新会话", exact: true }).click();
+      await page.getByLabel("Agent 消息").fill(mode);
+      await page.getByRole("button", { name: "发送消息", exact: true }).click();
+      await expect(page.locator(".message-text").last()).toContainText(
+        "[已隐藏凭据]",
+      );
+      if (mode === "cancel")
+        await page.getByRole("button", { name: "停止回复" }).click();
+      await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(
+        0,
+      );
+      const states = await page.evaluate(
+        (root) => window.desktop.agent<ChatSession[]>({ type: "list", root }),
+        root,
+      );
+      expect(JSON.stringify(states)).not.toContain(secret);
+      expect(
+        states
+          .flatMap((state) => state.messages)
+          .some(
+            (message) =>
+              message.status === (mode === "cancel" ? "aborted" : "error"),
+          ),
+      ).toBe(true);
+      for (const file of await fs.readdir(path.join(root, ".pi/sessions"))) {
+        const stored = await fs.readFile(
+          path.join(root, ".pi/sessions", file),
+          "utf8",
+        );
+        expect(stored).not.toContain(secret);
+        expect(stored).toContain("[已隐藏凭据]");
+      }
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("Pi 只读问答拒绝模型擅自写入和 Shell", async () => {
+  let index = 0;
+  const server = createServer(async (request, response) => {
+    for await (const _part of request) {
+      /* consume the request body */
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const action =
+      index++ === 0
+        ? {
+            name: "write",
+            arguments: JSON.stringify({
+              path: "notes/unasked.md",
+              content: "bad",
+            }),
+          }
+        : index === 2
+          ? {
+              name: "bash",
+              arguments: JSON.stringify({
+                command: "Set-Content notes/unasked.txt bad",
+              }),
+            }
+          : null;
+    const delta = action
+      ? {
+          tool_calls: [
+            {
+              index: 0,
+              id: "readonly-" + index,
+              type: "function",
+              function: action,
+            },
+          ],
+        }
+      : { content: "只回答问题" };
+    response.write(
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
+    );
+    response.write(
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: action ? "tool_calls" : "stop" }] })}\n\n`,
+    );
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "只读工程");
+    await page.evaluate(
+      async (endpoint) => {
+        const settings = await window.desktop.agent<AgentSettings>({
+          type: "settings",
+        });
+        settings.services[0].baseUrl = endpoint;
+        settings.models[0].model = "tool-model";
+        await window.desktop.agent({
+          type: "saveSettings",
+          settings,
+          apiKey: "readonly-key",
+        });
+      },
+      `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+    );
+    await page.getByLabel("Agent 消息").fill("什么是梯度？");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".message-text").last()).toHaveText("只回答问题");
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    expect(
+      await fs.readdir(path.join(sandbox, "projects/只读工程/notes")),
+    ).toEqual([]);
+    await expect(page.locator('[data-tool="write"]')).toContainText("失败");
+    await expect(page.locator('[data-tool="bash"]')).toContainText("失败");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 
@@ -1301,7 +1765,8 @@ test("Responses 与 Anthropic 文本协议及损坏配置恢复通过真实 Elec
 });
 
 test.describe("真实模型验证", () => {
-  test("用本机旧配置运行真实 Pi 基础消息并重开", async () => {
+  test("用本机旧配置运行真实 Pi 消息与工具任务并重开", async () => {
+    test.setTimeout(180000);
     test.skip(
       process.env.PAPER30MIN_REAL_MODEL !== "1",
       "需用户授权复用本机旧模型配置后显式运行。",
@@ -1344,7 +1809,7 @@ test.describe("真实模型验证", () => {
           models: settings.models.map((entry) => ({
             ...entry,
             model: model.model,
-            maxTokens: 256,
+            maxTokens: 2048,
           })),
           proxy: "direct",
         },
@@ -1362,10 +1827,90 @@ test.describe("真实模型验证", () => {
       { timeout: 60000 },
     );
     await expect(page.locator(".agent-error")).toHaveCount(0);
-    const reply = await page
-      .locator(".chat-message.assistant .message-text")
-      .innerText();
     const root = path.join(sandbox, "projects", "真实模型工程");
+    if (process.env.PAPER30MIN_REAL_WEB === "1") {
+      await page
+        .getByLabel("Agent 消息")
+        .fill(
+          "请调研 Attention Is All You Need 的主要结果。使用 web_search 找到论文原始来源，再用 fetch_content 读取该网页，并用 get_search_content 在实际获取正文中查找 BLEU。用中文简短综合模型特点和 WMT 2014 英德 BLEU 结果，只引用你实际使用的一两个网页，不列出全部搜索结果。不要读取或修改工程文件。",
+        );
+      await page.getByRole("button", { name: "发送消息", exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: "停止回复" }),
+      ).toBeVisible();
+      await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(
+        0,
+        { timeout: 120000 },
+      );
+      await expect(page.locator(".agent-error")).toHaveCount(0);
+      const states = await page.evaluate(
+        (root) => window.desktop.agent<ChatSession[]>({ type: "list", root }),
+        root,
+      );
+      const tools = states.flatMap((state) =>
+        state.messages.flatMap((message) => message.tools ?? []),
+      );
+      for (const name of ["web_search", "fetch_content", "get_search_content"])
+        expect(
+          tools.some((tool) => tool.name === name && tool.status === "done"),
+        ).toBe(true);
+      await expect(
+        page.locator(".chat-message.assistant .message-text").last(),
+      ).toContainText("28.4");
+      await expect(
+        page.locator('.message-text a[href*="arxiv.org"]'),
+      ).toHaveCount(1);
+      const replies = await page
+        .locator(".chat-message.assistant .message-text")
+        .allTextContents();
+      await page.screenshot({ path: "test-results/real-model/ste100-web.png" });
+      await desktop.close();
+      await launch();
+      await page.getByRole("button", { name: /真实模型工程/ }).click();
+      await expect(
+        page.locator(".chat-message.assistant .message-text"),
+      ).toHaveText(replies);
+      expect(await fs.readdir(path.join(root, "notes"))).toEqual([]);
+      return;
+    }
+    await fs.writeFile(
+      path.join(root, "notes/numbers.csv"),
+      "value\n1\n2\n3\n4\n",
+    );
+    await page.getByRole("button", { name: "任务", exact: true }).click();
+    await page
+      .getByLabel("Agent 消息")
+      .fill(
+        "请执行一个小型计算任务：先用 read 读取 notes/numbers.csv，编写 tmp/calculate.ps1，用 bash（Windows PowerShell）运行脚本计算各数平方之和，将计算结果保存为 notes/calculation.csv（表头 metric,value，数据 sum_squares,真实结果）；用 write 保存 notes/calculation.md，正文包含计算结果。必须真实调用工具，不访问工程外文件，不读取 PDF。最后简短回复结果。",
+      );
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(
+      0,
+      { timeout: 120000 },
+    );
+    await expect(page.locator(".agent-error")).toHaveCount(0);
+    expect(
+      await fs.readFile(path.join(root, "notes/calculation.csv"), "utf8"),
+    ).toContain("sum_squares,30");
+    expect(
+      await fs.readFile(path.join(root, "notes/calculation.md"), "utf8"),
+    ).toContain("30");
+    const tools = await page.evaluate(async (root) => {
+      const states = await window.desktop.agent<ChatSession[]>({
+        type: "list",
+        root,
+      });
+      return states.flatMap((state) =>
+        state.messages.flatMap((message) => message.tools ?? []),
+      );
+    }, root);
+    for (const name of ["read", "write", "bash"])
+      expect(
+        tools.some((tool) => tool.name === name && tool.status === "done"),
+      ).toBe(true);
+    const replies = await page
+      .locator(".chat-message.assistant .message-text")
+      .allTextContents();
     for (const file of await fs.readdir(path.join(root, ".pi", "sessions")))
       expect(
         (
@@ -1377,7 +1922,7 @@ test.describe("真实模型验证", () => {
     await page.getByRole("button", { name: /真实模型工程/ }).click();
     await expect(
       page.locator(".chat-message.assistant .message-text"),
-    ).toHaveText(reply);
+    ).toHaveText(replies);
   });
 });
 

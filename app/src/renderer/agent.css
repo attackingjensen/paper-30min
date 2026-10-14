@@ -8,6 +8,76 @@
   font-size: 12px;
   font-weight: 600;
 }
+.agent-mode {
+  display: flex;
+  gap: 2px;
+  padding: 6px 6px 0;
+}
+.agent-mode button {
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #827a8b;
+  border-radius: 4px;
+}
+.agent-mode button[aria-pressed="true"] {
+  background: #ebe6f1;
+  color: #665475;
+}
+.tool-process {
+  margin-top: 9px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+.tool-process summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+.tool-process svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+.tool-process summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.tool-process summary small {
+  flex: none;
+}
+.tool-process pre {
+  max-height: 230px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 7px;
+  background: #f5f4f6;
+  font:
+    11px/1.6 Consolas,
+    monospace;
+}
+.tool-diff {
+  color: #456a58;
+}
+.tool-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  padding: 5px 0;
+}
+.tool-conflict label {
+  display: block;
+  margin-top: 8px;
+  color: #8a6672;
+}
 .agent-head > svg {
   width: 15px;
   color: #8b80ad;
@@ -729,6 +799,17 @@
 }
 .agent-settings input::placeholder {
   color: #b0a7b7;
+}
+.agent-settings .settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-settings .settings-checkbox input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
 }
 .agent-settings input:focus {
   background: #fff;

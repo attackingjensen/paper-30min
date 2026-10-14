@@ -959,6 +959,7 @@ export function App() {
               )}
               <div className="right-slot" inert={!right} aria-hidden={!right}>
                 <AgentPanel
+                  onOpenFile={openPath}
                   key={root}
                   root={root!}
                   onSettings={() => setSettings("agent")}

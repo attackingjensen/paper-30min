@@ -226,6 +226,8 @@ async function start() {
           command.apiKeys ??
             (command.apiKey ? { default: command.apiKey } : {}),
           command.clearKeyIds ?? (command.clearKey ? ["default"] : []),
+          command.exaApiKey,
+          command.clearExaKey,
         ),
       );
       settingsWrite = result.catch(() => undefined);

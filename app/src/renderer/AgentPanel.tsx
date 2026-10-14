@@ -8,6 +8,10 @@ import {
   Settings2,
   Sparkles,
   Square,
+  FileCode,
+  Terminal,
+  FileOutput,
+  Globe,
 } from "lucide-react";
 import { AgentMessage } from "./AgentMessage";
 import "./agent.css";
@@ -16,6 +20,7 @@ import type {
   AgentSettings,
   ChatSession,
   ThinkingLevel,
+  ChatTool,
 } from "../shared/contracts";
 
 export function AgentPanel({
@@ -23,17 +28,20 @@ export function AgentPanel({
   onSettings,
   initialView,
   onViewChange,
+  onOpenFile,
 }: {
   root: string;
   onSettings: () => void;
   initialView?: { active: string; text: string };
   onViewChange: (view: { active: string; text: string }) => void;
+  onOpenFile: (path: string) => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [active, setActive] = useState(initialView?.active ?? "");
   const [text, setText] = useState(initialView?.text ?? "");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [allowChanges, setAllowChanges] = useState(false);
   const [catalog, setCatalog] = useState<AgentSettings>();
   const [modelOpen, setModelOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
@@ -143,7 +151,15 @@ export function AgentPanel({
     const conversation =
       current ?? (await command({ type: "create", root }, true));
     if (!conversation) return;
-    if (await command({ type: "send", root, id: conversation.id, text }))
+    if (
+      await command({
+        type: "send",
+        root,
+        id: conversation.id,
+        text,
+        allowChanges: current?.busy ? current.allowChanges : allowChanges,
+      })
+    )
       setText("");
   }
   return (
@@ -255,6 +271,9 @@ export function AgentPanel({
               </details>
             )}
             <AgentMessage text={m.text} role={m.role} onError={setError} />
+            {m.tools?.map((tool) => (
+              <ToolProcess key={tool.id} tool={tool} onOpenFile={onOpenFile} />
+            ))}
             {m.status && (
               <small>{m.status === "aborted" ? "已停止" : "请求失败"}</small>
             )}
@@ -292,6 +311,28 @@ export function AgentPanel({
           </div>
         )}
         <div className="composer">
+          <div className="agent-mode" role="group" aria-label="运行模式">
+            {[false, true].map((task) => (
+              <button
+                key={String(task)}
+                type="button"
+                aria-pressed={
+                  (current?.busy
+                    ? current.allowChanges === true
+                    : allowChanges) === task
+                }
+                disabled={current?.busy || pending}
+                title={
+                  task
+                    ? "授权当前任务连续修改工程文件及运行受信任主机 Shell"
+                    : "只读问答"
+                }
+                onClick={() => setAllowChanges(task)}
+              >
+                {task ? "任务" : "问答"}
+              </button>
+            ))}
+          </div>
           <textarea
             aria-label="Agent 消息"
             placeholder="有什么想聊的？"
@@ -450,5 +491,106 @@ export function AgentPanel({
         </div>
       </div>
     </aside>
+  );
+}
+
+function ToolProcess({
+  tool,
+  onOpenFile,
+}: {
+  tool: ChatTool;
+  onOpenFile: (path: string) => void;
+}) {
+  const details = tool.details as
+    | {
+        artifacts?: string[];
+        change?: { path: string; patch: string };
+        conflict?: {
+          base: string | null;
+          current: string | null;
+          proposed: string;
+        };
+      }
+    | undefined;
+  const args = tool.arguments as
+    | {
+        path?: string;
+        command?: string;
+        query?: string;
+        url?: string;
+        responseId?: string;
+      }
+    | undefined;
+  return (
+    <details className="tool-process" data-tool={tool.name}>
+      <summary>
+        {["web_search", "fetch_content", "get_search_content"].includes(
+          tool.name,
+        ) ? (
+          <Globe />
+        ) : tool.name === "bash" ? (
+          <Terminal />
+        ) : (
+          <FileCode />
+        )}
+        <span>
+          {tool.name} ·{" "}
+          {args?.query ??
+            args?.url ??
+            args?.responseId ??
+            args?.path ??
+            "PowerShell"}
+        </span>
+        <small>
+          {
+            {
+              running: "运行中",
+              done: "完成",
+              error: "失败",
+              aborted: "已停止",
+            }[tool.status]
+          }
+        </small>
+      </summary>
+      <pre className="tool-arguments">
+        {args?.command ?? JSON.stringify(tool.arguments, null, 2)}
+      </pre>
+      {tool.output && <pre className="tool-output">{tool.output}</pre>}
+      {details?.change && (
+        <>
+          <button
+            className="tool-file"
+            onClick={() => onOpenFile(details.change!.path)}
+          >
+            <FileOutput />
+            {details.change.path}
+          </button>
+          <pre className="tool-diff">
+            {details.change.patch || "内容未改变"}
+          </pre>
+        </>
+      )}
+      {details?.artifacts?.map((file) => (
+        <button
+          key={file}
+          className="tool-file"
+          onClick={() => onOpenFile(file)}
+        >
+          <FileOutput />
+          {file}
+        </button>
+      ))}
+      {details?.conflict && (
+        <div className="tool-conflict">
+          <strong>写入冲突</strong>
+          <label>读取基线</label>
+          <pre>{details.conflict.base ?? "新文件"}</pre>
+          <label>磁盘内容</label>
+          <pre>{details.conflict.current ?? "文件已删除"}</pre>
+          <label>本次内容</label>
+          <pre>{details.conflict.proposed}</pre>
+        </div>
+      )}
+    </details>
   );
 }
