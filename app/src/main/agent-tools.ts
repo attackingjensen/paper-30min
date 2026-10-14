@@ -64,18 +64,15 @@ public static class Paper30MinJob {
 export function createProjectTools(
   root: string,
   service: ProjectService,
-  allowChanges: boolean,
   active: () => boolean,
   secrets: string[],
   scope: WriteScope = {},
 ): ToolDefinition[] {
   const baselines = new Map<string, AgentFile>();
   const key = (file: string) => path.resolve(file).toLowerCase();
-  const check = (signal?: AbortSignal, mutation = false) => {
+  const check = (signal?: AbortSignal) => {
     signal?.throwIfAborted();
     if (!active()) throw new Error("任务已停止。");
-    if (mutation && !allowChanges)
-      throw new Error("当前是只读问答，请使用任务模式授权工程修改和 Shell。");
   };
   const read = async (file: string) => {
     check();
@@ -90,7 +87,7 @@ export function createProjectTools(
     return value.bytes;
   };
   const write = async (file: string, content: string, signal: AbortSignal) => {
-    check(signal, true);
+    check(signal);
     const baseline = baselines.get(key(file));
     const saved = await service.writeAgentFile(
       root,
@@ -152,7 +149,7 @@ export function createProjectTools(
     ) {
       let change: { path: string; patch: string } | undefined;
       try {
-        check(signal, true);
+        check(signal);
         const controller = signal ?? new AbortController().signal;
         const operations = {
           writeFile: async (file: string, content: string) => {
@@ -165,7 +162,7 @@ export function createProjectTools(
                 operations: {
                   ...operations,
                   mkdir: async () => {
-                    check(signal, true);
+                    check(signal);
                   },
                 },
               })
@@ -173,7 +170,7 @@ export function createProjectTools(
                 operations: {
                   ...operations,
                   access: async () => {
-                    check(signal, true);
+                    check(signal);
                   },
                   readFile: editorRead,
                 },
@@ -208,7 +205,7 @@ export function createProjectTools(
     exposeSessionEnvironment: false,
     operations: {
       exec: async (command, cwd, options) => {
-        check(options.signal, true);
+        check(options.signal);
         if (process.platform !== "win32")
           throw new Error("Shell 当前仅支持 Windows。");
         const env = Object.fromEntries(

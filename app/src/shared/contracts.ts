@@ -217,7 +217,6 @@ export interface ChatSession {
   queued: string[];
   error?: string;
   revision: number;
-  allowChanges?: boolean;
 }
 export type AgentCommand =
   | { type: "settings" }
@@ -241,6 +240,5 @@ export type AgentCommand =
       root: string;
       id: string;
       text: string;
-      allowChanges?: boolean;
     }
   | { type: "stop"; root: string; id: string };

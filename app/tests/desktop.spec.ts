@@ -435,6 +435,10 @@ test("多服务模型选择、思考流与会话恢复", async () => {
 test("Exa 密钥设置支持加密保存、重开、独立恢复与清除", async () => {
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByLabel("Exa API key", { exact: true })).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Agent 网络搜索", exact: true })
+    .click();
   const keyInput = page.getByLabel("Exa API key", { exact: true });
   await expect(keyInput).toHaveAttribute("placeholder", "未配置，使用免费服务");
   await keyInput.fill("exa-settings-secret");
@@ -449,7 +453,9 @@ test("Exa 密钥设置支持加密保存、重开、独立恢复与清除", asyn
   await desktop.close();
   await launch();
   await page.getByRole("button", { name: "设置", exact: true }).click();
-  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Agent 网络搜索", exact: true })
+    .click();
   await expect(page.getByLabel("Exa API key", { exact: true })).toHaveAttribute(
     "placeholder",
     "已保存，留空保留",
@@ -474,10 +480,13 @@ test("Exa 密钥设置支持加密保存、重开、独立恢复与清除", asyn
   await desktop.close();
   const stored = JSON.parse(await fs.readFile(file, "utf8"));
   stored.encryptedExaKey = "broken-key";
+  stored.encryptedKeys.default = "broken-model-key";
   await fs.writeFile(file, JSON.stringify(stored));
   await launch();
   await page.getByRole("button", { name: "设置", exact: true }).click();
-  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Agent 网络搜索", exact: true })
+    .click();
   await expect(page.getByRole("alert")).toContainText("Exa 密钥无法读取");
   await page.getByLabel("移除 Exa 密钥").check();
   await page.getByRole("button", { name: "保存配置" }).click();
@@ -489,6 +498,13 @@ test("Exa 密钥设置支持加密保存、重开、独立恢复与清除", asyn
   expect(
     JSON.parse(await fs.readFile(file, "utf8")).encryptedExaKey,
   ).toBeUndefined();
+  expect(JSON.parse(await fs.readFile(file, "utf8")).encryptedKeys.default).toBe("broken-model-key");
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByText("此密钥无法读取，请替换或移除。")).toBeVisible();
+  await page.getByLabel("API 密钥", { exact: true }).fill("recovered-model-key");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByRole("status")).toHaveText("已保存");
+  await expect(page.getByText("此密钥无法读取，请替换或移除。")).toHaveCount(0);
 });
 
 test("旧单模型配置读取后保留加密密钥", async () => {
@@ -948,6 +964,10 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
 
 test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开", async () => {
   test.setTimeout(120000);
+  let releaseThinking = () => {};
+  const thinkingGate = new Promise<void>((resolve) => {
+    releaseThinking = resolve;
+  });
   const root = path.join(sandbox, "projects", "工具工程");
   const secret = "controlled-tool-secret-STE81-controlled";
   const plot =
@@ -1034,6 +1054,12 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
         })}\n\n`,
       );
     if (action) {
+      if (index === 1) {
+        emit({
+          reasoning_content: "先读取工程材料，再计算并核对结果。\n".repeat(18),
+        });
+        await thinkingGate;
+      }
       emit({
         tool_calls: [
           {
@@ -1076,17 +1102,20 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
         secret,
       },
     );
-    await page.getByRole("button", { name: "任务", exact: true }).click();
     await page
       .getByLabel("Agent 消息")
       .fill(
         "读取并修改 input.md，计算平方总和、绘图；最后运行可停止的长任务。",
       );
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    const thinking = page.locator(".thinking-card").first();
+    await thinking.locator("summary").click();
+    releaseThinking();
     const shell = page
       .locator('[data-tool="bash"]')
       .filter({ has: page.locator(".tool-arguments", { hasText: "child=" }) });
     await expect(shell).toContainText("运行中", { timeout: 60000 });
+    await expect(thinking).toHaveAttribute("open", "");
     await shell.locator("summary").click();
     await expect(shell.locator(".tool-output")).toContainText("child=", {
       timeout: 60000,
@@ -1191,6 +1220,7 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
       }
     }
   } finally {
+    releaseThinking();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -1274,7 +1304,7 @@ test("模型含凭据的流中止或异常后，终态与持久会话仍脱敏",
   }
 });
 
-test("Pi 只读问答拒绝模型擅自写入和 Shell", async () => {
+test("Pi 普通对话可写入文件和运行 Shell", async () => {
   let index = 0;
   const server = createServer(async (request, response) => {
     for await (const _part of request) {
@@ -1286,15 +1316,15 @@ test("Pi 只读问答拒绝模型擅自写入和 Shell", async () => {
         ? {
             name: "write",
             arguments: JSON.stringify({
-              path: "notes/unasked.md",
-              content: "bad",
+              path: "notes/requested.md",
+              content: "hello",
             }),
           }
         : index === 2
           ? {
               name: "bash",
               arguments: JSON.stringify({
-                command: "Set-Content notes/unasked.txt bad",
+                command: "Set-Content notes/requested.txt hello",
               }),
             }
           : null;
@@ -1303,13 +1333,13 @@ test("Pi 只读问答拒绝模型擅自写入和 Shell", async () => {
           tool_calls: [
             {
               index: 0,
-              id: "readonly-" + index,
+              id: "normal-" + index,
               type: "function",
               function: action,
             },
           ],
         }
-      : { content: "只回答问题" };
+      : { content: "文件已生成" };
     response.write(
       `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
     );
@@ -1320,7 +1350,7 @@ test("Pi 只读问答拒绝模型擅自写入和 Shell", async () => {
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    await create(fixture, path.join(sandbox, "projects"), "只读工程");
+    await create(fixture, path.join(sandbox, "projects"), "普通对话工程");
     await page.evaluate(
       async (endpoint) => {
         const settings = await window.desktop.agent<AgentSettings>({
@@ -1331,20 +1361,26 @@ test("Pi 只读问答拒绝模型擅自写入和 Shell", async () => {
         await window.desktop.agent({
           type: "saveSettings",
           settings,
-          apiKey: "readonly-key",
+          apiKey: "normal-key",
         });
       },
       `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
     );
-    await page.getByLabel("Agent 消息").fill("什么是梯度？");
+    await page
+      .getByLabel("Agent 消息")
+      .fill(
+        "请写入 notes/requested.md，并运行命令生成 notes/requested.txt，内容均为 hello。",
+      );
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    await expect(page.locator(".message-text").last()).toHaveText("只回答问题");
+    await expect(page.locator(".message-text").last()).toHaveText("文件已生成");
     await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
     expect(
-      await fs.readdir(path.join(sandbox, "projects/只读工程/notes")),
-    ).toEqual([]);
-    await expect(page.locator('[data-tool="write"]')).toContainText("失败");
-    await expect(page.locator('[data-tool="bash"]')).toContainText("失败");
+      await fs.readdir(path.join(sandbox, "projects/普通对话工程/notes")),
+    ).toEqual(["requested.md", "requested.txt"]);
+    expect(await fs.readFile(path.join(sandbox, "projects/普通对话工程/notes/requested.md"), "utf8")).toBe("hello");
+    expect((await fs.readFile(path.join(sandbox, "projects/普通对话工程/notes/requested.txt"), "utf8")).trim()).toBe("hello");
+    await expect(page.locator('[data-tool="write"]')).toContainText("完成");
+    await expect(page.locator('[data-tool="bash"]')).toContainText("完成");
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -1931,7 +1967,6 @@ test.describe("真实模型验证", () => {
       path.join(root, "notes/numbers.csv"),
       "value\n1\n2\n3\n4\n",
     );
-    await page.getByRole("button", { name: "任务", exact: true }).click();
     await page
       .getByLabel("Agent 消息")
       .fill(

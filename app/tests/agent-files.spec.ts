@@ -29,7 +29,7 @@ test("公共工程写入保护基线、取消、所有权与统一出处转换",
     const root = project.root;
     const file = path.join(root, "notes", "note.md");
     await fs.writeFile(file, "Original\r\n");
-    const tools = createProjectTools(root, service, true, () => true, []);
+    const tools = createProjectTools(root, service, () => true, []);
     const run = (
       name: string,
       args: unknown,

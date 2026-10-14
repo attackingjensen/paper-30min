@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -12,6 +18,7 @@ import {
   Terminal,
   FileOutput,
   Globe,
+  Brain,
 } from "lucide-react";
 import { AgentMessage } from "./AgentMessage";
 import "./agent.css";
@@ -41,7 +48,6 @@ export function AgentPanel({
   const [text, setText] = useState(initialView?.text ?? "");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const [allowChanges, setAllowChanges] = useState(false);
   const [catalog, setCatalog] = useState<AgentSettings>();
   const [modelOpen, setModelOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
@@ -117,7 +123,7 @@ export function AgentPanel({
       setError((e as Error).message);
     }
   }
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scroll.current;
     if (el && follow.current) el.scrollTop = el.scrollHeight;
   }, [active, current?.revision]);
@@ -157,7 +163,6 @@ export function AgentPanel({
         root,
         id: conversation.id,
         text,
-        allowChanges: current?.busy ? current.allowChanges : allowChanges,
       })
     )
       setText("");
@@ -226,8 +231,13 @@ export function AgentPanel({
             <p>聊聊你的想法，或继续探索阅读中遇到的问题。</p>
           </div>
         )}
-        {current?.messages.map((m) => (
-          <div className={`chat-message ${m.role}`} key={m.id}>
+        {/* A conversation is append-only. Keep each row mounted when its provisional
+            message ID is replaced by Pi's persisted ID (including open details). */}
+        {current?.messages.map((m, index) => (
+          <div
+            className={`chat-message ${m.role}`}
+            key={`${current.id}:${index}`}
+          >
             <div className="message-head">
               <span>
                 {m.role === "user" ? (
@@ -263,9 +273,11 @@ export function AgentPanel({
                 )}
             </div>
             {m.role === "assistant" && m.thinking && (
-              <details className="thinking-card">
+              <details className="process-card thinking-card">
                 <summary>
-                  Thinking <ChevronDown />
+                  <Brain />
+                  <span className="process-title">思考过程</span>
+                  <ChevronDown className="process-chevron" />
                 </summary>
                 <div className="thinking-content">{m.thinking}</div>
               </details>
@@ -304,35 +316,20 @@ export function AgentPanel({
             <ArrowDown /> 回到最新消息
           </button>
         )}
-        {current?.busy && (
-          <div className="agent-activity" role="status">
-            <span />
-            {current.stopping ? "正在停止…" : "正在回复…"}
-          </div>
-        )}
+        <div
+          className={`agent-activity ${current?.busy ? "active" : ""}`}
+          role={current?.busy ? "status" : undefined}
+        >
+          {current?.busy ? (
+            <>
+              <span />
+              {current.stopping ? "正在停止…" : "正在处理…"}
+            </>
+          ) : (
+            "Enter 发送 · Ctrl+Enter 换行"
+          )}
+        </div>
         <div className="composer">
-          <div className="agent-mode" role="group" aria-label="运行模式">
-            {[false, true].map((task) => (
-              <button
-                key={String(task)}
-                type="button"
-                aria-pressed={
-                  (current?.busy
-                    ? current.allowChanges === true
-                    : allowChanges) === task
-                }
-                disabled={current?.busy || pending}
-                title={
-                  task
-                    ? "授权当前任务连续修改工程文件及运行受信任主机 Shell"
-                    : "只读问答"
-                }
-                onClick={() => setAllowChanges(task)}
-              >
-                {task ? "任务" : "问答"}
-              </button>
-            ))}
-          </div>
           <textarea
             aria-label="Agent 消息"
             placeholder="有什么想聊的？"
@@ -522,7 +519,11 @@ function ToolProcess({
       }
     | undefined;
   return (
-    <details className="tool-process" data-tool={tool.name}>
+    <details
+      className="process-card tool-process"
+      data-tool={tool.name}
+      data-status={tool.status}
+    >
       <summary>
         {["web_search", "fetch_content", "get_search_content"].includes(
           tool.name,
@@ -533,15 +534,29 @@ function ToolProcess({
         ) : (
           <FileCode />
         )}
-        <span>
-          {tool.name} ·{" "}
-          {args?.query ??
-            args?.url ??
-            args?.responseId ??
-            args?.path ??
-            "PowerShell"}
+        <span className="process-title">
+          <span className="process-name">
+            {{
+              read: "读取文件",
+              write: "写入文件",
+              edit: "编辑文件",
+              bash: "运行命令",
+              web_search: "搜索网页",
+              fetch_content: "读取网页",
+              get_search_content: "继续查阅",
+            }[tool.name] ?? tool.name}
+          </span>
+          <span
+            className="process-subject"
+            title={args?.path ?? args?.query ?? args?.url ?? args?.responseId}
+          >
+            {args?.query ??
+              args?.url ??
+              args?.path?.replace(/\\/g, "/").split("/").at(-1) ??
+              (tool.name === "bash" ? "PowerShell" : args?.responseId)}
+          </span>
         </span>
-        <small>
+        <small className="process-status">
           {
             {
               running: "运行中",
@@ -551,46 +566,55 @@ function ToolProcess({
             }[tool.status]
           }
         </small>
+        <ChevronDown className="process-chevron" />
       </summary>
-      <pre className="tool-arguments">
-        {args?.command ?? JSON.stringify(tool.arguments, null, 2)}
-      </pre>
-      {tool.output && <pre className="tool-output">{tool.output}</pre>}
-      {details?.change && (
-        <>
+      <div className="process-body">
+        <div className="process-label">参数 · {tool.name}</div>
+        <pre className="tool-arguments">
+          {args?.command ?? JSON.stringify(tool.arguments, null, 2)}
+        </pre>
+        {tool.output && (
+          <>
+            <div className="process-label">结果</div>
+            <pre className="tool-output">{tool.output}</pre>
+          </>
+        )}
+        {details?.change && (
+          <>
+            <button
+              className="tool-file"
+              onClick={() => onOpenFile(details.change!.path)}
+            >
+              <FileOutput />
+              {details.change.path}
+            </button>
+            <pre className="tool-diff">
+              {details.change.patch || "内容未改变"}
+            </pre>
+          </>
+        )}
+        {details?.artifacts?.map((file) => (
           <button
+            key={file}
             className="tool-file"
-            onClick={() => onOpenFile(details.change!.path)}
+            onClick={() => onOpenFile(file)}
           >
             <FileOutput />
-            {details.change.path}
+            {file}
           </button>
-          <pre className="tool-diff">
-            {details.change.patch || "内容未改变"}
-          </pre>
-        </>
-      )}
-      {details?.artifacts?.map((file) => (
-        <button
-          key={file}
-          className="tool-file"
-          onClick={() => onOpenFile(file)}
-        >
-          <FileOutput />
-          {file}
-        </button>
-      ))}
-      {details?.conflict && (
-        <div className="tool-conflict">
-          <strong>写入冲突</strong>
-          <label>读取基线</label>
-          <pre>{details.conflict.base ?? "新文件"}</pre>
-          <label>磁盘内容</label>
-          <pre>{details.conflict.current ?? "文件已删除"}</pre>
-          <label>本次内容</label>
-          <pre>{details.conflict.proposed}</pre>
-        </div>
-      )}
+        ))}
+        {details?.conflict && (
+          <div className="tool-conflict">
+            <strong>写入冲突</strong>
+            <label>读取基线</label>
+            <pre>{details.conflict.base ?? "新文件"}</pre>
+            <label>磁盘内容</label>
+            <pre>{details.conflict.current ?? "文件已删除"}</pre>
+            <label>本次内容</label>
+            <pre>{details.conflict.proposed}</pre>
+          </div>
+        )}
+      </div>
     </details>
   );
 }

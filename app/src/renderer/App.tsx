@@ -618,6 +618,7 @@ export function App() {
             {[
               ["projects", "工程文件夹"],
               ["agent", "Agent 模型"],
+              ["search", "Agent 网络搜索"],
               ["parsing", "解析模型"],
               ["proxy", "代理配置"],
             ].map(([id, name]) => (
@@ -644,9 +645,11 @@ export function App() {
                   ? "工程文件夹"
                   : settings === "agent"
                     ? "Agent 模型"
-                    : settings === "parsing"
-                      ? "解析模型"
-                      : "代理配置"}
+                    : settings === "search"
+                      ? "Agent 网络搜索"
+                      : settings === "parsing"
+                        ? "解析模型"
+                        : "代理配置"}
               </h1>
               {settings === "projects" ? (
                 <>
@@ -692,7 +695,9 @@ export function App() {
                     )}
                   </div>
                 </>
-              ) : settings === "agent" || settings === "proxy" ? (
+              ) : settings === "agent" ||
+                settings === "proxy" ||
+                settings === "search" ? (
                 <AgentSettingsForm key={settings} section={settings} />
               ) : (
                 <p className="empty">尚未接入</p>

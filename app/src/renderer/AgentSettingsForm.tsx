@@ -59,7 +59,11 @@ function draftOf(
   };
 }
 
-export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
+export function AgentSettingsForm({
+  section,
+}: {
+  section: "agent" | "proxy" | "search";
+}) {
   const [settings, setSettings] = useState<SettingsDraft>();
   const [catalog, setCatalog] = useState<AgentSettings>();
   const [serviceId, setServiceId] = useState("default");
@@ -252,7 +256,9 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
       <p className="settings-intro">
         {section === "agent"
           ? "连接你习惯使用的模型，开始对话。"
-          : "选择 Agent 访问模型服务时使用的网络连接。"}
+          : section === "search"
+            ? "为 Agent 的网页搜索配置服务，所有对话共用。"
+            : "选择 Agent 访问模型服务时使用的网络连接。"}
       </p>
       <fieldset disabled={busy} className="settings-fields">
         {section === "agent" ? (
@@ -714,7 +720,7 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
               </section>
             </div>
           </div>
-        ) : (
+        ) : section === "proxy" ? (
           <section className="settings-group">
             <div className="settings-group-heading">
               <h2>网络连接</h2>
@@ -754,13 +760,17 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" }) {
                   : "通过指定的 HTTP 或 HTTPS 代理连接模型服务。"}
             </p>
           </section>
-        )}
+        ) : null}
       </fieldset>
-      {section === "agent" && (
+      {section === "search" && (
         <section className="settings-group">
           <div className="settings-group-heading">
-            <h2>网络搜索</h2>
+            <h2>Exa 网页搜索</h2>
           </div>
+          <p className="field-help">
+            默认使用免费搜索服务。也可以填写自己的 Exa
+            密钥，使用对应账户的额度。
+          </p>
           <label>
             Exa API key
             <input

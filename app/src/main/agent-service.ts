@@ -394,7 +394,7 @@ export class AgentService {
       noThemes: true,
       systemPrompt:
         `你是 Paper30Min 的论文研究助手。根据实际读取的内容回答，说明不确定点；不要声称已读取未提供的论文或修改文件。当前工程：${c.state.root}。\n` +
-        `当前为${c.state.allowChanges ? "用户明确授权的任务模式，可连续修改普通成果及运行脚本" : "只读问答，不允许修改文件或执行 Shell"}。\n` +
+        "根据用户意图使用读取、编辑、计算和网络调研工具，完成请求；无需切换对话模式。\n" +
         "read/write/edit 只允许工程内普通文件，已有文件写入前必须 read；发生基线冲突先重读，保留双方输入。" +
         "text/ 是原始 PDF 与解析区，sources/ 是出处字典；两者及所有 PDF、内部文件不允许普通写入。" +
         "bash 实际使用 Windows PowerShell 语法，是受信任主机 Shell，不是权限沙箱。仅用于明确任务的计算/绘图/材料处理，文档写入必须用 write/edit，禁止绕过上述保护。工程外访问、系统修改、上传/发布须已获用户任务授权。脚本子进程不能作为后台服务保留。" +
@@ -409,7 +409,6 @@ export class AgentService {
       ...createProjectTools(
         c.state.root,
         this.projects,
-        c.state.allowChanges === true,
         () => c.state.busy && !c.state.stopping && !this.closing,
         secrets,
       ),
@@ -585,8 +584,6 @@ export class AgentService {
     if (c.state.stopping || c.initializing)
       throw new Error("会话正在准备或停止，请稍后再试。");
     if (c.state.busy) {
-      if ((command.allowChanges === true) !== c.state.allowChanges)
-        throw new Error("请等待当前任务完成后再切换问答／任务模式。");
       if (c.activeModelId !== config.selectedModelId)
         throw new Error("已切换模型，请等待当前回复完成后再发送。");
       await c.session!.followUp(command.text);
@@ -609,7 +606,6 @@ export class AgentService {
     c.state.busy = true;
     c.state.error = undefined;
     c.state.stopping = false;
-    c.state.allowChanges = command.allowChanges === true;
     c.state.messages.push({
       id: "pending-user",
       role: "user",

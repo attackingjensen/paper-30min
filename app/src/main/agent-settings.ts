@@ -265,7 +265,7 @@ export class AgentSettingsStore {
       stored.formatVersion === 2
         ? (stored.encryptedKeys ?? {})
         : { default: stored.encryptedKey };
-    const encryptedKeys: Record<string, string> = {};
+    const encryptedKeys: Record<string, unknown> = {};
     for (const service of validated.services) {
       if (clearKeyIds.includes(service.id)) continue;
       const replacement = apiKeys[service.id]?.trim();
@@ -276,19 +276,9 @@ export class AgentSettingsStore {
           .encryptString(replacement)
           .toString("base64");
       } else if (previous[service.id] !== undefined) {
-        const encrypted = previous[service.id];
-        if (typeof encrypted !== "string")
-          throw new Error(
-            `服务「${service.name}」的密钥无法读取，请替换或移除。`,
-          );
-        try {
-          safeStorage.decryptString(Buffer.from(encrypted, "base64"));
-        } catch {
-          throw new Error(
-            `服务「${service.name}」的密钥无法读取，请替换或移除。`,
-          );
-        }
-        if (encrypted) encryptedKeys[service.id] = encrypted;
+        // Preserve untouched credentials, even if this machine cannot decrypt them.
+        // Each settings page can then repair its own key independently.
+        encryptedKeys[service.id] = previous[service.id];
       }
     }
     let encryptedExaKey = clearExaKey ? undefined : stored.encryptedExaKey;
@@ -298,14 +288,8 @@ export class AgentSettingsStore {
       encryptedExaKey = safeStorage
         .encryptString(exaApiKey.trim())
         .toString("base64");
-    } else if (encryptedExaKey !== undefined) {
-      try {
-        if (typeof encryptedExaKey !== "string") throw new Error();
-        safeStorage.decryptString(Buffer.from(encryptedExaKey, "base64"));
-      } catch {
-        throw new Error("Exa 密钥无法读取，请替换或移除。");
-      }
     }
+
     const value = {
       formatVersion: 2,
       ...validated,
