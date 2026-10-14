@@ -14,6 +14,7 @@ import type { AgentSettings, ChatSession } from "../src/shared/contracts";
 
 let sandbox: string;
 let desktop: ElectronApplication;
+let desktopProcess: ReturnType<ElectronApplication["process"]>;
 let page: Page;
 let errors: string[];
 const fixture = path.resolve("../legacy/v1/app/ui/samples/sample_paper.pdf");
@@ -71,6 +72,7 @@ async function launch() {
   };
   delete env.ELECTRON_RUN_AS_NODE;
   desktop = await electron.launch({ args: ["."], env });
+  desktopProcess = desktop.process();
   page = await desktop.firstWindow();
   errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -112,6 +114,26 @@ async function readManifest(root: string) {
   );
 }
 
+async function closeDesktopForCleanup() {
+  if (
+    !desktopProcess ||
+    desktopProcess.exitCode !== null ||
+    desktopProcess.signalCode !== null
+  ) return;
+  // Only teardown discards disposable drafts; normal close protection stays active.
+  await desktop.evaluate(({ dialog }) => {
+    dialog.showMessageBoxSync = (...args: unknown[]) => {
+      const options = args.at(-1) as Electron.MessageBoxSyncOptions;
+      if (
+        options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" ||
+        options.buttons?.[1] !== "放弃并关闭"
+      ) throw new Error("测试清理遇到非预期的原生确认框。");
+      return 1;
+    };
+  });
+  await desktop.close();
+}
+
 test.beforeEach(async () => {
   errors = [];
   sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-desktop-"));
@@ -122,10 +144,42 @@ test.afterEach(async () => {
   try {
     expect(errors).toEqual([]);
   } finally {
-    await desktop?.close();
+    await closeDesktopForCleanup();
     // The sandbox is an exclusively created test directory, never a user-selected path.
     await fs.rm(sandbox, { recursive: true, force: true });
   }
+});
+
+test("窗口关闭保护保留草稿，测试清理自动放弃临时编辑", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  const root = path.join(sandbox, "projects/研究工程");
+  const note = path.join(root, "notes/关闭.md");
+  const original = "# 原始内容\n";
+  await fs.writeFile(note, original);
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "关闭.md", exact: true }).click();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
+  await editor.press("Control+End");
+  await editor.pressSequentially("未保存草稿");
+  await expect(page.locator(".markdown-save-state")).toHaveText("未保存");
+
+  const prompt = await desktop.evaluate(({ BrowserWindow, dialog }) =>
+    new Promise<string>((resolve) => {
+      dialog.showMessageBoxSync = (...args: unknown[]) => {
+        const options = args.at(-1) as Electron.MessageBoxSyncOptions;
+        resolve(options.message);
+        return 0;
+      };
+      BrowserWindow.getAllWindows()[0].close();
+    }),
+  );
+  expect(prompt).toBe("有未保存的文档，确定放弃编辑并关闭吗？");
+  await expect(editor).toContainText("未保存草稿");
+
+  await closeDesktopForCleanup();
+  expect(desktopProcess.exitCode).toBe(0);
+  expect(await fs.readFile(note, "utf8")).toBe(original);
 });
 
 test("多服务模型选择、思考流与会话恢复", async () => {
