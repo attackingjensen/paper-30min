@@ -1436,8 +1436,10 @@ test("从真实创建入口保存默认位置、复制 PDF，重启与搬迁后�
   await expect(page.getByRole("tab", { name: "paper.pdf" })).toBeVisible();
   expect((await readManifest(root)).paper.id).toBe(manifest.paper.id);
   const moved = path.join(sandbox, "搬迁后的工程");
+  // Relocate a closed project, rather than racing its atomic reading-state writes.
+  await desktop.close();
   await fs.cp(root, moved, { recursive: true });
-  await page.getByRole("button", { name: "所有工程", exact: true }).click();
+  await launch();
   await choose(moved);
   await page
     .getByRole("button", { name: "打开工程文件夹", exact: true })
@@ -2126,6 +2128,178 @@ test("工作台真实文件树、标签复用与设置返回，桌面和窄窗�
   await expect(
     page.getByRole("navigation", { name: "工程文件" }),
   ).toBeVisible();
+});
+
+test("PDF 出处复制、原生粘贴撤销、定位高亮与返回草稿", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  const root = path.join(parent, "研究工程");
+  await expectPdfRendered();
+  await setPdfZoom("100");
+  await page.getByRole("button", { name: "框选出处", exact: true }).click();
+  const image = await pdfImage().boundingBox();
+  expect(image).not.toBeNull();
+  const start = { x: image!.x + 60, y: image!.y + 80 };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 160, start.y + 50, { steps: 10 });
+  await page.mouse.up();
+  await expect(page.getByRole("status")).toContainText("区域已选中");
+  await page.mouse.click(start.x + 30, start.y + 15, { button: "right" });
+  await page.getByRole("menuitem", { name: "复制出处", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已复制出处");
+  const link = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  expect(link).toMatch(/^\[PDF 第 1 页\]\(paper:\/\/cite\/[a-f0-9]{32}\)$/);
+  const dictionary = JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"));
+  const source: any = Object.values(dictionary.citations)[0];
+  expect(source.kind).toBe("region");
+  expect(source.pages[0].rects[0].origin.x).toBeCloseTo(60, 0);
+  expect(source.pages[0].rects[0].size.width).toBeCloseTo(160, 0);
+  await fs.writeFile(path.join(root, "notes/出处.md"), "草稿开始\n\n");
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "出处.md", exact: true }).click();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
+  await editor.press("Control+End");
+  await editor.press("Control+v");
+  await expect(editor).toContainText("paper://cite/");
+  await editor.press("Control+z");
+  await expect(editor).not.toContainText("paper://cite/");
+  await editor.press("Control+v");
+  await page.getByRole("button", { name: "分屏", exact: true }).click();
+  await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
+  await expectPdfRendered();
+  await expect(page.getByRole("status")).toContainText("已定位并高亮");
+  const mark = page.locator('[aria-label="出处高亮"] [data-citation-page="1"]');
+  await expect(mark).toHaveCount(1);
+  const rect = await mark.boundingBox();
+  const pdf = await pdfImage().boundingBox();
+  expect(rect!.x - pdf!.x).toBeCloseTo(60, 0);
+  expect(rect!.y - pdf!.y).toBeCloseTo(80, 0);
+  await setPdfZoom("150");
+  await expect.poll(async () => (await mark.boundingBox())?.width).toBeCloseTo(240, 0);
+  for (const name of ["水平滚动", "双页视图", "顺时针旋转"]) {
+    await page.getByRole("button", { name: "页面设置", exact: true }).click();
+    await page.getByRole("menuitem", { name, exact: true }).click();
+  }
+  await expect.poll(async () => (await mark.boundingBox())?.height).toBeCloseTo(240, 0);
+  await expect.poll(async () => {
+    const marked = await mark.boundingBox();
+    const image = await pdfImage().boundingBox();
+    return marked!.x - image!.x;
+  }).toBeCloseTo((source.pages[0].height - 130) * 1.5, 0);
+  await pdfViewport().evaluate((element) => { element.scrollLeft = 500; element.scrollTop = 0; });
+  await expect.poll(async () => {
+    const marked = await mark.boundingBox();
+    const image = await pdfImage().boundingBox();
+    return marked!.y - image!.y;
+  }).toBeCloseTo(60 * 1.5, 0);
+  await page.screenshot({ path: "test-results/citation-rotated.png" });
+  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await expect(editor).toContainText(link);
+  await expect(page.locator(".markdown-save-state")).toHaveText("未保存");
+  await editor.getByText(/paper:\/\/cite\//).click({ modifiers: ["Control"] });
+  await expect(page.getByRole("status")).toContainText("已定位并高亮");
+  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect.poll(() => fs.readFile(path.join(root, "notes/出处.md"), "utf8")).toContain(link);
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: /研究工程/ }).click();
+  await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已定位并高亮");
+});
+
+test("文字多行出处保留原句与多个区域，整页出处不伪装精确高亮", async () => {
+  const file = path.join(sandbox, "text-selection.pdf");
+  // Independently authored page geometry: two 14pt text lines, baselines y=100/130 from top.
+  const content = "BT /F1 14 Tf 50 700 Td (Citation alpha [one] \\(two\\).) Tj 0 -30 Td (Second line evidence.) Tj ET";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, i) => { offsets.push(Buffer.byteLength(pdf)); pdf += `${i + 1} 0 obj\n${object}\nendobj\n`; });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((n) => String(n).padStart(10, "0") + " 00000 n \n").join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  await fs.writeFile(file, pdf);
+  await create(file, path.join(sandbox, "projects"));
+  await expectPdfRendered();
+  await setPdfZoom("100");
+  await page.getByRole("button", { name: "光标模式", exact: true }).click();
+  const image = await pdfImage().boundingBox();
+  await page.mouse.move(image!.x + 50, image!.y + 95);
+  await page.mouse.down();
+  await page.mouse.move(image!.x + 190, image!.y + 125, { steps: 15 });
+  await page.mouse.up();
+  await page.screenshot({ path: "test-results/citation-text-selection.png" });
+  await page.mouse.click(image!.x + 90, image!.y + 95, { button: "right" });
+  await page.getByRole("menuitem", { name: "复制出处", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已复制出处");
+  const markdown = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  expect(markdown).toContain("Citation alpha \\[one\\] \\(two\\).");
+  const root = path.join(sandbox, "projects/研究工程");
+  const dictionary = JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"));
+  const citation: any = Object.values(dictionary.citations)[0];
+  expect(citation.kind).toBe("text");
+  expect(citation.pages[0].rects.length).toBeGreaterThanOrEqual(2);
+  expect(citation.text).toContain("Second line evidence.");
+  await page.getByRole("button", { name: "复制整页出处", exact: true }).click();
+  await expect.poll(() => desktop.evaluate(({ clipboard }) => clipboard.readText())).not.toBe(markdown);
+  const pageLink = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  await fs.writeFile(path.join(root, "notes/原句.md"), markdown + "\n\n" + pageLink);
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "原句.md", exact: true }).click();
+  await expect(page.getByRole("link", { name: /Citation alpha \[one\] \(two\)/ })).toBeVisible();
+  await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("页级出处");
+  await expect(page.locator('[data-citation-page]')).toHaveCount(0);
+});
+
+test("出处字典并发新增、跨页区域、搬迁改名与明确失效", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  let root = path.join(parent, "研究工程");
+  const manifest = await readManifest(root);
+  const input = { sha256: manifest.paper.sha256, kind: "text" as const, text: "中文 [括号] (测试) *内容*",
+    pages: [1, 2].map((p) => ({ page: p, width: 612, height: 792, rects: [
+      { origin: { x: 50, y: 60 }, size: { width: 180, height: 12 } },
+      { origin: { x: 50, y: 80 }, size: { width: 95, height: 12 } },
+    ] })) };
+  const created = await page.evaluate(async ({ root, input }) => Promise.all(Array.from({ length: 12 }, () =>
+    window.desktop.invoke<any>({ type: "createCitation", root, path: "text/paper.pdf", input }))), { root, input });
+  expect(new Set(created.map((c) => c.id)).size).toBe(12);
+  const dictionaryPath = () => path.join(root, ".paper30min-citations.json");
+  const original = await fs.readFile(dictionaryPath(), "utf8");
+  expect(Object.keys(JSON.parse(original).citations)).toHaveLength(12);
+  const link = `paper://cite/${created[0].id}`;
+  const resolve = () => page.evaluate(({ root, link }) => window.desktop.invoke<any>({ type: "resolveCitation", root, link }), { root, link });
+  expect((await resolve()).citation.pages).toEqual(input.pages);
+  await page.evaluate(({ root }) => window.desktop.invoke({ type: "move", root, path: "text/paper.pdf", destination: "text/改名.pdf" }), { root });
+  expect((await resolve()).path).toBe("text/改名.pdf");
+  await fs.rename(path.join(root, "text/改名.pdf"), path.join(root, "text/外部移动.pdf"));
+  await expect(resolve()).rejects.toThrow("缺失");
+  await page.evaluate(({ root, id }) => window.desktop.invoke({ type: "relink", root, id, source: root + "/text/外部移动.pdf" }), { root, id: manifest.paper.id });
+  expect((await resolve()).path).toBe("text/外部移动.pdf");
+  await desktop.close();
+  const moved = path.join(parent, "已搬迁");
+  await fs.rename(root, moved);
+  root = moved;
+  // A crashed staging write is not a published dictionary.
+  await fs.writeFile(path.join(root, ".paper30min-interrupted.tmp"), "{broken");
+  await launch();
+  expect((await resolve()).citation.id).toBe(created[0].id);
+  await fs.appendFile(path.join(root, "text/外部移动.pdf"), "\nchanged");
+  await expect(resolve()).rejects.toThrow("替换");
+  await expect(page.evaluate(({ root }) => window.desktop.invoke({ type: "resolveCitation", root, link: "paper://cite/" + "0".repeat(32) }), { root })).rejects.toThrow("找不到此出处");
+  expect(await fs.readFile(dictionaryPath(), "utf8")).toBe(original);
+  await fs.writeFile(dictionaryPath(), "{broken");
+  await expect(page.evaluate(({ root, input }) => window.desktop.invoke({ type: "createCitation", root, path: "text/外部移动.pdf", input }), { root, input })).rejects.toThrow();
+  expect(await fs.readFile(dictionaryPath(), "utf8")).toBe("{broken");
 });
 
 test("Markdown 三种视图、真实文件保真、图片公式与多标签草稿", async () => {

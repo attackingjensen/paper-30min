@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream, constants } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { citationId, validateCitation, type Citation, type CitationDictionary } from "../shared/citations.js";
 import type {
   Command,
   CreateInput,
@@ -19,6 +20,7 @@ const manifestName = "paper30min.json";
 const directories = ["map", "explanations", "text", "notes", "memories", "tmp"];
 const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
 const readingName = ".paper30min-reading.json";
+const citationName = ".paper30min-citations.json";
 
 function validateReading(value: ReadingState): ReadingState {
   if (
@@ -112,9 +114,11 @@ async function atomicJson(file: string, value: unknown) {
     `.paper30min-${randomUUID()}.tmp`,
   );
   try {
-    await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", {
-      flag: "wx",
-    });
+    const handle = await fs.open(temporary, "wx");
+    try {
+      await handle.writeFile(JSON.stringify(value, null, 2) + "\n");
+      await handle.sync();
+    } finally { await handle.close(); }
     await fs.rename(temporary, file);
   } finally {
     await fs.rm(temporary, { force: true });
@@ -539,6 +543,48 @@ export class ProjectService {
     }
     const root = await fs.realpath(command.root);
     const m = await this.manifest(root);
+    if (command.type === "createCitation" || command.type === "resolveCitation") {
+      let dictionary: CitationDictionary = { formatVersion: 1, projectId: m.id, citations: {} };
+      try {
+        const file = path.join(root, citationName);
+        if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("出处字典不能是符号链接。");
+        if ((await fs.stat(file)).size > 32 * 1024 * 1024) throw new Error("出处字典超过 32 MiB。");
+        dictionary = JSON.parse(await fs.readFile(file, "utf8"));
+        if (dictionary?.formatVersion !== 1 || dictionary.projectId !== m.id ||
+            !dictionary.citations || typeof dictionary.citations !== "object" || Array.isArray(dictionary.citations))
+          throw new Error("出处字典格式或工程身份无效。");
+        for (const [id, item] of Object.entries(dictionary.citations)) {
+          if (!item || !/^[a-f0-9]{32}$/.test(id) || item.id !== id || typeof item.documentId !== "string")
+            throw new Error("出处字典已损坏。");
+          validateCitation(item);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      const existing = command.type === "resolveCitation" ? dictionary.citations[citationId(command.link)] : undefined;
+      if (command.type === "resolveCitation" && !existing) throw new Error("找不到此出处，可能属于其他工程或字典已缺失。");
+      const record = [m.paper, ...m.materials].find((r) => existing ? r.id === existing.documentId : command.type === "createCitation" && r.path === command.path);
+      if (!record) throw new Error("出处对应的 PDF 身份不存在，请先将 PDF 加入工程材料。");
+      const input = command.type === "createCitation" ? command.input : existing!;
+      validateCitation(input);
+      if (record.sha256 !== input.sha256) throw new Error("PDF 版本不一致，出处已失效。");
+      let file: string;
+      try { file = await this.resolve(root, record.path); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("出处 PDF 已缺失，请重新关联原文件。");
+        throw error;
+      }
+      if (!/\.pdf$/i.test(file) || await digest(file) !== input.sha256)
+        throw new Error("PDF 已被替换或版本无法确认，不能定位此出处。");
+      if (existing) return { citation: existing, path: record.path };
+      const citation: Citation = { ...input, id: randomUUID().replaceAll("-", ""), documentId: record.id };
+      dictionary.citations[citation.id] = citation;
+      if (Buffer.byteLength(JSON.stringify(dictionary, null, 2) + "\n") > 32 * 1024 * 1024)
+        throw new Error("出处字典超过 32 MiB，本次出处未保存。");
+      // The project command queue serializes additions; staging + sync + rename keeps old data intact on interruption.
+      await atomicJson(path.join(root, citationName), dictionary);
+      return citation;
+    }
     if (
       command.type === "saveWorkspace" ||
       command.type === "savePdfPosition"

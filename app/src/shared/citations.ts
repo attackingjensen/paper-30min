@@ -1,0 +1,66 @@
+/** EmbedPDF page space: unrotated, top-left origin, PDF points; pages are 1-based. */
+export interface CitationRect {
+  origin: { x: number; y: number };
+  size: { width: number; height: number };
+}
+export interface CitationPage {
+  page: number;
+  width: number;
+  height: number;
+  rects: CitationRect[];
+}
+export interface CitationInput {
+  sha256: string;
+  kind: "text" | "region" | "page";
+  pages: CitationPage[];
+  text: string;
+}
+export interface Citation extends CitationInput {
+  id: string;
+  documentId: string;
+}
+export interface ResolvedCitation {
+  citation: Citation;
+  path: string;
+}
+export interface CitationDictionary {
+  formatVersion: 1;
+  projectId: string;
+  citations: Record<string, Citation>;
+}
+export function citationId(link: string): string {
+  const match = /^paper:\/\/cite\/([a-f0-9]{32})$/.exec(link);
+  if (!match) throw new Error("出处链接格式无效。");
+  return match[1];
+}
+export function citationLink(id: string): string {
+  return `paper://cite/${id}`;
+}
+export function citationMarkdown(citation: Citation): string {
+  const label = (citation.text.trim() || `PDF 第 ${citation.pages.map((p) => p.page).join("、")} 页`)
+    .replace(/\s+/g, " ").slice(0, 100).replace(/[\\`*{}\[\]()<>!_~&$]/g, "\\$&");
+  return `[${label}](${citationLink(citation.id)})`;
+}
+export function validateCitation(input: CitationInput): void {
+  if (!input || !/^[a-f0-9]{64}$/.test(input.sha256) ||
+      !["text", "region", "page"].includes(input.kind) ||
+      typeof input.text !== "string" || input.text.length > 100000 ||
+      !Array.isArray(input.pages) || !input.pages.length || input.pages.length > 1000)
+    throw new Error("出处数据无效。");
+  let previous = 0;
+  for (const p of input.pages) {
+    if (!p || !Number.isSafeInteger(p.page) || p.page <= previous ||
+        !Number.isFinite(p.width) || !Number.isFinite(p.height) || p.width <= 0 || p.height <= 0 ||
+        !Array.isArray(p.rects) || p.rects.length > 10000 ||
+        (input.kind === "page" ? p.rects.length !== 0 : p.rects.length === 0))
+      throw new Error("出处页码或区域无效。");
+    previous = p.page;
+    for (const r of p.rects) {
+      if (!r?.origin || !r.size ||
+          ![r.origin.x, r.origin.y, r.size.width, r.size.height].every(Number.isFinite) ||
+          r.origin.x < 0 || r.origin.y < 0 || r.size.width <= 0 || r.size.height <= 0 ||
+          r.origin.x + r.size.width > p.width + 0.01 || r.origin.y + r.size.height > p.height + 0.01)
+        throw new Error("出处区域超出 PDF 页面。");
+    }
+  }
+}

@@ -38,6 +38,7 @@ import { PdfReader } from "./PdfReader";
 import { MarkdownDocument } from "./MarkdownDocument";
 import { AgentPanel } from "./AgentPanel";
 import { AgentSettingsForm } from "./AgentSettingsForm";
+import type { ResolvedCitation } from "../shared/citations";
 import {
   useMarkdownDocuments,
   isMarkdown,
@@ -100,6 +101,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
+  const [citationVisit, setCitationVisit] = useState<(ResolvedCitation & { from: string; nonce: string }) | null>(null);
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
   const activeRoot = useRef(root);
@@ -231,7 +233,18 @@ export function App() {
       title: filePath.split("/").at(-1)!,
     });
   }
+  async function openCitation(link: string) {
+    if (!root) return;
+    const originRoot = root;
+    await run(async () => {
+      const resolved = await desktop.invoke<ResolvedCitation>({ type: "resolveCitation", root, link });
+      if (activeRoot.current !== originRoot) return;
+      setCitationVisit({ ...resolved, from: active, nonce: crypto.randomUUID() });
+      openPath(resolved.path);
+    });
+  }
   function enter(p: Project) {
+    setCitationVisit(null);
     setProject(p);
     const tab = {
       key: p.manifest.paper.path,
@@ -442,6 +455,7 @@ export function App() {
           onChange={documents.notify}
           onSave={() => void documents.save(draft)}
           onOpen={openPath}
+          onCitation={(link) => void openCitation(link)}
           onPosition={(position) => {
             const updatePosition = (items: Tab[]) =>
               items.map((t) =>
@@ -489,9 +503,10 @@ export function App() {
     if (current.path && /\.pdf$/i.test(current.path))
       return (
         <PdfReader
-          key={root + "/" + current.path}
+          key={root + "/" + current.path + (citationVisit?.path === current.path ? citationVisit.nonce : "")}
           root={root!}
           path={current.path}
+          citation={citationVisit?.path === current.path ? citationVisit.citation : undefined}
           position={positions.current[root!]?.[current.path]}
           onPosition={(p) => savePosition(root!, current.path!, p)}
         />
@@ -928,6 +943,12 @@ export function App() {
                     )}
                   </div>
                 </div>
+                {citationVisit && <div className="citation-return">
+                  <button onClick={() => {
+                    if (tabs.some((tab) => tab.key === citationVisit.from)) setActive(citationVisit.from);
+                    setCitationVisit(null);
+                  }}>返回引用处</button>
+                </div>}
                 {contentView()}
               </main>
               {right && (

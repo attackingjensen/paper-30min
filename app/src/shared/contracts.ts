@@ -1,3 +1,5 @@
+import type { CitationInput } from "./citations.js";
+
 export interface DocumentRecord {
   id: string;
   path: string;
@@ -101,6 +103,8 @@ export type Command =
   | { type: "createNote"; root: string; name: string }
   | { type: "readAsset"; root: string; path: string }
   | { type: "readPdf"; root: string; path: string }
+  | { type: "createCitation"; root: string; path: string; input: CitationInput }
+  | { type: "resolveCitation"; root: string; link: string }
   | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
   | {
       type: "savePdfPosition";

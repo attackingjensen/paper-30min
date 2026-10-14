@@ -4,6 +4,7 @@ import { EditorState, StateField, StateEffect } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { markdown } from "@codemirror/lang-markdown";
+import { syntaxTree } from "@codemirror/language";
 import MarkdownIt from "markdown-it";
 import katex from "@vscode/markdown-it-katex";
 import "katex/dist/katex.min.css";
@@ -64,6 +65,7 @@ export function MarkdownDocument({
   onChange,
   onSave,
   onOpen,
+  onCitation,
   onPosition,
 }: {
   root: string;
@@ -71,6 +73,7 @@ export function MarkdownDocument({
   onChange: () => void;
   onSave: () => void;
   onOpen: (path: string) => void;
+  onCitation: (link: string) => void;
   onPosition: (position: {
     mode: MarkdownDraft["mode"];
     scroll: number;
@@ -82,8 +85,8 @@ export function MarkdownDocument({
   const preview = useRef<HTMLElement>(null);
   const [showConflict, setShowConflict] = useState(false);
   const [linkError, setLinkError] = useState("");
-  const callbacks = useRef({ onChange, onSave, onPosition });
-  callbacks.current = { onChange, onSave, onPosition };
+  const callbacks = useRef({ onChange, onSave, onPosition, onCitation });
+  callbacks.current = { onChange, onSave, onPosition, onCitation };
   const positionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -158,6 +161,29 @@ export function MarkdownDocument({
         ],
       });
     const view = new EditorView({ state, parent: host.current });
+    const citationAt = (event: MouseEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return null;
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (pos === null) return null;
+      let node = syntaxTree(view.state).resolveInner(pos, 1);
+      while (node.parent && node.name !== "Link") node = node.parent;
+      if (node.name !== "Link") return null;
+      const url = node.getChild("URL");
+      const link = url && view.state.sliceDoc(url.from, url.to);
+      return link?.startsWith("paper:") ? link : null;
+    };
+    const preserveCursor = (event: MouseEvent) => {
+      if (citationAt(event)) { event.preventDefault(); event.stopPropagation(); }
+    };
+    const openCitation = (event: MouseEvent) => {
+      const link = citationAt(event);
+      if (link) {
+        event.preventDefault();
+        callbacks.current.onCitation(link);
+      }
+    };
+    view.dom.addEventListener("mousedown", preserveCursor, true);
+    view.dom.addEventListener("click", openCitation);
     view.scrollDOM.scrollTop = draft.scroll;
     const scrolled = () => {
       draft.scroll = view.scrollDOM.scrollTop;
@@ -173,6 +199,8 @@ export function MarkdownDocument({
         cursor: draft.cursor,
       });
       view.scrollDOM.removeEventListener("scroll", scrolled);
+      view.dom.removeEventListener("click", openCitation);
+      view.dom.removeEventListener("mousedown", preserveCursor, true);
       view.destroy();
     };
   }, [draft, editing, draft.file?.version]);
@@ -322,6 +350,7 @@ export function MarkdownDocument({
               event.preventDefault();
               setLinkError("");
               const href = anchor.getAttribute("href") ?? "";
+              if (href.startsWith("paper:")) { onCitation(href); return; }
               if (/^https?:\/\//i.test(href)) {
                 void window.desktop
                   .openLink(href)
