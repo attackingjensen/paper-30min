@@ -289,14 +289,19 @@ async function start() {
   );
 
   function createWindow() {
+    const hidden = process.env.PAPER30MIN_TEST_WINDOW === "hidden";
     window = new BrowserWindow({
       title: "Paper30Min",
+      show: !hidden,
+      skipTaskbar: hidden,
       width: 1440,
       height: 960,
       minWidth: 560,
       minHeight: 500,
       backgroundColor: "#f0f0f2",
       webPreferences: {
+        backgroundThrottling: !hidden,
+        offscreen: hidden,
         preload: path.join(here, "preload.cjs"),
         contextIsolation: true,
         nodeIntegration: false,

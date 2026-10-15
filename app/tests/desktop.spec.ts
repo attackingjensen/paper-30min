@@ -62,6 +62,7 @@ async function expectPdfRendered() {
 }
 
 async function launch() {
+  const visible = process.env.PAPER30MIN_TEST_WINDOW === "visible";
   const env: Record<string, string> = {
     ...Object.fromEntries(
       Object.entries(process.env).filter(
@@ -69,6 +70,7 @@ async function launch() {
       ),
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
+    PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
   };
   delete env.ELECTRON_RUN_AS_NODE;
   desktop = await electron.launch({ args: ["."], env });
@@ -76,7 +78,14 @@ async function launch() {
   page = await desktop.firstWindow();
   errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  if (!visible) {
+    // Keep browser input/clipboard APIs active without taking native desktop focus.
+    const session = await page.context().newCDPSession(page);
+    await session.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  }
   await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible();
+  expect(await desktop.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].isVisible())).toBe(visible);
 }
 
 async function choose(selected: string | null) {
@@ -1437,9 +1446,17 @@ test("模型含凭据的流中止或异常后，终态与持久会话仍脱敏",
 
 test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页并回查", async () => {
   test.setTimeout(240000);
-  test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || !process.env.PAPER30MIN_REAL_CONFIG,
-    "需显式提供本机真实视觉模型配置文件，trace 必须关闭。");
-  const model = JSON.parse(await fs.readFile(process.env.PAPER30MIN_REAL_CONFIG!, "utf8"));
+  test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || (!process.env.PAPER30MIN_REAL_CONFIG && !process.env.PAPER30MIN_REAL_PROFILE),
+    "需显式提供本机真实视觉模型配置文件或加密配置目录，trace 必须关闭。");
+  const model = process.env.PAPER30MIN_REAL_CONFIG
+    ? JSON.parse(await fs.readFile(process.env.PAPER30MIN_REAL_CONFIG, "utf8")) : null;
+  if (!model) {
+    await desktop.close();
+    // Windows safeStorage needs the source profile's encrypted master key at startup.
+    for (const file of ["agent-settings.json", "Local State"])
+      await fs.copyFile(path.join(process.env.PAPER30MIN_REAL_PROFILE!, file), path.join(sandbox, "profile", file));
+    await launch();
+  }
   await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
     path.join(sandbox, "projects"), "真实 PDF 工程");
   const root = path.join(sandbox, "projects", "真实 PDF 工程");
@@ -1447,12 +1464,22 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
   if (scanPath) await page.evaluate(({ root, source }) => window.desktop.invoke({ type: "addMaterial", root, source }), { root, source: scanPath });
   await page.evaluate(async (model) => {
     const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
-    settings.services[0].baseUrl = model.baseUrl;
-    settings.models[0] = { ...settings.models[0], model: model.model, vision: true,
-      thinking: "high", availableThinking: ["off", "high"], maxTokens: 8192 };
+    if (model) {
+      settings.services[0].baseUrl = model.baseUrl;
+      settings.models[0] = { ...settings.models[0], model: model.model, vision: true,
+        thinking: "high", availableThinking: ["off", "high"], maxTokens: 8192 };
+      settings.selectedModelId = settings.models[0].id;
+    } else {
+      const selected = settings.models.find((item) => item.id === settings.selectedModelId)!;
+      if (!selected.vision || !selected.availableThinking.includes("high"))
+        throw new Error("真实验证需要支持视觉输入和 high 思考强度的模型配置。");
+      selected.thinking = "high";
+    }
     settings.proxy = "direct";
-    await window.desktop.agent({ type: "saveSettings", settings, apiKey: model.apiKey });
+    await window.desktop.agent({ type: "saveSettings", settings, ...(model ? { apiKey: model.apiKey } : {}) });
   }, model);
+  const settings = await page.evaluate(() => window.desktop.agent<AgentSettings>({ type: "settings" }));
+  const modelId = settings.models.find((item) => item.id === settings.selectedModelId)!.model;
   const scan = scanPath ? (await readManifest(root)).materials[0].path : null;
   await page.getByLabel("Agent 消息").fill(
     "请实际调用 read_pdf 核对 text/paper.pdf 第8页的翻译结果表，再读取第4页注意力公式的局部区域（可先整页检查再放大）。" +
@@ -1468,7 +1495,13 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
   const successful = calls.filter((tool) => tool.name === "read_pdf" && tool.status === "done");
   expect(successful.length).toBeGreaterThanOrEqual(scan ? 3 : 2);
   expect(successful.some((tool) => (tool.arguments as any).region)).toBe(true);
-  if (scan) expect(successful.some((tool) => (tool.arguments as any).path === scan && JSON.parse(tool.output!).text === "")).toBe(true);
+  if (scan) expect(successful.some((tool) => (tool.arguments as any).path === scan)).toBe(true);
+  for (const tool of successful) {
+    const info = JSON.parse(tool.output!);
+    expect(info).not.toHaveProperty("text");
+    expect(info).not.toHaveProperty("textStatus");
+    expect(info).not.toHaveProperty("textTruncated");
+  }
   const reply = states.flatMap((state) => state.messages).filter((message) => message.role === "assistant").at(-1)!.text;
   expect(reply).toContain("28.4");
   const links = page.locator('.message-text a[href^="paper://cite/"]');
@@ -1484,12 +1517,13 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
   await expectPdfRendered();
   await page.screenshot({ path: "test-results/real-model/ste94-pdf.png" });
   await fs.writeFile("test-results/real-model/ste94-evidence.json", JSON.stringify({
-    model: model.model, thinking: "high", reply, calls: successful.map((tool) => ({ args: tool.arguments, pdf: (tool.details as any).pdf })),
+    model: modelId, thinking: "high", reply, calls: successful.map((tool) => ({ args: tool.arguments, pdf: (tool.details as any).pdf })),
   }, null, 2));
   // Optional local setup retains only Electron-encrypted settings, never the input secret file.
   if (process.env.PAPER30MIN_REAL_SAVE_PROFILE) {
     await fs.mkdir(process.env.PAPER30MIN_REAL_SAVE_PROFILE, { recursive: true });
-    await fs.copyFile(path.join(sandbox, "profile/agent-settings.json"), path.join(process.env.PAPER30MIN_REAL_SAVE_PROFILE, "agent-settings.json"));
+    for (const file of ["agent-settings.json", "Local State"])
+      await fs.copyFile(path.join(sandbox, "profile", file), path.join(process.env.PAPER30MIN_REAL_SAVE_PROFILE, file));
   }
 });
 
@@ -1545,7 +1579,11 @@ test("read_pdf 经真实 Electron 和 Pi 传送页图与区域，保留视口并
     await expect(link).toHaveText("核对公式图表");
     await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
     expect(results).toHaveLength(2);
-    expect(results[0].text).toContain("Attention Is All You Need");
+    for (const result of results) {
+      expect(result).not.toHaveProperty("text");
+      expect(result).not.toHaveProperty("textStatus");
+      expect(result).not.toHaveProperty("textTruncated");
+    }
     expect(images).toHaveLength(2);
     const { PNG } = await import("pngjs");
     const crop = PNG.sync.read(Buffer.from(images[1].split(",")[1], "base64"));
@@ -3114,10 +3152,14 @@ test("PDF 引用复制、原生粘贴撤销、定位高亮与返回草稿", asyn
   await expect(page.getByRole("status")).toContainText("已定位并高亮");
   const mark = page.locator('[aria-label="引用高亮"] [data-citation-page="1"]');
   await expect(mark).toHaveCount(1);
-  const rect = await mark.boundingBox();
-  const pdf = await pdfImage().boundingBox();
-  expect(rect!.x - pdf!.x).toBeCloseTo(60, 0);
-  expect(rect!.y - pdf!.y).toBeCloseTo(80, 0);
+  await expect.poll(async () => {
+    const [rect, pdf] = await Promise.all([mark.boundingBox(), pdfImage().boundingBox()]);
+    return rect && pdf ? rect.x - pdf.x : undefined;
+  }).toBeCloseTo(60, 0);
+  await expect.poll(async () => {
+    const [rect, pdf] = await Promise.all([mark.boundingBox(), pdfImage().boundingBox()]);
+    return rect && pdf ? rect.y - pdf.y : undefined;
+  }).toBeCloseTo(80, 0);
   await setPdfZoom("150");
   await expect.poll(async () => (await mark.boundingBox())?.width).toBeCloseTo(240, 0);
   for (const name of ["水平滚动", "双页视图", "顺时针旋转"]) {

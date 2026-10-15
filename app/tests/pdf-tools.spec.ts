@@ -123,7 +123,9 @@ test("read_pdf 返回实际页图、放大区域及持久引用，不依赖阅�
       .catch(() => null);
     const page = await run({});
     const info = JSON.parse((page.content[0] as any).text);
-    expect(info.text).toContain("Attention Is All You Need");
+    expect(info).not.toHaveProperty("text");
+    expect(info).not.toHaveProperty("textStatus");
+    expect(info).not.toHaveProperty("textTruncated");
     expect(info.pageCount).toBeGreaterThan(1);
     expect(info.granularity).toBe("页面");
     const image = PNG.sync.read(
@@ -195,20 +197,18 @@ test("read_pdf 返回实际页图、放大区域及持久引用，不依赖阅�
     ).rejects.toThrow("区域");
     await expect(run({ sha256: "0".repeat(64) })).rejects.toThrow("版本");
     await expect(run({ path: "../outside.pdf" })).rejects.toThrow("身份");
-    const textOnly = await createPdfTools(
-      root,
-      service,
-      false,
-      () => true,
-    )[0].execute(
-      "text",
-      { path: "text/paper.pdf" },
-      undefined,
-      undefined,
-      {} as any,
-    );
-    expect(textOnly.content).toHaveLength(1);
-    expect((textOnly.content[0] as any).text).toContain("未启用视觉");
+    await expect(
+      createPdfTools(root, service, false, () => true)[0].execute(
+        "text",
+        { path: "text/paper.pdf", page: 2 },
+        undefined,
+        undefined,
+        {} as any,
+      ),
+    ).rejects.toThrow("视觉输入");
+    expect(
+      await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"),
+    ).toBe(dictionary);
     const canceled = new AbortController();
     canceled.abort();
     await expect(run({}, canceled.signal)).rejects.toThrow();
@@ -226,7 +226,7 @@ test("read_pdf 返回实际页图、放大区域及持久引用，不依赖阅�
   }
 });
 
-test("扫描页只返回实际图像；区域文字和图片保持同一取证位置，取消不登记迟到引用", async () => {
+test("公式区域和扫描页均只返回实际图像与定位信息，取消不登记迟到引用", async () => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-scan-"),
   );
@@ -256,7 +256,7 @@ test("扫描页只返回实际图像；区域文字和图片保持同一取证�
       tool.execute("scan", value, signal, undefined, {} as any);
     const result = await invoke({ ...args, page: 1 });
     const info = JSON.parse((result.content[0] as any).text);
-    expect(info.text).toBe("");
+    expect(info).not.toHaveProperty("text");
     const formulaImage = PNG.sync.read(
       Buffer.from((result.content[1] as any).data, "base64"),
     );
@@ -266,9 +266,10 @@ test("扫描页只返回实际图像；区域文字和图片保持同一取证�
       if (formulaImage.data[i] < 128) ink++;
     expect(ink).toBeGreaterThan(500);
     const full = await invoke({ path: args.path });
-    expect(JSON.parse((full.content[0] as any).text).text).toContain(
-      "Formula Graphics Fixture",
+    expect(JSON.parse((full.content[0] as any).text)).not.toHaveProperty(
+      "text",
     );
+    expect(full.content[1].type).toBe("image");
     const added = (await service.dispatch({
       type: "addMaterial",
       root,
@@ -278,8 +279,8 @@ test("扫描页只返回实际图像；区域文字和图片保持同一取证�
     })) as Project;
     const scan = await invoke({ path: added.manifest.materials[0].path });
     const scanInfo = JSON.parse((scan.content[0] as any).text);
-    expect(scanInfo.text).toBe("");
-    expect(scanInfo.textStatus).toContain("无可用文本层");
+    expect(scanInfo).not.toHaveProperty("text");
+    expect(scanInfo).not.toHaveProperty("textStatus");
     expect(scan.content[1].type).toBe("image");
     const before = await fs.readFile(
       path.join(root, ".paper30min-citations.json"),

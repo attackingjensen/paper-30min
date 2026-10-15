@@ -23,9 +23,9 @@ export function createPdfTools(
   return [
     defineTool({
       name: "read_pdf",
-      label: "读取 PDF 原文",
+      label: "查看 PDF 图像",
       description:
-        "Read an actual PDF page or magnified region in the current project, independently of the viewer and parsing. Returns page count, available PDF text, a real PNG for vision models, and an application-issued citation link. Pages are 1-based; region is unrotated top-left PDF points, never viewport coordinates. Omit page to inspect page 1 and document metadata. Reuse returned links verbatim; never invent citation IDs. Scanned pages have no text layer (no OCR).",
+        "Visually inspect an actual PDF page or magnified region in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real PNG, page count and dimensions, PDF version, and an application-issued citation link. Pages are 1-based; region is unrotated top-left PDF points, never viewport coordinates. Omit page to inspect page 1. No PDF text extraction or OCR. Read the parsed manuscript for document text. Reuse returned links verbatim; never invent citation IDs.",
       parameters: Type.Object({
         path: Type.String({
           description:
@@ -73,6 +73,10 @@ export function createPdfTools(
           }
         };
         check();
+        if (!vision)
+          throw new Error(
+            "read_pdf 需要支持视觉输入的模型，请切换模型并启用视觉输入；不提供文本层降级。",
+          );
         const project = (await projects.dispatch({
           type: "refresh",
           root,
@@ -161,40 +165,24 @@ export function createPdfTools(
             ],
           };
           validateCitation(input);
-          const textRects = await task(engine.getPageTextRects(doc, page));
-          const text = textRects
-            .filter(
-              ({ rect }) =>
-                !region ||
-                (rect.origin.x >= region.origin.x &&
-                  rect.origin.y >= region.origin.y &&
-                  rect.origin.x + rect.size.width <=
-                    region.origin.x + region.size.width &&
-                  rect.origin.y + rect.size.height <=
-                    region.origin.y + region.size.height),
-            )
-            .map((item) => item.content)
-            .join("\n");
           const size = region?.size ?? page.size;
           const actualScale = Math.min(
             scale,
             2048 / Math.max(size.width, size.height),
           );
-          const image = vision
-            ? await task(
-                region
-                  ? engine.renderPageRect(doc, page, region, {
-                      scaleFactor: actualScale,
-                      rotation: 0,
-                      dpr: 1,
-                    })
-                  : engine.renderPage(doc, page, {
-                      scaleFactor: actualScale,
-                      rotation: 0,
-                      dpr: 1,
-                    }),
-              )
-            : undefined;
+          const image = await task(
+            region
+              ? engine.renderPageRect(doc, page, region, {
+                  scaleFactor: actualScale,
+                  rotation: 0,
+                  dpr: 1,
+                })
+              : engine.renderPage(doc, page, {
+                  scaleFactor: actualScale,
+                  rotation: 0,
+                  dpr: 1,
+                }),
+          );
           check();
           const citation = (await projects.dispatch(
             { type: "createCitation", root, path: args.path, input },
@@ -210,32 +198,21 @@ export function createPdfTools(
             citation,
             link: citationLink(citation.id),
             markdown: citationMarkdown(citation),
-            source: "PDF 原文件；PDFium 渲染与文本层提取，未使用解析稿或 OCR",
+            source: "PDF 原文件；PDFium 渲染，未提取文本层，未使用解析稿或 OCR",
             granularity: region ? "区域" : "页面",
-            scale: image ? actualScale : undefined,
-            image: image
-              ? "实际 PNG 页图/裁切图，非原生 PDF 输入"
-              : "当前模型未启用视觉输入，仅返回文本；如需核对图表请切换支持视觉输入的模型。",
-            textStatus: text.trim()
-              ? "仅提取完整落在读取区域内的文本块，阅读顺序与公式可能不完整，请核对图像。"
-              : "此页或区域无可用文本层，可能为扫描页或纯图像；未执行 OCR。",
-            text: text.slice(0, 24000),
-            textTruncated: text.length > 24000,
+            scale: actualScale,
+            image: "实际 PNG 页图/裁切图，非原生 PDF 输入",
           };
           return {
             content: [
               { type: "text" as const, text: JSON.stringify(info) },
-              ...(image
-                ? [
-                    {
-                      type: "image" as const,
-                      mimeType: "image/png",
-                      data: image.toString("base64"),
-                    },
-                  ]
-                : []),
+              {
+                type: "image" as const,
+                mimeType: "image/png",
+                data: image.toString("base64"),
+              },
             ],
-            details: { pdf: { ...info, text: undefined } },
+            details: { pdf: info },
           };
         } finally {
           try {

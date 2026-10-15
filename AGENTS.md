@@ -25,6 +25,8 @@
 - 真实 Electron 高层集成：`npm test`（或 `npm run test:desktop`），覆盖窗口操作、工程文件结果与重开。
 - 开发窗口：`npm run dev`；详细入口见 [app/README.md](app/README.md)，工程契约见 [docs/project-format.md](docs/project-format.md)。
 
+Electron 自动化回归默认隐藏窗口，不在用户桌面弹窗或抢占焦点，避免干扰用户同时操作电脑。只有明确需要现场前端视觉检查、原生焦点或人工交互验收时，才设置 `PAPER30MIN_TEST_WINDOW=visible` 并通过 Playwright `-g` 筛选相关用例；完成后清除该环境变量，不以可见模式运行整套回归。隐藏模式仍须验证实际渲染、截图和交互，但不能替代原生焦点或人工交互验收；剪贴板用例仍可能使用系统剪贴板。
+
 以下为归档旧客户端的检查，不代表新版 Electron 已通过验证：
 
 - Windows JavaScript：`cd legacy/v1/app` 后 `node --test`。

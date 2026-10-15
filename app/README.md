@@ -22,6 +22,16 @@ npm test
 
 `npm test` 先构建，再运行 Playwright 的真实 Electron 高层测试。测试只替代系统文件选择器，使用生产 preload、IPC、Node 工程进程和真实磁盘操作；回收站调用也使用 Electron 系统接口。默认测试使用临时配置与可控模型服务，覆盖流式回复、代理、失败恢复、并发停止和迟到事件。失败保留 trace，布局截图位于 `test-results/`。
 
+桌面回归默认隐藏原生窗口，不显示任务栏按钮，也不抢占桌面焦点；后台仍进行真实渲染和截图，并通过 CDP 保持浏览器输入与剪贴板 API 可用。需要现场视觉检查或验证原生焦点时，只显式显示所选用例：
+
+```powershell
+$env:PAPER30MIN_TEST_WINDOW='visible'
+npx playwright test -g '需要检查的用例名称'
+Remove-Item Env:PAPER30MIN_TEST_WINDOW
+```
+
+隐藏测试不代替原生焦点或人工交互验收；涉及复制的用例仍会使用系统剪贴板。普通开发和正式启动默认显示窗口。
+
 可用 `PAPER30MIN_PROFILE` 指定独立本机配置目录，用于隔离试用；普通启动使用 Electron 的 `userData`。启动运行器会移除宿主的 `ELECTRON_RUN_AS_NODE`，防止 Electron 被当成 Node 启动。
 
 ## 工程格式
@@ -40,7 +50,7 @@ npm test
 
 普通对话即可根据用户请求读取、编辑成果、运行脚本与搜索网页，无需切换模式。思考过程和工具调用使用统一的可展开卡片；网络搜索密钥在「Agent 网络搜索」设置页独立配置。Pi 原生 read、write、edit、bash 已接入，工具卡片显示参数、过程、输出、失败、实际改动及新文件入口，历史重开仍保留工具调用与结果。read 当前支持 2 MiB 内 UTF-8 工程文本。
 
-`read_pdf` 可独立读取已登记 PDF 的原页或放大区域，无需打开 PDF 标签或等待解析，也不改变阅读位置。工具返回实际 PNG、可用文本层和应用登记的引用；回复中的引用链接可点击回查。模型设置中的「支持视觉输入」须与服务实际能力一致：启用后 Pi 传递 PNG，关闭时仅传文字并说明无法查看图片。扫描页不执行 OCR，文本缺失有明确提示。每次调用独立释放 PDFium 与图像，不保留跨调用图像缓存；引用 JSON 只保存定位记录，图像保留在 Pi 工具结果中。附件与研究 Skill 由后续工单接入。
+`read_pdf` 将已登记 PDF 的指定页面或区域渲染为实际 PNG，无需打开 PDF 标签或等待解析，也不改变阅读位置。除图像外，只返回文件版本、页码、尺寸、区域、缩放和应用登记的可回查引用；不提取文本层、不执行 OCR，也不负责块内短句定位。正文阅读使用工程已有解析稿。模型设置中的「支持视觉输入」须与服务实际能力一致；未启用时明确报错，不提供文本降级。每次调用独立释放 PDFium 与图像，不保留跨调用图像缓存；引用 JSON 只保存定位记录，图像保留在 Pi 工具结果中。附件与研究 Skill 由后续工单接入。
 
 Windows 的 bash 工具实际执行 PowerShell。使用本机可用的 PowerShell，默认超时 120 秒，工具参数可指定其他期限。输出截断与非零退出码沿用 Pi；子进程置于 Windows Job Object 中，Shell 退出或被取消时清理整棵进程树。只传递运行所需的系统环境变量，不继承模型密钥、代理凭据或 Orca/Codex 会话变量；已知模型密钥在输出、工具结果和持久会话前脱敏。
 
@@ -54,7 +64,7 @@ npx playwright test -g '用本机旧配置运行真实 Pi'
 Remove-Item Env:PAPER30MIN_REAL_MODEL
 ```
 
-`read_pdf` 的真实视觉测试支持通过 `PAPER30MIN_REAL_CONFIG` 指定本机 JSON 文件（字段为 `baseUrl`、`model`、`apiKey`），并用 `PAPER30MIN_REAL_SCAN` 指定无文本层的扫描 PDF；运行 `npx playwright test -g 'read_pdf 真实视觉模型'`。该测试使用 high 思考强度与视觉输入，产物不包含密钥。凭据文件应放在仓库外，完成后删除；临时工程与隔离配置仍由测试清理。只有显式指定 `PAPER30MIN_REAL_SAVE_PROFILE` 时才把 Electron 加密后的配置复制到该目录。
+`read_pdf` 的真实视觉测试支持通过 `PAPER30MIN_REAL_PROFILE` 指定包含 Electron 加密配置 `agent-settings.json` 及其配套 `Local State` 的本机目录，复制到隔离测试目录并重新启动后使用，不修改原配置。也可通过 `PAPER30MIN_REAL_CONFIG` 指定本机 JSON 文件（字段为 `baseUrl`、`model`、`apiKey`），同时指定时优先使用 JSON。用 `PAPER30MIN_REAL_SCAN` 指定扫描 PDF，并设置 `PAPER30MIN_REAL_MODEL=1` 后运行 `npx playwright test -g 'read_pdf 真实视觉模型'`。该测试使用 high 思考强度与视觉输入，产物不包含密钥。明文凭据文件应放在仓库外，完成后删除；临时工程与隔离配置仍由测试清理。只有显式指定 `PAPER30MIN_REAL_SAVE_PROFILE` 时才把 Electron 加密后的配置及配套 `Local State` 复制到该目录。
 
 Viewer 的 WASM 和中文预置印章使用本地资源，界面字体使用系统字体，不加载默认远端字体。批注编辑与导出使用 Viewer 原生行为，尚未接入工程内的自动保存或 Agent 取证流程。
 
