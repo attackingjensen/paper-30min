@@ -28,7 +28,27 @@ npm test
 
 详见 [工程文件契约](../docs/project-format.md)。`src/main/project-service.ts` 是界面及后续 Agent 共享的文件操作入口，由 Node utility process 执行；主进程负责系统选择器、回收站和外部打开，React 通过受限 preload 调用。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统。
 
-当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。保存使用 Ctrl+S 或保存按钮，未保存的编辑在标签和设置往返中保留。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。解析配置由后续工单交付，正式启动页由 STE-92 承接。
+当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。保存使用 Ctrl+S 或保存按钮，未保存的编辑在标签和设置往返中保留。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析可生成只读候选，正式启动页由 STE-92 承接。
+
+## 百度解析
+
+在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token，再从工程「论文解析」选择已登记 PDF 并确认上传。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置。解析完成后可查看带块 ID、统一 PDF 引用和本地图片的 Markdown；结果保存在 `text/candidates/<batchId>/`，可离线重开和整体搬迁，仍待 STE-83 的 Agent 逐页审阅，不作为已审阅正文。
+
+接口沿用 [百度官方异步任务服务](https://ai.baidu.com/ai-doc/AISTUDIO/Mml7n69e7)：向 `/api/v2/ocr/jobs` 提交 multipart PDF，收到 `data.jobId` 后查询 `data.state`，完成后下载 `data.resultUrl.jsonUrl`。实际 JSONL 按返回顺序包含 `result.layoutParsingResults`（`prunedResult`、`markdown.text/images`）及 `result.dataInfo`；块含 `block_id`、`block_label`、`block_content`、`block_bbox`、`group_id` 等。图片实际支持签名 HTTPS 地址和 Base64，不假设 Gemini 格式。
+
+本机上传上限为 50 MiB、1 至 1000 页；请求超时 120 秒，单轮查询最长 30 分钟，超时可恢复原任务。原始 JSONL 上限 256 MiB、单张图片 32 MiB、图片合计 256 MiB，PNG 像素上限 1600 万，候选 Markdown 上限 2 MiB。超预算保留可恢复现场，不截断后报成功。配额及服务端实际模型版本由百度账户和服务决定，请求模型名不等于服务端版本证据。
+
+停止会保留云端任务号；提交回执未到时显示等待回执，应用退出可能留下「提交结果不明」。此时需从百度控制台取得任务号并关联，不能自动重传，避免重复调用。OCR 位置是块区域引用；页面旋转、裁切、预处理或区域无效时明确降为页级。当前不能检测同尺寸页面的语义换位，公式和表格质量仍需对照原页审阅。四份旧版真实 JSONL 与对应 PDF 共 49 页由新版公共接口回归，真实服务质量证据记录在 STE-82。
+
+真实解析测试默认跳过；可使用本机加密配置及同目录配套的 Electron `Local State`（两者均须来自本机同一配置目录），测试自动关闭 trace，临时工程和原始返回保存在被忽略的 `tmp/ste82-real/`。配置和产物路径均不应提交：
+
+```powershell
+$env:PAPER30MIN_REAL_PARSING_CONFIG='C:\local\parsing-settings.json'
+npx playwright test -g '真实百度服务生成'
+Remove-Item Env:PAPER30MIN_REAL_PARSING_CONFIG
+```
+
+可用 `PAPER30MIN_REAL_PARSING_SOURCE` 指定扫描 PDF、`PAPER30MIN_REAL_PARSING_PROJECT` 复用已有真实候选或恢复原任务、`PAPER30MIN_REAL_PARSING_OUTPUT` 隔离证据目录。只复查完整候选时无需再次提交或提供 Token。真实调用另验质量，受控服务测试覆盖停止、提交不明、下载失败、重开恢复、区域降级、图片完整性与搬迁。
 
 ## Agent 对话与模型
 

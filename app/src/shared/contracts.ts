@@ -1,4 +1,5 @@
 import type { CitationInput } from "./citations.js";
+import type { ParsingCommand } from "./parsing.js";
 
 export interface DocumentRecord {
   id: string;
@@ -116,6 +117,7 @@ export type Command =
   | { type: "resolveFile"; root: string; path: string };
 
 export interface Desktop {
+  parsing<T>(command: ParsingCommand): Promise<T>;
   agent<T>(command: AgentCommand): Promise<T>;
   watchAgent(listener: (state: ChatSession) => void): () => void;
   invoke<T>(command: Command): Promise<T>;

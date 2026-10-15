@@ -5,8 +5,11 @@ import type {
   Command,
   Desktop,
 } from "../shared/contracts.js";
+import type { ParsingCommand } from "../shared/parsing.js";
 
 const desktop: Desktop = {
+  parsing: <T,>(command: ParsingCommand) =>
+    ipcRenderer.invoke("parsing:command", command) as Promise<T>,
   agent: <T,>(command: AgentCommand) =>
     ipcRenderer.invoke("agent:command", command) as Promise<T>,
   watchAgent: (listener) => {

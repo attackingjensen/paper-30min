@@ -2,6 +2,9 @@ import { ProjectService } from "./project-service.js";
 import { AgentService } from "./agent-service.js";
 import type { ModelConfig } from "./agent-settings.js";
 import type { AgentCommand, Command } from "../shared/contracts.js";
+import type { ParsingCommand } from "../shared/parsing.js";
+import type { ParsingConfig } from "./parsing-settings.js";
+import { ParsingService } from "./parsing-service.js";
 
 const port = process.parentPort!;
 let nextId = 0;
@@ -22,6 +25,7 @@ const agent = new AgentService(
   (state) => port.postMessage({ agentState: state }),
   service,
 );
+const parsing = new ParsingService(service);
 
 port.on(
   "message",
@@ -31,7 +35,9 @@ port.on(
     data: {
       id: number;
       command?:
-        Command | { type: "agent"; command: AgentCommand; config: ModelConfig };
+        | Command
+        | { type: "agent"; command: AgentCommand; config: ModelConfig }
+        | { type: "parsing"; command: ParsingCommand; config: ParsingConfig };
       shutdown?: boolean;
       trashResult?: boolean;
       error?: string;
@@ -48,7 +54,15 @@ port.on(
       const command = data.command;
       let value: unknown;
       if (data.shutdown) {
-        await Promise.all([agent.close(), service.close()]);
+        await Promise.all([agent.close(), parsing.close()]);
+        await service.close();
+      } else if (command?.type === "parsing") {
+        if (
+          command.command.type === "settings" ||
+          command.command.type === "saveSettings"
+        )
+          throw new Error("无效解析命令。");
+        value = await parsing.dispatch(command.command, command.config);
       } else if (command?.type === "agent") {
         if (
           command.command.type === "settings" ||
