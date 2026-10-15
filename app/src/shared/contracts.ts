@@ -156,6 +156,7 @@ export interface AgentModelSettings {
   maxTokens: number;
   availableThinking: ThinkingLevel[];
   thinking: ThinkingLevel;
+  vision?: boolean;
 }
 export interface AgentSettings {
   services: AgentServiceSettings[];

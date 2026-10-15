@@ -983,6 +983,7 @@ export function App() {
               )}
               <div className="right-slot" inert={!right} aria-hidden={!right}>
                 <AgentPanel
+                  onCitation={(link) => void openCitation(link)}
                   onOpenFile={openPath}
                   key={root}
                   root={root!}

@@ -785,9 +785,11 @@ test("单服务密钥损坏可独立恢复，协议切换校正该服务模型�
     await page.getByLabel("Agent 消息").fill("服务 B");
     await page.getByRole("button", { name: "发送消息" }).click();
     await expect(page.locator(".chat-message.assistant")).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
     await page.getByRole("button", { name: "选择模型" }).click();
     await page.getByLabel("搜索模型").fill("A1");
     await page.getByRole("button", { name: /A1.*服务 A/ }).click();
+    await expect(page.getByRole("button", { name: "选择模型" })).toHaveText("A1");
     await page.getByLabel("思考等级").selectOption("off");
     await page.getByLabel("Agent 消息").fill("服务 A");
     await page.getByRole("button", { name: "发送消息" }).click();
@@ -1166,6 +1168,7 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
         "fetch_content",
         "get_search_content",
         "read",
+        "read_pdf",
         "web_search",
         "write",
       ],
@@ -1432,6 +1435,146 @@ test("模型含凭据的流中止或异常后，终态与持久会话仍脱敏",
   }
 });
 
+test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页并回查", async () => {
+  test.setTimeout(240000);
+  test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || !process.env.PAPER30MIN_REAL_CONFIG,
+    "需显式提供本机真实视觉模型配置文件，trace 必须关闭。");
+  const model = JSON.parse(await fs.readFile(process.env.PAPER30MIN_REAL_CONFIG!, "utf8"));
+  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
+    path.join(sandbox, "projects"), "真实 PDF 工程");
+  const root = path.join(sandbox, "projects", "真实 PDF 工程");
+  const scanPath = process.env.PAPER30MIN_REAL_SCAN;
+  if (scanPath) await page.evaluate(({ root, source }) => window.desktop.invoke({ type: "addMaterial", root, source }), { root, source: scanPath });
+  await page.evaluate(async (model) => {
+    const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+    settings.services[0].baseUrl = model.baseUrl;
+    settings.models[0] = { ...settings.models[0], model: model.model, vision: true,
+      thinking: "high", availableThinking: ["off", "high"], maxTokens: 8192 };
+    settings.proxy = "direct";
+    await window.desktop.agent({ type: "saveSettings", settings, apiKey: model.apiKey });
+  }, model);
+  const scan = scanPath ? (await readManifest(root)).materials[0].path : null;
+  await page.getByLabel("Agent 消息").fill(
+    "请实际调用 read_pdf 核对 text/paper.pdf 第8页的翻译结果表，再读取第4页注意力公式的局部区域（可先整页检查再放大）。" +
+    (scan ? `另读取参考材料 ${scan} 第1页，这是论文第3页的扫描图，无文本层，请依据图像解释编码器和解码器结构的区别。` : "") +
+    "最终简要报告英德 BLEU 分数、注意力公式与结构区别，每项给出工具返回的原文引用链接。禁止通过 read/bash/web_search 旁路读取资料。",
+  );
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 210000 });
+  await expect(page.locator(".agent-error")).toHaveCount(0);
+  const states = await page.evaluate((root) => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
+  const calls = states.flatMap((state) => state.messages.flatMap((message) => message.tools ?? []));
+  const successful = calls.filter((tool) => tool.name === "read_pdf" && tool.status === "done");
+  expect(successful.length).toBeGreaterThanOrEqual(scan ? 3 : 2);
+  expect(successful.some((tool) => (tool.arguments as any).region)).toBe(true);
+  if (scan) expect(successful.some((tool) => (tool.arguments as any).path === scan && JSON.parse(tool.output!).text === "")).toBe(true);
+  const reply = states.flatMap((state) => state.messages).filter((message) => message.role === "assistant").at(-1)!.text;
+  expect(reply).toContain("28.4");
+  const links = page.locator('.message-text a[href^="paper://cite/"]');
+  expect(await links.count()).toBeGreaterThanOrEqual(2);
+  for (const link of await links.all()) {
+    const href = await link.getAttribute("href");
+    await page.evaluate(({ root, link }) => window.desktop.invoke({ type: "resolveCitation", root, link }), { root, link: href! });
+  }
+  const regionCall = successful.find((tool) => (tool.arguments as any).region)!;
+  const regionLink = JSON.parse(regionCall.output!).link;
+  await page.evaluate(({ root, link }) => window.desktop.invoke({ type: "resolveCitation", root, link }), { root, link: regionLink });
+  await links.first().click();
+  await expectPdfRendered();
+  await page.screenshot({ path: "test-results/real-model/ste94-pdf.png" });
+  await fs.writeFile("test-results/real-model/ste94-evidence.json", JSON.stringify({
+    model: model.model, thinking: "high", reply, calls: successful.map((tool) => ({ args: tool.arguments, pdf: (tool.details as any).pdf })),
+  }, null, 2));
+  // Optional local setup retains only Electron-encrypted settings, never the input secret file.
+  if (process.env.PAPER30MIN_REAL_SAVE_PROFILE) {
+    await fs.mkdir(process.env.PAPER30MIN_REAL_SAVE_PROFILE, { recursive: true });
+    await fs.copyFile(path.join(sandbox, "profile/agent-settings.json"), path.join(process.env.PAPER30MIN_REAL_SAVE_PROFILE, "agent-settings.json"));
+  }
+});
+
+test("read_pdf 经真实 Electron 和 Pi 传送页图与区域，保留视口并可点击引用及重开", async () => {
+  let index = 0;
+  let returnedLink = "";
+  const images: string[] = [];
+  const results: any[] = [];
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const part of request) body += part;
+    const payload = JSON.parse(body);
+    const tools = payload.messages.filter((message: any) => message.role === "tool");
+    if (tools.length > results.length) {
+      const info = JSON.parse(tools.at(-1).content);
+      results.push(info);
+      returnedLink = info.link;
+    }
+    const imageUrls = payload.messages.flatMap((message: any) => Array.isArray(message.content)
+      ? message.content.flatMap((block: any) => block.type === "image_url" ? [block.image_url.url] : []) : []);
+    for (const url of imageUrls) if (!images.includes(url)) images.push(url);
+    const args = index === 0 ? { path: "text/paper.pdf", page: 1 }
+      : index === 1 ? { path: "text/paper.pdf", page: 3, region: { x: 50, y: 100, width: 300, height: 200 }, scale: 3 } : null;
+    index++;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const delta = args ? { tool_calls: [{ index: 0, id: `pdf-${index}`, type: "function",
+      function: { name: "read_pdf", arguments: JSON.stringify(args) } }] }
+      : { content: `[核对公式图表](${returnedLink})` };
+    for (const [value, finish] of [[delta, null], [{}, args ? "tool_calls" : "stop"]])
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const source = path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf");
+    await create(source, path.join(sandbox, "projects"), "PDF 工具工程");
+    const root = path.join(sandbox, "projects", "PDF 工具工程");
+    await expectPdfRendered();
+    await jumpPdfPage(2);
+    await setPdfZoom("125");
+    await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
+    const before = JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf;
+    await page.evaluate(async (endpoint) => {
+      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+      settings.services[0].baseUrl = endpoint;
+      settings.models[0].model = "vision-fixture";
+      settings.models[0].vision = true;
+      await window.desktop.agent({ type: "saveSettings", settings, apiKey: "pdf-fixture-key" });
+    }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+    await page.getByLabel("Agent 消息").fill("核对工程论文原页和公式图表，返回原文引用。");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    const link = page.locator('.message-text a[href^="paper://cite/"]');
+    await expect(link).toHaveText("核对公式图表");
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    expect(results).toHaveLength(2);
+    expect(results[0].text).toContain("Attention Is All You Need");
+    expect(images).toHaveLength(2);
+    const { PNG } = await import("pngjs");
+    const crop = PNG.sync.read(Buffer.from(images[1].split(",")[1], "base64"));
+    expect([crop.width, crop.height]).toEqual([900, 600]);
+    expect(JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf).toEqual(before);
+    await expect(page.getByRole("tab", { name: "paper.pdf", exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-tool="read_pdf"][data-status="done"]')).toHaveCount(2);
+    await link.click();
+    await expectPdfRendered();
+    await expect(page.getByRole("status")).toContainText("已定位并高亮");
+    const mark = page.locator('[aria-label="引用高亮"] [data-citation-page="3"]');
+    await expect(mark).toHaveCount(1);
+    await expect.poll(async () => (await mark.boundingBox())?.width).toBeCloseTo(375, 0);
+    await page.screenshot({ path: "test-results/ste94-citation.png" });
+    await desktop.close();
+    await launch();
+    await page.getByRole("button", { name: /PDF 工具工程/ }).click();
+    await expect(page.locator('[data-tool="read_pdf"][data-status="done"]')).toHaveCount(2);
+    await expect(page.locator('.message-text a[href^="paper://cite/"]')).toHaveAttribute("href", returnedLink);
+    const sessionFiles = await fs.readdir(path.join(root, ".pi/sessions"));
+    const history = await fs.readFile(path.join(root, ".pi/sessions", sessionFiles[0]), "utf8");
+    expect(history).toContain('"type":"image"');
+    expect(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8")).not.toContain("base64");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("Pi 普通对话可写入文件和运行 Shell", async () => {
   let index = 0;
   const server = createServer(async (request, response) => {
@@ -1569,7 +1712,13 @@ test("Pi 原生对话流式回复、补充、分支及搬迁重开，密钥留�
     await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
     await expect(page.locator(".chat-message")).toHaveCount(4);
     expect(requests).toHaveLength(2);
-    expect(JSON.stringify(requests)).not.toContain("paper.pdf");
+    const conversationMessages = requests.flatMap((request) =>
+      request.messages.filter((message) => message.role !== "system"),
+    );
+    expect(JSON.stringify(conversationMessages)).not.toContain("paper.pdf");
+    expect(conversationMessages.every((message) =>
+      message.role === "user" || message.role === "assistant",
+    )).toBe(true);
     const originalId = await page
       .getByLabel("会话", { exact: true })
       .inputValue();
@@ -3167,13 +3316,19 @@ test("PDF 文档引用标记、重叠跨页反查、外部更新与重开", asyn
   await page.getByRole("button", { name: "关闭文档引用列表", exact: true }).click();
   await page.getByRole("button", { name: "引用", exact: true }).click();
   await page.getByRole("button", { name: "框选引用", exact: true }).click();
-  const start = await page.locator(`[data-document-citation="${regionCitation.id}"]`).first().evaluate((element) => {
-    const { x, y } = element.getBoundingClientRect();
-    return { x, y };
-  });
-  await page.mouse.move(start.x + 5, start.y + 5);
+  const regionMark = page.locator(`[data-document-citation="${regionCitation.id}"]`).first();
+  await expect(regionMark).toBeInViewport();
+  let start: { x: number; y: number } | null = null;
+  // The overlay redraw replaces nodes; a detached node reports a zero DOM rect.
+  await expect.poll(async () => {
+    const box = await regionMark.boundingBox();
+    if (!box || !box.width || !box.height) return false;
+    start = box;
+    return true;
+  }).toBe(true);
+  await page.mouse.move(start!.x + 5, start!.y + 5);
   await page.mouse.down();
-  await page.mouse.move(start.x + 90, start.y + 60, { steps: 8 });
+  await page.mouse.move(start!.x + 90, start!.y + 60, { steps: 8 });
   await page.mouse.up();
   await expect(page.locator("[data-citation-page]")).toHaveCount(1);
   await expect(list).toHaveCount(0);

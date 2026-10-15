@@ -36,12 +36,14 @@ export function AgentPanel({
   initialView,
   onViewChange,
   onOpenFile,
+  onCitation,
 }: {
   root: string;
   onSettings: () => void;
   initialView?: { active: string; text: string };
   onViewChange: (view: { active: string; text: string }) => void;
   onOpenFile: (path: string) => void;
+  onCitation: (link: string) => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [active, setActive] = useState(initialView?.active ?? "");
@@ -282,7 +284,7 @@ export function AgentPanel({
                 <div className="thinking-content">{m.thinking}</div>
               </details>
             )}
-            <AgentMessage text={m.text} role={m.role} onError={setError} />
+            <AgentMessage text={m.text} role={m.role} onError={setError} onCitation={onCitation} />
             {m.tools?.map((tool) => (
               <ToolProcess key={tool.id} tool={tool} onOpenFile={onOpenFile} />
             ))}
@@ -538,6 +540,7 @@ function ToolProcess({
           <span className="process-name">
             {{
               read: "读取文件",
+              read_pdf: "读取 PDF 原文",
               write: "写入文件",
               edit: "编辑文件",
               bash: "运行命令",

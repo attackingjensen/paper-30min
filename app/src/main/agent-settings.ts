@@ -215,6 +215,7 @@ export class AgentSettingsStore {
           ...new Set(model.availableThinking),
         ] as ThinkingLevel[],
         thinking: model.thinking,
+        vision: model.vision === true,
       };
     });
     if (settings.selectedModelId && !modelIds.has(settings.selectedModelId))

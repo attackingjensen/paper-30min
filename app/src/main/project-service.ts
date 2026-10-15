@@ -118,7 +118,7 @@ function relativePath(value: string) {
   return value;
 }
 
-async function atomicJson(file: string, value: unknown) {
+async function atomicJson(file: string, value: unknown, signal?: AbortSignal) {
   const temporary = path.join(
     path.dirname(file),
     `.paper30min-${randomUUID()}.tmp`,
@@ -129,6 +129,7 @@ async function atomicJson(file: string, value: unknown) {
       await handle.writeFile(JSON.stringify(value, null, 2) + "\n");
       await handle.sync();
     } finally { await handle.close(); }
+    signal?.throwIfAborted();
     await fs.rename(temporary, file);
   } finally {
     await fs.rm(temporary, { force: true });
@@ -227,7 +228,7 @@ export class ProjectService {
     await this.queue;
   }
 
-  dispatch(command: Command): Promise<unknown> {
+  dispatch(command: Command, signal?: AbortSignal): Promise<unknown> {
     if (command.type === "cancelCreate") {
       this.creation.get(command.operationId)?.abort();
       return Promise.resolve();
@@ -241,7 +242,7 @@ export class ProjectService {
         this.create(command.input, controller.signal),
       ).finally(() => this.creation.delete(command.input.operationId));
     }
-    return this.serialize(() => this.execute(command));
+    return this.serialize(() => this.execute(command, signal));
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -678,7 +679,9 @@ export class ProjectService {
 
   private async execute(
     command: Exclude<Command, { type: "create" | "cancelCreate" }>,
+    signal?: AbortSignal,
   ): Promise<unknown> {
+    signal?.throwIfAborted();
     if (command.type === "preferences") return this.preferences();
     if (command.type === "setDefault") {
       if (command.folder !== null) await this.writableFolder(command.folder);
@@ -749,7 +752,7 @@ export class ProjectService {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("引用 PDF 已缺失，请重新关联原文件。");
         throw error;
       }
-      if (!/\.pdf$/i.test(file) || await digest(file) !== input.sha256)
+      if (!/\.pdf$/i.test(file) || await digest(file, signal) !== input.sha256)
         throw new Error("PDF 已被替换或版本无法确认，不能定位此引用。");
       if (existing) return { citation: existing, path: record.path };
       // Compare evidence, not object serialization or approximate geometry. Reuse
@@ -772,7 +775,7 @@ export class ProjectService {
       if (Buffer.byteLength(JSON.stringify(dictionary, null, 2) + "\n") > 32 * 1024 * 1024)
         throw new Error("引用字典超过 32 MiB，本次引用未保存。");
       // The project command queue serializes additions; staging + sync + rename keeps old data intact on interruption.
-      await atomicJson(path.join(root, citationName), dictionary);
+      await atomicJson(path.join(root, citationName), dictionary, signal);
       return citation;
     }
     if (

@@ -27,6 +27,7 @@ type SettingsDraft = {
   serviceName: string;
   availableThinking: ThinkingLevel[];
   thinking: ThinkingLevel;
+  vision: boolean;
   hasKey: boolean;
   keyError?: boolean;
   proxy: AgentSettings["proxy"];
@@ -54,6 +55,7 @@ function draftOf(
     maxTokens: model.maxTokens,
     availableThinking: model.availableThinking,
     thinking: model.thinking,
+    vision: model.vision === true,
     proxy: catalog.proxy,
     proxyUrl: catalog.proxyUrl,
   };
@@ -142,6 +144,7 @@ export function AgentSettingsForm({
             maxTokens: Number(settings!.maxTokens) || model.maxTokens,
             availableThinking: settings!.availableThinking,
             thinking: settings!.thinking,
+            vision: settings!.vision,
           }
         : model,
     );
@@ -601,6 +604,15 @@ export function AgentSettingsForm({
                                     update({ model: e.target.value })
                                   }
                                 />
+                              </label>
+                              <label className="settings-checkbox">
+                                <input
+                                  type="checkbox"
+                                  aria-label="支持视觉输入"
+                                  checked={settings.vision}
+                                  onChange={(e) => update({ vision: e.target.checked })}
+                                />
+                                支持视觉输入
                               </label>
                               <div className="settings-grid">
                                 <label>
