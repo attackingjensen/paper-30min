@@ -254,10 +254,14 @@ async function start() {
   });
   ipcMain.handle("project:choose", async (event, kind: string) => {
     trusted(event);
-    if (!["folder", "pdf", "material"].includes(kind))
+    if (!["folder", "pdf", "material", "legacy"].includes(kind))
       throw new Error("无效的选择类型。");
     const result = await dialog.showOpenDialog(window, {
-      properties: kind === "folder" ? ["openDirectory"] : ["openFile"],
+      title: kind === "legacy" ? "选择旧书库文件夹" : undefined,
+      defaultPath: kind === "legacy"
+        ? path.join(app.getPath("appData"), "com.paper30min.reader")
+        : undefined,
+      properties: kind === "folder" || kind === "legacy" ? ["openDirectory"] : ["openFile"],
       filters:
         kind === "pdf" ? [{ name: "PDF", extensions: ["pdf"] }] : undefined,
     });

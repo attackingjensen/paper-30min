@@ -2312,7 +2312,7 @@ test("从真实创建入口保存默认位置、复制 PDF，重启与搬迁后�
   );
   expect(await fs.readFile(source)).toEqual(original);
   expect(JSON.stringify(manifest)).not.toContain(parent);
-  expect((await fs.readdir(root)).sort()).toEqual([
+  await expect.poll(async () => (await fs.readdir(root)).sort()).toEqual([
     ".paper30min-reading.json",
     ".pi",
     "explanations",
@@ -2670,6 +2670,154 @@ test("150 页文档按视口渲染，反复关闭释放并在窄窗口阅读", a
   await expect(viewport).toBeVisible();
   await expectPdfRendered();
   await page.screenshot({ path: "test-results/pdf-narrow.png" });
+});
+
+test("旧 PDF 批量导入只复制原文，保留冲突目录并在重开后幂等重试", async () => {
+  const parent = path.join(sandbox, "projects");
+  const legacy = path.join(sandbox, "旧书库");
+  for (const id of ["a", "b", "c"]) {
+    await fs.mkdir(path.join(legacy, "attachments", id), { recursive: true });
+    await fs.copyFile(fixture, path.join(legacy, "attachments", id, "pdf"));
+  }
+  await fs.writeFile(path.join(legacy, "attachments/c/pdf"), "not a PDF");
+  await fs.writeFile(path.join(legacy, "attachments/a/card.png"), "old image");
+  await fs.copyFile(fixture, path.join(legacy, "attachments/a/pdf.old"));
+  await fs.mkdir(path.join(legacy, "database"));
+  await fs.writeFile(path.join(legacy, "database/library.sqlite"), "unreadable old metadata");
+  await fs.mkdir(path.join(parent, "pdf-a"));
+  await fs.writeFile(path.join(parent, "pdf-a/keep.txt"), "do not overwrite");
+
+  await page.getByRole("button", { name: "导入旧 PDF", exact: true }).click();
+  await expect(page.getByText("请先设置默认工程文件夹", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "关闭导入", exact: true }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await choose(parent);
+  await page.getByRole("button", { name: "选择文件夹", exact: true }).click();
+  await page.getByRole("button", { name: "返回工程", exact: true }).click();
+  await page.getByRole("button", { name: "导入旧 PDF", exact: true }).click();
+  await choose(legacy);
+  await page.getByRole("button", { name: "选择旧书库", exact: true }).click();
+  await expect(page.getByLabel("工程名称 1", { exact: true })).toHaveValue("pdf-a");
+  await page.getByLabel("工程名称 2", { exact: true }).fill("第二篇");
+  await page.getByRole("button", { name: "开始导入", exact: true }).click();
+  await expect(page.getByRole("button", { name: "重试未完成项", exact: true })).toBeEnabled();
+  await expect(page.getByText("已创建", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("失败", { exact: true })).toHaveCount(1);
+  expect(await fs.readFile(path.join(parent, "pdf-a/keep.txt"), "utf8")).toBe("do not overwrite");
+  const original = await fs.readFile(fixture);
+  const first = path.join(parent, "pdf-a (2)");
+  for (const root of [first, path.join(parent, "第二篇")]) {
+    expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(original);
+    expect(await fs.readdir(path.join(root, "text"))).toEqual(["paper.pdf"]);
+    for (const folder of ["notes", "map", "explanations", ".pi/sessions"])
+      expect(await fs.readdir(path.join(root, folder))).toEqual([]);
+    expect(await readManifest(root)).toMatchObject({ map: null, materials: [], explanations: [], translations: {} });
+  }
+  await page.screenshot({ path: "test-results/legacy-import-desktop.png" });
+  await page.setViewportSize({ width: 600, height: 760 });
+  await page.screenshot({ path: "test-results/legacy-import-narrow.png" });
+  expect(await page.locator('[aria-label="导入旧 PDF"]').evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  expect(await page.getByRole("dialog", { name: "导入旧 PDF", exact: true }).evaluate((e) => {
+    const box = e.getBoundingClientRect();
+    return box.left >= 0 && box.right <= window.innerWidth;
+  })).toBe(true);
+  await fs.copyFile(fixture, path.join(legacy, "attachments/c/pdf"));
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: "导入旧 PDF", exact: true }).click();
+  await choose(legacy);
+  await page.getByRole("button", { name: "选择旧书库", exact: true }).click();
+  await page.getByRole("button", { name: "开始导入", exact: true }).click();
+  await expect(page.getByText("已存在", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("已创建", { exact: true })).toHaveCount(1);
+  expect((await fs.readdir(parent)).sort()).toEqual(["pdf-a", "pdf-a (2)", "pdf-c", "第二篇"].sort());
+  expect(await fs.readFile(path.join(legacy, "attachments/a/pdf"))).toEqual(original);
+  expect(await fs.readFile(path.join(legacy, "database/library.sqlite"), "utf8")).toBe("unreadable old metadata");
+  expect(await fs.readFile(path.join(legacy, "attachments/a/card.png"), "utf8")).toBe("old image");
+  await fs.rename(legacy, path.join(sandbox, "旧库已移动"));
+  await page.getByRole("button", { name: "打开 pdf-a (2)", exact: true }).click();
+  await expectPdfRendered();
+});
+
+test("旧 PDF 导入报告空库、危险路径、消失源文件和不可用默认位置", async () => {
+  const parent = path.join(sandbox, "projects");
+  const legacy = path.join(sandbox, "旧书库");
+  const outside = path.join(sandbox, "外部论文");
+  await fs.mkdir(path.join(legacy, "attachments"), { recursive: true });
+  await fs.mkdir(outside);
+  await fs.copyFile(fixture, path.join(outside, "pdf"));
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await choose(parent);
+  await page.getByRole("button", { name: "选择文件夹", exact: true }).click();
+  await page.getByRole("button", { name: "导入旧 PDF", exact: true }).click();
+  await choose(legacy);
+  await page.getByRole("button", { name: "选择旧书库", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("没有可导入");
+  await fs.symlink(outside, path.join(legacy, "attachments/escape"), "junction");
+  await fs.mkdir(path.join(legacy, "attachments/valid"));
+  await fs.copyFile(fixture, path.join(legacy, "attachments/valid/pdf"));
+  await page.getByRole("button", { name: "选择旧书库", exact: true }).click();
+  await expect(page.locator(".legacy-items")).toContainText("符号链接或目录联接");
+  await fs.unlink(path.join(legacy, "attachments/valid/pdf"));
+  await page.getByRole("button", { name: "开始导入", exact: true }).click();
+  await expect(page.getByText("失败", { exact: true })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "重试未完成项", exact: true })).toBeEnabled();
+  expect(await fs.readdir(parent)).toEqual([]);
+  expect(await fs.readFile(path.join(outside, "pdf"))).toEqual(await fs.readFile(fixture));
+  expect(await page.evaluate(async (root) => {
+    try { await window.desktop.invoke({ type: "importLegacy", root, path: "attachments/../pdf", name: "越界", operationId: "unsafe" }); }
+    catch (error) { return (error as Error).message; }
+  }, legacy)).toContain("不能");
+  await fs.copyFile(fixture, path.join(legacy, "attachments/valid/pdf"));
+  await fs.rmdir(parent);
+  await page.getByRole("button", { name: "重试未完成项", exact: true }).click();
+  await expect(page.locator(".legacy-items")).toContainText("重新选择保存位置");
+  await expect(page.getByRole("button", { name: "重试未完成项", exact: true })).toBeEnabled();
+});
+
+test("旧 PDF 导入停止清理当前项，进程中断保留残留并可继续", async () => {
+  const parent = path.join(sandbox, "projects");
+  const legacy = path.join(sandbox, "旧书库");
+  for (const id of ["a", "z"]) await fs.mkdir(path.join(legacy, "attachments", id), { recursive: true });
+  await fs.copyFile(fixture, path.join(legacy, "attachments/a/pdf"));
+  const large = await fs.open(path.join(legacy, "attachments/z/pdf"), "w");
+  await large.write(await fs.readFile(fixture));
+  await large.truncate(1024 * 1024 * 1024);
+  await large.close();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await choose(parent);
+  await page.getByRole("button", { name: "选择文件夹", exact: true }).click();
+  await page.getByRole("button", { name: "导入旧 PDF", exact: true }).click();
+  await choose(legacy);
+  await page.getByRole("button", { name: "选择旧书库", exact: true }).click();
+  await page.getByRole("button", { name: "开始导入", exact: true }).click();
+  await expect.poll(() => fs.readdir(parent), { intervals: [10] }).toContain("pdf-z");
+  await page.getByRole("button", { name: "停止导入", exact: true }).click();
+  await expect(page.getByRole("button", { name: "重试未完成项", exact: true })).toBeEnabled();
+  expect(await fs.readdir(parent)).toEqual(["pdf-a"]);
+  await page.getByRole("button", { name: "重试未完成项", exact: true }).click();
+  await expect.poll(() => fs.readdir(parent), { intervals: [10] }).toContain("pdf-z");
+  await desktop.evaluate(({ app }) => {
+    const target = app.getAppMetrics().find((metric) => metric.name === "Paper30Min Project");
+    if (!target) throw new Error("找不到测试工程进程");
+    process.kill(target.pid);
+  });
+  await expect(page.getByRole("button", { name: "重试未完成项", exact: true })).toBeEnabled();
+  const interrupted = path.join(parent, "pdf-z");
+  expect(await fs.stat(interrupted)).toBeTruthy();
+  await fs.writeFile(path.join(interrupted, "keep.txt"), "interrupted directory");
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: "导入旧 PDF", exact: true }).click();
+  await choose(legacy);
+  await page.getByRole("button", { name: "选择旧书库", exact: true }).click();
+  await page.getByRole("button", { name: "开始导入", exact: true }).click();
+  await expect(page.getByText("已存在", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("已创建", { exact: true })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "关闭导入", exact: true })).toBeEnabled();
+  expect(await fs.readFile(path.join(interrupted, "keep.txt"), "utf8")).toBe("interrupted directory");
+  expect((await fs.stat(path.join(parent, "pdf-z (2)/text/paper.pdf"))).size).toBe(1024 * 1024 * 1024);
+  expect(JSON.parse(await fs.readFile(path.join(sandbox, "profile/preferences.json"), "utf8")).recent).toHaveLength(2);
 });
 
 test("默认位置与单次位置独立，同名目录和不可用默认位置明确失败", async () => {

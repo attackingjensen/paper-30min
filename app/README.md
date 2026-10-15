@@ -30,6 +30,12 @@ npm test
 
 当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。保存使用 Ctrl+S 或保存按钮，未保存的编辑在标签和设置往返中保留。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。解析配置由后续工单交付，正式启动页由 STE-92 承接。
 
+## 导入旧 PDF
+
+先在「设置 → 工程文件夹」选择默认位置，再从启动页或该设置页进入「导入旧 PDF」。选择旧书库根目录（默认 `%APPDATA%/com.paper30min.reader`），确认或修改逐篇工程名后开始。旧版把原始文件统一存为 `attachments/<论文 ID>/pdf`，默认工程名因此取 `pdf-<论文 ID>`；同名目录追加序号，不覆盖已有文件。
+
+每份 PDF 复制进独立工程，其他旧内容全部不导入，不访问旧数据库，不自动解析或调用模型。可停止导入或重试未完成项；重启后再次导入同一来源会核验并跳过成功项。本机 `legacy-imports.json` 用于重试识别，不随工程搬迁。强制中断留下的未完成目录保留，重试使用新目录。源 PDF 及旧书库不移动、不修改、不删除。完整约定见 [工程文件契约](../docs/project-format.md)。
+
 ## Agent 对话与模型
 
 设置页可保存 Agent 协议、端点、模型名称和 token 预算，支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 的 Pi 适配器。OpenAI 端点填写 API 基地址（通常以 `/v1` 结尾）；Anthropic 填写服务根地址（例如 `https://api.anthropic.com`），SDK 自行添加 `/v1/messages`。API 密钥由 Electron `safeStorage` 加密，保存在本机 `agent-settings.json`，不返回界面、不写入工程。替换密钥需要重新输入，留空保留已保存密钥；也可明确移除。配置损坏或无法解密时，可在设置页重新填写配置和密钥，或移除旧密钥后保存。
