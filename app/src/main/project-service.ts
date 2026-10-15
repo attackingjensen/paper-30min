@@ -346,6 +346,62 @@ export class ProjectService {
     });
   }
 
+  readParsingFile(root: string, batchId: string, relative: string): Promise<Buffer> {
+    return this.serialize(async () => {
+      const file = await this.resolve(root, this.parsingPath(batchId, relative));
+      if ((await fs.stat(file)).size > 256 * 1024 * 1024) throw new Error("解析文件超过 256 MiB。");
+      const bytes = await fs.readFile(file);
+      if (bytes.length > 256 * 1024 * 1024) throw new Error("解析文件超过 256 MiB。");
+      return bytes;
+    });
+  }
+
+  private parsingPath(batchId: string, relative: string) {
+    if (!/^[a-f0-9]{32}$/.test(batchId)) throw new Error("解析批次 ID 无效。");
+    relativePath(relative);
+    if (relative.split("/").some((part) => part.startsWith(".")) || /\.pdf$/i.test(relative))
+      throw new Error("解析产物路径无效。");
+    return `text/candidates/${batchId}/${relative}`;
+  }
+
+  writeParsingFile(root: string, batchId: string, relative: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+    return this.serialize(async () => {
+      signal?.throwIfAborted();
+      const target = this.parsingPath(batchId, relative);
+      await this.manifest(root);
+      let parent = await fs.realpath(root);
+      for (const part of target.split("/").slice(0, -1)) {
+        parent = path.join(parent, part);
+        try { await fs.mkdir(parent); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+        if ((await fs.lstat(parent)).isSymbolicLink()) throw new Error("解析目录不能是链接。");
+      }
+      const destination = path.join(root, target);
+      try {
+        await this.resolve(root, target);
+        if (relative !== "run.json") {
+          const previous = await fs.readFile(destination);
+          if (!previous.equals(Buffer.from(bytes))) throw new Error("已有候选产物已变化，不能覆盖；请保留现场并检查。");
+          return;
+        }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const temporary = path.join(parent, `.paper30min-${randomUUID()}.tmp`);
+      try {
+        const handle = await fs.open(temporary, "wx");
+        try { await handle.writeFile(bytes); await handle.sync(); }
+        finally { await handle.close(); }
+        signal?.throwIfAborted();
+        if (relative === "run.json") await fs.rename(temporary, destination);
+        else {
+          try { await fs.link(temporary, destination); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST" || !(await fs.readFile(await this.resolve(root, target))).equals(Buffer.from(bytes))) throw error;
+          }
+        }
+      } finally { await fs.rm(temporary, { force: true }); }
+    });
+  }
+
   private async preferences(): Promise<Preferences> {
     try {
       const p = JSON.parse(

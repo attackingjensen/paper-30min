@@ -7,11 +7,19 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   reporter: "list",
   outputDir:
-    process.env.PAPER30MIN_REAL_MODEL === "1"
+    process.env.PAPER30MIN_REAL_MODEL === "1" ||
+    process.env.PAPER30MIN_REAL_PARSING_CONFIG ||
+    process.env.PAPER30MIN_REAL_PARSING_TOKEN ||
+    process.env.PAPER30MIN_REAL_PARSING_PROJECT
       ? "test-results/real-model"
       : "test-results",
   use: {
     trace:
-      process.env.PAPER30MIN_REAL_MODEL === "1" ? "off" : "retain-on-failure",
+      process.env.PAPER30MIN_REAL_MODEL === "1" ||
+      process.env.PAPER30MIN_REAL_PARSING_CONFIG ||
+      process.env.PAPER30MIN_REAL_PARSING_TOKEN ||
+      process.env.PAPER30MIN_REAL_PARSING_PROJECT
+        ? "off"
+        : "retain-on-failure",
   },
 });

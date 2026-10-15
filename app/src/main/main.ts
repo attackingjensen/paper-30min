@@ -21,6 +21,12 @@ import type {
 } from "../shared/contracts.js";
 import { defaultAgentSettings } from "../shared/contracts.js";
 import { AgentSettingsStore, type ModelConfig } from "./agent-settings.js";
+import {
+  ParsingSettingsStore,
+  type ParsingConfig,
+} from "./parsing-settings.js";
+import type { ParsingCommand } from "../shared/parsing.js";
+import { defaultParsingSettings } from "../shared/parsing.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 protocol.registerSchemesAsPrivileged([
@@ -43,6 +49,11 @@ function request(
   command:
     | Command
     | { type: "agent"; command: AgentCommand; config: ModelConfig }
+    | {
+        type: "parsing";
+        command: ParsingCommand;
+        config: ParsingConfig & { proxy?: string; proxyUrl?: string };
+      }
     | null,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -89,6 +100,10 @@ async function start() {
   const agentSettings = new AgentSettingsStore(
     path.join(app.getPath("userData"), "agent-settings.json"),
   );
+  const parsingSettings = new ParsingSettingsStore(
+    path.join(app.getPath("userData"), "parsing-settings.json"),
+  );
+  let parsingSettingsWrite: Promise<unknown> = Promise.resolve();
   let settingsWrite: Promise<unknown> = Promise.resolve();
   const running = new Map<string, ChatSession>();
   worker = utilityProcess.fork(
@@ -216,6 +231,39 @@ async function start() {
   ipcMain.handle("project:command", (event, command: Command) => {
     trusted(event);
     return request(command);
+  });
+  ipcMain.handle("parsing:command", async (event, command: ParsingCommand) => {
+    trusted(event);
+    if (command.type === "saveSettings") {
+      const result = parsingSettingsWrite.then(() =>
+        parsingSettings.save(
+          command.settings,
+          command.apiKey,
+          command.clearKey,
+        ),
+      );
+      parsingSettingsWrite = result.catch(() => undefined);
+      return result;
+    }
+    if (
+      command.type === "stop" ||
+      command.type === "status" ||
+      command.type === "verify"
+    )
+      return request({
+        type: "parsing",
+        command,
+        config: { ...defaultParsingSettings, apiKey: "" },
+      });
+    await parsingSettingsWrite;
+    if (command.type === "settings") return parsingSettings.publicSettings();
+    const config = await parsingSettings.read();
+    const { proxy, proxyUrl } = await agentSettings.read();
+    return request({
+      type: "parsing",
+      command,
+      config: { ...config, proxy, proxyUrl },
+    });
   });
   ipcMain.handle("agent:command", async (event, command: AgentCommand) => {
     trusted(event);

@@ -40,6 +40,7 @@ import { MarkdownDocument } from "./MarkdownDocument";
 import { AgentPanel } from "./AgentPanel";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { LegacyImport } from "./LegacyImport";
+import { ParsingPanel, ParsingSettingsForm } from "./ParsingPanel";
 import type { ResolvedCitation, CitationUse } from "../shared/citations";
 import {
   useMarkdownDocuments,
@@ -444,6 +445,15 @@ export function App() {
   }
   function contentView() {
     if (!current) return <div className="empty">尚未打开文档</div>;
+    if (current.key === "parsing")
+      return (
+        <ParsingPanel
+          key={root}
+          project={project!}
+          onOpen={openPath}
+          onSettings={() => setSettings("parsing")}
+        />
+      );
     if (current.key === "materials")
       return (
         <article className="article">
@@ -704,6 +714,8 @@ export function App() {
                 settings === "proxy" ||
                 settings === "search" ? (
                 <AgentSettingsForm key={settings} section={settings} />
+              ) : settings === "parsing" ? (
+                <ParsingSettingsForm />
               ) : (
                 <p className="empty">尚未接入</p>
               )}
@@ -832,6 +844,10 @@ export function App() {
                       key: project.manifest.paper.path,
                       path: project.manifest.paper.path,
                       title: project.manifest.paper.path.split("/").at(-1)!,
+                    })}
+                    {nav("论文解析", <FileText />, {
+                      key: "parsing",
+                      title: "论文解析",
                     })}
                     {nav("阅读地图", <Map />, {
                       key: "map",

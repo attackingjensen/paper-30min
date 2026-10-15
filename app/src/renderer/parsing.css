@@ -1,0 +1,72 @@
+.parsing-settings {
+  display: grid;
+  gap: 12px;
+  max-width: 640px;
+}
+.parsing-settings input,
+.parsing-settings select {
+  min-width: 0;
+  width: 100%;
+}
+.parsing-settings .primary {
+  justify-self: start;
+  margin-top: 8px;
+}
+.parsing-panel {
+  max-width: 100%;
+  overflow: auto;
+}
+.parsing-start {
+  margin: 20px 0;
+  flex-wrap: wrap;
+}
+.parsing-start select {
+  flex: 1;
+  min-width: 160px;
+  max-width: 100%;
+}
+.parsing-confirm {
+  padding: 16px 0;
+  border-block: 1px solid #d4d4da;
+  margin-bottom: 16px;
+}
+.parsing-confirm p {
+  margin-top: 0;
+}
+.parsing-run {
+  padding: 20px 0;
+  border-top: 1px solid #d4d4da;
+}
+.parsing-run .row {
+  flex-wrap: wrap;
+}
+.parsing-run .path {
+  overflow-wrap: anywhere;
+}
+.parsing-run progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 14px 0;
+  accent-color: #347c59;
+}
+.parsing-phase {
+  font-size: 12px;
+  color: #595963;
+}
+.parsing-phase.candidate {
+  color: #28724c;
+}
+.parsing-phase.unknown,
+.parsing-error {
+  color: #a64639;
+}
+.parsing-error {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.parsing-job {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}

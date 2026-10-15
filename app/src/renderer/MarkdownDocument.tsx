@@ -97,7 +97,8 @@ export function MarkdownDocument({
       180,
     );
   }
-  const editing = draft.mode !== "read";
+  const readOnly = /^(text|sources)\//i.test(draft.path);
+  const editing = !readOnly && draft.mode !== "read";
   useEffect(() => {
     if (!host.current || !editing || !draft.file) return;
     const state =
@@ -283,36 +284,46 @@ export function MarkdownDocument({
   return (
     <section className="markdown-document">
       <div className="markdown-actions">
-        <div className="switch" role="group" aria-label="Markdown 视图">
-          {(
-            [
-              ["read", "阅读"],
-              ["edit", "编辑"],
-              ["split", "分屏"],
-            ] as const
-          ).map(([id, label]) => (
+        {readOnly ? (
+          <span className="muted">只读解析候选</span>
+        ) : (
+          <>
+            <div className="switch" role="group" aria-label="Markdown 视图">
+              {(
+                [
+                  ["read", "阅读"],
+                  ["edit", "编辑"],
+                  ["split", "分屏"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  aria-pressed={draft.mode === id}
+                  className={draft.mode === id ? "active" : ""}
+                  onClick={() => mode(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="muted markdown-save-state">
+              {draft.saving
+                ? "正在保存…"
+                : isDirty(draft)
+                  ? "未保存"
+                  : "已保存"}
+            </span>
             <button
-              key={id}
-              aria-pressed={draft.mode === id}
-              className={draft.mode === id ? "active" : ""}
-              onClick={() => mode(id)}
+              className="borderbtn"
+              disabled={
+                !isDirty(draft) || draft.saving || draft.external !== undefined
+              }
+              onClick={onSave}
             >
-              {label}
+              保存
             </button>
-          ))}
-        </div>
-        <span className="muted markdown-save-state">
-          {draft.saving ? "正在保存…" : isDirty(draft) ? "未保存" : "已保存"}
-        </span>
-        <button
-          className="borderbtn"
-          disabled={
-            !isDirty(draft) || draft.saving || draft.external !== undefined
-          }
-          onClick={onSave}
-        >
-          保存
-        </button>
+          </>
+        )}
       </div>
       {(draft.error || linkError) && (
         <div className="notice error" role="alert">
@@ -347,9 +358,9 @@ export function MarkdownDocument({
           </label>
         </div>
       )}
-      <div className={"markdown-panes " + draft.mode}>
+      <div className={"markdown-panes " + (readOnly ? "read" : draft.mode)}>
         {editing && <div ref={host} className="markdown-editor" />}
-        {draft.mode !== "edit" && (
+        {(readOnly || draft.mode !== "edit") && (
           <article
             ref={preview}
             className="markdown-preview"
