@@ -73,9 +73,9 @@
 
 v2.0 的建图生成阅读地图与论文精解，不另产节薄摘要。两类成果分别归入工程的 `map/` 与 `explanations/`；「30 分钟」不是讲解的时长或字数上限。见 [ADR-0007](docs/adr/0007-paper-explanations.md)。
 
-### 旧成果重建
-用户在已迁移的论文工程中主动发起的 Agent 工作：以同篇论文的旧生成成果为线索，回查原始 PDF 后生成符合新版定义的阅读地图或论文精解。旧成果本身不作为新版正式成果，也不因重建而改变旧库备份。
-*Avoid: 无损格式转换、自动导入旧生成成果*
+### 旧 PDF 导入
+以旧书库的原始 PDF 为唯一内容输入，为每份 PDF 创建独立的新工程。工程使用复制进来的 PDF；旧笔记、成果、附件、会话、阅读状态和元数据均不导入，创建本身不触发解析或生成。见 [ADR-0009](docs/adr/0009-pdf-only-legacy-import.md)。
+*Avoid: 旧书库整体迁移、旧成果重建*
 
 ## 解析方式
 
@@ -130,3 +130,8 @@ v2.0 的建图生成阅读地图与论文精解，不另产节薄摘要。两类
 供移动端读取的内容副本；Windows 仍是论文内容来源。
 
 详细契约见 [#25](https://github.com/attackingjensen/paper-30min/issues/25)、[#26](https://github.com/attackingjensen/paper-30min/issues/26)，重新启动时需结合现行实现复核。
+
+## Retired
+
+### 旧成果重建
+原指 Agent 参考旧生成成果、回查 PDF 后重建新版成果的工作；新版已改为仅导入原始 PDF，不再提供该能力，见 [ADR-0009](docs/adr/0009-pdf-only-legacy-import.md)。

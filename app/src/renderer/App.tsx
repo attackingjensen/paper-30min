@@ -14,6 +14,7 @@ import {
   Folder,
   FolderOpen,
   Home,
+  Import,
   Map,
   MoreHorizontal,
   PanelLeft,
@@ -38,6 +39,7 @@ import { PdfReader } from "./PdfReader";
 import { MarkdownDocument } from "./MarkdownDocument";
 import { AgentPanel } from "./AgentPanel";
 import { AgentSettingsForm } from "./AgentSettingsForm";
+import { LegacyImport } from "./LegacyImport";
 import type { ResolvedCitation, CitationUse } from "../shared/citations";
 import {
   useMarkdownDocuments,
@@ -100,6 +102,7 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
+  const [legacyImport, setLegacyImport] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [citationVisit, setCitationVisit] = useState<(ResolvedCitation & { from: string; nonce: string }) | null>(null);
   const [usageVisit, setUsageVisit] = useState<{ use: CitationUse; from: string; pdfPath: string; position?: PdfPosition; nonce: string } | null>(null);
@@ -694,6 +697,8 @@ export function App() {
                       </button>
                     )}
                   </div>
+                  <button className="borderbtn legacy-entry" disabled={busy}
+                    onClick={() => setLegacyImport(true)}><Import /> 导入旧 PDF</button>
                 </>
               ) : settings === "agent" ||
                 settings === "proxy" ||
@@ -728,6 +733,9 @@ export function App() {
               onClick={() => void openProject()}
             >
               <FolderOpen /> 打开工程文件夹
+            </button>
+            <button className="borderbtn" disabled={busy} onClick={() => setLegacyImport(true)}>
+              <Import /> 导入旧 PDF
             </button>
           </div>
           <h2>最近工程</h2>
@@ -998,6 +1006,9 @@ export function App() {
           </div>
         </div>
       )}
+      {legacyImport && <LegacyImport folder={preferences.defaultFolder}
+        onClose={() => setLegacyImport(false)} onUpdated={reloadPreferences}
+        onOpen={(folder) => { setLegacyImport(false); void openProject(folder); }} />}
       {dialog && (
         <div className="modal-backdrop">
           <form

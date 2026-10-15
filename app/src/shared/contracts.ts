@@ -80,11 +80,27 @@ export interface CreateInput {
   makeDefault: boolean;
   operationId: string;
 }
+export interface LegacyPdf {
+  path: string;
+  name: string;
+  error?: string;
+}
+export interface LegacyLibrary {
+  root: string;
+  papers: LegacyPdf[];
+}
+export interface LegacyImportResult {
+  root: string;
+  name: string;
+  existing: boolean;
+}
 export type Command =
   | { type: "preferences" }
   | { type: "setDefault"; folder: string | null }
   | { type: "create"; input: CreateInput }
   | { type: "cancelCreate"; operationId: string }
+  | { type: "scanLegacy"; root: string }
+  | { type: "importLegacy"; root: string; path: string; name: string; operationId: string }
   | { type: "open"; root: string }
   | { type: "refresh"; root: string }
   | { type: "addMaterial"; root: string; source: string }
@@ -119,7 +135,7 @@ export interface Desktop {
   agent<T>(command: AgentCommand): Promise<T>;
   watchAgent(listener: (state: ChatSession) => void): () => void;
   invoke<T>(command: Command): Promise<T>;
-  choose(kind: "pdf" | "folder" | "material"): Promise<string | null>;
+  choose(kind: "pdf" | "folder" | "material" | "legacy"): Promise<string | null>;
   watchProject(root: string, listener: (error?: string) => void): () => void;
   openLink(url: string): Promise<void>;
   openFile(root: string, path: string): Promise<void>;
