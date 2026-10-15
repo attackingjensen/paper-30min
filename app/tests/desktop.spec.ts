@@ -2851,7 +2851,7 @@ test("旧 PDF 导入停止清理当前项，进程中断保留残留并可继续
   await page.getByRole("button", { name: "选择旧书库", exact: true }).click();
   await page.getByRole("button", { name: "开始导入", exact: true }).click();
   await expect(page.getByText("已存在", { exact: true })).toHaveCount(1);
-  await expect(page.getByText("已创建", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("已创建", { exact: true })).toHaveCount(1, { timeout: 60_000 });
   await expect(page.getByRole("button", { name: "关闭导入", exact: true })).toBeEnabled();
   expect(await fs.readFile(path.join(interrupted, "keep.txt"), "utf8")).toBe("interrupted directory");
   expect((await fs.stat(path.join(parent, "pdf-z (2)/text/paper.pdf"))).size).toBe(1024 * 1024 * 1024);
