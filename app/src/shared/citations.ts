@@ -50,8 +50,11 @@ export function citationLink(id: string): string {
   return `paper://cite/${id}`;
 }
 export function citationMarkdown(citation: Citation): string {
-  const label = (citation.text.trim() || `PDF 第 ${citation.pages.map((p) => p.page).join("、")} 页`)
-    .replace(/\s+/g, " ").slice(0, 100).replace(/[\\`*{}\[\]()<>!_~&$]/g, "\\$&");
+  const text = Array.from(citation.text.trim().replace(/\s+/g, " "));
+  const label = (text.length
+    ? text.slice(0, 25).join("") + (text.length > 25 ? "…" : "")
+    : `PDF 第 ${citation.pages.map((p) => p.page).join("、")} 页`)
+    .replace(/[\\`*{}\[\]()<>!_~&$]/g, "\\$&");
   return `[${label}](${citationLink(citation.id)})`;
 }
 export function validateCitation(input: CitationInput): void {

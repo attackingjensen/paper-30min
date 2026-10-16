@@ -269,11 +269,11 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     );
     const mapping = JSON.parse(
       await fs.readFile(
-        path.join(root, "text/candidates", run.batchId, "mapping.json"),
+        path.join(root, ".paper30min/parsing", run.batchId, "mapping.json"),
         "utf8",
       ),
     ) as ParsingMapping;
-    const imagePath = path.join(root, "text/candidates", run.batchId, mapping.images[0].path);
+    const imagePath = path.join(root, "text", run.batchId, mapping.images[0].path);
     const originalImage = await fs.readFile(imagePath);
     await fs.writeFile(imagePath, "damaged");
     await page.getByRole("button", { name: "查看候选" }).click();
@@ -337,7 +337,7 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     await page
       .getByRole("button", { name: "打开工程文件夹", exact: true })
       .click();
-    await expect(page.locator(".markdown-preview")).toContainText("解析候选");
+    await expect(page.locator(".markdown-preview")).toContainText("Deep Residual Learning for Image Recognition");
     await expect
       .poll(() =>
         page
@@ -460,7 +460,9 @@ test("真实百度服务生成可回查候选并记录格式与耗时", async ()
       .toBe("candidate");
     const mapping = JSON.parse(
       await fs.readFile(
-        path.join(root, "text/candidates", run!.batchId, "mapping.json"),
+        run!.candidate!.startsWith("text/candidates/")
+          ? path.join(root, path.dirname(run!.candidate!), "mapping.json")
+          : path.join(root, ".paper30min/parsing", run!.batchId, "mapping.json"),
         "utf8",
       ),
     ) as ParsingMapping;
@@ -3785,7 +3787,7 @@ test("文字多行引用保留原句与多个区域，整页引用不伪装精�
   await page.getByRole("menuitem", { name: "复制引用链接", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("已复制引用链接");
   const markdown = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  expect(markdown).toContain("Citation alpha \\[one\\] \\(two\\).");
+  expect(markdown).toMatch(/^\[Citation alpha \\\[one\\\] \\\(two…\]\(paper:\/\/cite\/[a-f0-9]{32}\)$/);
   const root = path.join(sandbox, "projects/研究工程");
   const dictionary = JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"));
   const citation: any = Object.values(dictionary.citations)[0];
@@ -3800,7 +3802,7 @@ test("文字多行引用保留原句与多个区域，整页引用不伪装精�
   await fs.writeFile(path.join(root, "notes/原句.md"), markdown + "\n\n" + pageLink);
   await page.getByRole("button", { name: "笔记", exact: true }).click();
   await page.getByRole("button", { name: "原句.md", exact: true }).click();
-  await expect(page.getByRole("link", { name: /Citation alpha \[one\] \(two\)/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Citation alpha [one] (two…", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("页级引用");
   await expect(page.locator('[data-citation-page]')).toHaveCount(0);

@@ -283,7 +283,7 @@ export class ProjectService {
     if (scope.candidateDirectory) {
       const candidate = relativePath(scope.candidateDirectory).toLowerCase();
       if (
-        !candidate.startsWith("text/candidates/") ||
+        (!candidate.startsWith("text/candidates/") && !/^text\/[a-f0-9]{32}$/.test(candidate)) ||
         !lower.startsWith(candidate + "/") ||
         /\.pdf$/i.test(lower)
       )
@@ -348,7 +348,7 @@ export class ProjectService {
 
   readParsingFile(root: string, batchId: string, relative: string): Promise<Buffer> {
     return this.serialize(async () => {
-      const file = await this.resolve(root, this.parsingPath(batchId, relative));
+      const file = await this.resolve(root, await this.parsingPath(root, batchId, relative));
       if ((await fs.stat(file)).size > 256 * 1024 * 1024) throw new Error("解析文件超过 256 MiB。");
       const bytes = await fs.readFile(file);
       if (bytes.length > 256 * 1024 * 1024) throw new Error("解析文件超过 256 MiB。");
@@ -356,18 +356,51 @@ export class ProjectService {
     });
   }
 
-  private parsingPath(batchId: string, relative: string) {
+  parsingBatches(root: string): Promise<string[]> {
+    return this.serialize(async () => {
+      await this.manifest(root);
+      const batches = new Set<string>();
+      for (const directory of [".paper30min/parsing", "text/candidates"]) {
+        let entries;
+        try { entries = await fs.readdir(await this.resolve(root, directory), { withFileTypes: true }); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw error;
+        }
+        for (const entry of entries) {
+          if (!entry.isDirectory() || !/^[a-f0-9]{32}$/.test(entry.name)) continue;
+          try { await this.resolve(root, `${directory}/${entry.name}/run.json`); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw error;
+          }
+          if (batches.has(entry.name)) throw new Error("解析批次记录重复，请保留现场检查。");
+          batches.add(entry.name);
+        }
+      }
+      return [...batches];
+    });
+  }
+
+  private async parsingPath(root: string, batchId: string, relative: string) {
     if (!/^[a-f0-9]{32}$/.test(batchId)) throw new Error("解析批次 ID 无效。");
     relativePath(relative);
     if (relative.split("/").some((part) => part.startsWith(".")) || /\.pdf$/i.test(relative))
       throw new Error("解析产物路径无效。");
-    return `text/candidates/${batchId}/${relative}`;
+    // Existing batches keep their original paths, including unfinished runs.
+    try {
+      await this.resolve(root, `text/candidates/${batchId}/run.json`);
+      return `text/candidates/${batchId}/${relative}`;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (relative === "candidate.md") return `text/${batchId}/paper.md`;
+    if (relative.startsWith("images/")) return `text/${batchId}/${relative}`;
+    return `.paper30min/parsing/${batchId}/${relative}`;
   }
 
-  writeParsingFile(root: string, batchId: string, relative: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+  writeParsingFile(root: string, batchId: string, relative: string, bytes: Uint8Array, signal?: AbortSignal): Promise<string> {
     return this.serialize(async () => {
       signal?.throwIfAborted();
-      const target = this.parsingPath(batchId, relative);
+      const target = await this.parsingPath(root, batchId, relative);
       await this.manifest(root);
       let parent = await fs.realpath(root);
       for (const part of target.split("/").slice(0, -1)) {
@@ -382,7 +415,7 @@ export class ProjectService {
         if (relative !== "run.json") {
           const previous = await fs.readFile(destination);
           if (!previous.equals(Buffer.from(bytes))) throw new Error("已有候选产物已变化，不能覆盖；请保留现场并检查。");
-          return;
+          return target;
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       const temporary = path.join(parent, `.paper30min-${randomUUID()}.tmp`);
@@ -399,6 +432,7 @@ export class ProjectService {
           }
         }
       } finally { await fs.rm(temporary, { force: true }); }
+      return target;
     });
   }
 

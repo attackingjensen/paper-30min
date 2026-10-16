@@ -12,6 +12,7 @@ import {
   type ParsingMapping,
 } from "../src/shared/parsing";
 import type { Project } from "../src/shared/contracts";
+import { markdownRenderer } from "../src/shared/markdown-references";
 
 test("真实百度片段生成独立批次、多区域引用和离线候选；失败恢复不重复提交", async () => {
   const directory = await fs.mkdtemp(
@@ -41,6 +42,14 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
   firstPage.prunedResult.parsing_res_list[0].block_label = "table";
   firstPage.prunedResult.parsing_res_list[0].block_content =
     '<table><tr><th>Image</th></tr><tr><td><img src="imgs/table.png" /></td></tr></table>';
+  const paragraph = firstPage.prunedResult.parsing_res_list.find((block: any) => block.block_label === "figure_title");
+  paragraph.block_content = "First paragraph.\n\nSecond paragraph.\n\n```text\ncode example\n```\n\nSection title\n===\n\n| A | B |\n| --- | --- |\n| x | y |\n\n1. First item\n\n   ```text\n   nested code\n   ```\n\n2. Second item\n\n> | A | B |\n> | --- | --- |\n> | x | y |\n>\n> After table.";
+  firstPage.prunedResult.parsing_res_list.push({
+    block_id: 10000,
+    block_label: "text",
+    block_content: "    indented code\n    second line",
+    block_bbox: [10, 10, 100, 50],
+  });
   let raw = Buffer.from(rows.map((row) => JSON.stringify(row)).join("\n"));
   const server = createServer(async (request, response) => {
     if (request.method === "POST") {
@@ -118,7 +127,7 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     expect(final.pageCount).toBe(12);
     const mapping: ParsingMapping = JSON.parse(
       await fs.readFile(
-        path.join(root, "text/candidates", run.batchId, "mapping.json"),
+        path.join(root, ".paper30min/parsing", run.batchId, "mapping.json"),
         "utf8",
       ),
     );
@@ -138,12 +147,34 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
       path.join(root, final.candidate!),
       "utf8",
     );
-    expect(markdown).toContain(`块 ID：${grouped!.id}`);
-    expect(markdown).toContain(`paper://cite/${grouped!.citation.id}`);
+    expect(markdown).not.toContain("块 ID：");
+    expect(markdown).not.toContain("图片来源：");
+    expect(markdown).toContain(`[原文](paper://cite/${grouped!.citation.id})`);
+    expect(final.candidate).toBe(`text/${run.batchId}/paper.md`);
+    expect(await fs.readdir(path.join(root, "text", run.batchId))).toEqual(["images", "paper.md"]);
+    const snapshot = await projects.dispatch({ type: "refresh", root }) as Project;
+    expect(snapshot.files.some((file) => file.path.startsWith(".paper30min/"))).toBe(false);
+    expect(snapshot.files.filter((file) => file.path.startsWith(`text/${run.batchId}/`) && file.path.endsWith(".md"))).toHaveLength(1);
     expect(markdown).not.toContain("test-secret");
     expect(markdown).not.toContain("http:");
     expect(mapping.blocks[0].images.length).toBeGreaterThan(0);
     expect(markdown).not.toContain("](imgs/table.png)");
+    const tableImage = mapping.blocks[0].images[0];
+    expect(markdown.split(`](${tableImage})`)).toHaveLength(2);
+    for (const crop of mapping.blocks[0].images.slice(1))
+      expect(markdown).not.toContain(`](${crop})`);
+    const paragraphBlock = mapping.blocks.find((block) => block.vendorIds.includes(paragraph.block_id))!;
+    expect(paragraphBlock.text).toContain("Second paragraph.");
+    expect(markdown).toContain(`First paragraph. [原文](paper://cite/${paragraphBlock.citation.id})\n\nSecond paragraph. [原文](paper://cite/${paragraphBlock.citation.id})`);
+    expect(markdown).toContain("```text\ncode example\n```");
+    const rendered = markdownRenderer.render(markdown);
+    expect(rendered).toContain(`<h1>Section title <a href="paper://cite/${paragraphBlock.citation.id}">原文</a></h1>`);
+    expect(rendered).toContain(`</table>\n<p><a href="paper://cite/${paragraphBlock.citation.id}">原文</a></p>`);
+    expect(rendered.match(/<ol>/g)).toHaveLength(1);
+    expect(rendered).toContain(`<li>\n<p>Second item <a href="paper://cite/${paragraphBlock.citation.id}">原文</a></p>`);
+    expect(rendered.match(/<blockquote>/g)).toHaveLength(1);
+    const codeBlock = mapping.blocks.find((block) => block.vendorIds.includes(10000))!;
+    expect(rendered).toContain(`<pre><code>indented code\nsecond line\n</code></pre>\n<p><a href="paper://cite/${codeBlock.citation.id}">原文</a></p>`);
     for (const block of mapping.blocks) {
       const resolved: any = await projects.dispatch({
         type: "resolveCitation",
@@ -183,6 +214,16 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
         await projects.readParsingFile(root, run.batchId, "candidate.md")
       ).toString(),
     ).toBe(markdown);
+    // Recreate a pre-change completed batch to exercise its existing on-disk contract.
+    const legacy = path.join(root, "text/candidates", run.batchId);
+    await fs.mkdir(path.dirname(legacy), { recursive: true });
+    await fs.rename(path.join(root, ".paper30min/parsing", run.batchId), legacy);
+    await fs.rename(path.join(root, "text", run.batchId, "paper.md"), path.join(legacy, "candidate.md"));
+    await fs.rename(path.join(root, "text", run.batchId, "images"), path.join(legacy, "images"));
+    const legacyRun = JSON.parse(await fs.readFile(path.join(legacy, "run.json"), "utf8"));
+    legacyRun.candidate = `text/candidates/${run.batchId}/candidate.md`;
+    await fs.writeFile(path.join(legacy, "run.json"), JSON.stringify(legacyRun));
+    await fs.writeFile(path.join(legacy, "page-1.md"), "existing page output");
     const reopened = new ParsingService(projects);
     expect(
       (
@@ -198,7 +239,7 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     );
     const imagePath = mapping.images[0].path;
     await fs.writeFile(
-      path.join(root, "text/candidates", run.batchId, imagePath),
+      path.join(legacy, imagePath),
       "damaged",
     );
     await expect(
@@ -215,6 +256,7 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     expect(
       (await projects.readParsingFile(root, run.batchId, imagePath)).toString(),
     ).toBe("damaged");
+    expect(await fs.readFile(path.join(legacy, "page-1.md"), "utf8")).toBe("existing page output");
     await reopened.close();
   } finally {
     await parsing.close();
@@ -294,6 +336,9 @@ test("停止提交时仍保存迟到的任务回执，重开复用任务号", as
           )[0].phase,
       )
       .toBe("stopped");
+    const legacy = path.join(root, "text/candidates", run.batchId);
+    await fs.mkdir(path.dirname(legacy), { recursive: true });
+    await fs.rename(path.join(root, ".paper30min/parsing", run.batchId), legacy);
     const reopened = new ParsingService(projects);
     try {
       await reopened.dispatch(
@@ -320,6 +365,7 @@ test("停止提交时仍保存迟到的任务回执，重开复用任务号", as
           )) as ParsingRun[]
         )[0].jobId,
       ).toBe("late-job");
+      expect(JSON.parse(await fs.readFile(path.join(legacy, "run.json"), "utf8")).phase).toBe("remote-failed");
     } finally {
       await reopened.close();
     }
@@ -444,7 +490,9 @@ test("未知提交禁止重付费；关联任务号后可恢复，任一分组�
     const md = (
       await projects.readParsingFile(root, run.batchId, "candidate.md")
     ).toString();
-    expect(md).toContain("仅页级定位，未生成推测区域");
+    expect(md).not.toContain("未生成推测区域");
+    expect(md).toContain("[原文](paper://cite/");
+    expect(mapping.blocks[0].limitation).toContain("仅页级定位");
     await reopened.close();
   } finally {
     await parsing.close();

@@ -6,6 +6,7 @@ import TurndownService from "turndown";
 import { tables } from "turndown-plugin-gfm";
 import type { PdfSource } from "../shared/contracts.js";
 import type { Citation, CitationRect } from "../shared/citations.js";
+import { markdownRenderer } from "../shared/markdown-references.js";
 import type {
   ParsingRun,
   ParsingMapping,
@@ -136,12 +137,7 @@ export async function buildCandidate({
       blocks: [],
       images: [],
     };
-    const markdown: string[] = [
-      "# 解析候选",
-      "",
-      "> 待 Agent 审阅；OCR 正文与区域可能存在误差。",
-      "",
-    ];
+    const markdown: string[] = [];
     const tableMarkdown = new TurndownService();
     tableMarkdown.use(tables);
     let totalImages = 0;
@@ -241,14 +237,6 @@ export async function buildCandidate({
           text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
         return text;
       };
-      if (typeof vendorPage.markdown?.text === "string")
-        await projects.writeParsingFile(
-          root,
-          run.batchId,
-          `page-${pageNumber}.md`,
-          Buffer.from(localImages(vendorPage.markdown.text)),
-          signal,
-        );
       const groups: any[][] = [];
       const grouped = new Map<number, any[]>();
       const ids = new Set<number>();
@@ -286,7 +274,6 @@ export async function buildCandidate({
             grouped.set(item.group_id, created);
         }
       }
-      markdown.push(`## 第 ${pageNumber} 页`, "");
       const crop = page.boxes?.crop;
       const media = page.boxes?.media;
       const calibrated =
@@ -408,37 +395,34 @@ export async function buildCandidate({
             }
           }
         mapping.blocks.push(block);
-        markdown.push(
-          `块 ID：${id}`,
-          "",
-          `[${rects.length ? "块级引用" : "页级引用"} · 第 ${pageNumber} 页](paper://cite/${citation.id})`,
-          "",
-        );
+        const reference = `[原文](paper://cite/${citation.id})`;
+        let content = body.trimEnd();
         if (["doc_title", "paragraph_title"].includes(first.block_label))
-          markdown.push(`### ${body.replace(/\s+/g, " ")}`, "");
-        else if (htmlTable)
-          markdown.push(
-            body,
-            "",
-            "> 表格结构以原图为准；原始表格保存在块 JSON 中。",
-            "",
-          );
-        else if (text) markdown.push(body, "");
-        for (const image of cropped)
-          markdown.push(
-            `![第 ${pageNumber} 页 ${first.block_label} 原图](${image})`,
-            "",
-          );
-        if (!rects.length) markdown.push("> 仅页级定位，未生成推测区域。", "");
+          content = `${first.block_label === "doc_title" ? "#" : "##"} ${content.trim().replace(/\s+/g, " ")}`;
+        if (!content.trim() && cropped.length)
+          content = cropped.map((image) => `![第 ${pageNumber} 页原图](${image})`).join("\n\n");
+        const offsets = [0, ...Array.from(content.matchAll(/\n/g), (match) => match.index + 1)];
+        const edits: { offset: number; text: string }[] = [];
+        for (const token of markdownRenderer.parse(content, {})) {
+          if (!token.map || !["paragraph_open", "heading_open", "table_open", "math_block"].includes(token.type)) continue;
+          const inline = token.type === "paragraph_open" || token.type === "heading_open";
+          // Setext underlines and ATX closing markers must remain heading syntax.
+          const endLine = token.map[1] - (token.type === "heading_open" && !token.markup.startsWith("#") ? 1 : 0);
+          const lineStart = offsets[endLine - 1];
+          const line = content.slice(lineStart, offsets[endLine] ?? content.length).replace(/[ \t\r\n]+$/, "");
+          const closing = token.type === "heading_open" && token.markup.startsWith("#")
+            ? /[ \t]+#+$/.exec(line) : null;
+          const prefix = /^[ \t]*(?:>[ \t]*)*/.exec(line)![0];
+          edits.push({
+            offset: lineStart + (closing?.index ?? line.length),
+            text: inline ? ` ${reference}` : `\n${prefix}\n${prefix}${reference}`,
+          });
+        }
+        for (const edit of edits.sort((a, b) => b.offset - a.offset))
+          content = content.slice(0, edit.offset) + edit.text + content.slice(edit.offset);
+        if (!edits.length) content += `\n\n${reference}`;
+        markdown.push(content.trimEnd(), "");
       }
-      // Preserve every vendor image even when its relation to a block is unavailable.
-      for (const [vendorPath, image] of images)
-        markdown.push(
-          `![第 ${pageNumber} 页解析图片](${image})`,
-          "",
-          `图片来源：${vendorPath.replace(/[\r\n]/g, " ")}（页级关联）`,
-          "",
-        );
       await progress(pageNumber, pages.length);
     }
     const body = markdown.join("\n");

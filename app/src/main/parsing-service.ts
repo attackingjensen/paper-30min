@@ -60,18 +60,14 @@ export class ParsingService {
 
   private async runs(project: Project): Promise<ParsingRun[]> {
     const result: ParsingRun[] = [];
-    for (const file of project.files) {
-      const match = /^text\/candidates\/([a-f0-9]{32})\/run\.json$/.exec(
-        file.path,
-      );
-      if (!match || file.directory) continue;
+    for (const batchId of await this.projects.parsingBatches(project.root)) {
       let run: ParsingRun;
       try {
         run = JSON.parse(
           (
             await this.projects.readParsingFile(
               project.root,
-              match[1],
+              batchId,
               "run.json",
             )
           ).toString("utf8"),
@@ -81,7 +77,7 @@ export class ParsingService {
       }
       if (
         run.formatVersion !== 1 ||
-        run.batchId !== match[1] ||
+        run.batchId !== batchId ||
         run.projectId !== project.manifest.id ||
         !run.document?.id ||
         !/^[a-f0-9]{64}$/.test(run.document.sha256) ||
@@ -488,7 +484,7 @@ export class ParsingService {
         json(result.mapping),
         signal,
       );
-      await this.projects.writeParsingFile(
+      run.candidate = await this.projects.writeParsingFile(
         root,
         run.batchId,
         "candidate.md",
@@ -497,7 +493,6 @@ export class ParsingService {
       );
       run.mappingSha256 = hash(json(result.mapping));
       run.markdownSha256 = hash(Buffer.from(result.markdown));
-      run.candidate = `text/candidates/${run.batchId}/candidate.md`;
       run.phase = "candidate";
       delete run.error;
     } catch (error) {

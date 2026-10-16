@@ -42,7 +42,7 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 ## 百度解析
 
-在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token，再从工程「论文解析」选择已登记 PDF 并确认上传。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置。解析完成后可查看带块 ID、统一 PDF 引用和本地图片的 Markdown；结果保存在 `text/candidates/<batchId>/`，可离线重开和整体搬迁，仍待 STE-83 的 Agent 逐页审阅，不作为已审阅正文。
+在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token，再从工程「论文解析」选择已登记 PDF 并确认上传。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置。每批次只生成一份完整 Markdown：`text/<batchId>/paper.md`，图片就地出现，段尾「原文」链接回查 PDF；恢复状态、原始返回和块映射保存在隐藏目录 `.paper30min/parsing/<batchId>/`。已有旧布局继续原位读取，不删除旧成果。结果可离线重开和整体搬迁，仍待 STE-83 的 Agent 逐页审阅，不作为已审阅正文。
 
 接口沿用 [百度官方异步任务服务](https://ai.baidu.com/ai-doc/AISTUDIO/Mml7n69e7)：向 `/api/v2/ocr/jobs` 提交 multipart PDF，收到 `data.jobId` 后查询 `data.state`，完成后下载 `data.resultUrl.jsonUrl`。实际 JSONL 按返回顺序包含 `result.layoutParsingResults`（`prunedResult`、`markdown.text/images`）及 `result.dataInfo`；块含 `block_id`、`block_label`、`block_content`、`block_bbox`、`group_id` 等。图片实际支持签名 HTTPS 地址和 Base64，不假设 Gemini 格式。
 

@@ -81,16 +81,17 @@ test("公共工程写入保护基线、取消、所有权与统一出处转换",
       service.writeAgentFile(root, file, "late", null, controller.signal),
     ).rejects.toThrow();
     expect(await fs.readFile(file, "utf8")).toContain("validated");
-    await expect(
-      service.writeAgentFile(
-        root,
-        path.join(root, "text/candidates/review/page.md"),
-        "reviewed",
-        null,
-        new AbortController().signal,
-        { candidateDirectory: "text/candidates/review" },
-      ),
-    ).resolves.toMatchObject({ saved: true });
+    for (const candidateDirectory of ["text/candidates/review", `text/${"a".repeat(32)}`])
+      await expect(
+        service.writeAgentFile(
+          root,
+          path.join(root, candidateDirectory, "paper.md"),
+          "reviewed",
+          null,
+          new AbortController().signal,
+          { candidateDirectory },
+        ),
+      ).resolves.toMatchObject({ saved: true });
     await expect(
       service.writeAgentFile(
         root,
