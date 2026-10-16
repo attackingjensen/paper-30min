@@ -254,6 +254,10 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     await page.getByRole("button", { name: "解析 PDF", exact: true }).click();
     await page.getByRole("button", { name: "上传并解析", exact: true }).click();
     await expect(page.getByRole("status")).toContainText("云端处理中");
+    await expect(page.getByRole("button", { name: "删除解析", exact: true })).toBeDisabled();
+    const activeRuns = await page.evaluate(root => window.desktop.parsing<ParsingRun[]>({ type: "status", root }), root);
+    await expect(page.evaluate(({ root, batchId }) => window.desktop.parsing({ type: "delete", root, batchId }),
+      { root, batchId: activeRuns[0].batchId })).rejects.toThrow("先停止");
     await page.getByRole("button", { name: "停止解析" }).click();
     await expect(page.getByRole("status")).toContainText("已停止");
     await desktop.close();
@@ -370,6 +374,27 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     expect(
       await fs.readFile(path.join(relocated, run.candidate!), "utf8"),
     ).not.toContain(endpoint);
+    const citationsBeforeDelete = await fs.readFile(path.join(relocated, ".paper30min-citations.json"), "utf8");
+    const pdfBeforeDelete = await fs.readFile(path.join(relocated, "text/paper.pdf"));
+    await page.getByRole("button", { name: "论文解析", exact: true }).click();
+    await page.getByRole("button", { name: "删除解析", exact: true }).click();
+    const deleteDialog = page.getByRole("dialog", { name: "删除解析记录" });
+    await deleteDialog.getByRole("button", { name: "取消", exact: true }).click();
+    await expect(page.getByRole("button", { name: "查看正文", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "删除解析", exact: true }).click();
+    await page.screenshot({ path: "test-results/parsing-delete.png" });
+    await deleteDialog.getByRole("button", { name: "确认删除", exact: true }).click();
+    await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
+    await expect(fs.stat(path.join(relocated, "text", run.batchId))).rejects.toThrow();
+    await expect(fs.stat(path.join(relocated, ".paper30min/parsing", run.batchId))).rejects.toThrow();
+    expect(await fs.readFile(path.join(relocated, ".paper30min-citations.json"), "utf8")).toBe(citationsBeforeDelete);
+    expect(await fs.readFile(path.join(relocated, "text/paper.pdf"))).toEqual(pdfBeforeDelete);
+    await desktop.close();
+    await launch();
+    await choose(relocated);
+    await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
+    await page.getByRole("button", { name: "论文解析", exact: true }).click();
+    await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await page.getByRole("button", { name: "解析模型", exact: true }).click();
     await expect(page.getByRole("status")).toContainText("解析配置无法读取");

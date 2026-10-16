@@ -602,3 +602,51 @@ test("旧版其余三份真实 JSONL 与对应 PDF 可生成完整候选，跨�
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
+
+test("删除解析兼容旧批次，回收失败可重试且保留其他批次与引用", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-delete-parsing-"));
+  let failMetadata = true;
+  let recycled = 0;
+  const projects = new ProjectService(path.join(directory, "preferences.json"), async (file) => {
+    if (failMetadata && file.includes(`${path.sep}.paper30min${path.sep}`)) throw new Error("回收站暂不可用");
+    await fs.rename(file, path.join(directory, `recycled-${recycled++}`));
+  });
+  const parsing = new ParsingService(projects);
+  const config = { ...defaultParsingSettings, apiKey: "" };
+  try {
+    const project = await projects.dispatch({ type: "create", input: {
+      source: path.resolve("tests/fixtures/long-150.pdf"), parent: directory,
+      name: "project", makeDefault: false, operationId: "delete-parsing",
+    } }) as Project;
+    const root = project.root;
+    const batchId = "a".repeat(32);
+    const legacyId = "b".repeat(32);
+    const run = (id: string): ParsingRun => ({ formatVersion: 1, batchId: id, projectId: project.manifest.id,
+      document: project.manifest.paper, endpoint: config.endpoint, model: config.model, phase: "stopped",
+      completedPages: 0, pageCount: 150, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), elapsedMs: 0 });
+    await projects.writeParsingFile(root, batchId, "run.json", Buffer.from(JSON.stringify(run(batchId))));
+    await projects.writeParsingFile(root, batchId, "candidate.md", Buffer.from("正文"));
+    const legacy = path.join(root, "text/candidates", legacyId);
+    await fs.mkdir(legacy, { recursive: true });
+    await fs.writeFile(path.join(legacy, "run.json"), JSON.stringify(run(legacyId)));
+    await fs.writeFile(path.join(legacy, "candidate.md"), "旧正文");
+    const citation = await projects.dispatch({ type: "createCitation", root, path: project.manifest.paper.path,
+      input: { sha256: project.manifest.paper.sha256, kind: "page", text: "", pages: [{ page: 1, width: 612, height: 792, rects: [] }] } }) as any;
+    await expect(parsing.dispatch({ type: "delete", root, batchId: "../paper.pdf" }, config)).rejects.toThrow("不存在");
+    await expect(parsing.dispatch({ type: "delete", root, batchId }, config)).rejects.toThrow("回收站暂不可用");
+    expect(await parsing.dispatch({ type: "status", root }, config)).toHaveLength(2);
+    expect(await fs.readFile(path.join(legacy, "candidate.md"), "utf8")).toBe("旧正文");
+    failMetadata = false;
+    await parsing.dispatch({ type: "delete", root, batchId }, config);
+    expect(await parsing.dispatch({ type: "status", root }, config)).toHaveLength(1);
+    await parsing.dispatch({ type: "delete", root, batchId: legacyId }, config);
+    expect(await parsing.dispatch({ type: "status", root }, config)).toHaveLength(0);
+    expect((await projects.dispatch({ type: "resolveCitation", root, link: `paper://cite/${citation.id}` }) as any).citation.id).toBe(citation.id);
+    expect((await fs.stat(path.join(root, "text/paper.pdf"))).isFile()).toBe(true);
+    expect(recycled).toBe(3);
+  } finally {
+    await parsing.close();
+    await projects.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});

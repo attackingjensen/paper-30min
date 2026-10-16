@@ -79,6 +79,7 @@ export type ParsingCommand =
     }
   | { type: "status"; root: string }
   | { type: "verify"; root: string; batchId: string }
+  | { type: "delete"; root: string; batchId: string }
   | { type: "start"; root: string; documentId: string }
   | { type: "resume"; root: string; batchId: string; jobId?: string }
   | { type: "stop"; root: string; batchId: string };

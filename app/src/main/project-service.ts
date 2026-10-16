@@ -382,6 +382,28 @@ export class ProjectService {
     });
   }
 
+  deleteParsingBatch(root: string, batchId: string): Promise<void> {
+    return this.serialize(async () => {
+      const manifest = await this.manifest(root);
+      const runPath = await this.parsingPath(root, batchId, "run.json");
+      await this.resolve(root, runPath);
+      const directories = runPath.startsWith("text/candidates/")
+        ? [`text/candidates/${batchId}`]
+        : [`text/${batchId}`, `.paper30min/parsing/${batchId}`];
+      const targets: string[] = [];
+      for (const directory of directories) {
+        if ([manifest.paper, ...manifest.materials].some((record) =>
+          record.path.toLowerCase().startsWith(directory.toLowerCase() + "/")))
+          throw new Error("解析目录内有已登记的原始材料，不能删除。");
+        try { targets.push(await this.resolve(root, directory)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      // Keep the task record until its visible output has been recycled. A failed
+      // second move can be retried without losing the remaining task identity.
+      for (const target of targets) await this.trashFile(target);
+    });
+  }
+
   private async parsingPath(root: string, batchId: string, relative: string) {
     if (!/^[a-f0-9]{32}$/.test(batchId)) throw new Error("解析批次 ID 无效。");
     relativePath(relative);

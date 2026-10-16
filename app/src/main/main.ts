@@ -248,6 +248,7 @@ async function start() {
     if (
       command.type === "stop" ||
       command.type === "status" ||
+      command.type === "delete" ||
       command.type === "verify"
     )
       return request({

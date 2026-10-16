@@ -126,6 +126,13 @@ export class ParsingService {
     const { root } = project;
     const runs = await this.runs(project);
     if (command.type === "status") return runs;
+    if (command.type === "delete") {
+      const run = runs.find((item) => item.batchId === command.batchId);
+      if (!run) throw new Error("解析批次不存在。");
+      if (run.busy) throw new Error("请先停止此批次，等待任务停止后再删除。");
+      await this.projects.deleteParsingBatch(root, run.batchId);
+      return;
+    }
     if (command.type === "verify") {
       const run = runs.find((item) => item.batchId === command.batchId);
       if (!run || run.phase !== "candidate")

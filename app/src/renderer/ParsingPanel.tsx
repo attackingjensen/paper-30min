@@ -141,6 +141,7 @@ export function ParsingPanel({
   const [jobIds, setJobIds] = useState<Record<string, string>>({});
   const [documentId, setDocumentId] = useState(project.manifest.paper.id);
   const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState<string>();
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     let disposed = false;
@@ -173,8 +174,10 @@ export function ParsingPanel({
     try {
       await window.desktop.parsing(value);
       setRevision((value) => value + 1);
+      return true;
     } catch (error) {
       setError((error as Error).message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -352,7 +355,32 @@ export function ParsingPanel({
                   <FileText /> 查看正文
                 </button>
               )}
+              <button
+                className="parsing-delete"
+                disabled={busy || run.busy}
+                onClick={() => setDeleting(run.batchId)}
+              >
+                <Trash2 /> 删除解析
+              </button>
             </div>
+            {deleting === run.batchId && (
+              <div className="parsing-confirm" role="dialog" aria-label="删除解析记录">
+                <p>将此批次的正文、图片和任务记录移入回收站。原 PDF 和引用链接保留。</p>
+                {run.phase !== "candidate" && run.phase !== "remote-failed" && (
+                  <p>删除本机记录不会取消云端任务，也将无法从这里恢复查询。再次解析可能重新计费。</p>
+                )}
+                <div className="row">
+                  <button className="borderbtn parsing-delete" disabled={busy || run.busy}
+                    onClick={async () => {
+                      if (await command({ type: "delete", root: project.root, batchId: run.batchId }))
+                        setDeleting(undefined);
+                    }}>
+                    确认删除
+                  </button>
+                  <button disabled={busy} onClick={() => setDeleting(undefined)}>取消</button>
+                </div>
+              </div>
+            )}
           </section>
         ))}
       </div>
