@@ -38,11 +38,15 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 详见 [工程文件契约](../docs/project-format.md)。`src/main/project-service.ts` 是界面及后续 Agent 共享的文件操作入口，由 Node utility process 执行；主进程负责系统选择器、回收站和外部打开，React 通过受限 preload 调用。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统。
 
-当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。保存使用 Ctrl+S 或保存按钮，未保存的编辑在标签和设置往返中保留。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析可生成只读候选，正式启动页由 STE-92 承接。
+当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。保存使用 Ctrl+S 或保存按钮，未保存的编辑在标签和设置往返中保留。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析生成可编辑正文，Agent 可逐页核对并记录进度，正式启动页由 STE-92 承接。
 
 ## 百度解析
 
-在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token，再从工程「论文解析」选择已登记 PDF 并确认上传。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置。每批次只生成一份完整 Markdown：`text/<batchId>/paper.md`，图片就地出现，段尾「原文」链接回查 PDF；恢复状态、原始返回和块映射保存在隐藏目录 `.paper30min/parsing/<batchId>/`。已有旧布局继续原位读取，不删除旧成果。结果可离线重开和整体搬迁，仍待 STE-83 的 Agent 逐页审阅，不作为已审阅正文。
+在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token，再从工程「论文解析」选择已登记 PDF 并确认上传。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置。每批次只生成一份完整 Markdown：`text/<batchId>/paper.md`，图片就地出现，段尾「原文」链接回查 PDF；恢复状态、原始返回和块映射保存在隐藏目录 `.paper30min/parsing/<batchId>/`。已有旧布局继续原位读取，不删除旧成果。结果可离线重开和整体搬迁。
+
+解析完成后点击「开始审阅」，使用支持视觉的 Agent 模型自主对照整页 PDF，将原文逐字逐句完整、忠实地还原到同一份 Markdown。校对覆盖文字、公式符号、表格单元格、原图与图注、脚注及参考文献等内容，不用摘要、改写、翻译或学术评价替代原文。每页修正保存后重读核对，再标记完成；无法辨认且重新读取后仍未解决时在会话报告并暂停，不标记该页完成。审阅会话在右侧普通历史可见，可查看工具过程、停止并继续；每完成一页保存进度，中断后点击「继续审阅」，新会话从下一未完成页重审。普通会话与审阅均使用 Pi 原生自动上下文压缩。工程论文全部审阅完成后开放日常 Agent，手动阅读、编辑和引用始终可用。
+
+正文在审阅前后均可通过编辑器及 Agent read/write/edit 纠错；提示词要求无必要不修改 `text/`，解释、翻译和扩写另写成果。PDF、图片与内部字典仍受保护。后续纠错不清空完成进度；PDF 替换会使旧结果失效。映射中的 `text` 保留解析时的摘录，当前 Markdown 才是正文，旧摘录不能冒充修正后内容。引用 ID 保留原目标，增补内容可复用已登记区域或页级链接。
 
 接口沿用 [百度官方异步任务服务](https://ai.baidu.com/ai-doc/AISTUDIO/Mml7n69e7)：向 `/api/v2/ocr/jobs` 提交 multipart PDF，收到 `data.jobId` 后查询 `data.state`，完成后下载 `data.resultUrl.jsonUrl`。实际 JSONL 按返回顺序包含 `result.layoutParsingResults`（`prunedResult`、`markdown.text/images`）及 `result.dataInfo`；块含 `block_id`、`block_label`、`block_content`、`block_bbox`、`group_id` 等。图片实际支持签名 HTTPS 地址和 Base64，不假设 Gemini 格式。
 

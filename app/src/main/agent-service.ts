@@ -6,10 +6,12 @@ import {
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  defineTool,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import {
   InMemoryCredentialStore,
+  isContextOverflow,
   type AssistantMessage,
   type StreamFunction,
 } from "@earendil-works/pi-ai";
@@ -36,6 +38,8 @@ import { createProjectTools, redactData } from "./agent-tools.js";
 import type { ChatTool } from "../shared/contracts.js";
 import { createWebTools } from "./web-tools.js";
 import { createPdfTools } from "./pdf-tools.js";
+import { Type } from "typebox";
+import { ParsingService } from "./parsing-service.js";
 
 interface Conversation {
   manager: SessionManager;
@@ -46,6 +50,7 @@ interface Conversation {
   run?: Promise<void>;
   initializing?: boolean;
   activeModelId?: string;
+  stopRevision?: number;
 }
 
 function textOf(message: { content: unknown }) {
@@ -67,6 +72,8 @@ function thinkingOf(message: { content: unknown }) {
     : "";
 }
 function failure(message?: string) {
+  if (/context.{0,30}(length|window|limit)|too many tokens|maximum context/i.test(message ?? ""))
+    return "context_length_exceeded：上下文超过模型窗口，请压缩后继续。";
   if (/401|403|authentication|api.key|模型认证失败/i.test(message ?? ""))
     return "模型认证失败，请检查 API 密钥与端点。";
   if (/429|rate.limit|模型服务限流/i.test(message ?? ""))
@@ -151,7 +158,9 @@ function guardedStream(
           if ("partial" in event)
             latest = redactData(event.partial, config.secrets);
           if (event.type === "error") {
-            event.error.errorMessage = failure(event.error.errorMessage);
+            event.error.errorMessage = isContextOverflow(event.error)
+              ? "context_length_exceeded：上下文超过模型窗口，请压缩后继续。"
+              : failure(event.error.errorMessage);
             terminal = true;
           } else if (event.type === "done") terminal = true;
           output.push(redactData(event, config.secrets));
@@ -180,6 +189,7 @@ export class AgentService {
   constructor(
     private publish: (state: ChatSession) => void,
     private projects: ProjectService,
+    private parsing = new ParsingService(projects),
   ) {}
   private key(root: string, id: string) {
     return root + "\0" + id;
@@ -192,6 +202,8 @@ export class AgentService {
     const messages: ChatMessage[] = [];
     const pending = new Map<string, ChatTool>();
     for (const entry of c.manager.getBranch()) {
+      if (entry.type === "custom" && entry.customType === "paper30min-review")
+        c.state.reviewBatchId = (entry.data as { batchId: string }).batchId;
       if (entry.type !== "message") continue;
       const m = entry.message;
       if (m.role === "toolResult") {
@@ -240,6 +252,7 @@ export class AgentService {
     }
     c.state.messages = messages;
     c.state.title =
+      c.state.reviewBatchId ? "解析审阅" :
       c.state.messages.find((m) => m.role === "user")?.text.slice(0, 40) ||
       "新会话";
   }
@@ -384,7 +397,7 @@ export class AgentService {
     await runtime.setRuntimeApiKey("paper30min", apiKey);
     const settingsManager = SettingsManager.inMemory({
       retry: { enabled: false },
-      compaction: { enabled: false },
+      compaction: { enabled: true, reserveTokens: Math.min(16384, Math.floor(selected.contextWindow / 4)), keepRecentTokens: Math.min(20000, Math.floor(selected.contextWindow / 4)) },
       enableAnalytics: false,
       enableInstallTelemetry: false,
     });
@@ -401,7 +414,7 @@ export class AgentService {
         `你是 Paper30Min 的论文研究助手。根据实际读取的内容回答，说明不确定点；不要声称已读取未提供的论文或修改文件。当前工程：${c.state.root}。\n` +
         "根据用户意图使用读取、编辑、计算和网络调研工具，完成请求；无需切换对话模式。\n" +
         "read/write/edit 只允许工程内普通文件，已有文件写入前必须 read；发生基线冲突先重读，保留双方输入。" +
-        "text/ 是原始 PDF 与解析区，sources/ 是出处字典；两者及所有 PDF、内部文件不允许普通写入。" +
+        "text/ 下的解析 Markdown 是论文原文的忠实转录，PDF 原页是核对依据，现有解析稿只是待校对底稿。转录校对的目标是逐字逐句完整还原原文，包含公式、表格、图注、脚注及参考文献；不能以意思相近、摘要、改写、翻译或学术评价替代原文，也不能凭知识补全、修正原作者的措辞或论断。仅在对照原 PDF 确认有遗漏、识别或结构错误时修正，无修正必要时勿改动；解释、翻译、扩写写入笔记或其他成果。无法辨认的内容在会话报告，不能猜写成原文。原始 PDF、图片、sources/ 出处字典及内部文件不允许普通写入。纠错保留原引用 ID，不将旧 ID 改指其他来源；新增或拆合内容使用实际登记的已有引用或 read_pdf 返回的页级引用，禁止猜坐标和编造 ID。" +
         "bash 实际使用 Windows PowerShell 语法，是受信任主机 Shell，不是权限沙箱。仅用于明确任务的计算/绘图/材料处理，文档写入必须用 write/edit，禁止绕过上述保护。工程外访问、系统修改、上传/发布须已获用户任务授权。脚本子进程不能作为后台服务保留。" +
         "成果、脚本和图片使用工程相对路径返回；不要自行编造出处 ID。" +
         "核对论文原页、公式或图表时使用 read_pdf，无需先打开 PDF 或等待解析；当前工程论文默认为 text/paper.pdf。页码从 1 开始，只读取完整页面，不接受区域坐标。此工具仅返回整页图像与定位信息，不提取文本层；正文阅读使用解析稿。工具返回的引用链接直接复用，禁止拼接引用 ID；工具失败时不能声称看过图像。" +
@@ -411,12 +424,18 @@ export class AgentService {
         "准确区分搜索摘录、已获取正文与已查阅片段，不宣称读过未获取的全文；失败或资料不足时说明限制，不无限重试。",
     });
     await resourceLoader.reload();
+    const readPages = new Set<number>();
+    const review = c.state.reviewBatchId && this.parsing.isReviewActive(c.state.root, c.state.reviewBatchId, c.state.id)
+      ? await this.parsing.reviewStatus(c.state.root, c.state.reviewBatchId) : undefined;
     const customTools = [
       ...createPdfTools(
         c.state.root,
         this.projects,
         selected.vision === true,
         () => c.state.busy && !c.state.stopping && !this.closing,
+        (documentId, sha256, page) => {
+          if (review && documentId === review.document.id && sha256 === review.document.sha256) readPages.add(page);
+        },
       ),
       ...createProjectTools(
         c.state.root,
@@ -435,6 +454,19 @@ export class AgentService {
         secrets,
         () => c.state.busy && !c.state.stopping && !this.closing,
       ),
+      ...(review ? [defineTool({
+        name: "complete_review_page",
+        label: "完成一页审阅",
+        description: "Mark the next consecutive page complete ONLY AFTER reading its full-page image with read_pdf, comparing every word and sentence with the Markdown, faithfully restoring all source content including equations, table cells, captions, footnotes and references, saving corrections, and rereading the saved manuscript to check it against the page. Similar meaning, summaries, paraphrases and academic review do not count as transcription. Never skip pages or mark unresolved transcription complete. If source content remains illegible after rereading the full page at a suitable scale, report it in the conversation and stop without marking this page.",
+        parameters: Type.Object({ page: Type.Integer({ minimum: 1 }) }),
+        execute: async (_id, args, signal) => {
+          if (!c.state.busy || c.state.stopping || this.closing) throw new Error("审阅已停止。");
+          if (!readPages.has(args.page)) throw new Error("请先使用 read_pdf 读取并核对此页。");
+          const result = await this.parsing.completeReviewPage(c.state.root, review.batchId, c.state.id, args.page, signal ?? new AbortController().signal);
+          readPages.delete(args.page);
+          return { content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result };
+        },
+      })] : []),
     ];
     const { session } = await createAgentSession({
       cwd: c.state.root,
@@ -451,6 +483,12 @@ export class AgentService {
     c.session = session;
     c.unsubscribe = session.subscribe((event) => {
       if (!c.state.busy || c.state.stopping || this.closing) return;
+      if (event.type === "compaction_start" || event.type === "compaction_end") {
+        c.state.compacting = event.type === "compaction_start";
+        if (event.type === "compaction_start") c.state.error = undefined;
+        if (event.type === "compaction_end" && event.errorMessage) c.state.error = "上下文压缩失败，可停止后继续审阅。";
+        this.emit(c);
+      }
       if (event.type === "queue_update") {
         c.state.queued = [...event.followUp];
         this.emit(c);
@@ -539,12 +577,13 @@ export class AgentService {
       { type: "settings" | "saveSettings" | "selectModel" }
     >,
     config: ModelConfig,
-  ) {
+  ): Promise<ChatSession | ChatSession[]> {
     if (this.closing) throw new Error("应用正在退出。");
     const root = command.root;
     if (command.type === "stop") {
       const c = this.conversations.get(this.key(root, command.id));
       if (!c) throw new Error("找不到此会话。");
+      c.stopRevision = (c.stopRevision ?? 0) + 1;
       if (c.state.busy) {
         c.state.stopping = true;
         c.state.queued = [];
@@ -570,9 +609,35 @@ export class AgentService {
     }
     if (command.type === "create")
       return this.add(root, SessionManager.create(root, dir)).state;
+    if (command.type === "review") {
+      const model = config.models.find((item) => item.id === config.selectedModelId);
+      if (!model?.vision) throw new Error("审阅需要支持视觉输入的 Agent 模型，请先在设置中启用视觉输入。");
+      const c = this.add(root, SessionManager.create(root, dir));
+      const run = await this.parsing.startReview(root, command.batchId, c.state.id);
+      c.manager.appendCustomEntry("paper30min-review", { batchId: run.batchId });
+      c.state.reviewBatchId = run.batchId;
+      try {
+        return await this.dispatch({ type: "send", root, id: c.state.id,
+          text: [
+            `解析审阅（原文转录校对）：${run.document.path}`,
+            `正文：${run.candidate}`,
+            `本批次共 ${run.pageCount} 页，已连续完成 ${run.reviewedThroughPage ?? 0} 页。请从第 ${(run.reviewedThroughPage ?? 0) + 1} 页开始，依次完成剩余页面的原文转录校对。`,
+            "任务目标：以 PDF 原页为唯一内容依据，逐字逐句把论文原文完整、忠实地还原到这同一份 Markdown。现有解析稿只是底稿，不能因为读起来通顺或意思大致相同就认定正确。这不是论文内容评价、摘要、翻译或润色任务。",
+            "每页使用 read_pdf 读取完整原页，按需用 read 读取对应 Markdown，从本页第一处内容到最后一处逐句对照。检查漏字、多字、错字、标点、数字、单位、专有名词及段落阅读顺序；覆盖标题、作者与机构、正文、列表、公式、表格、图注、脚注、致谢、参考文献和附录等实际出现的内容，不能只抽查重点。跨页句子、段落和表格须核对衔接，避免遗漏或重复。",
+            "公式逐项核对字母、希腊字母、运算符、上下标、括号、矩阵、条件及编号，用准确的 Markdown/LaTeX 表达；表格逐个单元格核对表头、行列归属、数值、符号、单位及注释，不能用文字概述替代表格。图像复用现有本地原图，在对应位置保留并核对图号、完整图注和来源，不能用自行解释替代原图。",
+            "保留原文语言、措辞、大小写、数字和语义，不依据常识、外部资料或自己的学术判断修正原作者，即使原文看似有错也照录。可把印刷布局转换为 Markdown 阅读结构、合并确定由排版换行造成的断行或断词；不必复刻字体、栏宽和物理分页，但不能因此丢失内容或改变含义。不要一次加载全部页图或全文；难辨认时调整 read_pdf 的整页渲染比例重新读取，不猜测内容或区域坐标。",
+            "发现转录差异就用 write/edit 修正同一正文；已经忠实的内容保持原样，保留现有引用身份、图像及相对路径。解释、翻译、审稿意见和校对说明不得混入论文原文。重新读取已保存的对应正文，对照原页确认该页内容完整且修正正确后，才调用 complete_review_page 标记下一连续页；没有修改也必须完成逐句核对。不要跳页，不把工具读取成功或口头声称完成当作转录完成。",
+            "重新读取后仍有无法辨认或无法忠实还原的内容，在会话中报告页码、具体位置及问题，暂停本轮，不标记该页完成，不编造原文。其余情况下自主继续，直到全部页完成；最后在会话简要报告已完成页数及实际修正。",
+          ].join("\n") }, config);
+      } catch (error) {
+        await this.parsing.finishReview(root, run.batchId, c.state.id, (error as Error).message);
+        throw error;
+      }
+    }
     const c = await this.get(root, command.id);
     if (command.type === "open") return c.state;
     if (command.type === "branch") {
+      if (c.state.reviewBatchId) throw new Error("审阅请使用继续审阅创建新会话，避免分支重复标记进度。");
       if (c.state.busy) throw new Error("请先停止此会话再分支。");
       const entry = c.manager.getEntry(command.messageId);
       if (!entry || entry.type !== "message")
@@ -595,6 +660,11 @@ export class AgentService {
       throw new Error("消息不能为空或超过 100,000 字符。");
     if (c.state.stopping || c.initializing)
       throw new Error("会话正在准备或停止，请稍后再试。");
+    const reviewing = c.state.reviewBatchId && this.parsing.isReviewActive(root, c.state.reviewBatchId, c.state.id);
+    const stopRevision = c.stopRevision;
+    if (!reviewing) await this.parsing.requireReviewed(root);
+    if (this.closing || c.state.stopping || c.initializing || c.stopRevision !== stopRevision)
+      throw new Error("会话正在准备、停止或退出，请稍后再试。");
     if (c.state.busy) {
       if (c.activeModelId !== config.selectedModelId)
         throw new Error("已切换模型，请等待当前回复完成后再发送。");
@@ -633,7 +703,7 @@ export class AgentService {
       .catch(() => {
         c.state.error = failure();
       })
-      .finally(() => {
+      .finally(async () => {
         c.unsubscribe?.();
         c.unsubscribe = undefined;
         c.session?.dispose();
@@ -642,10 +712,16 @@ export class AgentService {
         c.network = undefined;
         c.initializing = false;
         c.activeModelId = undefined;
+        if (reviewing) {
+          try {
+            await this.parsing.finishReview(root, c.state.reviewBatchId!, c.state.id, c.state.stopping || this.closing ? "已停止审阅，可从下一页继续。" : c.state.error);
+          } catch { c.state.error = "审阅进度保存失败，请检查工程文件后继续。"; }
+        }
         this.sync(c);
         c.state.busy = false;
         c.state.stopping = false;
         c.state.queued = [];
+        c.state.compacting = false;
         this.emit(c);
       });
     return c.state;

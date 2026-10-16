@@ -21,11 +21,12 @@ const service = new ProjectService(
       port.postMessage({ trash: { id, file } });
     }),
 );
+const parsing = new ParsingService(service);
 const agent = new AgentService(
   (state) => port.postMessage({ agentState: state }),
   service,
+  parsing,
 );
-const parsing = new ParsingService(service);
 
 port.on(
   "message",

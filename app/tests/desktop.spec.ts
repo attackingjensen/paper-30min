@@ -13,6 +13,7 @@ import { connect } from "node:net";
 import { PNG } from "pngjs";
 import type { ParsingRun, ParsingMapping } from "../src/shared/parsing";
 import type { AgentSettings, ChatSession } from "../src/shared/contracts";
+import { seedParsing } from "./review-fixture";
 
 let sandbox: string;
 let desktop: ElectronApplication;
@@ -113,10 +114,14 @@ async function preview(source: string, parent?: string, name = "研究工程") {
   }
 }
 
-async function create(source: string, parent?: string, name = "研究工程") {
+async function create(source: string, parent?: string, name = "研究工程", reviewed = false) {
   await preview(source, parent, name);
   await page.getByRole("button", { name: "创建工程", exact: true }).click();
   await expect(page.getByRole("tab", { name: "paper.pdf" })).toBeVisible();
+  if (reviewed) {
+    const root = await page.evaluate(() => window.desktop.invoke<{ defaultFolder: string }>({ type: "preferences" }));
+    await seedParsing(path.join(parent ?? root.defaultFolder, name));
+  }
 }
 
 async function readManifest(root: string) {
@@ -248,7 +253,7 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
       path.join(sandbox, "projects"),
     );
     const root = path.join(sandbox, "projects/研究工程");
-    await page.getByRole("button", { name: "论文解析", exact: true }).click();
+    await page.getByRole("navigation", { name: "阅读导航" }).getByRole("button", { name: "论文解析", exact: true }).click();
     await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
     await page.screenshot({ path: "test-results/parsing-empty.png" });
     await page.getByRole("button", { name: "解析 PDF", exact: true }).click();
@@ -305,7 +310,7 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     await fs.writeFile(imagePath, originalImage);
     await fs.writeFile(path.join(sandbox, "profile/parsing-settings.json"), "damaged");
     await page.getByRole("button", { name: "查看正文" }).click();
-    await expect(page.getByText("只读解析候选", { exact: true })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Markdown 视图" })).toBeVisible();
     await expect(page.locator(".markdown-preview img").first()).toBeVisible();
     for (const label of ["text", "display_formula", "chart"]) {
       const block = mapping.blocks.find(
@@ -340,7 +345,7 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
         .getByRole("button", { name: "返回引用处", exact: true })
         .click();
       await expect(
-        page.getByText("只读解析候选", { exact: true }),
+        page.getByRole("group", { name: "Markdown 视图" }),
       ).toBeVisible();
     }
     await page.screenshot({ path: "test-results/ste82-candidate-desktop.png" });
@@ -376,7 +381,7 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     ).not.toContain(endpoint);
     const citationsBeforeDelete = await fs.readFile(path.join(relocated, ".paper30min-citations.json"), "utf8");
     const pdfBeforeDelete = await fs.readFile(path.join(relocated, "text/paper.pdf"));
-    await page.getByRole("button", { name: "论文解析", exact: true }).click();
+    await page.getByRole("navigation", { name: "阅读导航" }).getByRole("button", { name: "论文解析", exact: true }).click();
     await page.getByRole("button", { name: "删除解析", exact: true }).click();
     const deleteDialog = page.getByRole("dialog", { name: "删除解析记录" });
     await deleteDialog.getByRole("button", { name: "取消", exact: true }).click();
@@ -393,7 +398,7 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     await launch();
     await choose(relocated);
     await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
-    await page.getByRole("button", { name: "论文解析", exact: true }).click();
+    await page.getByRole("navigation", { name: "阅读导航" }).getByRole("button", { name: "论文解析", exact: true }).click();
     await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await page.getByRole("button", { name: "解析模型", exact: true }).click();
@@ -697,7 +702,7 @@ test("多服务模型选择、思考流与会话恢复", async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    await create(fixture, path.join(sandbox, "projects"), "多模型工程");
+    await create(fixture, path.join(sandbox, "projects"), "多模型工程", true);
     await page.evaluate(
       async ({ address }) => {
         const settings = await window.desktop.agent<AgentSettings>({
@@ -954,7 +959,7 @@ test("百炼思考配置保持 system 角色，关闭档显式关闭且始终显
   });
   await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   try {
-    await create(fixture, path.join(sandbox, "projects"), "思考协议工程");
+    await create(fixture, path.join(sandbox, "projects"), "思考协议工程", true);
     await page.evaluate(
       async (port) => {
         const settings = await window.desktop.agent<AgentSettings>({
@@ -1168,7 +1173,7 @@ test("单服务密钥损坏可独立恢复，协议切换校正该服务模型�
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    await create(fixture, path.join(sandbox, "projects"), "密钥恢复工程");
+    await create(fixture, path.join(sandbox, "projects"), "密钥恢复工程", true);
     await page.evaluate(
       async ({ base }) => {
         const original = await window.desktop.agent<AgentSettings>({
@@ -1448,7 +1453,7 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   try {
-    await create(fixture, path.join(sandbox, "projects"), "阅读与思考");
+    await create(fixture, path.join(sandbox, "projects"), "阅读与思考", true);
     await expect(
       page.getByRole("heading", { name: "从一个问题开始" }),
     ).toBeVisible();
@@ -1681,7 +1686,7 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    await create(fixture, path.join(sandbox, "projects"), "工具工程");
+    await create(fixture, path.join(sandbox, "projects"), "工具工程", true);
     await fs.writeFile(path.join(root, "notes/input.md"), "score=2\n");
     await page.evaluate(
       async ({ endpoint, secret }) => {
@@ -1842,7 +1847,7 @@ test("模型含凭据的流中止或异常后，终态与持久会话仍脱敏",
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    await create(fixture, path.join(sandbox, "projects"), "终态工程");
+    await create(fixture, path.join(sandbox, "projects"), "终态工程", true);
     const root = path.join(sandbox, "projects", "终态工程");
     await page.evaluate(
       async ({ endpoint, secret }) => {
@@ -1917,7 +1922,7 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
     await launch();
   }
   await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
-    path.join(sandbox, "projects"), "真实 PDF 工程");
+    path.join(sandbox, "projects"), "真实 PDF 工程", true);
   const root = path.join(sandbox, "projects", "真实 PDF 工程");
   const scanPath = process.env.PAPER30MIN_REAL_SCAN;
   if (scanPath) await page.evaluate(({ root, source }) => window.desktop.invoke({ type: "addMaterial", root, source }), { root, source: scanPath });
@@ -1983,6 +1988,132 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
   }
 });
 
+test("解析审阅可见、自动压缩、停止后新会话逐页续接，正文持续纠错", async () => {
+  test.setTimeout(180000);
+  const calls: { session: number; name: string; args: any }[] = [];
+  const prompts: string[] = [];
+  let step = 0;
+  let session = 1;
+  let compactions = 0;
+  let holding = false;
+  let overflow = false;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let batch: ParsingRun;
+  const server = createServer(async (request, response) => {
+    let raw = "";
+    for await (const part of request) raw += part;
+    const payload = JSON.parse(raw);
+    const summarizing = !payload.tools?.some((tool: any) => tool.function?.name === "complete_review_page");
+    if (!summarizing && session === 2 && step === 1 && !overflow) {
+      overflow = true;
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "prompt is too long: review-key", type: "invalid_request_error" } }));
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const emit = (delta: unknown, finish: string | null = null, usage?: object) => response.write(`data: ${JSON.stringify({
+      choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`);
+    if (summarizing) {
+      compactions++;
+      emit({ content: "## Goal\n逐页核对解析稿。\n## Progress\n第 1 页已完成；从第 2 页继续，使用 complete_review_page 保存连续进度。修正保存在正文。" });
+      emit({}, "stop", { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 });
+    } else {
+      const prompt = payload.messages.find((item: any) => item.role === "user")?.content;
+      const text = typeof prompt === "string" ? prompt : JSON.stringify(prompt);
+      if (step === 0) prompts.push(text);
+      let call: { name: string; args: any } | undefined;
+      if (session === 1) {
+        call = [
+          { name: "complete_review_page", args: { page: 2 } },
+          { name: "read", args: { path: batch.candidate } },
+          { name: "read_pdf", args: { path: "text/paper.pdf", page: 1 } },
+          { name: "edit", args: { path: batch.candidate, edits: [{ oldText: "Original paragraph.", newText: "First corrected paragraph." }] } },
+          { name: "complete_review_page", args: { page: 1 } },
+          { name: "read_pdf", args: { path: "text/paper.pdf", page: 2 } },
+          { name: "edit", args: { path: batch.candidate, edits: [{ oldText: "Second original.", newText: "Second corrected." }] } },
+        ][step];
+        if (step === 7) { holding = true; await held; }
+      } else if (step === 0) call = { name: "read", args: { path: batch.candidate } };
+      else if (step <= (batch.pageCount - 1) * 2) {
+        const page = Math.floor((step - 1) / 2) + 2;
+        call = step % 2 ? { name: "read_pdf", args: { path: "text/paper.pdf", page } }
+          : { name: "complete_review_page", args: { page } };
+      }
+      if (call) {
+        calls.push({ session, ...call });
+        emit({ tool_calls: [{ index: 0, id: `review-${session}-${step}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.args) } }] });
+        emit({}, "tool_calls", { prompt_tokens: session === 1 && step === 4 ? 15000 : 1000, completion_tokens: 50, total_tokens: 1050 });
+      } else { emit({ content: "审阅结束，修正已保存。" }); emit({}, "stop"); }
+      step++;
+    }
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "审阅工程");
+    const root = path.join(sandbox, "projects", "审阅工程");
+    batch = await seedParsing(root, false);
+    await fs.writeFile(path.join(root, batch.candidate!), "Original paragraph.\n\nSecond original.\n\n" + "Context for checking the manuscript. ".repeat(800));
+    await page.evaluate(async ({ root, endpoint }) => {
+      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+      settings.services[0].baseUrl = endpoint;
+      settings.models[0] = { ...settings.models[0], model: "review-fixture", vision: true, contextWindow: 16000, maxTokens: 1024 };
+      await window.desktop.agent({ type: "saveSettings", settings, apiKey: "review-key" });
+      const conversation = await window.desktop.agent<ChatSession>({ type: "create", root });
+      try { await window.desktop.agent({ type: "send", root, id: conversation.id, text: "绕过审阅" }); throw new Error("gate bypassed"); }
+      catch (error) { if (!(error as Error).message.includes("审阅")) throw error; }
+    }, { root, endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` });
+    await page.getByRole("button", { name: "论文解析", exact: true }).first().click();
+    await page.getByRole("button", { name: "开始审阅", exact: true }).click();
+    await expect.poll(() => holding, { timeout: 45000 }).toBe(true);
+    const progress = async () => JSON.parse(await fs.readFile(path.join(root, ".paper30min/parsing", batch.batchId, "run.json"), "utf8")) as ParsingRun;
+    expect((await progress()).reviewedThroughPage).toBe(1);
+    expect(compactions).toBeGreaterThan(0);
+    await expect(page.getByLabel("会话", { exact: true })).toContainText("解析审阅");
+    await expect(page.locator('[data-tool="complete_review_page"][data-status="error"]')).toHaveCount(1);
+    await page.locator(".parsing-panel").getByRole("button", { name: "停止审阅", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    const firstSession = (await progress()).reviewSessionId;
+    expect(await fs.readFile(path.join(root, batch.candidate!), "utf8")).toContain("Second corrected.");
+    await desktop.close();
+    await launch();
+    await page.getByRole("button", { name: /审阅工程/ }).click();
+    await expect(page.locator(".parsing-panel")).toContainText(`已审阅 1 / ${batch.pageCount} 页`);
+    session = 2;
+    step = 0;
+    await page.locator(".parsing-panel").getByRole("button", { name: "继续审阅", exact: true }).click();
+    await expect.poll(async () => (await progress()).reviewedThroughPage, { timeout: 60000 }).toBe(batch.pageCount);
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    expect((await progress()).reviewSessionId).not.toBe(firstSession);
+    expect(overflow).toBe(true);
+    expect(compactions).toBeGreaterThanOrEqual(2);
+    await expect(page.locator(".agent-error")).toHaveCount(0);
+    expect(prompts[1]).toContain("从第 2 页开始");
+    expect(calls.filter((call) => call.session === 2 && call.name === "read_pdf").map((call) => call.args.page))
+      .toEqual(Array.from({ length: batch.pageCount - 1 }, (_, i) => i + 2));
+    const states = await page.evaluate((root) => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
+    expect(states.filter((state) => state.reviewBatchId === batch.batchId)).toHaveLength(2);
+    const histories = await fs.readdir(path.join(root, ".pi/sessions"));
+    expect((await Promise.all(histories.map((file) => fs.readFile(path.join(root, ".pi/sessions", file), "utf8")))).some((text) => text.includes('"type":"compaction"'))).toBe(true);
+    await page.getByRole("button", { name: "查看正文", exact: true }).click();
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    await page.locator(".cm-content").press("Control+End");
+    await page.keyboard.insertText("\nUser correction.\n");
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect.poll(() => fs.readFile(path.join(root, batch.candidate!), "utf8")).toContain("User correction.");
+    expect((await progress()).reviewedThroughPage).toBe(batch.pageCount);
+    await page.screenshot({ path: "test-results/ste83-reviewed-desktop.png", animations: "disabled" });
+    await page.setViewportSize({ width: 760, height: 900 });
+    await page.screenshot({ path: "test-results/ste83-reviewed-narrow.png", animations: "disabled" });
+    expect(errors).toEqual([]);
+  } finally {
+    release();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可点击引用及重开", async () => {
   let index = 0;
   let returnedLink = "";
@@ -2015,7 +2146,7 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const source = path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf");
-    await create(source, path.join(sandbox, "projects"), "PDF 工具工程");
+    await create(source, path.join(sandbox, "projects"), "PDF 工具工程", true);
     const root = path.join(sandbox, "projects", "PDF 工具工程");
     await expectPdfRendered();
     await jumpPdfPage(2);
@@ -2116,7 +2247,7 @@ test("Pi 普通对话可写入文件和运行 Shell", async () => {
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    await create(fixture, path.join(sandbox, "projects"), "普通对话工程");
+    await create(fixture, path.join(sandbox, "projects"), "普通对话工程", true);
     await page.evaluate(
       async (endpoint) => {
         const settings = await window.desktop.agent<AgentSettings>({
@@ -2177,7 +2308,7 @@ test("Pi 原生对话流式回复、补充、分支及搬迁重开，密钥留�
   const address = server.address() as { port: number };
   try {
     const parent = path.join(sandbox, "projects");
-    await create(fixture, parent, "Pi 论文工程");
+    await create(fixture, parent, "Pi 论文工程", true);
     const root = path.join(parent, "Pi 论文工程");
     await page.getByLabel("Agent 消息").fill("不附加论文，只问你好");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
@@ -2377,7 +2508,7 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
   const proxyPort = (proxy.address() as { port: number }).port;
   try {
     const parent = path.join(sandbox, "projects");
-    await create(fixture, parent, "并发会话工程");
+    await create(fixture, parent, "并发会话工程", true);
     const root = path.join(parent, "并发会话工程");
     await page.evaluate(
       async ({ port, proxyPort, secret }) => {
@@ -2459,7 +2590,7 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
       "等待中的片段",
     );
     await page.getByRole("button", { name: "所有工程", exact: true }).click();
-    await create(fixture, undefined, "另一工程");
+    await create(fixture, undefined, "另一工程", true);
     await expect(page.locator(".chat-message")).toHaveCount(0);
     await page.getByLabel("Agent 消息").fill("另一工程正常回复");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
@@ -2578,7 +2709,7 @@ test("Responses 与 Anthropic 文本协议及损坏配置恢复通过真实 Elec
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as { port: number }).port;
   try {
-    await create(fixture, path.join(sandbox, "projects"));
+    await create(fixture, path.join(sandbox, "projects"), "研究工程", true);
     await fs.writeFile(
       path.join(sandbox, "profile", "agent-settings.json"),
       "{invalid",
@@ -2654,7 +2785,7 @@ test.describe("真实模型验证", () => {
       db.close();
     }
     expect(!!model.apiKey).toBe(true);
-    await create(fixture, path.join(sandbox, "projects"), "真实模型工程");
+    await create(fixture, path.join(sandbox, "projects"), "真实模型工程", true);
     await page.evaluate(async (model) => {
       const settings = await window.desktop.agent<AgentSettings>({
         type: "settings",

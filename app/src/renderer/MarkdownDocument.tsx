@@ -97,7 +97,7 @@ export function MarkdownDocument({
       180,
     );
   }
-  const readOnly = /^(text|sources)\//i.test(draft.path);
+  const readOnly = /^sources\//i.test(draft.path);
   const editing = !readOnly && draft.mode !== "read";
   useEffect(() => {
     if (!host.current || !editing || !draft.file) return;
@@ -285,7 +285,7 @@ export function MarkdownDocument({
     <section className="markdown-document">
       <div className="markdown-actions">
         {readOnly ? (
-          <span className="muted">只读解析候选</span>
+          <span className="muted">只读出处字典</span>
         ) : (
           <>
             <div className="switch" role="group" aria-label="Markdown 视图">

@@ -236,6 +236,8 @@ export interface ChatSession {
   queued: string[];
   error?: string;
   revision: number;
+  reviewBatchId?: string;
+  compacting?: boolean;
 }
 export type AgentCommand =
   | { type: "settings" }
@@ -252,6 +254,7 @@ export type AgentCommand =
   | { type: "selectModel"; modelId: string; thinking?: ThinkingLevel }
   | { type: "list"; root: string }
   | { type: "create"; root: string }
+  | { type: "review"; root: string; batchId: string }
   | { type: "open"; root: string; id: string }
   | { type: "branch"; root: string; id: string; messageId: string }
   | {

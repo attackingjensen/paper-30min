@@ -34,7 +34,94 @@ export class ParsingService {
     { controller: AbortController; done: Promise<void>; run: ParsingRun }
   >();
   private queue: Promise<unknown> = Promise.resolve();
+  private reviews = new Map<string, string>();
   constructor(private projects: ProjectService) {}
+
+  private reviewKey(root: string, batchId: string) {
+    return path.resolve(root).toLowerCase() + "\0" + batchId;
+  }
+
+  isReviewActive(root: string, batchId: string, sessionId: string) {
+    return this.reviews.get(this.reviewKey(root, batchId)) === sessionId;
+  }
+
+  reviewStatus(root: string, batchId: string) {
+    return this.serialize(() => this.reviewRun(root, batchId));
+  }
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(operation);
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  private async reviewRun(root: string, batchId: string) {
+    const project = await this.projects.dispatch({ type: "refresh", root }) as Project;
+    const run = (await this.runs(project)).find((item) => item.batchId === batchId);
+    if (!run || run.phase !== "candidate") throw new Error("此批次尚无完整解析正文。");
+    const document = [project.manifest.paper, ...project.manifest.materials].find((item) => item.id === run.document.id);
+    if (!document || document.sha256 !== run.document.sha256) throw new Error("PDF 身份或版本已变化，不能继续审阅。");
+    const source = await this.projects.dispatch({ type: "readPdf", root, path: document.path }) as PdfSource;
+    if (source.sha256 !== run.document.sha256) throw new Error("PDF 已被替换，解析及审阅已失效。");
+    run.document = document;
+    await this.verifyCandidate(root, run);
+    return run;
+  }
+
+  startReview(root: string, batchId: string, sessionId: string): Promise<ParsingRun> {
+    return this.serialize(async () => {
+      const key = this.reviewKey(root, batchId);
+      if (this.reviews.has(key)) throw new Error("此批次正在审阅，请先停止当前会话。");
+      const run = await this.reviewRun(root, batchId);
+      if ((run.reviewedThroughPage ?? 0) === run.pageCount) throw new Error("此批次已完成审阅，可继续阅读或纠错。");
+      run.reviewSessionId = sessionId;
+      delete run.reviewError;
+      await this.save(root, run);
+      this.reviews.set(key, sessionId);
+      return run;
+    });
+  }
+
+  completeReviewPage(root: string, batchId: string, sessionId: string, page: number, signal: AbortSignal) {
+    return this.serialize(async () => {
+      signal.throwIfAborted();
+      if (this.reviews.get(this.reviewKey(root, batchId)) !== sessionId) throw new Error("审阅会话已停止或被替换。");
+      const run = await this.reviewRun(root, batchId);
+      const next = (run.reviewedThroughPage ?? 0) + 1;
+      if (!Number.isSafeInteger(page) || page !== next || page > run.pageCount) throw new Error(`请先完成第 ${next} 页审阅。`);
+      signal.throwIfAborted();
+      run.reviewedThroughPage = page;
+      await this.save(root, run, signal);
+      return { reviewedThroughPage: page, pageCount: run.pageCount, complete: page === run.pageCount };
+    });
+  }
+
+  finishReview(root: string, batchId: string, sessionId: string, error?: string) {
+    return this.serialize(async () => {
+      const key = this.reviewKey(root, batchId);
+      if (this.reviews.get(key) !== sessionId) return;
+      try {
+        const project = await this.projects.dispatch({ type: "refresh", root }) as Project;
+        const run = (await this.runs(project)).find((item) => item.batchId === batchId);
+        if (!run) throw new Error("解析批次已不存在。");
+        run.reviewError = error ?? ((run.reviewedThroughPage ?? 0) < run.pageCount ? "审阅尚未完成，可从下一页继续。" : undefined);
+        await this.save(root, run);
+      } finally {
+        this.reviews.delete(key);
+      }
+    });
+  }
+
+  async requireReviewed(root: string): Promise<ParsingRun> {
+    const project = await this.projects.dispatch({ type: "refresh", root }) as Project;
+    const runs = (await this.runs(project)).filter((run) => run.document.id === project.manifest.paper.id && run.phase === "candidate" && run.pageCount > 0 && run.reviewedThroughPage === run.pageCount);
+    let reason = "请先在论文解析中完成工程论文的逐页审阅。";
+    for (const run of runs) {
+      try { return await this.reviewRun(root, run.batchId); }
+      catch (error) { reason = (error as Error).message; }
+    }
+    throw new Error(reason);
+  }
 
   async close() {
     for (const task of this.active.values()) task.controller.abort();
@@ -53,9 +140,7 @@ export class ParsingService {
       if (task?.run.batchId === command.batchId) task.controller.abort();
       return Promise.resolve();
     }
-    const result = this.queue.then(() => this.execute(command, config));
-    this.queue = result.catch(() => undefined);
-    return result;
+    return this.serialize(() => this.execute(command, config));
   }
 
   private async runs(project: Project): Promise<ParsingRun[]> {
@@ -93,12 +178,15 @@ export class ParsingService {
           "remote-failed",
           "candidate",
         ].includes(run.phase) ||
-        (run.jobId !== undefined && !validJob(run.jobId))
+        (run.jobId !== undefined && !validJob(run.jobId)) ||
+        !Number.isSafeInteger(run.pageCount) || run.pageCount < 0 ||
+        (run.reviewedThroughPage !== undefined && (!Number.isSafeInteger(run.reviewedThroughPage) || run.reviewedThroughPage < 0 || run.reviewedThroughPage > run.pageCount))
       )
         throw new Error("解析任务记录损坏或工程身份不匹配。");
       const active = this.active.get(project.root.toLowerCase());
       run.busy = active?.run.batchId === run.batchId;
       run.stopping = run.busy && active?.controller.signal.aborted;
+      run.reviewBusy = this.reviews.has(this.reviewKey(project.root, batchId));
       if (!run.busy && run.phase === "submitting") run.phase = "unknown";
       else if (
         !run.busy &&
@@ -126,10 +214,14 @@ export class ParsingService {
     const { root } = project;
     const runs = await this.runs(project);
     if (command.type === "status") return runs;
+    if (command.type === "readiness") {
+      try { await this.requireReviewed(root); return { ready: true }; }
+      catch (error) { return { ready: false, reason: (error as Error).message }; }
+    }
     if (command.type === "delete") {
       const run = runs.find((item) => item.batchId === command.batchId);
       if (!run) throw new Error("解析批次不存在。");
-      if (run.busy) throw new Error("请先停止此批次，等待任务停止后再删除。");
+      if (run.busy || run.reviewBusy) throw new Error("请先停止此批次，等待任务停止后再删除。");
       await this.projects.deleteParsingBatch(root, run.batchId);
       return;
     }
@@ -137,8 +229,7 @@ export class ParsingService {
       const run = runs.find((item) => item.batchId === command.batchId);
       if (!run || run.phase !== "candidate")
         throw new Error("此批次尚无完整解析候选。");
-      await this.verifyCandidate(root, run);
-      return run;
+      return this.reviewRun(root, run.batchId);
     }
     const key = root.toLowerCase();
     if (this.active.has(key)) throw new Error("工程已有解析任务正在运行。");
@@ -232,13 +323,14 @@ export class ParsingService {
     return { ...run, busy: true };
   }
 
-  private async save(root: string, run: ParsingRun) {
+  private async save(root: string, run: ParsingRun, signal?: AbortSignal) {
     run.updatedAt = new Date().toISOString();
     await this.projects.writeParsingFile(
       root,
       run.batchId,
       "run.json",
       json(run),
+      signal,
     );
   }
 
@@ -254,10 +346,10 @@ export class ParsingService {
       "candidate.md",
     );
     if (
-      hash(mappingBytes) !== run.mappingSha256 ||
-      hash(body) !== run.markdownSha256
+      hash(mappingBytes) !== run.mappingSha256
     )
-      throw new Error("候选正文或映射已变化，不能当作完整解析结果。");
+      throw new Error("解析映射已变化，不能当作完整解析结果。");
+    if (!body.length || body.length > 2 * 1024 * 1024) throw new Error("解析正文为空或超过编辑预算。");
     const mapping = JSON.parse(mappingBytes.toString("utf8")) as ParsingMapping;
     for (const image of mapping.images)
       if (

@@ -18,6 +18,7 @@ export function createPdfTools(
   projects: ProjectService,
   vision: boolean,
   active: () => boolean,
+  onRead?: (documentId: string, sha256: string, page: number) => void,
 ) {
   return [
     defineTool({
@@ -184,6 +185,7 @@ export function createPdfTools(
             scale: actualScale,
             image: "实际 PNG 整页图，非原生 PDF 输入",
           };
+          onRead?.(record.id, source.sha256, pageNumber);
           return {
             content: [
               { type: "text" as const, text: JSON.stringify(info) },

@@ -70,10 +70,12 @@ test("公共工程写入保护基线、取消、所有权与统一出处转换",
     expect(
       await fs.readFile(path.join(root, "notes/new/note.md"), "utf8"),
     ).toBe("[source](paper30min://source/validated)");
-    const blocked = await run("write", {
+    const corrected = await run("write", {
       path: "text/parsed.md",
       content: "changed",
     });
+    expect(corrected.details).not.toMatchObject({ failed: true });
+    const blocked = await run("write", { path: "text/images/original.png", content: "bad" });
     expect(blocked.details).toMatchObject({ failed: true });
     const controller = new AbortController();
     controller.abort();
@@ -112,9 +114,7 @@ test("公共工程写入保护基线、取消、所有权与统一出处转换",
       content: "bad",
     });
     expect(link.details).toMatchObject({ failed: true });
-    await expect(
-      fs.stat(path.join(root, "text/parsed.md")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(root, "text/parsed.md"), "utf8")).toBe("changed");
   } finally {
     await service.close();
     await fs.rm(directory, { recursive: true, force: true });

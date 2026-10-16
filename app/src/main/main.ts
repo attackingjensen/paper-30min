@@ -248,6 +248,7 @@ async function start() {
     if (
       command.type === "stop" ||
       command.type === "status" ||
+      command.type === "readiness" ||
       command.type === "delete" ||
       command.type === "verify"
     )
@@ -289,14 +290,14 @@ async function start() {
       settingsWrite = result.catch(() => undefined);
       return result;
     }
-    if (command.type === "settings" || command.type === "send")
+    if (command.type === "settings" || command.type === "send" || command.type === "review")
       await settingsWrite;
     if (command.type === "settings") return agentSettings.publicSettings();
     return request({
       type: "agent",
       command,
       config:
-        command.type === "send"
+        command.type === "send" || command.type === "review"
           ? await agentSettings.read()
           : { ...defaultAgentSettings, keys: {}, unreadableKeys: [] },
     });

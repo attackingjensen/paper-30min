@@ -108,6 +108,7 @@ export function App() {
   const [citationVisit, setCitationVisit] = useState<(ResolvedCitation & { from: string; nonce: string }) | null>(null);
   const [usageVisit, setUsageVisit] = useState<{ use: CitationUse; from: string; pdfPath: string; position?: PdfPosition; nonce: string } | null>(null);
   const [pdfRestore, setPdfRestore] = useState(0);
+  const [selectedAgent, setSelectedAgent] = useState<{ root: string; id: string }>();
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
   const activeRoot = useRef(root);
@@ -452,6 +453,7 @@ export function App() {
           project={project!}
           onOpen={openPath}
           onSettings={() => setSettings("parsing")}
+          onSession={(id) => { setRight(true); setSelectedAgent({ root: root!, id }); }}
         />
       );
     if (current.key === "materials")
@@ -1013,6 +1015,8 @@ export function App() {
                   root={root!}
                   onSettings={() => setSettings("agent")}
                   initialView={agentViews.current[root!]}
+                  selectedSession={selectedAgent && selectedAgent.root === root ? selectedAgent.id : undefined}
+                  onParsing={() => openTab({ key: "parsing", title: "论文解析" })}
                   onViewChange={(view) => {
                     agentViews.current[root!] = view;
                   }}

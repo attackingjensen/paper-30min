@@ -44,11 +44,15 @@ export interface ParsingRun {
   error?: string;
   busy?: boolean;
   stopping?: boolean;
+  reviewedThroughPage?: number;
+  reviewSessionId?: string;
+  reviewBusy?: boolean;
+  reviewError?: string;
 }
 export interface ParsedBlock {
   id: string;
   label: string;
-  text: string;
+  text: string; // Original parser excerpt; the editable Markdown remains authoritative.
   vendorIds: number[];
   citation: Citation;
   images: string[];
@@ -78,6 +82,7 @@ export type ParsingCommand =
       clearKey?: boolean;
     }
   | { type: "status"; root: string }
+  | { type: "readiness"; root: string }
   | { type: "verify"; root: string; batchId: string }
   | { type: "delete"; root: string; batchId: string }
   | { type: "start"; root: string; documentId: string }

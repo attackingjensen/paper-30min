@@ -291,14 +291,14 @@ export class ProjectService {
     } else {
       const manifest = await this.manifest(root);
       if (
-        lower.startsWith("text/") ||
+        (lower.startsWith("text/") && !/\.(md|markdown)$/.test(lower)) ||
         lower.startsWith("sources/") ||
         /\.pdf$/i.test(lower) ||
         [manifest.paper, ...manifest.materials].some(
           (record) => record.path.toLowerCase() === lower,
         )
       )
-        throw new Error("原始材料、解析稿和出处字典不能作为自由成果覆盖。");
+        throw new Error("原始材料、图片和出处字典不能作为自由成果覆盖。");
     }
   }
 
