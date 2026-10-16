@@ -10,7 +10,6 @@ import {
   citationMarkdown,
   validateCitation,
   type Citation,
-  type CitationRect,
 } from "../shared/citations.js";
 import { ProjectService } from "./project-service.js";
 
@@ -25,27 +24,19 @@ export function createPdfTools(
       name: "read_pdf",
       label: "查看 PDF 图像",
       description:
-        "Visually inspect an actual PDF page or magnified region in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real PNG, page count and dimensions, PDF version, and an application-issued citation link. Pages are 1-based; region is unrotated top-left PDF points, never viewport coordinates. Omit page to inspect page 1. No PDF text extraction or OCR. Read the parsed manuscript for document text. Reuse returned links verbatim; never invent citation IDs.",
+        "Visually inspect a complete PDF page in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real full-page PNG, page count and dimensions, PDF version, and a reusable page citation link. Pages are 1-based. Omit page to inspect page 1. No region cropping, PDF text extraction or OCR. Read the parsed manuscript for document text. Reuse returned links verbatim; never invent citation IDs.",
       parameters: Type.Object({
         path: Type.String({
           description:
             "Project-relative registered PDF path; normally text/paper.pdf",
         }),
         page: Type.Optional(Type.Integer({ minimum: 1 })),
-        region: Type.Optional(
-          Type.Object({
-            x: Type.Number(),
-            y: Type.Number(),
-            width: Type.Number(),
-            height: Type.Number(),
-          }),
-        ),
         scale: Type.Optional(
           Type.Number({
             minimum: 0.5,
             maximum: 4,
             description:
-              "Pixels per PDF point; default 1.5 for pages, 3 for regions; maximum image edge 2048 pixels",
+              "Pixels per PDF point; default 1.5; maximum image edge 2048 pixels. Always renders the complete page.",
           }),
         ),
         sha256: Type.Optional(
@@ -101,7 +92,7 @@ export function createPdfTools(
         const pageNumber = args.page ?? 1;
         if (!Number.isSafeInteger(pageNumber) || pageNumber < 1)
           throw new Error("PDF 页码必须是从 1 开始的整数。");
-        const scale = args.scale ?? (args.region ? 3 : 1.5);
+        const scale = args.scale ?? 1.5;
         if (!Number.isFinite(scale) || scale < 0.5 || scale > 4)
           throw new Error("图像放大比例必须在 0.5 到 4 之间。");
         const wasmBinary = await fs.readFile(
@@ -147,41 +138,31 @@ export function createPdfTools(
           const page = doc.pages[pageNumber - 1];
           if (!page)
             throw new Error(`PDF 页码越界：共 ${doc.pages.length} 页。`);
-          const region: CitationRect | undefined = args.region && {
-            origin: { x: args.region.x, y: args.region.y },
-            size: { width: args.region.width, height: args.region.height },
-          };
           const input = {
             sha256: source.sha256,
-            kind: region ? ("region" as const) : ("page" as const),
+            kind: "page" as const,
             text: "",
             pages: [
               {
                 page: pageNumber,
                 width: page.size.width,
                 height: page.size.height,
-                rects: region ? [region] : [],
+                rects: [],
               },
             ],
           };
           validateCitation(input);
-          const size = region?.size ?? page.size;
+          const size = page.size;
           const actualScale = Math.min(
             scale,
             2048 / Math.max(size.width, size.height),
           );
           const image = await task(
-            region
-              ? engine.renderPageRect(doc, page, region, {
-                  scaleFactor: actualScale,
-                  rotation: 0,
-                  dpr: 1,
-                })
-              : engine.renderPage(doc, page, {
-                  scaleFactor: actualScale,
-                  rotation: 0,
-                  dpr: 1,
-                }),
+            engine.renderPage(doc, page, {
+              scaleFactor: actualScale,
+              rotation: 0,
+              dpr: 1,
+            }),
           );
           check();
           const citation = (await projects.dispatch(
@@ -199,9 +180,9 @@ export function createPdfTools(
             link: citationLink(citation.id),
             markdown: citationMarkdown(citation),
             source: "PDF 原文件；PDFium 渲染，未提取文本层，未使用解析稿或 OCR",
-            granularity: region ? "区域" : "页面",
+            granularity: "页面",
             scale: actualScale,
-            image: "实际 PNG 页图/裁切图，非原生 PDF 输入",
+            image: "实际 PNG 整页图，非原生 PDF 输入",
           };
           return {
             content: [

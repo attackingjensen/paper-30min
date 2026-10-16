@@ -64,7 +64,7 @@
 
 Markdown 使用 `[描述](paper://cite/<id>)`，`id` 为去掉连字符的随机 UUID（32 位小写十六进制）。链接不包含机器路径或可编辑坐标，重复使用同一链接不创建新引用。`.paper30min-citations.json` 是正式工程数据，不是阅读位置缓存；丢失它会使链接失效，搬迁和备份必须包含该文件。无需数据库。
 
-字典结构为 `{ formatVersion: 1, projectId, citations: { [id]: Citation } }`。每个引用保存 `id`、`documentId`、`sha256`、`kind`、`text` 和 `pages`。`kind` 为 `text`、`region` 或 `page`；`text` 保存实际选中文字，不从附近段落推测。每页保存 `page`、`width`、`height` 和 `rects`；矩形为 `{ origin: { x, y }, size: { width, height } }`。图片不嵌入 JSON。`read_pdf` 从同版本 PDF 独立渲染 PNG，将图像、版本与定位信息保存在 Pi 工具结果中，不提取或返回文本层，也不执行 OCR 或短句匹配；登记的页级或区域引用复用此字典，其 `text` 为空。
+字典结构为 `{ formatVersion: 1, projectId, citations: { [id]: Citation } }`。每个引用保存 `id`、`documentId`、`sha256`、`kind`、`text` 和 `pages`。`kind` 为 `text`、`region` 或 `page`；`text` 保存实际选中文字，不从附近段落推测。每页保存 `page`、`width`、`height` 和 `rects`；矩形为 `{ origin: { x, y }, size: { width, height } }`。图片不嵌入 JSON。`read_pdf` 从同版本 PDF 独立渲染整页 PNG，不接受区域坐标，将图像、版本与定位信息保存在 Pi 工具结果中，不提取或返回文本层，也不执行 OCR 或短句匹配；页级引用复用此字典，其 `text` 为空；已有同文档、同版本、同页引用时直接复用，尚无引用时才登记，不依赖解析预先生成。
 
 页码从 **1** 开始；位置采用 EmbedPDF 页面空间，左上角为原点，单位为 PDF 点，不含当前阅读缩放和附加旋转。文字选区保存公开接口返回的逐段矩形，不以外包大框替代跨行／跨栏选区；多个页面按页码递增保存。页级引用的矩形列表为空，仅保证跳页。解析服务接入时须将自己的页码、裁切和坐标转换到此约定，不能直接把原生 PDF 左下角坐标或屏幕像素填入。
 

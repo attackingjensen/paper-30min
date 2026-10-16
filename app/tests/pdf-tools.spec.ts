@@ -58,7 +58,6 @@ test("旋转页按阅读器的未旋转坐标取证并登记可回查的尺寸",
       "rotated",
       {
         path: "text/paper.pdf",
-        region: { x: 10, y: 20, width: 120, height: 60 },
       },
       undefined,
       undefined,
@@ -88,7 +87,7 @@ test("旋转页按阅读器的未旋转坐标取证并登记可回查的尺寸",
   }
 });
 
-test("read_pdf 返回实际页图、放大区域及持久引用，不依赖阅读器或解析稿", async () => {
+test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读器或解析稿", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-pdf-"));
   const service = new ProjectService(
     path.join(directory, "config.json"),
@@ -135,27 +134,26 @@ test("read_pdf 返回实际页图、放大区域及持久引用，不依赖阅�
     expect(new Set(image.data).size).toBeGreaterThan(30);
     const args = {
       page: 1,
-      region: { x: 80, y: 60, width: 300, height: 120 },
       scale: 3,
       sha256: info.sha256,
     };
-    const region = await run(args);
-    const regionInfo = JSON.parse((region.content[0] as any).text);
+    const enlarged = await run(args);
+    const enlargedInfo = JSON.parse((enlarged.content[0] as any).text);
     const crop = PNG.sync.read(
-      Buffer.from((region.content[1] as any).data, "base64"),
+      Buffer.from((enlarged.content[1] as any).data, "base64"),
     );
-    expect([crop.width, crop.height]).toEqual([900, 360]);
+    expect([crop.width, crop.height]).toEqual([1583, 2048]);
+    expect(enlargedInfo.link).toBe(info.link);
     const resolved = (await service.dispatch({
       type: "resolveCitation",
       root,
-      link: regionInfo.link,
+      link: enlargedInfo.link,
     })) as any;
-    expect(resolved.citation.pages[0].rects).toEqual([
-      { origin: { x: 80, y: 60 }, size: { width: 300, height: 120 } },
-    ]);
+    expect(resolved.citation.kind).toBe("page");
+    expect(resolved.citation.pages[0].rects).toEqual([]);
     const repeated = await run(args);
     expect(JSON.parse((repeated.content[0] as any).text).link).toBe(
-      regionInfo.link,
+      enlargedInfo.link,
     );
     const reopened = new ProjectService(
       path.join(directory, "config2.json"),
@@ -175,7 +173,7 @@ test("read_pdf 返回实际页图、放大区域及持久引用，不依赖阅�
         {} as any,
       );
       expect(JSON.parse((again.content[0] as any).text).link).toBe(
-        regionInfo.link,
+        enlargedInfo.link,
       );
     } finally {
       await reopened.close();
@@ -192,9 +190,6 @@ test("read_pdf 返回实际页图、放大区域及持久引用，不依赖阅�
         .catch(() => null),
     ).toBe(before);
     await expect(run({ page: 999 })).rejects.toThrow("越界");
-    await expect(
-      run({ region: { x: -1, y: 0, width: 10, height: 10 } }),
-    ).rejects.toThrow("区域");
     await expect(run({ sha256: "0".repeat(64) })).rejects.toThrow("版本");
     await expect(run({ path: "../outside.pdf" })).rejects.toThrow("身份");
     await expect(
@@ -226,7 +221,7 @@ test("read_pdf 返回实际页图、放大区域及持久引用，不依赖阅�
   }
 });
 
-test("公式区域和扫描页均只返回实际图像与定位信息，取消不登记迟到引用", async () => {
+test("公式页和扫描页均只返回实际图像与定位信息，取消不登记迟到引用", async () => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-scan-"),
   );
@@ -250,7 +245,6 @@ test("公式区域和扫描页均只返回实际图像与定位信息，取消�
     const tool = createPdfTools(root, service, true, () => true)[0];
     const args = {
       path: "text/paper.pdf",
-      region: { x: 180, y: 425, width: 250, height: 65 },
     };
     const invoke = (value: any, signal?: AbortSignal) =>
       tool.execute("scan", value, signal, undefined, {} as any);
@@ -260,16 +254,12 @@ test("公式区域和扫描页均只返回实际图像与定位信息，取消�
     const formulaImage = PNG.sync.read(
       Buffer.from((result.content[1] as any).data, "base64"),
     );
-    expect([formulaImage.width, formulaImage.height]).toEqual([750, 195]);
+    // The fixture uses a 612 × 792 point page, rendered at the default 1.5 scale.
+    expect([formulaImage.width, formulaImage.height]).toEqual([918, 1188]);
     let ink = 0;
     for (let i = 0; i < formulaImage.data.length; i += 4)
       if (formulaImage.data[i] < 128) ink++;
     expect(ink).toBeGreaterThan(500);
-    const full = await invoke({ path: args.path });
-    expect(JSON.parse((full.content[0] as any).text)).not.toHaveProperty(
-      "text",
-    );
-    expect(full.content[1].type).toBe("image");
     const added = (await service.dispatch({
       type: "addMaterial",
       root,
@@ -288,7 +278,7 @@ test("公式区域和扫描页均只返回实际图像与定位信息，取消�
     );
     const controller = new AbortController();
     const stopped = invoke(
-      { ...args, page: 1, region: { x: 0, y: 0, width: 100, height: 100 } },
+      { ...args, page: 2 },
       controller.signal,
     );
     controller.abort();

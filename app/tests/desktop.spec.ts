@@ -1896,7 +1896,7 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
   const modelId = settings.models.find((item) => item.id === settings.selectedModelId)!.model;
   const scan = scanPath ? (await readManifest(root)).materials[0].path : null;
   await page.getByLabel("Agent 消息").fill(
-    "请实际调用 read_pdf 核对 text/paper.pdf 第8页的翻译结果表，再读取第4页注意力公式的局部区域（可先整页检查再放大）。" +
+    "请实际调用 read_pdf 核对 text/paper.pdf 第8页的翻译结果表，再读取第4页整页核对注意力公式。" +
     (scan ? `另读取参考材料 ${scan} 第1页，这是论文第3页的扫描图，无文本层，请依据图像解释编码器和解码器结构的区别。` : "") +
     "最终简要报告英德 BLEU 分数、注意力公式与结构区别，每项给出工具返回的原文引用链接。禁止通过 read/bash/web_search 旁路读取资料。",
   );
@@ -1908,7 +1908,7 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
   const calls = states.flatMap((state) => state.messages.flatMap((message) => message.tools ?? []));
   const successful = calls.filter((tool) => tool.name === "read_pdf" && tool.status === "done");
   expect(successful.length).toBeGreaterThanOrEqual(scan ? 3 : 2);
-  expect(successful.some((tool) => (tool.arguments as any).region)).toBe(true);
+  expect(successful.every((tool) => !(tool.arguments as any).region)).toBe(true);
   if (scan) expect(successful.some((tool) => (tool.arguments as any).path === scan)).toBe(true);
   for (const tool of successful) {
     const info = JSON.parse(tool.output!);
@@ -1924,9 +1924,6 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
     const href = await link.getAttribute("href");
     await page.evaluate(({ root, link }) => window.desktop.invoke({ type: "resolveCitation", root, link }), { root, link: href! });
   }
-  const regionCall = successful.find((tool) => (tool.arguments as any).region)!;
-  const regionLink = JSON.parse(regionCall.output!).link;
-  await page.evaluate(({ root, link }) => window.desktop.invoke({ type: "resolveCitation", root, link }), { root, link: regionLink });
   await links.first().click();
   await expectPdfRendered();
   await page.screenshot({ path: "test-results/real-model/ste94-pdf.png" });
@@ -1941,7 +1938,7 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
   }
 });
 
-test("read_pdf 经真实 Electron 和 Pi 传送页图与区域，保留视口并可点击引用及重开", async () => {
+test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可点击引用及重开", async () => {
   let index = 0;
   let returnedLink = "";
   const images: string[] = [];
@@ -1952,7 +1949,7 @@ test("read_pdf 经真实 Electron 和 Pi 传送页图与区域，保留视口并
     const payload = JSON.parse(body);
     const tools = payload.messages.filter((message: any) => message.role === "tool");
     if (tools.length > results.length) {
-      const info = JSON.parse(tools.at(-1).content);
+      const info = JSON.parse(tools.at(-1).content.split("\n")[0]);
       results.push(info);
       returnedLink = info.link;
     }
@@ -1960,7 +1957,7 @@ test("read_pdf 经真实 Electron 和 Pi 传送页图与区域，保留视口并
       ? message.content.flatMap((block: any) => block.type === "image_url" ? [block.image_url.url] : []) : []);
     for (const url of imageUrls) if (!images.includes(url)) images.push(url);
     const args = index === 0 ? { path: "text/paper.pdf", page: 1 }
-      : index === 1 ? { path: "text/paper.pdf", page: 3, region: { x: 50, y: 100, width: 300, height: 200 }, scale: 3 } : null;
+      : index === 1 ? { path: "text/paper.pdf", page: 3, scale: 2 } : null;
     index++;
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     const delta = args ? { tool_calls: [{ index: 0, id: `pdf-${index}`, type: "function",
@@ -2001,16 +1998,17 @@ test("read_pdf 经真实 Electron 和 Pi 传送页图与区域，保留视口并
     expect(images).toHaveLength(2);
     const { PNG } = await import("pngjs");
     const crop = PNG.sync.read(Buffer.from(images[1].split(",")[1], "base64"));
-    expect([crop.width, crop.height]).toEqual([900, 600]);
+    expect([crop.width, crop.height]).toEqual([1224, 1584]);
+    expect(results[1].citation.kind).toBe("page");
+    expect(results[1].citation.pages[0].rects).toEqual([]);
     expect(JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf).toEqual(before);
     await expect(page.getByRole("tab", { name: "paper.pdf", exact: true })).toHaveCount(0);
     await expect(page.locator('[data-tool="read_pdf"][data-status="done"]')).toHaveCount(2);
     await link.click();
     await expectPdfRendered();
-    await expect(page.getByRole("status")).toContainText("已定位并高亮");
-    const mark = page.locator('[aria-label="引用高亮"] [data-citation-page="3"]');
-    await expect(mark).toHaveCount(1);
-    await expect.poll(async () => (await mark.boundingBox())?.width).toBeCloseTo(375, 0);
+    await expect(page.getByRole("status")).toContainText("已定位到引用页面（页级引用）");
+    await expect(pdfPage()).toHaveValue("3");
+    await expect(page.locator('[data-citation-page]')).toHaveCount(0);
     await page.screenshot({ path: "test-results/ste94-citation.png" });
     await desktop.close();
     await launch();
