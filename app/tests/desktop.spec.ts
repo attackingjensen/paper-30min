@@ -230,6 +230,10 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
       .fill("desktop-parsing-secret");
     await page.getByRole("button", { name: "保存解析配置" }).click();
     await expect(page.getByRole("status")).toContainText("解析配置已保存");
+    await page.screenshot({ path: "test-results/parsing-settings.png" });
+    await page.setViewportSize({ width: 650, height: 850 });
+    await page.screenshot({ path: "test-results/parsing-settings-narrow.png", animations: "disabled" });
+    await page.setViewportSize({ width: 1440, height: 960 });
     expect(
       await fs.readFile(
         path.join(sandbox, "profile/parsing-settings.json"),
@@ -245,6 +249,8 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     );
     const root = path.join(sandbox, "projects/研究工程");
     await page.getByRole("button", { name: "论文解析", exact: true }).click();
+    await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
+    await page.screenshot({ path: "test-results/parsing-empty.png" });
     await page.getByRole("button", { name: "解析 PDF", exact: true }).click();
     await page.getByRole("button", { name: "上传并解析", exact: true }).click();
     await expect(page.getByRole("status")).toContainText("云端处理中");
@@ -261,6 +267,18 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     await expect(page.getByRole("status")).toContainText("待 Agent 审阅", {
       timeout: 45_000,
     });
+    await expect(page.getByText("desktop-1", { exact: true })).not.toBeVisible();
+    await page.getByText("任务详情", { exact: true }).click();
+    await expect(page.getByText("desktop-1", { exact: true })).toBeVisible();
+    await page.getByText("任务详情", { exact: true }).click();
+    await page.screenshot({ path: "test-results/parsing-ready.png" });
+    await page.getByRole("button", { name: "收起 Agent", exact: true }).click();
+    await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
+    await page.setViewportSize({ width: 650, height: 850 });
+    await page.screenshot({ path: "test-results/parsing-ready-narrow.png", animations: "disabled" });
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.getByRole("button", { name: "展开左侧栏", exact: true }).click();
+    await page.getByRole("button", { name: "展开 Agent", exact: true }).click();
     expect(submits).toBe(1);
     const [run] = await page.evaluate(
       async (root) =>
@@ -276,13 +294,13 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     const imagePath = path.join(root, "text", run.batchId, mapping.images[0].path);
     const originalImage = await fs.readFile(imagePath);
     await fs.writeFile(imagePath, "damaged");
-    await page.getByRole("button", { name: "查看候选" }).click();
+    await page.getByRole("button", { name: "查看正文" }).click();
     await expect(page.getByRole("alert")).toContainText("候选图片缺失或已变化");
     await page.waitForTimeout(1800);
     await expect(page.getByRole("alert")).toContainText("候选图片缺失或已变化");
     await fs.writeFile(imagePath, originalImage);
     await fs.writeFile(path.join(sandbox, "profile/parsing-settings.json"), "damaged");
-    await page.getByRole("button", { name: "查看候选" }).click();
+    await page.getByRole("button", { name: "查看正文" }).click();
     await expect(page.getByText("只读解析候选", { exact: true })).toBeVisible();
     await expect(page.locator(".markdown-preview img").first()).toBeVisible();
     for (const label of ["text", "display_formula", "chart"]) {
@@ -466,7 +484,7 @@ test("真实百度服务生成可回查候选并记录格式与耗时", async ()
         "utf8",
       ),
     ) as ParsingMapping;
-    await page.getByRole("button", { name: "查看候选" }).click();
+    await page.getByRole("button", { name: "查看正文" }).click();
     await expect(page.locator(".markdown-preview")).toContainText("解析候选");
     await expect
       .poll(() =>

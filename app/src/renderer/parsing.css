@@ -1,72 +1,44 @@
-.parsing-settings {
-  display: grid;
-  gap: 12px;
-  max-width: 640px;
-}
-.parsing-settings input,
-.parsing-settings select {
-  min-width: 0;
-  width: 100%;
-}
-.parsing-settings .primary {
-  justify-self: start;
-  margin-top: 8px;
-}
-.parsing-panel {
-  max-width: 100%;
-  overflow: auto;
-}
-.parsing-start {
-  margin: 20px 0;
-  flex-wrap: wrap;
-}
-.parsing-start select {
-  flex: 1;
-  min-width: 160px;
-  max-width: 100%;
-}
-.parsing-confirm {
-  padding: 16px 0;
-  border-block: 1px solid #d4d4da;
-  margin-bottom: 16px;
-}
-.parsing-confirm p {
-  margin-top: 0;
-}
-.parsing-run {
-  padding: 20px 0;
-  border-top: 1px solid #d4d4da;
-}
-.parsing-run .row {
-  flex-wrap: wrap;
-}
-.parsing-run .path {
-  overflow-wrap: anywhere;
-}
-.parsing-run progress {
-  display: block;
-  width: 100%;
-  height: 6px;
-  margin: 14px 0;
-  accent-color: #347c59;
-}
-.parsing-phase {
-  font-size: 12px;
-  color: #595963;
-}
-.parsing-phase.candidate {
-  color: #28724c;
-}
-.parsing-phase.unknown,
-.parsing-error {
-  color: #a64639;
-}
-.parsing-error {
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-.parsing-job {
-  display: grid;
-  gap: 8px;
-  margin: 12px 0;
+.parsing-settings { max-width: 640px; }
+.parsing-settings .settings-group-heading h2 { margin: 0; }
+.parsing-panel { width: 100%; max-width: 830px; overflow: auto; }
+.parsing-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 28px; }
+.parsing-heading .document-symbol { margin-bottom: 16px; }
+.parsing-heading > .borderbtn { display: inline-flex; gap: 6px; align-items: center; flex-shrink: 0; margin-top: 6px; color: #70677d; font-size: 12px; }
+.parsing-description { color: var(--muted); line-height: 1.8; font-size: 13px; }
+.parsing-source { padding: 20px; background: #faf9fc; border: 1px solid var(--border); border-radius: var(--radius); }
+.parsing-source > label { display: block; font-size: 12px; font-weight: 600; color: #655d70; margin-bottom: 10px; }
+.parsing-start { flex-wrap: wrap; gap: 10px; }
+.parsing-start select { flex: 1; min-width: 160px; max-width: 100%; height: 36px; padding: 7px 10px; border: 1px solid #e5e0e9; border-radius: 7px; background: #fff; color: #4c4455; font: inherit; font-size: 12px; }
+.parsing-start > button { min-height: 36px; font-size: 12px; }
+.parsing-source-help { color: var(--muted); font-size: 12px; line-height: 1.8; margin-top: 12px; }
+.parsing-confirm { padding-top: 16px; border-top: 1px solid var(--border); margin-top: 16px; font-size: 12px; line-height: 1.8; }
+.parsing-confirm p { margin-bottom: 12px; }
+.parsing-history-heading { display: flex; align-items: baseline; justify-content: space-between; margin: 30px 0 12px; }
+.parsing-history-heading h2 { font-size: 14px; font-weight: 600; }
+.parsing-history-heading > span { color: var(--muted); font-size: 12px; }
+.parsing-empty { display: flex; align-items: center; flex-direction: column; gap: 10px; padding: 32px 16px; border: 1px dashed var(--border); border-radius: var(--radius); text-align: center; }
+.parsing-empty > svg { width: 24px; height: 24px; color: #aaa0b7; }
+.parsing-empty strong { font-size: 13px; font-weight: 500; color: #70677d; }
+.parsing-empty p { font-size: 12px; color: var(--muted); line-height: 1.8; }
+.parsing-run { padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; background: #fff; }
+.parsing-run .row { flex-wrap: wrap; gap: 10px; }
+.parsing-document-name { display: flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.parsing-document-name svg { color: #9485a5; }
+.parsing-run .tiny { margin-top: 12px; font-variant-numeric: tabular-nums; }
+.parsing-run progress { display: block; width: 100%; height: 5px; margin: 14px 0; accent-color: var(--accent); }
+.parsing-phase { font-size: 11px; padding: 4px 9px; border-radius: 20px; color: #736680; background: #f2eef7; }
+.parsing-phase.candidate { color: #73608d; background: #eee9f6; }
+.parsing-phase.unknown, .parsing-phase.failed, .parsing-phase.remote-failed { color: #a35350; background: #fbefed; }
+.parsing-error { font-size: 12px; color: #a35350; overflow-wrap: anywhere; line-height: 1.8; margin: 12px 0; }
+.parsing-details { margin: 14px 0; color: var(--muted); font-size: 11px; }
+.parsing-details summary { cursor: pointer; width: fit-content; padding: 3px 0; }
+.parsing-details dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 12px; margin: 10px 0 0; padding: 12px; background: #faf9fc; border-radius: 6px; line-height: 1.6; }
+.parsing-details dd { margin: 0; overflow-wrap: anywhere; }
+.parsing-run button { font-size: 12px; }
+.parsing-job { display: grid; gap: 8px; margin: 12px 0; font-size: 12px; }
+.parsing-job input { min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; }
+@media (max-width: 760px) {
+  .parsing-heading { flex-wrap: wrap; gap: 12px; }
+  .parsing-heading > .borderbtn { margin-top: 0; }
+  .parsing-source, .parsing-run { padding: 16px; }
 }

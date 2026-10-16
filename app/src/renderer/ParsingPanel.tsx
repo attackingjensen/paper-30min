@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import {
   FileSearch,
+  FileText,
+  KeyRound,
+  Settings2,
   Play,
   RefreshCw,
   Save,
@@ -40,7 +43,7 @@ export function ParsingSettingsForm() {
   }, []);
   return (
     <form
-      className="parsing-settings"
+      className="agent-settings parsing-settings"
       onSubmit={(event) => {
         event.preventDefault();
         setBusy(true);
@@ -62,63 +65,49 @@ export function ParsingSettingsForm() {
           .finally(() => setBusy(false));
       }}
     >
-      <label htmlFor="parsing-endpoint">百度任务地址</label>
-      <input
-        id="parsing-endpoint"
-        value={settings.endpoint}
-        onChange={(event) =>
-          setSettings({ ...settings, endpoint: event.target.value })
-        }
-        required
-      />
-      <label htmlFor="parsing-model">解析模型</label>
-      <select
-        id="parsing-model"
-        value={settings.model}
-        onChange={(event) =>
-          setSettings({ ...settings, model: event.target.value })
-        }
-      >
-        <option>PaddleOCR-VL-1.6</option>
-      </select>
-      <label htmlFor="parsing-token">百度 Token</label>
-      <div className="row">
-        <input
-          id="parsing-token"
-          type="password"
-          autoComplete="off"
-          value={token}
-          placeholder={
-            clearKey
-              ? "保存后清除"
-              : settings.keyError
-                ? "凭据无法解密，请重新填写"
-                : settings.hasKey
-                  ? "已保存，留空保留"
-                  : "尚未配置"
-          }
-          onChange={(event) => {
-            setToken(event.target.value);
-            setClearKey(false);
-          }}
-        />
-        <button
-          type="button"
-          className="icon"
-          title="清除百度 Token"
-          aria-label="清除百度 Token"
-          onClick={() => {
-            setToken("");
-            setClearKey(true);
-          }}
-        >
-          <Trash2 />
-        </button>
+      <p className="settings-intro">将 PDF 转为带原文引用的正文，供后续审阅使用。</p>
+      <fieldset className="settings-fields" disabled={busy}>
+        <section className="settings-group">
+          <div className="settings-group-heading">
+            <h2><FileSearch /> 百度文档解析</h2>
+            <span>所有工程共用</span>
+          </div>
+          <label htmlFor="parsing-model">解析模型
+            <select id="parsing-model" value={settings.model}
+              onChange={(event) => setSettings({ ...settings, model: event.target.value })}>
+              <option>PaddleOCR-VL-1.6</option>
+            </select>
+          </label>
+          <label htmlFor="parsing-endpoint">百度任务地址
+            <input id="parsing-endpoint" type="url" value={settings.endpoint}
+              onChange={(event) => setSettings({ ...settings, endpoint: event.target.value })} required />
+          </label>
+          <div className="settings-key-heading">
+            <span><KeyRound /> 服务凭据</span>
+            <span className={`key-state ${settings.hasKey && !clearKey && !settings.keyError ? "configured" : ""}`}>
+              {clearKey ? "待清除" : settings.keyError ? "需要更新" : settings.hasKey ? "已配置" : "未配置"}
+            </span>
+          </div>
+          <label htmlFor="parsing-token">百度 Token
+            <input id="parsing-token" type="password" autoComplete="off" value={token}
+              placeholder={clearKey ? "保存后清除" : settings.keyError ? "凭据无法解密，请重新填写" : settings.hasKey ? "已保存，留空保留" : "填写百度解析服务的 Token"}
+              onChange={(event) => { setToken(event.target.value); setClearKey(false); }} />
+          </label>
+          <div className="key-help">
+            <p>凭据加密保存在本机，不随论文工程保存。</p>
+            <button type="button" className="remove-key" aria-label="清除百度 Token"
+              disabled={clearKey}
+              onClick={() => { setToken(""); setClearKey(true); }}>
+              <Trash2 /> 清除 Token
+            </button>
+          </div>
+          {settings.keyError && !clearKey && <p className="settings-feedback" role="alert">已保存的凭据无法读取，请重新填写或清除。</p>}
+        </section>
+      </fieldset>
+      <div className="settings-save-row">
+        <button className="primary" disabled={busy}><Save /> {busy ? "正在保存…" : "保存解析配置"}</button>
+        {message && <p className={`settings-feedback ${message === "解析配置已保存。" ? "success" : ""}`} role="status">{message}</p>}
       </div>
-      <button className="primary" disabled={busy}>
-        <Save /> 保存解析配置
-      </button>
-      {message && <p role="status">{message}</p>}
     </form>
   );
 }
@@ -192,14 +181,19 @@ export function ParsingPanel({
   };
   return (
     <article className="article parsing-panel">
-      <div className="between row">
-        <h1>论文解析</h1>
+      <header className="parsing-heading">
+        <div><FileSearch className="document-symbol" /><h1>论文解析</h1>
+          <p className="parsing-description">将论文转换为带原文引用的正文，保留图表与公式。</p>
+        </div>
         <button className="borderbtn" onClick={onSettings}>
-          解析设置
+          <Settings2 /> 解析设置
         </button>
-      </div>
-      <div className="row parsing-start">
+      </header>
+      <section className="parsing-source" aria-label="开始解析">
+        <label htmlFor="parsing-document">选择 PDF</label>
+        <div className="row parsing-start">
         <select
+          id="parsing-document"
           aria-label="待解析 PDF"
           value={documentId}
           onChange={(event) => setDocumentId(event.target.value)}
@@ -208,7 +202,7 @@ export function ParsingPanel({
             .filter((record) => /\.pdf$/i.test(record.path))
             .map((record) => (
               <option key={record.id} value={record.id}>
-                {record.path}
+                {record.id === project.manifest.paper.id ? `${record.path.split("/").at(-1)} · 工程论文` : record.path}
               </option>
             ))}
         </select>
@@ -219,7 +213,8 @@ export function ParsingPanel({
         >
           <FileSearch /> 解析 PDF
         </button>
-      </div>
+        </div>
+        <p className="parsing-source-help">解析结果保存在工程内，完成后可查看正文；Agent 审阅功能尚未接入。</p>
       {confirming && (
         <div
           className="parsing-confirm"
@@ -242,13 +237,15 @@ export function ParsingPanel({
           </div>
         </div>
       )}
+      </section>
       {(error || statusError) && (
         <div className="notice error" role="alert">
           {error || statusError}
         </div>
       )}
+      <div className="parsing-history-heading"><h2>解析记录</h2><span>{runs.length} 次</span></div>
       <div className="parsing-runs">
-        {!runs.length && <p className="muted">尚无解析候选</p>}
+        {!runs.length && <div className="parsing-empty"><FileText /><strong>还没有解析正文</strong><p>选择上方的 PDF 开始解析，完成后从这里打开正文。</p></div>}
         {runs.map((run) => (
           <section
             className="parsing-run"
@@ -256,14 +253,13 @@ export function ParsingPanel({
             aria-label={`解析批次 ${run.batchId}`}
           >
             <div className="between row">
-              <strong>{run.document.path.split("/").at(-1)}</strong>
+              <strong className="parsing-document-name"><FileText />{run.document.path.split("/").at(-1)}</strong>
               <span className={`parsing-phase ${run.phase}`} role="status">
                 {run.stopping
                   ? "正在停止，等待提交回执"
                   : phaseNames[run.phase]}
               </span>
             </div>
-            <p className="muted path">{run.batchId}</p>
             <div className="row muted tiny">
               <span>{new Date(run.startedAt).toLocaleString()}</span>
               <span>
@@ -278,7 +274,13 @@ export function ParsingPanel({
                 value={run.phase === "mapping" ? run.completedPages : undefined}
               />
             )}
-            {run.jobId && <p className="tiny path">任务号：{run.jobId}</p>}
+            <details className="parsing-details">
+              <summary>任务详情</summary>
+              <dl><dt>文档</dt><dd>{run.document.path}</dd><dt>批次</dt><dd>{run.batchId}</dd>
+                {run.jobId && <><dt>任务号</dt><dd>{run.jobId}</dd></>}
+                <dt>解析模型</dt><dd>{run.model}</dd>
+              </dl>
+            </details>
             {run.error && <p className="parsing-error">{run.error}</p>}
             {run.phase === "unknown" && !run.busy && (
               <label className="parsing-job">
@@ -347,7 +349,7 @@ export function ParsingPanel({
                       .finally(() => setBusy(false));
                   }}
                 >
-                  <FileSearch /> 查看候选
+                  <FileText /> 查看正文
                 </button>
               )}
             </div>
