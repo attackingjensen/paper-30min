@@ -3951,11 +3951,104 @@ test("PDF 引用复制、原生粘贴撤销、定位高亮与返回草稿", asyn
   await expect(page.getByRole("status")).toContainText("已定位并高亮");
 });
 
+test("PDF 初始化期间连续点击引用保留最新目标", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  const root = path.join(sandbox, "projects/研究工程");
+  const manifest = await readManifest(root);
+  const links = await page.evaluate(async ({ root, sha256 }) => {
+    const ids = await Promise.all([1, 2].map((page) => window.desktop.invoke<{ id: string }>({
+      type: "createCitation", root, path: "text/paper.pdf", input: { sha256, kind: "region", text: "",
+        pages: [{ page, width: 612, height: 792, rects: [{ origin: { x: 50, y: 160 }, size: { width: 180, height: 12 } }] }] },
+    })));
+    return ids.map(({ id }, i) => `[目标${i + 1}](paper://cite/${id})`).join("\n\n");
+  }, { root, sha256: manifest.paper.sha256 });
+  await page.getByRole("button", { name: "所有工程", exact: true }).click();
+  const sessionDir = path.join(root, ".pi/sessions");
+  await fs.mkdir(sessionDir, { recursive: true });
+  const session = SessionManager.create(root, sessionDir);
+  session.appendMessage({ role: "user", content: "请提供两个出处", timestamp: Date.now() });
+  session.appendMessage({ role: "assistant", content: [{ type: "text", text: links }],
+    api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", timestamp: Date.now(),
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  });
+  // Delay the actual browser worker transport, retaining real PDF/plugin initialization.
+  await page.evaluate(() => {
+    const original = Worker.prototype.postMessage as (this: Worker, message: unknown, options?: Transferable[] | StructuredSerializeOptions) => void;
+    const pending: (() => void)[] = [];
+    Worker.prototype.postMessage = function (message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+      pending.push(() => original.call(this, message, options));
+    };
+    window.addEventListener("release-pdf-workers", () => {
+      Worker.prototype.postMessage = original;
+      for (const send of pending) send();
+    }, { once: true });
+  });
+  await page.getByRole("button", { name: /研究工程/ }).click();
+  await expect(page.locator("embedpdf-container")).toHaveCount(1);
+  await page.locator(".chat-message").getByRole("link", { name: "目标1", exact: true }).click();
+  await page.locator(".chat-message").getByRole("link", { name: "目标2", exact: true }).click();
+  await expect(pdfImage()).toHaveCount(0);
+  await page.evaluate(() => window.dispatchEvent(new Event("release-pdf-workers")));
+  await expectPdfRendered();
+  await expect(pdfPage()).toHaveValue("2");
+  await expect(page.locator("[data-citation-page]")).toHaveAttribute("data-citation-page", "2");
+  await page.locator(".chat-message").getByRole("link", { name: "目标1", exact: true }).click();
+  await expect(pdfPage()).toHaveValue("1");
+  await expect(page.locator("[data-citation-page]")).toHaveAttribute("data-citation-page", "1");
+});
+
+test("同一阅读器共用批注与无痕引用，保存后可继续取证且反查不丢内存批注", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  const root = path.join(sandbox, "projects/研究工程");
+  await expectPdfRendered();
+  await expect(page.getByRole("group", { name: "PDF 引用模式" })).toHaveCount(0);
+  const original = await fs.readFile(path.join(root, "text/paper.pdf"));
+  await page.getByRole("button", { name: "引用", exact: true }).click();
+  await page.getByRole("button", { name: "整页引用", exact: true }).click();
+  await page.getByRole("button", { name: "复制引用链接", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已复制引用链接");
+  const invisible = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  expect(invisible).toContain("paper://cite/");
+  expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(original);
+  expect(await nativeAnnotations()).toHaveLength(0);
+  await fs.writeFile(path.join(root, "notes/混合.md"), `# 混合笔记\n\n${invisible}\n`);
+  await nativeHighlight();
+  const before = (await nativeAnnotations())[0];
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
+  const list = page.getByRole("complementary", { name: "文档引用使用位置" });
+  await list.getByRole("button", { name: /整页引用/ }).click();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注未保存");
+  expect((await nativeAnnotations())[0].id).toBe(before.id);
+  await page.getByRole("button", { name: "关闭文档引用列表", exact: true }).click();
+  await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
+  await expect(page.getByRole("status")).toContainText("已复制 1 个批注链接");
+  const annotation = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  await fs.appendFile(path.join(root, "notes/混合.md"), annotation.replace("text/paper.pdf", "../text/paper.pdf"));
+  await page.getByRole("button", { name: "引用", exact: true }).click();
+  await page.getByRole("button", { name: "整页引用", exact: true }).click();
+  await page.getByRole("button", { name: "复制引用链接", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已复制引用链接");
+  const after = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  expect(after).toContain("paper://cite/");
+  expect(after).not.toBe(invisible);
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
+  await expect(list.locator("section")).toHaveCount(2);
+  await expect(list).toContainText("整页引用");
+  await expect(list).toContainText("原生批注 · 第 1 页");
+  await expect(page.locator("[data-document-citation], [data-citation-uses-page]")).toHaveCount(0);
+  await list.getByRole("button", { name: /原生批注 · 第/ }).click();
+  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await list.locator("section").filter({ hasText: "原生批注" }).getByRole("button", { name: /混合笔记/ }).click();
+  await expect(page.locator(".citation-use-target")).toContainText("PDF 第 1 页批注");
+  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+});
+
 test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", async () => {
   test.setTimeout(90_000);
   await create(fixture, path.join(sandbox, "projects"));
   await expectPdfRendered();
-  await page.getByRole("button", { name: "原生批注", exact: true }).click();
   await expectPdfRendered();
   await page.getByRole("button", { name: "批注", exact: true }).click();
   await page.getByRole("button", { name: "高亮", exact: true }).first().click();
@@ -4000,8 +4093,8 @@ test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", a
   await page.locator('.markdown-preview a[href*="#annotation="]').click();
   await expect(page.getByRole("status")).toContainText("已定位并选中批注");
   await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
-  const uses = page.getByRole("complementary", { name: "批注使用位置" });
-  await expect(uses.locator(":scope > button")).toHaveCount(3);
+  const uses = page.getByRole("complementary", { name: "文档引用使用位置" });
+  await expect(uses.locator("section > button:not(.citation-source)")).toHaveCount(3);
   await uses.getByRole("button", { name: /第二篇/ }).nth(1).click();
   await expect(page.locator(".citation-use-target")).toContainText("PDF 第 1 页批注");
   await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
@@ -4025,7 +4118,6 @@ test("原生批注在 Markdown 与已有会话中随 PDF 和文档移动更新�
   await create(fixture, path.join(sandbox, "projects"));
   const root = path.join(sandbox, "projects/研究工程");
   await expectPdfRendered();
-  await page.getByRole("button", { name: "原生批注", exact: true }).click();
   await expectPdfRendered();
   await nativeHighlight();
   await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
@@ -4067,10 +4159,10 @@ test("原生批注在 Markdown 与已有会话中随 PDF 和文档移动更新�
     .filter({ hasText: "[再次][a\\]]" }).click({ modifiers: ["Control"] });
   await expect(page.getByRole("status")).toContainText("已定位并选中批注");
   await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
-  await expect(page.getByRole("complementary", { name: "批注使用位置" }).locator(":scope > button")).toHaveCount(2);
+  await expect(page.getByRole("complementary", { name: "文档引用使用位置" }).locator("section > button:not(.citation-source)")).toHaveCount(2);
   await fs.writeFile(path.join(root, "map/deep/移动.md"), "# 已移除链接\n");
   await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
-  await expect(page.getByRole("complementary", { name: "批注使用位置" })).toContainText("没有文档使用此批注");
+  await expect(page.getByRole("complementary", { name: "文档引用使用位置" })).toContainText("没有文档使用此批注");
   expect((await nativeAnnotations()).map((a) => a.id)).toContain(id);
   await fs.rename(path.join(root, "text/批注 甲.pdf"), path.join(root, "text/external.pdf"));
   await chatLink.click();
@@ -4085,7 +4177,6 @@ test("原生批注保存保护外部版本、失败现场和并发写入，旧�
   const old = await page.evaluate(({ root, sha256 }) => window.desktop.invoke<{ id: string }>({ type: "createCitation", root, path: "text/paper.pdf",
     input: { sha256, kind: "page", text: "", pages: [{ page: 1, width: 612, height: 792, rects: [] }] } }), { root, sha256: manifest.paper.sha256 });
   await expectPdfRendered();
-  await page.getByRole("button", { name: "原生批注", exact: true }).click();
   await expectPdfRendered();
   await nativeHighlight();
   const file = path.join(root, "text/paper.pdf");
@@ -4124,7 +4215,6 @@ test("原生批注真实论文渲染、原生评论与窄窗口可操作", async
   const source = path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf");
   await create(source, path.join(sandbox, "projects"));
   await expectPdfRendered();
-  await page.getByRole("button", { name: "原生批注", exact: true }).click();
   await expectPdfRendered();
   await setPdfZoom("75");
   await expect.poll(async () => Math.round((await pdfImage().boundingBox())!.width)).toBe(459);
@@ -4177,7 +4267,6 @@ test("原生批注跨页选字产生逐页链接，下划线、重叠、评论�
   await fs.writeFile(source, pdf);
   await create(source, path.join(sandbox, "projects"));
   await expectPdfRendered();
-  await page.getByRole("button", { name: "原生批注", exact: true }).click();
   await expectPdfRendered();
   await setPdfZoom("100");
   await page.getByRole("button", { name: "批注", exact: true }).click();
@@ -4371,7 +4460,7 @@ test("引用字典并发新增、跨页区域、搬迁改名与明确失效", as
   expect(await fs.readFile(dictionaryPath(), "utf8")).toBe("{broken");
 });
 
-test("PDF 文档引用标记、重叠跨页反查、外部更新与重开", async () => {
+test("PDF 无痕引用侧边反查、临时定位、外部更新与重开", async () => {
   const parent = path.join(sandbox, "projects");
   await create(fixture, parent);
   const root = path.join(parent, "研究工程");
@@ -4404,35 +4493,18 @@ test("PDF 文档引用标记、重叠跨页反查、外部更新与重开", asyn
   await fs.writeFile(path.join(root, "notes/甲.md"), noteA);
   await fs.writeFile(path.join(root, "notes/乙.md"), `# 第二篇\n\n[证据](${link}) 和 [重叠区域](${regionLink})\n`);
   await expect.poll(async () => (await uses()).map((item) => item.uses.length).sort()).toEqual([1, 3]);
-  await expect(page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true })).toBeVisible();
-  const area = await page.locator(`[data-document-citation="${regionCitation.id}"]`).first().boundingBox();
-  await page.mouse.click(area!.x + 10, area!.y + 6);
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   const list = page.getByRole("complementary", { name: "文档引用使用位置" });
-  await expect(list.getByRole("button")).toHaveCount(5);
+  const useButtons = list.locator("section > button:not(.citation-source)");
+  await expect(useButtons).toHaveCount(4);
   await expect(list).toContainText("第一篇");
   await expect(list).toContainText("第二篇");
-  await page.screenshot({ path: "test-results/citation-uses.png" });
-  await page.getByRole("button", { name: "关闭文档引用列表", exact: true }).click();
-  await page.getByRole("button", { name: "引用", exact: true }).click();
-  await page.getByRole("button", { name: "框选引用", exact: true }).click();
-  const regionMark = page.locator(`[data-document-citation="${regionCitation.id}"]`).first();
-  await expect(regionMark).toBeInViewport();
-  let start: { x: number; y: number } | null = null;
-  // The overlay redraw replaces nodes; a detached node reports a zero DOM rect.
-  await expect.poll(async () => {
-    const box = await regionMark.boundingBox();
-    if (!box || !box.width || !box.height) return false;
-    start = box;
-    return true;
-  }).toBe(true);
-  await page.mouse.move(start!.x + 5, start!.y + 5);
-  await page.mouse.down();
-  await page.mouse.move(start!.x + 90, start!.y + 60, { steps: 8 });
-  await page.mouse.up();
-  await expect(page.locator("[data-citation-page]")).toHaveCount(1);
-  await expect(list).toHaveCount(0);
+  await expect(page.locator("[data-document-citation], [data-citation-uses-page]")).toHaveCount(0);
+  await list.getByRole("button", { name: /文字引用/ }).click();
+  await expect(page.locator("[data-citation-page]")).toHaveCount(4);
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true }).click();
+  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
+  await page.screenshot({ path: "test-results/citation-uses.png" });
   const position = await pdfViewport().evaluate((e) => e.scrollTop);
   await list.getByRole("button").filter({ hasText: "第二处" }).click();
   await expect(page.locator(".citation-use-target")).toHaveAttribute("data-citation-use", `${textCitation.id}:1`);
@@ -4443,11 +4515,11 @@ test("PDF 文档引用标记、重叠跨页反查、外部更新与重开", asyn
   await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
   await expectPdfRendered();
   await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeCloseTo(position, 0);
-  await page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true }).click();
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   await fs.copyFile(path.join(root, "notes/甲.md"), path.join(root, "notes/复制.md"));
-  await expect(list.getByRole("button")).toHaveCount(7);
+  await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(6);
   await fs.unlink(path.join(root, "notes/复制.md"));
-  await expect(list.getByRole("button")).toHaveCount(5);
+  await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(4);
   await list.getByRole("button").filter({ hasText: "第二处" }).click();
   await page.getByRole("tab", { name: "paper.pdf" }).click();
   await jumpPdfPage(2);
@@ -4455,18 +4527,18 @@ test("PDF 文档引用标记、重叠跨页反查、外部更新与重开", asyn
   await expectPdfRendered();
   await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeCloseTo(position, 0);
   await jumpPdfPage(2);
-  await expect(page.getByRole("button", { name: "查看第 2 页的文档引用", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "查看第 2 页的文档引用", exact: true }).click();
-  await expect(list.getByRole("button")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: "文档引用使用位置", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
+  await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(4);
   await fs.rename(path.join(root, "notes/甲.md"), path.join(root, "map/移动.md"));
   await expect(list).toContainText("map/移动.md");
   await fs.writeFile(path.join(root, "notes/乙.md"), "# 第二篇\n\n删除所有引用\n");
-  await expect(list.getByRole("button")).toHaveCount(3);
+  await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(2);
   await desktop.close();
   await launch();
   await page.getByRole("button", { name: /研究工程/ }).click();
   await expectPdfRendered();
-  await expect(page.getByRole("button", { name: "查看第 2 页的文档引用", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "文档引用使用位置", exact: true })).toBeVisible();
   await fs.writeFile(path.join(root, "map/移动.md"), "# 无引用\n");
   await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
   expect(await uses()).toEqual([]);
@@ -4474,7 +4546,7 @@ test("PDF 文档引用标记、重叠跨页反查、外部更新与重开", asyn
   expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(pdfBefore);
 });
 
-test("文档反查保护未保存编辑，整页标记与失效字典明确处理", async () => {
+test("文档反查保护未保存编辑，整页引用与失效字典明确处理", async () => {
   const parent = path.join(sandbox, "projects");
   await create(fixture, parent);
   const root = path.join(parent, "研究工程");
@@ -4495,7 +4567,7 @@ test("文档反查保护未保存编辑，整页标记与失效字典明确处�
   await page.getByRole("tab", { name: "paper.pdf" }).click();
   await expectPdfRendered();
   await expect(page.locator("[data-document-citation]")).toHaveCount(0);
-  await page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true }).click();
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   const list = page.getByRole("complementary", { name: "文档引用使用位置" });
   await expect(list).toContainText("整页引用");
   await list.getByRole("button").filter({ hasText: "我的文档" }).click();
@@ -4503,21 +4575,28 @@ test("文档反查保护未保存编辑，整页标记与失效字典明确处�
   await expect(editor).toContainText("UNSAVED");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
-  await page.getByRole("button", { name: "查看第 1 页的文档引用", exact: true }).click();
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   await list.getByRole("button").filter({ hasText: "我的文档" }).click();
   await expect(page.locator(".citation-use-target")).toHaveText("页证据");
   await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(1);
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
+  await expect(list.locator("section")).toHaveCount(1);
   const dictionary = path.join(root, ".paper30min-citations.json");
   const original = await fs.readFile(dictionary, "utf8");
   await fs.writeFile(dictionary, "{broken");
   await expect(page.getByRole("alert")).toContainText("文档引用加载失败");
   await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
+  await expect(list.locator("section")).toHaveCount(0);
   await fs.writeFile(dictionary, original);
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(1);
+  await expect(list.locator("section")).toHaveCount(1);
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
   await fs.appendFile(path.join(root, "text/paper.pdf"), "\nchanged");
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(1);
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("alert").filter({ hasText: "已重新载入" })).toBeVisible();
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
+  await expect(list.locator("section")).toHaveCount(1);
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
+  await expect(page.getByRole("alert").filter({ hasText: "文档引用加载失败" })).toHaveCount(0);
 });
 
 test("Markdown 三种视图、真实文件保真、图片公式与多标签草稿", async () => {

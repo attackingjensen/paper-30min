@@ -1,12 +1,11 @@
 import { CommandsPlugin, UIPlugin, SelectionPlugin, InteractionManagerPlugin, DocumentManagerPlugin,
   ScrollPlugin, ViewportPlugin, type PluginRegistry, type EmbedPdfContainer, type ToolbarItem, type SelectionMenuItem } from "@embedpdf/react-pdf-viewer";
-import { citationMarkdown, type Citation, type CitationInput, type CitationPage, type CitationRect, type UsedCitation } from "../shared/citations";
+import { citationMarkdown, type Citation, type CitationInput, type CitationPage, type CitationRect } from "../shared/citations";
 
 /** All evidence coordinates come from plugin capabilities, never DOM text/selection geometry. */
 export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfContainer, options: {
   root: string; path: string; sha256: string; target?: Citation;
   onStatus: (message: string) => void;
-  onUses: (ids: string[]) => void;
 }) {
   const documentId = "reading";
   const selection = registry.getPlugin<SelectionPlugin>(SelectionPlugin.id)!.provides();
@@ -21,7 +20,6 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
   let copying = false;
   let selectedPage: number | undefined;
   let selectingRegion = false;
-  let usedCitations: UsedCitation[] = [];
   const page = (index: number, rects: CitationRect[]): CitationPage => {
     const p = manager.getDocument(documentId)?.pages[index];
     if (!p) throw new Error("PDF 页面尚未就绪。");
@@ -147,37 +145,16 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
   overlay.setAttribute("aria-label", "引用高亮");
   Object.assign(overlay.style, { position: "absolute", inset: "0", overflow: "hidden", pointerEvents: "none", zIndex: "5" });
   let targetShown = false;
+  let layoutReady = false;
   let targetValid = false;
   let frame = 0;
-  let pageHost: HTMLElement | null = null;
-  let pointerStart: { x: number; y: number; query: boolean } | undefined;
-  let hitRegions: { element: HTMLElement; id: string }[] = [];
-  const beginPointer = (event: PointerEvent) => {
-    pointerStart = event.button === 0 ? { x: event.clientX, y: event.clientY, query: !selectingRegion } : undefined;
-  };
-  const movePointer = (event: PointerEvent) => {
-    if (pointerStart && Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 3) pointerStart.query = false;
-  };
-  const queryUses = (event: MouseEvent) => {
-    if (!pointerStart?.query || !pageHost || !event.composedPath().includes(pageHost)) return;
-    pointerStart = undefined;
-    const ids = hitRegions.filter(({ element }) => {
-      const rect = element.getBoundingClientRect();
-      return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
-    }).map(({ id }) => id);
-    if (ids.length) options.onUses([...new Set(ids)]);
-  };
-  // Observe genuine clicks without stealing the page's pointer stream for text or marquee selection.
-  viewer.addEventListener("pointerdown", beginPointer, true);
-  viewer.addEventListener("pointermove", movePointer, true);
-  viewer.addEventListener("click", queryUses, true);
   function draw() {
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => {
       if (disposed || !manager.isDocumentOpen(documentId)) return;
+      if (!region && !targetValid) { overlay.replaceChildren(); return; }
       const host = viewer.shadowRoot?.querySelector<HTMLElement>('#document-content .bg-bg-app[style*="overflow: auto"]');
       if (!host) return;
-      pageHost = host;
       if (overlay.parentElement !== host.parentElement) host.parentElement!.appendChild(overlay);
       const metrics = viewport.forDocument(documentId).getMetrics();
       const layout = scroll.forDocument(documentId).getLayout();
@@ -188,48 +165,6 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
       overlay.style.width = `${metrics.clientWidth}px`;
       overlay.style.height = `${metrics.clientHeight}px`;
       overlay.replaceChildren();
-      hitRegions = [];
-      const pageUses = new Map<number, UsedCitation[]>();
-      const doc = manager.getDocument(documentId)!;
-      for (const item of usedCitations) {
-        for (const p of item.citation.pages) {
-          const actual = doc.pages[p.page - 1];
-          if (!actual || Math.abs(actual.size.width - p.width) > 0.01 || Math.abs(actual.size.height - p.height) > 0.01) continue;
-          const items = pageUses.get(p.page) ?? [];
-          items.push(item);
-          pageUses.set(p.page, items);
-          for (const rect of p.rects) {
-            const mapped = scroll.forDocument(documentId).getRectPositionForPage(p.page - 1, rect);
-            if (!mapped) continue;
-            const mark = document.createElement("div");
-            mark.dataset.documentCitation = item.citation.id;
-            mark.setAttribute("aria-label", `查看第 ${p.page} 页的引用区域`);
-            Object.assign(mark.style, {
-              position: "absolute", left: `${left + mapped.origin.x - metrics.scrollLeft}px`,
-              top: `${gap + mapped.origin.y - metrics.scrollTop}px`, width: `${mapped.size.width}px`, height: `${mapped.size.height}px`,
-              background: "rgba(104, 101, 216, 0.16)", border: "1px solid #6865d8", boxSizing: "border-box", pointerEvents: "none",
-            });
-            hitRegions.push({ element: mark, id: item.citation.id });
-            overlay.appendChild(mark);
-          }
-        }
-      }
-      for (const [number, items] of pageUses) {
-        const p = items[0].citation.pages.find((p) => p.page === number)!;
-        const mapped = scroll.forDocument(documentId).getRectPositionForPage(number - 1,
-          { origin: { x: 0, y: 0 }, size: { width: p.width, height: p.height } });
-        if (!mapped) continue;
-        const badge = document.createElement("button");
-        badge.type = "button";
-        badge.dataset.citationUsesPage = String(number);
-        badge.textContent = `文档引用 ${items.reduce((sum, item) => sum + item.uses.length, 0)}`;
-        badge.setAttribute("aria-label", `查看第 ${number} 页的文档引用`);
-        Object.assign(badge.style, { position: "absolute", left: `${left + mapped.origin.x - metrics.scrollLeft + 8}px`,
-          top: `${gap + mapped.origin.y - metrics.scrollTop + 8}px`, pointerEvents: "auto", cursor: "pointer",
-          background: "#f1efff", color: "#443a85", border: "1px solid #6865d8", borderRadius: "5px", padding: "4px 8px" });
-        badge.onclick = () => options.onUses(items.map((item) => item.citation.id));
-        overlay.appendChild(badge);
-      }
       const pages = region ? [page(region.pageIndex, [region.rect])] : targetValid ? options.target!.pages : [];
       for (const p of pages) for (const rect of p.rects) {
         const mapped = scroll.forDocument(documentId).getRectPositionForPage(p.page - 1, rect);
@@ -245,35 +180,45 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
       }
     });
   }
+  function navigate(target: Citation) {
+    options.target = target;
+    targetShown = false;
+    locate();
+  }
+  function locate() {
+    if (targetShown || !options.target || !layoutReady) return;
+    targetShown = true;
+    region = undefined;
+    targetValid = false;
+    const target = options.target;
+    const doc = manager.getDocument(documentId)!;
+    if (target.pages.some((p) => !doc.pages[p.page - 1] ||
+        Math.abs(doc.pages[p.page - 1].size.width - p.width) > 0.01 || Math.abs(doc.pages[p.page - 1].size.height - p.height) > 0.01)) {
+      options.onStatus("引用页码或尺寸不一致，无法定位。");
+      draw();
+      return;
+    }
+    const first = target.pages[0];
+    targetValid = true;
+    scroll.forDocument(documentId).scrollToPage({ pageNumber: first.page, pageCoordinates: first.rects[0]?.origin, behavior: "instant", alignY: 25 });
+    options.onStatus(target.kind === "page" ? "已定位到引用页面（页级引用）。" : "已定位并高亮引用。");
+    draw();
+  }
   const offReady = scroll.onLayoutReady((event) => {
     if (event.documentId !== documentId) return;
-    if (!targetShown && options.target) {
-      targetShown = true;
-      const target = options.target;
-      const doc = manager.getDocument(documentId)!;
-      if (target.pages.some((p) => !doc.pages[p.page - 1] ||
-          Math.abs(doc.pages[p.page - 1].size.width - p.width) > 0.01 || Math.abs(doc.pages[p.page - 1].size.height - p.height) > 0.01)) {
-        options.onStatus("引用页码或尺寸不一致，无法定位。");
-        return;
-      }
-      const first = target.pages[0];
-      targetValid = true;
-      scroll.forDocument(documentId).scrollToPage({ pageNumber: first.page, pageCoordinates: first.rects[0]?.origin, behavior: "instant", alignY: 25 });
-      options.onStatus(target.kind === "page" ? "已定位到引用页面（页级引用）。" : "已定位并高亮引用。");
-    }
+    layoutReady = true;
+    locate();
     draw();
   });
   const offLayout = scroll.onLayoutChange(draw);
   const offViewport = viewport.onViewportChange(draw);
   const offScroll = viewport.onScrollChange(draw);
   return {
-    setUses: (items: UsedCitation[]) => { usedCitations = items; draw(); },
+    navigate,
+    setVersion: (sha256: string) => { options.sha256 = sha256; },
     copy,
     selectRegion, cancel,
     dispose: () => {
-      viewer.removeEventListener("pointerdown", beginPointer, true);
-      viewer.removeEventListener("pointermove", movePointer, true);
-      viewer.removeEventListener("click", queryUses, true);
       window.removeEventListener("keydown", onKeyDown, true);
       disposed = true; cancelAnimationFrame(frame); overlay.remove();
       offMarquee(); offRegion(); offSelection(); offReady(); offLayout(); offViewport(); offScroll();

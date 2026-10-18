@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation } from "../shared/citations.js";
 import { markdownRenderer, markCitationUses } from "../shared/markdown-references.js";
-import { annotationKey, resolveAnnotationLink, annotationHref, rewriteAnnotationLinks } from "../shared/annotation-links.js";
+import { isAnnotationLink, annotationKey, resolveAnnotationLink, annotationHref, rewriteAnnotationLinks } from "../shared/annotation-links.js";
 import {
   prepareDocumentReferences,
   type DocumentReferenceProcessor,
@@ -1035,7 +1035,7 @@ export class ProjectService {
     if (command.type === "annotationUses") {
       await this.resolve(root, command.path);
       const uses = [];
-      const wanted = new Set(command.ids.map((id) => annotationKey({ path: command.path, id })));
+      const wanted = command.ids && new Set(command.ids.map((id) => annotationKey({ path: command.path, id })));
       for (const entry of (await this.snapshot(root)).files) {
         if (entry.directory || !/\.(md|markdown)$/i.test(entry.path) || /^(text|sources)\//i.test(entry.path)) continue;
         const file = await this.markdown(root, entry.path);
@@ -1043,7 +1043,7 @@ export class ProjectService {
         const heading = tokens.findIndex((token) => token.type === "heading_open");
         const title = heading >= 0 ? tokens[heading + 1].content : path.basename(entry.path);
         for (const use of markCitationUses(tokens, entry.path))
-          if (wanted.has(use.id)) uses.push({ ...use, path: entry.path, title, version: file.version });
+          if (wanted ? wanted.has(use.id) : isAnnotationLink(use.id) && resolveAnnotationLink(use.id).path === command.path) uses.push({ ...use, path: entry.path, title, version: file.version });
       }
       return uses;
     }

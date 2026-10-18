@@ -7,6 +7,7 @@ import { InteractionManagerPlugin } from "@embedpdf/plugin-interaction-manager";
 import { HistoryPlugin } from "@embedpdf/plugin-history";
 
 export interface AnnotationView {
+  items: { id: string; page: number; comment: string }[];
   selected: { id: string; page: number }[];
   dirty: boolean;
   saving: boolean;
@@ -54,6 +55,7 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
   function selected() { return loaded ? annotations.getSelectedAnnotations().filter((a) => a.commitState !== "deleted") : []; }
   function notify() {
     if (!disposed) options.onChange({ selected: selected().map(({ object }) => ({ id: object.id, page: object.pageIndex + 1 })),
+      items: loaded ? annotations.getAnnotations().filter((a) => a.commitState !== "deleted").map(({ object }) => ({ id: object.id, page: object.pageIndex + 1, comment: object.contents ?? "" })) : [],
       dirty: generation !== savedGeneration, saving: !!saving, loaded, error });
   }
   function locate() {

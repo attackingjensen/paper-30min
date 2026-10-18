@@ -101,7 +101,6 @@ export function App() {
   const layout = usePanelLayout(left, right);
   const [settings, setSettingsState] = useState<string | null>(null);
   const pdfPending = useRef(false);
-  const [pdfMode, setPdfMode] = useState<"legacy" | "annotation">("legacy");
   function mayLeavePdf() {
     if (!pdfPending.current) return true;
     setError("批注尚未保存，请先保存到 PDF；保存失败时可通过阅读器下载按钮导出副本。当前批注已保留。");
@@ -253,7 +252,6 @@ export function App() {
   }
   async function openCitation(link: string, base = "") {
     if (!root) return;
-    if (!mayLeavePdf()) return;
     const originRoot = root;
     await run(async () => {
       if (isAnnotationLink(link)) {
@@ -261,17 +259,17 @@ export function App() {
         try { await desktop.invoke({ type: "resolveFile", root, path: target.path }); }
         catch { throw new Error(`批注 PDF 已缺失或移动：${target.path}`); }
         if (activeRoot.current !== originRoot) return;
+        if (active !== target.path && !mayLeavePdf()) return;
         setCitationVisit(null);
-        setPdfMode("annotation");
         setAnnotationVisit({ target, from: active, nonce: crypto.randomUUID() });
         openPath(target.path);
         return;
       }
       const resolved = await desktop.invoke<ResolvedCitation>({ type: "resolveCitation", root, link });
       if (activeRoot.current !== originRoot) return;
+      if (active !== resolved.path && !mayLeavePdf()) return;
       setCitationVisit({ ...resolved, from: active, nonce: crypto.randomUUID() });
       setAnnotationVisit(null);
-      setPdfMode("legacy");
       openPath(resolved.path);
     });
   }
@@ -557,12 +555,10 @@ export function App() {
     if (current.path && /\.pdf$/i.test(current.path))
       return (
         <PdfReader
-          key={root + "/" + current.path + (citationVisit?.path === current.path ? citationVisit.nonce : "") + ":" + pdfRestore}
+          key={root + "/" + current.path + ":" + pdfRestore}
           root={root!}
           path={current.path}
           revision={project}
-          mode={pdfMode}
-          onMode={(mode) => { if (mode !== pdfMode && mayLeavePdf()) { setPdfMode(mode); setPdfRestore((n) => n + 1); } }}
           annotationTarget={annotationVisit?.target.path === current.path ? annotationVisit : undefined}
           onPending={(pending) => { pdfPending.current = pending; }}
           onUse={(use) => {
@@ -570,9 +566,10 @@ export function App() {
             setCitationVisit(null);
             setAnnotationVisit(null);
             setUsageVisit({ use, from: active, pdfPath: current.path!, position: positions.current[root!]?.[current.path!], nonce: crypto.randomUUID(),
-              ...(pdfMode === "annotation" && { annotation: resolveAnnotationLink(use.id) }) });
+              ...(isAnnotationLink(use.id) && { annotation: resolveAnnotationLink(use.id) }) });
             openPath(use.path);
           }}
+          citationNonce={citationVisit?.nonce}
           citation={citationVisit?.path === current.path ? citationVisit.citation : undefined}
           position={positions.current[root!]?.[current.path]}
           onPosition={(p) => savePosition(root!, current.path!, p)}
