@@ -192,7 +192,6 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
       const pageUses = new Map<number, UsedCitation[]>();
       const doc = manager.getDocument(documentId)!;
       for (const item of usedCitations) {
-        if (item.citation.sha256 !== options.sha256) continue;
         for (const p of item.citation.pages) {
           const actual = doc.pages[p.page - 1];
           if (!actual || Math.abs(actual.size.width - p.width) > 0.01 || Math.abs(actual.size.height - p.height) > 0.01) continue;
@@ -252,9 +251,9 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
       targetShown = true;
       const target = options.target;
       const doc = manager.getDocument(documentId)!;
-      if (target.sha256 !== options.sha256 || target.pages.some((p) => !doc.pages[p.page - 1] ||
+      if (target.pages.some((p) => !doc.pages[p.page - 1] ||
           Math.abs(doc.pages[p.page - 1].size.width - p.width) > 0.01 || Math.abs(doc.pages[p.page - 1].size.height - p.height) > 0.01)) {
-        options.onStatus("引用页码、尺寸或 PDF 版本不一致，无法定位。");
+        options.onStatus("引用页码或尺寸不一致，无法定位。");
         return;
       }
       const first = target.pages[0];

@@ -1029,7 +1029,7 @@ export class ProjectService {
         signal?.throwIfAborted();
         await fs.rename(temporary, file);
       } finally { await fs.rm(temporary, { force: true }); }
-      // Keep the original manifest/dictionary hashes: this trial deliberately invalidates old references.
+      // Preserve provenance hashes; citation navigation follows document identity, not byte equality.
       return { sha256: createHash("sha256").update(bytes).digest("hex") };
     }
     if (command.type === "annotationUses") {
@@ -1068,8 +1068,7 @@ export class ProjectService {
       if (command.type === "citationUses") {
         const record = [m.paper, ...m.materials].find((r) => r.path === command.path);
         if (!record) return [];
-        const sha256 = await digest(await this.resolve(root, record.path));
-        if (sha256 !== record.sha256) throw new Error("PDF 已被替换，无法显示文档引用标记。");
+        await this.resolve(root, record.path);
         const used = new Map<string, UsedCitation>();
         const { files } = await this.snapshot(root);
         for (const entry of files) {
@@ -1086,7 +1085,7 @@ export class ProjectService {
           const title = heading >= 0 ? tokens[heading + 1].content : path.basename(entry.path);
           for (const use of markCitationUses(tokens)) {
             const citation = dictionary.citations[use.id];
-            if (!citation || citation.documentId !== record.id || citation.sha256 !== sha256) continue;
+            if (!citation || citation.documentId !== record.id) continue;
             let item = used.get(use.id);
             if (!item) { item = { citation, uses: [] }; used.set(use.id, item); }
             item.uses.push({ ...use, path: entry.path, title, version: file.version });
@@ -1100,15 +1099,15 @@ export class ProjectService {
       if (!record) throw new Error("引用对应的 PDF 身份不存在，请先将 PDF 加入工程材料。");
       const input = command.type === "createCitation" ? command.input : existing!;
       validateCitation(input);
-      if (record.sha256 !== input.sha256) throw new Error("PDF 版本不一致，引用已失效。");
       let file: string;
       try { file = await this.resolve(root, record.path); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("引用 PDF 已缺失，请重新关联原文件。");
         throw error;
       }
-      if (!/\.pdf$/i.test(file) || await digest(file, signal) !== input.sha256)
-        throw new Error("PDF 已被替换或版本无法确认，不能定位此引用。");
+      if (!/\.pdf$/i.test(file)) throw new Error("引用目标必须是 PDF。");
+      if (!existing && await digest(file, signal) !== input.sha256)
+        throw new Error("PDF 已被替换或版本无法确认，请重新选择后创建引用。");
       if (existing) return { citation: existing, path: record.path };
       // Compare evidence, not object serialization or approximate geometry. Reuse
       // happens inside the project queue and only after verifying the current PDF.

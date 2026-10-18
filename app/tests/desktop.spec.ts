@@ -4077,7 +4077,7 @@ test("原生批注在 Markdown 与已有会话中随 PDF 和文档移动更新�
   await expect(page.getByRole("alert").filter({ hasText: "批注 PDF 已缺失或移动" })).toBeVisible();
 });
 
-test("原生批注保存保护外部版本、失败现场和并发写入，旧引用仍保留哈希失效保护", async () => {
+test("原生批注保存保护外部版本、失败现场和并发写入，旧引用在保存批注后仍可解析", async () => {
   test.setTimeout(120_000);
   await create(fixture, path.join(sandbox, "projects"));
   const root = path.join(sandbox, "projects/研究工程");
@@ -4102,7 +4102,7 @@ test("原生批注保存保护外部版本、失败现场和并发写入，旧�
   await fs.writeFile(file, original);
   await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
   await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
-  await expect(page.evaluate(({ root, id }) => window.desktop.invoke({ type: "resolveCitation", root, link: "paper://cite/" + id }), { root, id: old.id })).rejects.toThrow("替换");
+  expect(await page.evaluate(({ root, id }) => window.desktop.invoke<{ path: string }>({ type: "resolveCitation", root, link: "paper://cite/" + id }), { root, id: old.id })).toMatchObject({ path: "text/paper.pdf" });
   const source = await page.evaluate((root) => window.desktop.invoke<{ bytes: Uint8Array; sha256: string }>({ type: "readPdf", root, path: "text/paper.pdf" }), root);
   const outcomes = await page.evaluate(async ({ root, bytes, sha256 }) => {
     const first = new Uint8Array([...Object.values(bytes), ...new TextEncoder().encode("\n% first save\n")]);
@@ -4111,6 +4111,13 @@ test("原生批注保存保护外部版本、失败现场和并发写入，旧�
   }, { root, ...source });
   expect(outcomes.map((value) => value.status)).toEqual(["fulfilled", "rejected"]);
   expect((await fs.readFile(file)).subarray(-14).toString()).toBe("\n% first save\n");
+  await fs.writeFile(path.join(root, "notes/保存前出处.md"), `[保存前出处](paper://cite/${old.id})`);
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "保存前出处.md", exact: true }).click();
+  await page.getByRole("link", { name: "保存前出处", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("页级引用");
+  await expectPdfRendered();
+
 });
 
 test("原生批注真实论文渲染、原生评论与窄窗口可操作", async () => {
@@ -4356,7 +4363,7 @@ test("引用字典并发新增、跨页区域、搬迁改名与明确失效", as
   expect(await fs.readFile(dictionaryPath(), "utf8")).toBe(original);
   await fs.appendFile(path.join(root, "text/外部移动.pdf"), "\nchanged");
   await expect(repeatAfterRestart()).rejects.toThrow("替换");
-  await expect(resolve()).rejects.toThrow("替换");
+  expect((await resolve()).citation.id).toBe(created[0].id);
   await expect(page.evaluate(({ root }) => window.desktop.invoke({ type: "resolveCitation", root, link: "paper://cite/" + "0".repeat(32) }), { root })).rejects.toThrow("找不到此引用");
   expect(await fs.readFile(dictionaryPath(), "utf8")).toBe(original);
   await fs.writeFile(dictionaryPath(), "{broken");
@@ -4509,8 +4516,8 @@ test("文档反查保护未保存编辑，整页标记与失效字典明确处�
   await fs.writeFile(dictionary, original);
   await expect(page.locator("[data-citation-uses-page]")).toHaveCount(1);
   await fs.appendFile(path.join(root, "text/paper.pdf"), "\nchanged");
-  await expect(page.getByRole("alert")).toContainText("PDF 已被替换");
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
+  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("Markdown 三种视图、真实文件保真、图片公式与多标签草稿", async () => {

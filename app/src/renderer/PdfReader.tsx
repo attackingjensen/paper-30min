@@ -76,12 +76,10 @@ export function PdfReader({ root, path, position, onPosition, citation, revision
       }}><RefreshCw /></button>}
     </div>
     {mode === "annotation" && external && <div className="notice error" role="alert">{external}</div>}
-    {mode === "legacy" && citation && citation.sha256 !== source.sha256
-      ? <div role="alert">PDF 已被替换，引用已失效。</div>
-      : <PdfDocument key={`${mode}:${epoch}`} root={root} source={source} path={path} saved={saved} onPosition={onPosition}
+    <PdfDocument key={`${mode}:${epoch}`} root={root} source={source} path={path} saved={saved} onPosition={onPosition}
         citation={citation} revision={revision} onUse={onUse} mode={mode} annotationTarget={annotationTarget}
         onSaved={(sha256, bytes) => { const value = { sha256, bytes }; sourceRef.current = value; setSource(value); }}
-        onPending={(dirty, saving = false) => { pending.current = { dirty, saving }; onPending(dirty); }} />}
+        onPending={(dirty, saving = false) => { pending.current = { dirty, saving }; onPending(dirty); }} />
   </section>;
 }
 

@@ -85,10 +85,7 @@ export function createPdfTools(
           path: args.path,
         })) as PdfSource;
         check();
-        if (
-          source.sha256 !== record.sha256 ||
-          (args.sha256 && source.sha256 !== args.sha256)
-        )
+        if (args.sha256 && source.sha256 !== args.sha256)
           throw new Error("PDF 版本不一致，文件已被替换，不能读取旧引用。");
         const pageNumber = args.page ?? 1;
         if (!Number.isSafeInteger(pageNumber) || pageNumber < 1)

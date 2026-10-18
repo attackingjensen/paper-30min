@@ -214,7 +214,8 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
       path.resolve("tests/fixtures/long-150.pdf"),
       path.join(root, "text/paper.pdf"),
     );
-    await expect(run({})).rejects.toThrow("版本");
+    const current = await run({});
+    expect(current.content.some((item) => item.type === "image")).toBe(true);
   } finally {
     await service.close();
     await fs.rm(directory, { recursive: true, force: true });
