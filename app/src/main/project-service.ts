@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation } from "../shared/citations.js";
 import { markdownRenderer, markCitationUses } from "../shared/markdown-references.js";
+import { annotationKey, resolveAnnotationLink, annotationHref, rewriteAnnotationLinks } from "../shared/annotation-links.js";
 import {
   prepareDocumentReferences,
   type DocumentReferenceProcessor,
@@ -811,17 +812,18 @@ export class ProjectService {
   private async textFile(
     root: string,
     relative: string,
+    budget = 2 * 1024 * 1024,
   ): Promise<MarkdownFile> {
     const file = await this.resolve(root, relative);
     const handle = await fs.open(file, "r");
     try {
       const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > 2 * 1024 * 1024)
+      if (!stat.isFile() || stat.size > budget)
         throw new Error(
           "Markdown 超过 2 MiB 编辑预算或不是文件，请在外部应用中打开。",
         );
       const bytes = await handle.readFile();
-      if (bytes.length > 2 * 1024 * 1024)
+      if (bytes.length > budget)
         throw new Error("Markdown 超过编辑预算。");
       // Keep a UTF-8 BOM in the text so saving does not silently remove it.
       const text = new TextDecoder("utf-8", {
@@ -855,20 +857,21 @@ export class ProjectService {
     text: string,
     version: string | null,
     signal?: AbortSignal,
+    budget = 2 * 1024 * 1024,
   ): Promise<MarkdownSave> {
     if (
       typeof text !== "string" ||
-      Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024 ||
+      Buffer.byteLength(text, "utf8") > budget ||
       (version !== null && !/^[a-f0-9]{64}$/.test(version))
     )
       throw new Error("正文或保存基线无效，正文上限为 2 MiB。");
     if (/\.(md|markdown)$/i.test(relative))
       text = await this.references(root, text);
-    if (Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024)
+    if (Buffer.byteLength(text, "utf8") > budget)
       throw new Error("转换后的正文超过保存预算。");
     const readCurrent = async () => {
       try {
-        return await this.textFile(root, relative);
+        return await this.textFile(root, relative, budget);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
@@ -938,6 +941,55 @@ export class ProjectService {
     }
   }
 
+  private async movedLinkEdits(root: string, from: string, to: string) {
+    const edits: { path: string; before: MarkdownFile; text: string; budget: number }[] = [];
+    const rewrite = (text: string, base: string, nextBase = base) => rewriteAnnotationLinks(text, (href) => {
+      let target;
+      try { target = resolveAnnotationLink(href, base); } catch { return href; }
+      if (target.path !== from && base === nextBase) return href;
+      if (target.path === from) target.path = to;
+      return annotationHref(target, nextBase);
+    });
+    for (const entry of (await this.snapshot(root)).files) {
+      if (entry.directory || !/\.(md|markdown)$/i.test(entry.path) || /^sources\//i.test(entry.path)) continue;
+      const before = await this.markdown(root, entry.path);
+      const text = rewrite(before.text, entry.path, entry.path === from ? to : entry.path);
+      if (text !== before.text) edits.push({ path: entry.path === from ? to : entry.path, before, text, budget: 2 * 1024 * 1024 });
+    }
+    const directory = ".pi/sessions";
+    let sessions: string[];
+    try { sessions = await fs.readdir(await this.resolve(root, directory)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return edits; throw error; }
+    for (const name of sessions) {
+      if (!name.endsWith(".jsonl")) continue;
+      const relative = `${directory}/${name}`;
+      const budget = 32 * 1024 * 1024;
+      const before = await this.textFile(root, relative, budget);
+      if (!/#annotation=/i.test(before.text)) continue;
+      let changed = false;
+      const text = before.text.split(/(?<=\n)/).map((line) => {
+        if (!line.trim()) return line;
+        const entry: unknown = JSON.parse(line);
+        const update = (value: unknown): unknown => {
+          if (typeof value === "string") {
+            const next = rewrite(value, "");
+            if (next !== value) changed = true;
+            return next;
+          }
+          if (Array.isArray(value)) return value.map(update);
+          if (value && typeof value === "object")
+            return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, update(item)]));
+          return value;
+        };
+        const rewritten = update(entry);
+        return JSON.stringify(rewritten) !== JSON.stringify(entry)
+          ? JSON.stringify(rewritten) + (line.endsWith("\n") ? "\n" : "") : line;
+      }).join("");
+      if (changed) edits.push({ path: relative, before, text, budget });
+    }
+    return edits;
+  }
+
   private async execute(
     command: Exclude<Command, { type: "create" | "cancelCreate" | "importLegacy" }>,
     signal?: AbortSignal,
@@ -954,6 +1006,47 @@ export class ProjectService {
     }
     const root = await fs.realpath(command.root);
     const m = await this.manifest(root);
+    if (command.type === "savePdf") {
+      const record = [m.paper, ...m.materials].find((r) => r.path === command.path);
+      if (!record || !/\.pdf$/i.test(command.path)) throw new Error("只能保存已登记的工程 PDF。");
+      const bytes = Buffer.from(command.bytes);
+      if (!/^[a-f0-9]{64}$/.test(command.version) || bytes.length > 128 * 1024 * 1024 ||
+          bytes.subarray(0, 5).toString() !== "%PDF-") throw new Error("PDF 保存内容或版本无效。");
+      const file = await this.resolve(root, command.path);
+      const unchanged = async () => {
+        await this.resolve(root, command.path);
+        if (await digest(file) !== command.version)
+          throw new Error("PDF 已在外部修改，批注尚未保存。请保留当前窗口并导出副本，重新打开后核对。");
+      };
+      await unchanged();
+      await fs.access(file, constants.W_OK);
+      const temporary = path.join(path.dirname(file), `.paper30min-${randomUUID()}.tmp`);
+      try {
+        const handle = await fs.open(temporary, "wx", (await fs.stat(file)).mode);
+        try { await handle.writeFile(bytes); await handle.sync(); }
+        finally { await handle.close(); }
+        await unchanged();
+        signal?.throwIfAborted();
+        await fs.rename(temporary, file);
+      } finally { await fs.rm(temporary, { force: true }); }
+      // Keep the original manifest/dictionary hashes: this trial deliberately invalidates old references.
+      return { sha256: createHash("sha256").update(bytes).digest("hex") };
+    }
+    if (command.type === "annotationUses") {
+      await this.resolve(root, command.path);
+      const uses = [];
+      const wanted = new Set(command.ids.map((id) => annotationKey({ path: command.path, id })));
+      for (const entry of (await this.snapshot(root)).files) {
+        if (entry.directory || !/\.(md|markdown)$/i.test(entry.path) || /^(text|sources)\//i.test(entry.path)) continue;
+        const file = await this.markdown(root, entry.path);
+        const tokens = markdownRenderer.parse(file.text.replace(/^\uFEFF/, ""), {});
+        const heading = tokens.findIndex((token) => token.type === "heading_open");
+        const title = heading >= 0 ? tokens[heading + 1].content : path.basename(entry.path);
+        for (const use of markCitationUses(tokens, entry.path))
+          if (wanted.has(use.id)) uses.push({ ...use, path: entry.path, title, version: file.version });
+      }
+      return uses;
+    }
     if (command.type === "createCitation" || command.type === "resolveCitation" || command.type === "citationUses") {
       let dictionary: CitationDictionary = { formatVersion: 1, projectId: m.id, citations: {} };
       try {
@@ -1155,6 +1248,7 @@ export class ProjectService {
       const parent = path.posix.dirname(command.destination);
       if (parent !== ".") await this.resolve(root, parent);
       const destination = path.join(root, command.destination);
+      const edits = await this.movedLinkEdits(root, command.path, command.destination);
       await fs.link(source, destination);
       try {
         await fs.unlink(source);
@@ -1171,11 +1265,25 @@ export class ProjectService {
       Object.keys(m.translations).forEach(
         (k) => (m.translations[k] = replace(m.translations[k])),
       );
+      const applied: { edit: typeof edits[number]; version: string }[] = [];
       try {
+        for (const edit of edits) {
+          const result = await this.saveText(root, edit.path, edit.text, edit.before.version, signal, edit.budget);
+          if (!result.saved) throw new Error(`文档已在外部变化，不能更新批注链接：${edit.path}`);
+          applied.push({ edit, version: result.file.version });
+        }
         await atomicJson(path.join(root, manifestName), m);
       } catch (error) {
+        const failures: string[] = [];
+        for (const { edit, version } of applied.reverse()) {
+          try {
+            const result = await this.saveText(root, edit.path, edit.before.text, version, undefined, edit.budget);
+            if (!result.saved) failures.push(edit.path);
+          } catch { failures.push(edit.path); }
+        }
         await fs.link(destination, source);
         await fs.unlink(destination);
+        if (failures.length) throw new Error(`移动未完成，部分文档发生外部变更，未覆盖：${failures.join("、")}`);
         throw error;
       }
     }

@@ -186,6 +186,7 @@ function guardedStream(
 export class AgentService {
   private conversations = new Map<string, Conversation>();
   private closing = false;
+  private movingFiles = new Set<string>();
   constructor(
     private publish: (state: ChatSession) => void,
     private projects: ProjectService,
@@ -193,6 +194,27 @@ export class AgentService {
   ) {}
   private key(root: string, id: string) {
     return root + "\0" + id;
+  }
+  async withFileMove<T>(root: string, operation: () => Promise<T>): Promise<T> {
+    if (this.movingFiles.has(root) || [...this.conversations.values()].some((c) => c.state.root === root && (c.state.busy || c.initializing)))
+      throw new Error("Agent 正在运行或文件正在移动，请稍后再移动，以免会话链接丢失。");
+    this.movingFiles.add(root);
+    try {
+      return await operation();
+    } finally {
+      try {
+        for (const c of this.conversations.values()) {
+          if (c.state.root !== root) continue;
+          const file = c.manager.getSessionFile();
+          if (!file || !c.manager.isPersisted()) continue;
+          c.unsubscribe?.(); c.unsubscribe = undefined;
+          c.session?.dispose(); c.session = undefined;
+          await c.network?.destroy(); c.network = undefined;
+          c.manager = SessionManager.open(file, path.dirname(file), root);
+          this.sync(c); this.emit(c);
+        }
+      } finally { this.movingFiles.delete(root); }
+    }
   }
   private emit(c: Conversation) {
     c.state.revision++;
@@ -580,6 +602,7 @@ export class AgentService {
   ): Promise<ChatSession | ChatSession[]> {
     if (this.closing) throw new Error("应用正在退出。");
     const root = command.root;
+    if (this.movingFiles.has(root)) throw new Error("工程正在移动文件，请稍后再操作会话。");
     if (command.type === "stop") {
       const c = this.conversations.get(this.key(root, command.id));
       if (!c) throw new Error("找不到此会话。");
@@ -663,7 +686,7 @@ export class AgentService {
     const reviewing = c.state.reviewBatchId && this.parsing.isReviewActive(root, c.state.reviewBatchId, c.state.id);
     const stopRevision = c.stopRevision;
     if (!reviewing) await this.parsing.requireReviewed(root);
-    if (this.closing || c.state.stopping || c.initializing || c.stopRevision !== stopRevision)
+    if (this.closing || this.movingFiles.has(root) || c.state.stopping || c.initializing || c.stopRevision !== stopRevision)
       throw new Error("会话正在准备、停止或退出，请稍后再试。");
     if (c.state.busy) {
       if (c.activeModelId !== config.selectedModelId)

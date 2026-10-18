@@ -7,6 +7,8 @@ import { markdown } from "@codemirror/lang-markdown";
 import { syntaxTree } from "@codemirror/language";
 import { markdownRenderer as renderer, markCitationUses } from "../shared/markdown-references";
 import type { CitationUse } from "../shared/citations";
+import { annotationLinkSpans, isAnnotationLink } from "../shared/annotation-links";
+import { copiedAnnotationText, setAnnotationClipboard } from "./annotation-clipboard";
 import "katex/dist/katex.min.css";
 import { isDirty, type MarkdownDraft } from "./useMarkdownDocuments";
 import "./markdown.css";
@@ -118,6 +120,25 @@ export function MarkdownDocument({
           ),
           markdown(),
           EditorView.lineWrapping,
+          EditorView.domEventHandlers({
+            paste(event, view) {
+              if (!event.clipboardData) return false;
+              try {
+                const text = copiedAnnotationText(event.clipboardData, root, draft.path);
+                if (text === null) return false;
+                event.preventDefault();
+                view.dispatch(view.state.replaceSelection(normalize(text)), { scrollIntoView: true, userEvent: "input.paste" });
+              } catch (error) { event.preventDefault(); setLinkError((error as Error).message); }
+              return true;
+            },
+            copy(event, view) {
+              const selected = view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to);
+              if (!event.clipboardData || !isAnnotationLink(selected)) return false;
+              event.preventDefault();
+              setAnnotationClipboard(event.clipboardData, selected, root, draft.path);
+              return true;
+            },
+          }),
           EditorView.contentAttributes.of({
             "aria-label": "Markdown 源码",
             spellcheck: "false",
@@ -160,12 +181,14 @@ export function MarkdownDocument({
       if (!event.ctrlKey && !event.metaKey) return null;
       const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
       if (pos === null) return null;
+      const annotation = annotationLinkSpans(view.state.doc.toString()).find((link) => pos >= link.from && pos <= link.to);
+      if (annotation) return annotation.href;
       let node = syntaxTree(view.state).resolveInner(pos, 1);
       while (node.parent && node.name !== "Link") node = node.parent;
       if (node.name !== "Link") return null;
       const url = node.getChild("URL");
       const link = url && view.state.sliceDoc(url.from, url.to);
-      return link?.startsWith("paper:") ? link : null;
+      return link && (link.startsWith("paper:") || isAnnotationLink(link)) ? link : null;
     };
     const preserveCursor = (event: MouseEvent) => {
       if (citationAt(event)) { event.preventDefault(); event.stopPropagation(); }
@@ -221,7 +244,7 @@ export function MarkdownDocument({
 
   const html = useMemo(() => {
     const tokens = renderer.parse(draft.text.replace(/^\uFEFF/, ""), {});
-    markCitationUses(tokens);
+    markCitationUses(tokens, draft.path);
     const visit = (list: typeof tokens) => {
       for (const token of list) {
         if (token.type === "image") {
@@ -261,7 +284,7 @@ export function MarkdownDocument({
       return;
     }
     if (draft.mode === "edit") { draft.mode = "read"; onChange(); return; }
-    const link = preview.current?.querySelector<HTMLElement>(`[data-citation-use="${use.id}:${use.occurrence}"]`);
+    const link = preview.current?.querySelector<HTMLElement>(`[data-citation-use="${CSS.escape(`${use.id}:${use.occurrence}`)}"]`);
     visited.current = usageTarget.nonce;
     if (!link) { setLinkError("引用使用位置已变化，请返回 PDF 刷新引用列表。"); return; }
     setLinkError("");
@@ -375,7 +398,7 @@ export function MarkdownDocument({
               event.preventDefault();
               setLinkError("");
               const href = anchor.getAttribute("href") ?? "";
-              if (href.startsWith("paper:")) { onCitation(href); return; }
+              if (href.startsWith("paper:") || isAnnotationLink(href)) { onCitation(href); return; }
               if (/^https?:\/\//i.test(href)) {
                 void window.desktop
                   .openLink(href)

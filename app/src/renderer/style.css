@@ -919,6 +919,11 @@ body:has(.notice) .settings-workspace {
 .main:has(.pdf-reader) { display: flex; flex-direction: column; overflow: hidden; }
 .main:has(.pdf-reader) > .toolbar { flex-shrink: 0; }
 .pdf-reader { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+.pdf-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.pdf-mode.switch { flex-shrink: 0; margin: 0; padding: 4px 12px; border-bottom: 1px solid #dedee3; justify-content: flex-start; }
+.annotation-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 12px; border-bottom: 1px solid #dedee3; font-size: 12px; flex-shrink: 0; }
+.annotation-actions small { overflow-wrap: anywhere; }
+.citation-uses > button { display: flex; flex-direction: column; gap: 5px; width: 100%; text-align: left; padding: 10px; margin-top: 6px; border-bottom: 1px solid #e1e1e8; overflow-wrap: anywhere; }
 .citation-return { display: flex; align-items: center; gap: 10px; padding: 6px 12px; flex-shrink: 0; border-bottom: 1px solid #e5e2ea; font-size: 12px; }
 .citation-return button { white-space: nowrap; color: #6353a1; }
 .citation-context { position: fixed; z-index: 100; background: white; border: 1px solid #dcd8e4; border-radius: 6px; padding: 5px; box-shadow: 0 3px 12px #0002; }

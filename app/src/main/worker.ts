@@ -82,6 +82,8 @@ port.on(
           { ...command.command, root: project.root },
           command.config,
         );
+      } else if (command?.type === "move") {
+        value = await agent.withFileMove(command.root, () => service.dispatch(command));
       } else value = await service.dispatch(command!);
       port.postMessage({
         id: data.id,

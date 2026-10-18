@@ -14,6 +14,27 @@ import { PNG } from "pngjs";
 import type { ParsingRun, ParsingMapping } from "../src/shared/parsing";
 import type { AgentSettings, ChatSession } from "../src/shared/contracts";
 import { seedParsing } from "./review-fixture";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import type { EmbedPdfContainer, AnnotationPlugin } from "@embedpdf/react-pdf-viewer";
+
+async function nativeAnnotations() {
+  return page.locator("embedpdf-container").evaluate(async (element) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    return registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").getAnnotations()
+      .filter((item) => item.commitState !== "deleted").map((item) => item.object);
+  });
+}
+
+async function nativeHighlight() {
+  await page.getByRole("button", { name: "批注", exact: true }).click();
+  await page.getByRole("button", { name: "高亮", exact: true }).first().click();
+  const image = await pdfImage().boundingBox();
+  await page.mouse.move(image!.x + 80, image!.y + 190);
+  await page.mouse.down();
+  await page.mouse.move(image!.x + 300, image!.y + 230, { steps: 20 });
+  await page.mouse.up();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注未保存");
+}
 
 let sandbox: string;
 let desktop: ElectronApplication;
@@ -3928,6 +3949,299 @@ test("PDF 引用复制、原生粘贴撤销、定位高亮与返回草稿", asyn
   await page.getByRole("button", { name: /研究工程/ }).click();
   await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("已定位并高亮");
+});
+
+test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", async () => {
+  test.setTimeout(90_000);
+  await create(fixture, path.join(sandbox, "projects"));
+  await expectPdfRendered();
+  await page.getByRole("button", { name: "原生批注", exact: true }).click();
+  await expectPdfRendered();
+  await page.getByRole("button", { name: "批注", exact: true }).click();
+  await page.getByRole("button", { name: "高亮", exact: true }).first().click();
+  const image = await pdfImage().boundingBox();
+  await page.mouse.move(image!.x + 80, image!.y + 190);
+  await page.mouse.down();
+  await page.mouse.move(image!.x + 300, image!.y + 230, { steps: 20 });
+  await page.mouse.up();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注未保存");
+  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
+  await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
+  await expect(page.getByRole("status")).toContainText("已复制 1 个批注链接");
+  const markdown = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  expect(markdown).toMatch(/text\/paper\.pdf#annotation=[^)]/);
+  const root = path.join(sandbox, "projects/研究工程");
+  await expect(fs.readFile(path.join(root, ".paper30min-citations.json"))).rejects.toThrow();
+  await page.getByLabel("Agent 消息").press("Control+v");
+  await expect(page.getByLabel("Agent 消息")).toHaveValue(markdown);
+  await fs.writeFile(path.join(root, "notes/批注.md"), "# 我的笔记\n\n");
+  await fs.mkdir(path.join(root, "map/deep"));
+  const deepLink = markdown.replace("text/paper.pdf", "../../text/paper.pdf");
+  await fs.writeFile(path.join(root, "map/deep/另一篇.md"), `# 第二篇\n\n${deepLink}\n\n再次使用 ${deepLink}\n`);
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "批注.md", exact: true }).click();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
+  await editor.press("Control+End");
+  await editor.press("Control+v");
+  await expect(editor).toContainText("../text/paper.pdf#annotation=");
+  await editor.press("Control+z");
+  await expect(editor).not.toContainText("#annotation=");
+  await editor.press("Control+v");
+  await page.getByRole("button", { name: "分屏", exact: true }).click();
+  await page.locator('.markdown-preview a[href*="#annotation="]').click();
+  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await expect(editor).toContainText("../text/paper.pdf#annotation=");
+  await expect(page.locator(".markdown-save-state")).toHaveText("未保存");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.locator(".markdown-save-state")).toHaveText("已保存");
+  await page.locator('.markdown-preview a[href*="#annotation="]').click();
+  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
+  const uses = page.getByRole("complementary", { name: "批注使用位置" });
+  await expect(uses.locator(":scope > button")).toHaveCount(3);
+  await uses.getByRole("button", { name: /第二篇/ }).nth(1).click();
+  await expect(page.locator(".citation-use-target")).toContainText("PDF 第 1 页批注");
+  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await expectPdfRendered();
+  await desktop.close();
+  await launch();
+  await page.getByRole("button", { name: /研究工程/ }).click();
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "批注.md", exact: true }).click();
+  await page.locator('.markdown-preview a[href*="#annotation="]').first().click();
+  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  const reopened = await nativeAnnotations();
+  expect(reopened).toHaveLength(1);
+  expect(reopened[0].id).toBe(decodeURIComponent(markdown.match(/#annotation=([^)]*)/)![1]));
+  expect("segmentRects" in reopened[0] && reopened[0].segmentRects!.length).toBeGreaterThanOrEqual(2);
+  await page.screenshot({ path: "test-results/native-annotation-reopened.png" });
+});
+
+test("原生批注在 Markdown 与已有会话中随 PDF 和文档移动更新，移除链接不删除批注", async () => {
+  test.setTimeout(120_000);
+  await create(fixture, path.join(sandbox, "projects"));
+  const root = path.join(sandbox, "projects/研究工程");
+  await expectPdfRendered();
+  await page.getByRole("button", { name: "原生批注", exact: true }).click();
+  await expectPdfRendered();
+  await nativeHighlight();
+  await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
+  await expect(page.getByRole("status")).toContainText("已复制 1 个批注链接");
+  const markdown = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  const id = decodeURIComponent(markdown.match(/#annotation=([^)]*)/)![1]);
+  const relative = markdown.replace("text/paper.pdf", "../text/paper.pdf");
+  const href = relative.match(/\]\((.*)\)$/)![1];
+  await fs.writeFile(path.join(root, "notes/甲.md"), `# 甲\n\n${relative}\n\n[再次][a\\]]\n\n[a\\]]: ${href}\n`);
+  await fs.mkdir(path.join(root, "map/deep"));
+  const sessionDir = path.join(root, ".pi/sessions");
+  await fs.mkdir(sessionDir, { recursive: true });
+  const manager = SessionManager.create(root, sessionDir);
+  manager.appendMessage({ role: "user", content: markdown, timestamp: Date.now() });
+  await page.getByRole("button", { name: "所有工程", exact: true }).click();
+  await page.getByRole("button", { name: /研究工程/ }).click();
+  const chatLink = page.locator('.chat-message a[href*="#annotation="]');
+  await expect(chatLink).toHaveCount(1);
+  await chatLink.click();
+  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await page.getByRole("button", { name: "改名或移动", exact: true }).click();
+  await page.getByLabel("工程内相对路径").fill("text/批注 甲.pdf");
+  await page.getByRole("dialog").getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "批注 甲.pdf", exact: true })).toBeVisible();
+  await expect(chatLink).toHaveAttribute("href", new RegExp("text/%E6%89%B9%E6%B3%A8%20%E7%94%B2\\.pdf#annotation="));
+  expect(await fs.readFile(manager.getSessionFile()!, "utf8")).toContain("%E6%89%B9%E6%B3%A8%20%E7%94%B2.pdf#annotation=");
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "甲.md", exact: true }).click();
+  await page.getByRole("button", { name: "改名或移动", exact: true }).click();
+  await page.getByLabel("工程内相对路径").fill("map/deep/移动.md");
+  await page.getByRole("dialog").getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "移动.md", exact: true })).toBeVisible();
+  const moved = await fs.readFile(path.join(root, "map/deep/移动.md"), "utf8");
+  expect(moved).toContain("../../text/%E6%89%B9%E6%B3%A8%20%E7%94%B2.pdf#annotation=" + id);
+  expect(moved).toContain("[a\\]]: ../../text/");
+  await expect(page.locator('.markdown-preview a[href*="#annotation="]')).toHaveCount(2);
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByRole("textbox", { name: "Markdown 源码", exact: true }).locator(".cm-line")
+    .filter({ hasText: "[再次][a\\]]" }).click({ modifiers: ["Control"] });
+  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
+  await expect(page.getByRole("complementary", { name: "批注使用位置" }).locator(":scope > button")).toHaveCount(2);
+  await fs.writeFile(path.join(root, "map/deep/移动.md"), "# 已移除链接\n");
+  await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
+  await expect(page.getByRole("complementary", { name: "批注使用位置" })).toContainText("没有文档使用此批注");
+  expect((await nativeAnnotations()).map((a) => a.id)).toContain(id);
+  await fs.rename(path.join(root, "text/批注 甲.pdf"), path.join(root, "text/external.pdf"));
+  await chatLink.click();
+  await expect(page.getByRole("alert").filter({ hasText: "批注 PDF 已缺失或移动" })).toBeVisible();
+});
+
+test("原生批注保存保护外部版本、失败现场和并发写入，旧引用仍保留哈希失效保护", async () => {
+  test.setTimeout(120_000);
+  await create(fixture, path.join(sandbox, "projects"));
+  const root = path.join(sandbox, "projects/研究工程");
+  const manifest = await readManifest(root);
+  const old = await page.evaluate(({ root, sha256 }) => window.desktop.invoke<{ id: string }>({ type: "createCitation", root, path: "text/paper.pdf",
+    input: { sha256, kind: "page", text: "", pages: [{ page: 1, width: 612, height: 792, rects: [] }] } }), { root, sha256: manifest.paper.sha256 });
+  await expectPdfRendered();
+  await page.getByRole("button", { name: "原生批注", exact: true }).click();
+  await expectPdfRendered();
+  await nativeHighlight();
+  const file = path.join(root, "text/paper.pdf");
+  const original = await fs.readFile(file);
+  const external = Buffer.concat([original, Buffer.from("\n% external edit\n")]);
+  await fs.writeFile(file, external);
+  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "批注保存失败" })).toBeVisible();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注未保存");
+  expect(await fs.readFile(file)).toEqual(external);
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await expect(page.locator(".notice.error").filter({ hasText: "批注尚未保存，请先保存" })).toBeVisible();
+  await expect(page.locator(".pdf-reader")).toBeVisible();
+  await fs.writeFile(file, original);
+  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
+  await expect(page.evaluate(({ root, id }) => window.desktop.invoke({ type: "resolveCitation", root, link: "paper://cite/" + id }), { root, id: old.id })).rejects.toThrow("替换");
+  const source = await page.evaluate((root) => window.desktop.invoke<{ bytes: Uint8Array; sha256: string }>({ type: "readPdf", root, path: "text/paper.pdf" }), root);
+  const outcomes = await page.evaluate(async ({ root, bytes, sha256 }) => {
+    const first = new Uint8Array([...Object.values(bytes), ...new TextEncoder().encode("\n% first save\n")]);
+    const second = new Uint8Array([...Object.values(bytes), ...new TextEncoder().encode("\n% second save\n")]);
+    return Promise.allSettled([first, second].map((value) => window.desktop.invoke({ type: "savePdf", root, path: "text/paper.pdf", bytes: value, version: sha256 })));
+  }, { root, ...source });
+  expect(outcomes.map((value) => value.status)).toEqual(["fulfilled", "rejected"]);
+  expect((await fs.readFile(file)).subarray(-14).toString()).toBe("\n% first save\n");
+});
+
+test("原生批注真实论文渲染、原生评论与窄窗口可操作", async () => {
+  const source = path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf");
+  await create(source, path.join(sandbox, "projects"));
+  await expectPdfRendered();
+  await page.getByRole("button", { name: "原生批注", exact: true }).click();
+  await expectPdfRendered();
+  await setPdfZoom("75");
+  await expect.poll(async () => Math.round((await pdfImage().boundingBox())!.width)).toBe(459);
+  const raster = PNG.sync.read(await pdfImage().screenshot());
+  let ink = 0;
+  for (let i = 0; i < raster.data.length; i += 4)
+    if (raster.data[i] < 140 && raster.data[i + 1] < 140 && raster.data[i + 2] < 140) ink++;
+  expect(ink).toBeGreaterThan(3000);
+  const existingIds = (await nativeAnnotations()).map((item) => item.id);
+  await page.getByRole("button", { name: "批注", exact: true }).click();
+  await page.getByRole("button", { name: "高亮", exact: true }).first().click();
+  const image = await pdfImage().boundingBox();
+  // Independent pdftotext geometry: title x=211..400, y=150..166 at 75% zoom.
+  await page.mouse.move(image!.x + 160, image!.y + 118);
+  await page.mouse.down(); await page.mouse.move(image!.x + 297, image!.y + 118, { steps: 15 }); await page.mouse.up();
+  await expect.poll(async () => (await nativeAnnotations()).filter((item) => !existingIds.includes(item.id)).length).toBe(1);
+  const id = (await nativeAnnotations()).find((item) => !existingIds.includes(item.id))!.id;
+  await page.getByRole("button", { name: "评论", exact: true }).last().click();
+  await page.getByPlaceholder("新增评论...", { exact: true }).fill("Real paper comment");
+  await page.getByPlaceholder("新增评论...", { exact: true }).press("Enter");
+  await expect.poll(async () => (await nativeAnnotations()).find((item) => item.id === id)?.contents).toBe("Real paper comment");
+  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
+  await page.screenshot({ path: "test-results/native-real-paper-desktop.png" });
+  await page.getByRole("button", { name: "收起 Agent", exact: true }).click();
+  await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
+  await page.setViewportSize({ width: 560, height: 780 });
+  await expect(page.getByRole("button", { name: "保存批注到 PDF", exact: true })).toBeVisible();
+  await expectPdfRendered();
+  await page.screenshot({ path: "test-results/native-real-paper-narrow.png" });
+});
+
+test("原生批注跨页选字产生逐页链接，下划线、重叠、评论编辑和删除保留明确身份", async () => {
+  test.setTimeout(120_000);
+  const stream = "BT /F1 14 Tf 50 190 Td (First line annotation evidence.) Tj 0 -25 Td (Second line spans native annotations.) Tj ET";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 250] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 250] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => { offsets.push(Buffer.byteLength(pdf)); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 7\n0000000000 65535 f \n${offsets.slice(1).map((offset) => String(offset).padStart(10, "0") + " 00000 n \n").join("")}trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  const source = path.join(sandbox, "cross-page.pdf");
+  await fs.writeFile(source, pdf);
+  await create(source, path.join(sandbox, "projects"));
+  await expectPdfRendered();
+  await page.getByRole("button", { name: "原生批注", exact: true }).click();
+  await expectPdfRendered();
+  await setPdfZoom("100");
+  await page.getByRole("button", { name: "批注", exact: true }).click();
+  const images = pdfViewport().locator('img[style*="pointer-events: none"]');
+  await expect(images).toHaveCount(2);
+  await expect.poll(async () => Math.round((await images.nth(0).boundingBox())!.width)).toBe(600);
+  const first = await images.nth(0).boundingBox();
+  const second = await images.nth(1).boundingBox();
+  await page.getByRole("button", { name: "下划线", exact: true }).first().click();
+  await page.mouse.move(first!.x + 60, first!.y + 55);
+  await page.mouse.down(); await page.mouse.move(first!.x + 200, first!.y + 55, { steps: 10 }); await page.mouse.up();
+  await expect.poll(async () => (await nativeAnnotations()).length).toBe(1);
+  const underline = (await nativeAnnotations())[0];
+  await page.mouse.click(first!.x + 500, first!.y + 200);
+  await page.getByRole("button", { name: "高亮", exact: true }).first().click();
+  await page.mouse.move(first!.x + 60, first!.y + 80);
+  await page.mouse.down();
+  await page.mouse.move(second!.x + 220, second!.y + 80, { steps: 30 });
+  await page.mouse.up();
+  await expect.poll(async () => (await nativeAnnotations()).length).toBe(3);
+  const annotations = (await nativeAnnotations()).filter((item) => item.id !== underline.id);
+  expect(annotations.map((a) => a.pageIndex)).toEqual([0, 1]);
+  // The SDK's public multi-selection keeps both per-page IDs, without inventing a shared one.
+  await page.locator("embedpdf-container").evaluate(async (element, ids) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").setSelection(ids);
+  }, annotations.map((a) => a.id));
+  await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
+  await expect(page.getByRole("status")).toContainText("已复制 2 个批注链接");
+  const links = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  expect(links.split("\n")).toHaveLength(2);
+  expect(links).toContain("PDF 第 1 页批注"); expect(links).toContain("PDF 第 2 页批注");
+  await page.locator("embedpdf-container").evaluate(async (element, target) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    const api = registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading");
+    api.selectAnnotation(target.pageIndex, target.id);
+    api.updateAnnotation(target.pageIndex, target.id, { contents: "A durable comment", strokeColor: "#ff0000" });
+  }, annotations[0]);
+  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
+  await page.locator("embedpdf-container").evaluate(async (element, target) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading")
+      .updateAnnotation(0, target.id, { rect: { ...target.rect, origin: { ...target.rect.origin, y: target.rect.origin.y + 25 } },
+        segmentRects: (target as { segmentRects: typeof target.rect[] }).segmentRects.map((rect) => ({ ...rect, origin: { ...rect.origin, y: rect.origin.y + 25 } })) });
+  }, underline);
+  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
+  const root = path.join(sandbox, "projects/研究工程");
+  await fs.writeFile(path.join(root, "notes/跨页.md"), links.replaceAll("text/paper.pdf", "../text/paper.pdf"));
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "跨页.md", exact: true }).click();
+  await page.locator('.markdown-preview a[href*="#annotation="]').nth(0).click();
+  await expect(page.getByRole("status")).toContainText("第 1 页");
+  expect((await nativeAnnotations()).find((a) => a.id === annotations[0].id)?.contents).toBe("A durable comment");
+  expect((await nativeAnnotations()).find((a) => a.id === annotations[0].id)).toMatchObject({ strokeColor: "#ff0000" });
+  await page.getByRole("button", { name: "删除选中的批注", exact: true }).click();
+  await page.getByRole("button", { name: "批注", exact: true }).click();
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect.poll(async () => (await nativeAnnotations()).map((item) => item.id)).toContain(annotations[0].id);
+  await page.getByRole("button", { name: "恢复", exact: true }).click();
+  await expect.poll(async () => (await nativeAnnotations()).map((item) => item.id)).not.toContain(annotations[0].id);
+  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
+  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
+  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await page.locator('.markdown-preview a[href*="#annotation="]').nth(0).click();
+  await expect(page.getByRole("status")).toContainText("找不到目标批注");
+  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await page.locator('.markdown-preview a[href*="#annotation="]').nth(1).click();
+  await expect(page.getByRole("status")).toContainText("第 2 页");
+  await page.screenshot({ path: "test-results/native-annotation-cross-page.png" });
 });
 
 test("文字多行引用保留原句与多个区域，整页引用不伪装精确高亮", async () => {

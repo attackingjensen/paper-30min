@@ -40,6 +40,26 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。保存使用 Ctrl+S 或保存按钮，未保存的编辑在标签和设置往返中保留。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析生成可编辑正文，Agent 可逐页核对并记录进度，正式启动页由 STE-92 承接。
 
+## 原生批注试用（STE-101）
+
+在 `codex/annotation-phase1` 工作树构建后，以独立配置启动：
+
+```powershell
+cd app
+npm run build
+$env:PAPER30MIN_PROFILE = Join-Path $PWD '../.orca/annotation-trial-profile'
+npm start
+Remove-Item Env:PAPER30MIN_PROFILE
+```
+
+对照使用 `codex/v2.0.0`，两边分别打开独立的工程副本。复制工程时包含隐藏文件；新建工程也可分别导入同一份原 PDF。不要让两边打开同一工程目录。试用不代表采纳新架构，旧引用字典、链接、解析块定位及 Viewer 定制仍保留。
+
+PDF 默认进入「旧引用」模式；切到「原生批注」后，可在未解析 PDF 上使用 EmbedPDF 的高亮、下划线和评论工具。点击「保存批注到 PDF」才写回工程文件；「复制批注链接」会先保存。跨页选区产生逐页批注，选中多个批注时复制多条带页码的链接。颜色和评论修改沿用原批注 ID。
+
+链接为 `相对路径.pdf#annotation=<id>`，Markdown 相对所在文档，对话相对工程根目录；应用内复制、粘贴会换算路径基准。点击链接定位并选中批注，可返回来源；选中批注后点击搜索图标，按需扫描成果 Markdown 的全部使用位置。列表不包含 `text/`、`sources/` 或聊天记录，不新增持久化映射表。应用内移动 PDF 或 Markdown 会更新文档与已有会话链接，需先保存 Markdown 草稿并等待 Agent 空闲。外部移动或删除会明确报错。
+
+保存批注会改变 PDF 字节和 SHA-256。本阶段保留清单、旧引用字典和解析记录的原哈希，因此保存后的旧引用、旧解析及审阅版本校验可能失效，不能用试用副本继续原工程的旧流程；原对照工程不受影响。真实 PDF 替换检查仍启用。保存失败时保留内存批注，阻止离开阅读器；可从 Viewer 文件菜单导出副本，确认下载后再重新载入磁盘文件。导出不等于已保存到工程。
+
 ## 百度解析
 
 在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token，再从工程「论文解析」选择已登记 PDF 并确认上传。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置。每批次只生成一份完整 Markdown：`text/<batchId>/paper.md`，图片就地出现，段尾「原文」链接回查 PDF；恢复状态、原始返回和块映射保存在隐藏目录 `.paper30min/parsing/<batchId>/`。已有旧布局继续原位读取，不删除旧成果。结果可离线重开和整体搬迁。
@@ -96,7 +116,7 @@ Remove-Item Env:PAPER30MIN_REAL_MODEL
 
 `read_pdf` 的真实视觉测试支持通过 `PAPER30MIN_REAL_PROFILE` 指定包含 Electron 加密配置 `agent-settings.json` 及其配套 `Local State` 的本机目录，复制到隔离测试目录并重新启动后使用，不修改原配置。也可通过 `PAPER30MIN_REAL_CONFIG` 指定本机 JSON 文件（字段为 `baseUrl`、`model`、`apiKey`），同时指定时优先使用 JSON。用 `PAPER30MIN_REAL_SCAN` 指定扫描 PDF，并设置 `PAPER30MIN_REAL_MODEL=1` 后运行 `npx playwright test -g 'read_pdf 真实视觉模型'`。该测试使用 high 思考强度与视觉输入，产物不包含密钥。明文凭据文件应放在仓库外，完成后删除；临时工程与隔离配置仍由测试清理。只有显式指定 `PAPER30MIN_REAL_SAVE_PROFILE` 时才把 Electron 加密后的配置及配套 `Local State` 复制到该目录。
 
-Viewer 的 WASM 和中文预置印章使用本地资源，界面字体使用系统字体，不加载默认远端字体。批注编辑与导出使用 Viewer 原生行为，尚未接入工程内的自动保存或 Agent 取证流程。
+Viewer 的 WASM 和中文预置印章使用本地资源，界面字体使用系统字体，不加载默认远端字体。原生批注试用提供显式工程保存，尚未接入 Agent 自动创建批注或原文取证流程。
 
 真实模型验证仅覆盖实际使用的供应商、模型与场景，不代表所有协议或图文、工具能力都已验证；公式文字仍需对照原页核验。当前检查不覆盖安装包、v1 升级或持续内存表现；触控板的实际手感需在设备上体验。旧客户端测试和当前不可用的 GitHub CI 不构成新版验证证据。
 

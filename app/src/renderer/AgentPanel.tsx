@@ -22,6 +22,8 @@ import {
   Play,
 } from "lucide-react";
 import { AgentMessage } from "./AgentMessage";
+import { copiedAnnotationText, setAnnotationClipboard } from "./annotation-clipboard";
+import { isAnnotationLink } from "../shared/annotation-links";
 import "./agent.css";
 import type {
   AgentCommand,
@@ -370,6 +372,24 @@ export function AgentPanel({
         </div>
         <div className="composer">
           <textarea
+            onPaste={(event) => {
+              try {
+                const pasted = copiedAnnotationText(event.clipboardData, root, "");
+                if (pasted === null) return;
+                event.preventDefault();
+                const input = event.currentTarget;
+                const start = input.selectionStart;
+                setText(input.value.slice(0, start) + pasted + input.value.slice(input.selectionEnd));
+                requestAnimationFrame(() => input.setSelectionRange(start + pasted.length, start + pasted.length));
+              } catch (error) { event.preventDefault(); setError((error as Error).message); }
+            }}
+            onCopy={(event) => {
+              const input = event.currentTarget;
+              const selected = input.value.slice(input.selectionStart, input.selectionEnd);
+              if (!isAnnotationLink(selected)) return;
+              event.preventDefault();
+              setAnnotationClipboard(event.clipboardData, selected, root, "");
+            }}
             aria-label="Agent 消息"
             placeholder="有什么想聊的？"
             title="Enter 发送，Ctrl+Enter 换行"
