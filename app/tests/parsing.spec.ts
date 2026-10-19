@@ -24,6 +24,7 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
   );
   let submits = 0;
   let downloads = 0;
+  let beforeDownload: (() => Promise<void>) | undefined;
   const rows = (
     await fs.readFile(
       "../legacy/v1/app/src-tauri/tests/fixtures/aistudio/1512.03385.jsonl",
@@ -74,7 +75,10 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
       if (downloads === 1) {
         response.writeHead(503);
         response.end();
-      } else response.end(raw);
+      } else {
+        await beforeDownload?.();
+        response.end(raw);
+      }
     }
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -95,6 +99,22 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
       },
     })) as Project;
     const { root } = project;
+    const saveAnnotationVersion = async () => {
+      const source = await projects.dispatch({ type: "readPdf", root, path: project.manifest.paper.path }) as { bytes: Uint8Array; sha256: string };
+      await projects.dispatch({ type: "savePdf", root, path: project.manifest.paper.path, version: source.sha256,
+        bytes: new Uint8Array([...source.bytes, ...Buffer.from("\n% annotation save\n")]) });
+    };
+    let saveBeforeRead = false;
+    const dispatch = projects.dispatch.bind(projects);
+    projects.dispatch = async (command, signal) => {
+      // Place a real save between the parser's manifest snapshot and final PDF read.
+      if (command.type === "readPdf" && saveBeforeRead) {
+        saveBeforeRead = false;
+        await saveAnnotationVersion();
+      }
+      return dispatch(command, signal);
+    };
+    await saveAnnotationVersion();
     const rejected = (await parsing.dispatch(
       { type: "start", root, documentId: project.manifest.paper.id },
       config,
@@ -115,6 +135,12 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     )) as ParsingRun;
     await expect.poll(async () => (await status()).phase).toBe("failed");
     expect((await status()).jobId).toBe("job-1");
+    await saveAnnotationVersion();
+    beforeDownload = async () => {
+      beforeDownload = undefined;
+      await saveAnnotationVersion();
+      saveBeforeRead = true;
+    };
     await parsing.dispatch(
       { type: "resume", root, batchId: run.batchId },
       config,
@@ -122,6 +148,7 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     await expect
       .poll(async () => (await status()).phase, { timeout: 60_000 })
       .toBe("candidate");
+    expect(saveBeforeRead).toBe(false);
     expect(submits).toBe(2);
     const final = await status();
     expect(final.pageCount).toBe(12);

@@ -171,7 +171,8 @@ function parseManifest(value: unknown): Manifest {
       !r ||
       typeof r.id !== "string" ||
       !r.id ||
-      !/^[a-f0-9]{64}$/.test(r.sha256)
+      !/^[a-f0-9]{64}$/.test(r.sha256) ||
+      (r.annotationSha256 !== undefined && !/^[a-f0-9]{64}$/.test(r.annotationSha256))
     )
       throw new Error("工程文档身份无效。");
     relativePath(r.path);
@@ -1030,7 +1031,12 @@ export class ProjectService {
         await fs.rename(temporary, file);
       } finally { await fs.rm(temporary, { force: true }); }
       // Preserve provenance hashes; citation navigation follows document identity, not byte equality.
-      return { sha256: createHash("sha256").update(bytes).digest("hex") };
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      if (command.version === (record.annotationSha256 ?? record.sha256)) {
+        record.annotationSha256 = sha256;
+        await atomicJson(path.join(root, manifestName), m);
+      }
+      return { sha256 };
     }
     if (command.type === "createCitation" || command.type === "resolveCitation" || command.type === "pdfUses") {
       let dictionary: CitationDictionary = { formatVersion: 1, projectId: m.id, citations: {} };
@@ -1101,8 +1107,12 @@ export class ProjectService {
         throw error;
       }
       if (!/\.pdf$/i.test(file)) throw new Error("引用目标必须是 PDF。");
-      if (!existing && await digest(file, signal) !== input.sha256)
-        throw new Error("PDF 已被替换或版本无法确认，请重新选择后创建引用。");
+      if (!existing) {
+        const current = await digest(file, signal);
+        const fromOriginal = input.sha256 === record.sha256 && current === record.annotationSha256;
+        if (current !== input.sha256 && !fromOriginal)
+          throw new Error("PDF 已被替换或版本无法确认，请重新选择后创建引用。");
+      }
       if (existing) return { citation: existing, path: record.path };
       // Compare evidence, not object serialization or approximate geometry. Reuse
       // happens inside the project queue and only after verifying the current PDF.
@@ -1197,6 +1207,7 @@ export class ProjectService {
         return {
           bytes: new Uint8Array(bytes),
           sha256: createHash("sha256").update(bytes).digest("hex"),
+          document: [m.paper, ...m.materials].find((item) => item.path === command.path),
         };
       } finally {
         await handle.close();

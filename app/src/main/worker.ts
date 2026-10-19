@@ -5,6 +5,8 @@ import type { AgentCommand, Command } from "../shared/contracts.js";
 import type { ParsingCommand } from "../shared/parsing.js";
 import type { ParsingConfig } from "./parsing-settings.js";
 import { ParsingService } from "./parsing-service.js";
+import { ReferenceService } from "./reference-service.js";
+import type { AnnotationWrite } from "../shared/references.js";
 
 const port = process.parentPort!;
 let nextId = 0;
@@ -22,10 +24,24 @@ const service = new ProjectService(
     }),
 );
 const parsing = new ParsingService(service);
+const annotationRequests = new Map<number, { resolve: (value: { sha256: string } | null) => void; reject: (error: Error) => void }>();
+const references = new ReferenceService(service, (request: AnnotationWrite, signal) => new Promise((resolve, reject) => {
+  signal?.throwIfAborted();
+  const id = ++nextId;
+  const abort = () => port.postMessage({ annotationCancel: id });
+  signal?.addEventListener("abort", abort, { once: true });
+  const cleanup = () => signal?.removeEventListener("abort", abort);
+  annotationRequests.set(id, {
+    resolve: (value) => { cleanup(); resolve(value); },
+    reject: (error) => { cleanup(); reject(error); },
+  });
+  port.postMessage({ annotationWrite: { id, request } });
+}));
 const agent = new AgentService(
   (state) => port.postMessage({ agentState: state }),
   service,
   parsing,
+  references,
 );
 
 port.on(
@@ -42,8 +58,17 @@ port.on(
       shutdown?: boolean;
       trashResult?: boolean;
       error?: string;
+      annotationResult?: boolean;
+      value?: { sha256: string } | null;
     };
   }) => {
+    if (data.annotationResult) {
+      const request = annotationRequests.get(data.id);
+      annotationRequests.delete(data.id);
+      if (data.error) request?.reject(new Error(data.error));
+      else request?.resolve(data.value ?? null);
+      return;
+    }
     if (data.trashResult !== undefined) {
       const request = trashRequests.get(data.id);
       trashRequests.delete(data.id);
@@ -82,6 +107,8 @@ port.on(
           { ...command.command, root: project.root },
           command.config,
         );
+      } else if (command?.type === "resolveReference") {
+        value = await references.resolve(command.root, command);
       } else if (command?.type === "move") {
         value = await agent.withFileMove(command.root, () => service.dispatch(command));
       } else value = await service.dispatch(command!);

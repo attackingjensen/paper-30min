@@ -9,7 +9,7 @@ import {
   ProxyAgent,
   type Dispatcher,
 } from "undici";
-import type { PdfSource, Project } from "../shared/contracts.js";
+import type { DocumentRecord, PdfSource, Project } from "../shared/contracts.js";
 import type {
   ParsingCommand,
   ParsingRun,
@@ -55,15 +55,23 @@ export class ParsingService {
     return result;
   }
 
+  private async readSource(root: string, expected: DocumentRecord) {
+    const source = await this.projects.dispatch({ type: "readPdf", root, path: expected.path }) as PdfSource;
+    const document = source.document;
+    if (!document || document.id !== expected.id || document.sha256 !== expected.sha256 ||
+        source.sha256 !== (document.annotationSha256 ?? document.sha256))
+      throw new Error("PDF 已被替换或版本无法确认，解析及审阅已失效。");
+    return source;
+  }
+
   private async reviewRun(root: string, batchId: string) {
     const project = await this.projects.dispatch({ type: "refresh", root }) as Project;
     const run = (await this.runs(project)).find((item) => item.batchId === batchId);
     if (!run || run.phase !== "candidate") throw new Error("此批次尚无完整解析正文。");
     const document = [project.manifest.paper, ...project.manifest.materials].find((item) => item.id === run.document.id);
     if (!document || document.sha256 !== run.document.sha256) throw new Error("PDF 身份或版本已变化，不能继续审阅。");
-    const source = await this.projects.dispatch({ type: "readPdf", root, path: document.path }) as PdfSource;
-    if (source.sha256 !== run.document.sha256) throw new Error("PDF 已被替换，解析及审阅已失效。");
-    run.document = document;
+    const source = await this.readSource(root, document);
+    run.document = source.document!;
     await this.verifyCandidate(root, run);
     return run;
   }
@@ -296,13 +304,8 @@ export class ParsingService {
     if (!currentDocument)
       throw new Error("PDF 身份或版本已变化，不能继续此解析批次。");
     run.document = currentDocument;
-    const source = (await this.projects.dispatch({
-      type: "readPdf",
-      root,
-      path: run.document.path,
-    })) as PdfSource;
-    if (source.sha256 !== run.document.sha256)
-      throw new Error("PDF 身份或版本已变化，不能继续此解析批次。");
+    const source = await this.readSource(root, run.document);
+    run.document = source.document!;
     if (source.bytes.byteLength > 50 * 1024 * 1024)
       throw new Error("本地上传 PDF 上限为 50 MiB。");
     run.pageCount = await checkParsingPdf(source);
@@ -569,13 +572,7 @@ export class ParsingService {
         },
       });
       signal.throwIfAborted();
-      const current = (await this.projects.dispatch({
-        type: "readPdf",
-        root,
-        path: run.document.path,
-      })) as PdfSource;
-      if (current.sha256 !== run.document.sha256)
-        throw new Error("PDF 已变化，候选不能提交为完整结果。");
+      await this.readSource(root, run.document);
       await this.projects.writeParsingFile(
         root,
         run.batchId,

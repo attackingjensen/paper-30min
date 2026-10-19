@@ -12,8 +12,8 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import { PNG } from "pngjs";
 import type { ParsingRun, ParsingMapping } from "../src/shared/parsing";
-import type { AgentSettings, ChatSession } from "../src/shared/contracts";
-import { seedParsing } from "./review-fixture";
+import type { AgentSettings, ChatSession, PdfSource } from "../src/shared/contracts";
+import { seedParsing, seedBlockParsing } from "./review-fixture";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { EmbedPdfContainer, AnnotationPlugin } from "@embedpdf/react-pdf-viewer";
 
@@ -303,9 +303,9 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     await page.getByRole("button", { name: "恢复解析" }).click();
     await expect(page.getByRole("status")).toContainText("处理失败");
     await page.getByRole("button", { name: "恢复解析" }).click();
-    await expect(page.getByRole("status")).toContainText("待 Agent 审阅", {
-      timeout: 45_000,
-    });
+    await expect.poll(async () => (await page.evaluate(root => window.desktop.parsing<ParsingRun[]>({ type: "status", root }), root))[0],
+      { timeout: 45_000 }).toMatchObject({ phase: "candidate" });
+    await expect(page.getByRole("status")).toContainText("待 Agent 审阅");
     await expect(page.getByText("desktop-1", { exact: true })).not.toBeVisible();
     await page.getByText("任务详情", { exact: true }).click();
     await expect(page.getByText("desktop-1", { exact: true })).toBeVisible();
@@ -1669,11 +1669,13 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
     expect(payload.tools.map((tool: any) => tool.function.name).sort()).toEqual(
       [
         "bash",
+        "create_annotation",
         "edit",
         "fetch_content",
         "get_search_content",
         "read",
         "read_pdf",
+        "resolve_reference",
         "web_search",
         "write",
       ],
@@ -1940,6 +1942,187 @@ test("模型含凭据的流中止或异常后，终态与持久会话仍脱敏",
   }
 });
 
+test("Agent 引用工具复用块链接写笔记，保存阅读器待存批注，重开后同一批注可定位", async () => {
+  test.setTimeout(150000);
+  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
+    path.join(sandbox, "projects"), "引用工具工程");
+  const root = path.join(sandbox, "projects", "引用工具工程");
+  const { run, link } = await seedBlockParsing(root);
+  await expectPdfRendered();
+  await page.locator("embedpdf-container").evaluate(async (element) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").createAnnotation(0,
+      { id: "reader-existing", type: 1, pageIndex: 0, contents: "原有用户评论",
+        rect: { origin: { x: 80, y: 250 }, size: { width: 24, height: 24 } } });
+  });
+  let step = 0;
+  let created: { link: string; annotationId: string };
+  const outputs: any[] = [];
+  const server = createServer(async (request, response) => {
+    let body = ""; for await (const part of request) body += part;
+    const payload = JSON.parse(body);
+    const last = payload.messages.at(-1);
+    if (last?.role === "tool") {
+      outputs.push(last);
+      if (step === 5) created = JSON.parse(last.content);
+    }
+    const actions = [
+      { name: "read", args: { path: run.candidate, offset: 3, limit: 3 } },
+      { name: "bash", args: { command: "Get-ChildItem text -Recurse -Filter *.md | Select-String 'dominant' -Context 0,2" } },
+      { name: "resolve_reference", args: { link } },
+      { name: "write", args: { path: "notes/Agent笔记.md", content: `# 研究笔记\n\n模型采用编码器和解码器。[原文](${link})\n` } },
+      { name: "create_annotation", args: { link, comment: "Agent 块级评论：请区分编码器和解码器。" } },
+      { name: "resolve_reference", args: { link: created?.link } },
+      { name: "resolve_reference", args: { link: "paper://cite/" + "0".repeat(32) } },
+      { name: "create_annotation", args: { link: created?.link, comment: "不允许把批注当解析块" } },
+      { name: "read_pdf", args: { path: "text/paper.pdf", page: 1 } },
+    ];
+    if (step === 4) {
+      await page.locator("embedpdf-container").evaluate(async (element) => {
+        const registry = await (element as EmbedPdfContainer).registry;
+        registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading")
+          .updateAnnotation(0, "reader-existing", { contents: "用户待保存评论也要保留" });
+      });
+    }
+    const action = actions[step++];
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const delta = action ? { tool_calls: [{ index: 0, id: `references-${step}`, type: "function",
+      function: { name: action.name, arguments: JSON.stringify(action.args) } }] } : { content: `已写入笔记。[原文](${link})` };
+    for (const [value, finish] of [[delta, null], [{}, action ? "tool_calls" : "stop"]])
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await page.evaluate(async (endpoint) => {
+      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+      settings.services[0].baseUrl = endpoint;
+      settings.models[0].model = "reference-model";
+      settings.models[0].vision = true;
+      await window.desktop.agent({ type: "saveSettings", settings, apiKey: "controlled-reference-key" });
+    }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+    await page.getByLabel("Agent 消息").fill("读搜解析稿，解释后写笔记，展开引用，创建评论并看原页。");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 120000 });
+    expect(created!.link).toContain("#annotation=");
+    expect(outputs.some((item) => String(item.content).includes("找不到此引用"))).toBe(true);
+    expect(outputs.some((item) => String(item.content).includes("定位不足"))).toBe(true);
+    expect(await fs.readFile(path.join(root, "notes/Agent笔记.md"), "utf8")).toContain(link);
+    const invoke = (href: string) => page.evaluate(({ root, link }) => window.desktop.invoke<any>({ type: "resolveReference", root, link }), { root, link: href });
+    expect((await invoke(link)).excerptSource).toBe("parser");
+    expect((await invoke("text/paper.pdf#annotation=reader-existing")).comment).toBe("用户待保存评论也要保留");
+    expect((await invoke(created!.link)).comment).toContain("Agent 块级评论");
+    expect(await page.evaluate((root) => window.desktop.parsing({ type: "readiness", root }), root)).toMatchObject({ ready: true });
+    await desktop.close(); await launch();
+    await page.getByRole("button", { name: /引用工具工程/ }).click();
+    await expectPdfRendered();
+    await expect.poll(async () => (await nativeAnnotations()).map((item) => item.id)).toContain(created!.annotationId);
+    expect((await invoke(created!.link)).comment).toContain("Agent 块级评论");
+    await page.getByRole("button", { name: "新会话", exact: true }).click();
+    // Reuse the returned ordinary annotation link through the existing document navigation.
+    await fs.writeFile(path.join(root, "notes/评论链接.md"), `[评论](../${created!.link})`);
+    await page.getByRole("button", { name: "笔记", exact: true }).click();
+    await expect(page.getByRole("button", { name: "评论链接.md", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "评论链接.md", exact: true }).click();
+    await page.locator('.markdown-preview a[href*="#annotation="]').click();
+    await expectAnnotationSelected(created!.annotationId);
+    await page.screenshot({ path: "test-results/ste96-reference-tools.png" });
+    expect(await page.evaluate((root) => window.desktop.parsing({ type: "readiness", root }), root)).toMatchObject({ ready: true });
+    expect(errors).toEqual([]);
+  } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
+});
+
+test("Agent 创建评论遇到外部 PDF 修改明确失败并保留阅读器待存评论", async () => {
+  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
+    path.join(sandbox, "projects"), "评论冲突工程");
+  const root = path.join(sandbox, "projects", "评论冲突工程");
+  const { link } = await seedBlockParsing(root);
+  await expectPdfRendered();
+  let step = 0;
+  let external: Buffer;
+  const server = createServer(async (request, response) => {
+    for await (const _part of request) { /* Consume the model request. */ }
+    if (step === 0) {
+      await page.locator("embedpdf-container").evaluate(async (element) => {
+        const registry = await (element as EmbedPdfContainer).registry;
+        registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").createAnnotation(0,
+          { id: "pending-conflict", type: 1, pageIndex: 0, contents: "保留用户内存评论",
+            rect: { origin: { x: 80, y: 250 }, size: { width: 24, height: 24 } } });
+      });
+      await fs.appendFile(path.join(root, "text/paper.pdf"), "\n% externally changed\n");
+      external = await fs.readFile(path.join(root, "text/paper.pdf"));
+    }
+    const delta = step++ === 0 ? { tool_calls: [{ index: 0, id: "annotation-conflict", type: "function",
+      function: { name: "create_annotation", arguments: JSON.stringify({ link, comment: "不能覆盖外部文件" }) } }] } : { content: "保存失败，未报告成功。" };
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const [value, finish] of [[delta, null], [{}, step === 1 ? "tool_calls" : "stop"]])
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await page.evaluate(async (endpoint) => {
+      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+      settings.services[0].baseUrl = endpoint; settings.models[0].model = "conflict-model";
+      await window.desktop.agent({ type: "saveSettings", settings, apiKey: "controlled-conflict-key" });
+    }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+    await page.getByLabel("Agent 消息").fill("给原文块创建评论。");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    const card = page.locator('[data-tool="create_annotation"]');
+    await expect(card).toContainText("失败");
+    await card.locator("summary").click();
+    await expect(card).toContainText(/版本|外部修改/);
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(external!);
+    expect((await nativeAnnotations()).find((item) => item.id === "pending-conflict")?.contents).toBe("保留用户内存评论");
+    expect(await page.evaluate((root) => window.desktop.parsing({ type: "readiness", root }), root)).toMatchObject({ ready: false });
+  } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
+});
+
+test("引用工具真实模型读搜、解释、按要求写笔记和创建评论，普通问答不写成果", async () => {
+  test.setTimeout(300000);
+  test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || !process.env.PAPER30MIN_REAL_PROFILE,
+    "需显式提供真实模型加密配置目录；关闭 trace。");
+  await desktop.close();
+  for (const file of ["agent-settings.json", "Local State"])
+    await fs.copyFile(path.join(process.env.PAPER30MIN_REAL_PROFILE!, file), path.join(sandbox, "profile", file));
+  await launch();
+  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
+    path.join(sandbox, "projects"), "真实引用工程");
+  const root = path.join(sandbox, "projects", "真实引用工程");
+  const { run, link } = await seedBlockParsing(root);
+  await page.evaluate(async () => {
+    const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+    const selected = settings.models.find((model) => model.id === settings.selectedModelId)!;
+    selected.vision = true; selected.thinking = "high";
+    await window.desktop.agent({ type: "saveSettings", settings });
+  });
+  const send = async (text: string) => {
+    await page.getByLabel("Agent 消息").fill(text);
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 135000 });
+    await expect(page.locator(".agent-error")).toHaveCount(0);
+    return page.evaluate((root) => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
+  };
+  await send(`请用 read 分段读取 ${run.candidate}，用 bash 搜索其中 dominant 段落并查看相邻引用链接，` +
+    "用 resolve_reference 展开该链接，再按需 read_pdf 核对第1页。简要解释这段话，只回复并给出已有原文链接。");
+  expect((await fs.readdir(path.join(root, "notes"))).filter((name) => name.endsWith(".md"))).toEqual([]);
+  const states = await send("现在请将刚才解释写入 notes/研究笔记.md，直接复用原文块链接。" +
+    "再在该块创建一条评论，讨论编码器和解码器的职责，使用 resolve_reference 读回保存的批注，回复批注链接。");
+  const calls = states.flatMap((state) => state.messages.flatMap((message) => message.tools ?? []));
+  for (const name of ["read", "bash", "resolve_reference", "read_pdf", "write", "create_annotation"])
+    expect(calls.some((tool) => tool.name === name && tool.status === "done")).toBe(true);
+  const created = calls.filter((tool) => tool.name === "create_annotation" && tool.status === "done").at(-1)!;
+  const annotation = JSON.parse(created.output!);
+  const resolved = await page.evaluate(({ root, link }) => window.desktop.invoke<any>({ type: "resolveReference", root, link }), { root, link: annotation.link });
+  expect(resolved.comment.length).toBeGreaterThan(0);
+  expect(await fs.readFile(path.join(root, "notes/研究笔记.md"), "utf8")).toContain(link);
+  await page.screenshot({ path: "test-results/real-model/ste96-reference-tools.png" });
+  await fs.writeFile("test-results/real-model/ste96-evidence.json", JSON.stringify({ states, resolved }, null, 2));
+});
+
 test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页并回查", async () => {
   test.setTimeout(240000);
   test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || (!process.env.PAPER30MIN_REAL_CONFIG && !process.env.PAPER30MIN_REAL_PROFILE),
@@ -2031,6 +2214,9 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
   let overflow = false;
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
+  let waitingForSave = false;
+  let resumeAfterSave: () => void = () => {};
+  const annotationSaved = new Promise<void>((resolve) => { resumeAfterSave = resolve; });
   let batch: ParsingRun;
   const server = createServer(async (request, response) => {
     let raw = "";
@@ -2056,6 +2242,7 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
       if (step === 0) prompts.push(text);
       let call: { name: string; args: any } | undefined;
       if (session === 1) {
+        if (step === 2) { waitingForSave = true; await annotationSaved; }
         call = [
           { name: "complete_review_page", args: { page: 2 } },
           { name: "read", args: { path: batch.candidate } },
@@ -2098,6 +2285,15 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
     }, { root, endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` });
     await page.getByRole("button", { name: "论文解析", exact: true }).first().click();
     await page.getByRole("button", { name: "开始审阅", exact: true }).click();
+    await expect.poll(() => waitingForSave, { timeout: 45000 }).toBe(true);
+    await page.evaluate(async (root) => {
+      const source = await window.desktop.invoke<PdfSource>({ type: "readPdf", root, path: "text/paper.pdf" });
+      const suffix = new TextEncoder().encode("\n% annotation save during review\n");
+      const bytes = new Uint8Array(source.bytes.length + suffix.length);
+      bytes.set(source.bytes); bytes.set(suffix, source.bytes.length);
+      await window.desktop.invoke({ type: "savePdf", root, path: "text/paper.pdf", version: source.sha256, bytes });
+    }, root);
+    resumeAfterSave();
     await expect.poll(() => holding, { timeout: 45000 }).toBe(true);
     const progress = async () => JSON.parse(await fs.readFile(path.join(root, ".paper30min/parsing", batch.batchId, "run.json"), "utf8")) as ParsingRun;
     expect((await progress()).reviewedThroughPage).toBe(1);
@@ -2140,6 +2336,7 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
     await page.screenshot({ path: "test-results/ste83-reviewed-narrow.png", animations: "disabled" });
     expect(errors).toEqual([]);
   } finally {
+    resumeAfterSave();
     release();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

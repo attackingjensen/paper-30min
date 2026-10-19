@@ -4,6 +4,34 @@ import { createHash } from "node:crypto";
 import type { Manifest } from "../src/shared/contracts";
 import type { ParsingRun } from "../src/shared/parsing";
 import { checkParsingPdf } from "../src/main/baidu-candidate";
+import { ProjectService } from "../src/main/project-service";
+import type { Citation } from "../src/shared/citations";
+
+// A short transcribed block from the Attention Is All You Need fixture. Register
+// ordinary parser output, then exercise only production tool/desktop entry points.
+export async function seedBlockParsing(root: string) {
+  const run = await seedParsing(root);
+  const projects = new ProjectService(path.join(root, "tmp/test-preferences.json"), async () => {});
+  const excerpt = "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder.";
+  try {
+    const citation = await projects.dispatch({ type: "createCitation", root, path: run.document.path,
+      input: { sha256: run.document.sha256, kind: "region", text: "", pages: [
+        { page: 1, width: 612, height: 792, rects: [{ origin: { x: 144, y: 414 }, size: { width: 325, height: 18 } }] },
+      ] } }) as Citation;
+    const mapping = Buffer.from(JSON.stringify({ formatVersion: 1, projectId: run.projectId, batchId: run.batchId,
+      document: run.document, rawSha256: run.rawSha256, images: [], blocks: [
+        { id: `${run.batchId}:p1:b0`, label: "text", text: excerpt, vendorIds: [0], citation, images: [], limitation: "" },
+      ] }));
+    const link = `paper://cite/${citation.id}`;
+    const body = Buffer.from(`# Attention Is All You Need\n\n${excerpt}\n\n[原文](${link})\n`);
+    run.mappingSha256 = createHash("sha256").update(mapping).digest("hex");
+    run.markdownSha256 = createHash("sha256").update(body).digest("hex");
+    await fs.writeFile(path.join(root, ".paper30min/parsing", run.batchId, "mapping.json"), mapping);
+    await fs.writeFile(path.join(root, ".paper30min/parsing", run.batchId, "run.json"), JSON.stringify(run));
+    await fs.writeFile(path.join(root, run.candidate!), body);
+    return { run, link, excerpt };
+  } finally { await projects.close(); }
+}
 
 // Historical Agent tests start after parsing. Seed that precondition as ordinary
 // project files; the production readiness check still runs through IPC.

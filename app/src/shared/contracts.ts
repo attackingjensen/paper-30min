@@ -1,10 +1,13 @@
 import type { CitationInput } from "./citations.js";
+import type { AnnotationWrite, ReferenceRequest } from "./references.js";
 import type { ParsingCommand } from "./parsing.js";
 
 export interface DocumentRecord {
   id: string;
   path: string;
   sha256: string;
+  /** Latest annotation-only save descended from the imported PDF. */
+  annotationSha256?: string;
 }
 
 export interface Manifest {
@@ -69,6 +72,8 @@ export interface ReadingState {
 export interface PdfSource {
   bytes: Uint8Array;
   sha256: string;
+  /** Registered identity captured in the same project operation as the bytes. */
+  document?: DocumentRecord;
 }
 export interface Preferences {
   defaultFolder: string | null;
@@ -123,6 +128,7 @@ export type Command =
   | { type: "savePdf"; root: string; path: string; bytes: Uint8Array; version: string }
   | { type: "createCitation"; root: string; path: string; input: CitationInput }
   | { type: "resolveCitation"; root: string; link: string }
+  | ({ type: "resolveReference"; root: string } & ReferenceRequest)
   | { type: "pdfUses"; root: string; path: string }
   | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
   | {
@@ -134,6 +140,7 @@ export type Command =
   | { type: "resolveFile"; root: string; path: string };
 
 export interface Desktop {
+  handleAnnotationWrite(writer: (request: AnnotationWrite, checkActive: () => void) => Promise<{ sha256: string } | null>): () => void;
   parsing<T>(command: ParsingCommand): Promise<T>;
   agent<T>(command: AgentCommand): Promise<T>;
   watchAgent(listener: (state: ChatSession) => void): () => void;

@@ -8,6 +8,8 @@ const encode = (value: string) => encodeURIComponent(value)
 
 /** An empty base denotes the project root (chat and the PDF clipboard). */
 export function resolveAnnotationLink(href: string, base = ""): AnnotationTarget {
+  if (base && (base.startsWith("/") || base.split("/").some((part) => !part || part === "." || part === ".." || /[\\:?#\x00-\x1f]/.test(part))))
+    throw new Error("来源文档必须使用工程内路径。");
   if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("/") || href.includes("\\"))
     throw new Error("批注链接必须使用工程内相对路径。");
   const hash = href.indexOf("#");

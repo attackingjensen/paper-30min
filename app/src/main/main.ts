@@ -106,6 +106,7 @@ async function start() {
   let parsingSettingsWrite: Promise<unknown> = Promise.resolve();
   let settingsWrite: Promise<unknown> = Promise.resolve();
   const running = new Map<string, ChatSession>();
+  const annotationWrites = new Map<number, ReturnType<typeof setTimeout>>();
   worker = utilityProcess.fork(
     path.join(here, "worker.js"),
     [path.join(app.getPath("userData"), "preferences.json")],
@@ -129,6 +130,24 @@ async function start() {
   });
   worker.on("message", async (message) => {
     if (message.ready) return;
+    if (message.annotationCancel !== undefined) {
+      if (window && !window.isDestroyed()) window.webContents.send("pdf:annotation-cancel", message.annotationCancel);
+      return;
+    }
+    if (message.annotationWrite) {
+      const { id, request: write } = message.annotationWrite;
+      if (!window || window.isDestroyed()) {
+        worker.postMessage({ id, annotationResult: true, value: null });
+        return;
+      }
+      annotationWrites.set(id, setTimeout(() => {
+        annotationWrites.delete(id);
+        if (!window.isDestroyed()) window.webContents.send("pdf:annotation-cancel", id);
+        worker.postMessage({ id, annotationResult: true, error: "阅读器批注保存超时，请核对 PDF 后重试。" });
+      }, 30000));
+      window.webContents.send("pdf:annotation-write", id, write);
+      return;
+    }
     if (message.agentState) {
       const state: ChatSession = message.agentState;
       const key = state.root + "\0" + state.id;
@@ -157,6 +176,8 @@ async function start() {
     else p?.resolve(message.value);
   });
   worker.on("exit", () => {
+    for (const timer of annotationWrites.values()) clearTimeout(timer);
+    annotationWrites.clear();
     workerExited = true;
     for (const state of running.values()) {
       if (window && !window.isDestroyed())
@@ -182,6 +203,12 @@ async function start() {
     )
       throw new Error("无效的窗口请求。");
   };
+  ipcMain.on("pdf:annotation-result", (event, result) => {
+    if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || !annotationWrites.has(result.id)) return;
+    clearTimeout(annotationWrites.get(result.id));
+    annotationWrites.delete(result.id);
+    worker.postMessage({ ...result, annotationResult: true });
+  });
   let watcher: FSWatcher | undefined;
   let watchGeneration = 0;
   let watchTimer: ReturnType<typeof setTimeout> | undefined;

@@ -162,6 +162,21 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
   commands.registerCommand({ id: "document:export", label: "导出 PDF 副本", icon: "download", categories: ["document", "document-export"],
     action: () => void exportCopy() });
   commands.registerCommand({ id: "paper:copy-annotation", label: "复制批注链接", icon: "link", action: () => void copy() });
+  const offAgentWrite = window.desktop.handleAnnotationWrite(async (request, checkActive) => {
+    if (request.root !== options.root || request.path !== options.path) return null;
+    if (!loaded || disposed) throw new Error("阅读器批注尚未加载完成，请稍后重试。");
+    checkActive();
+    // A pending reader save may legitimately change the hash after resolution.
+    if (request.sha256 !== version && !saving)
+      throw new Error("阅读器 PDF 版本与磁盘不一致，请重新载入后重试。");
+    await flush();
+    checkActive();
+    if (disposed) throw new Error("阅读器已关闭，请重试。");
+    annotations.createAnnotation(request.annotation.pageIndex, request.annotation);
+    await flush();
+    if (!annotations.getAnnotationById(request.annotation.id)) throw new Error("批注创建失败。");
+    return { sha256: version };
+  });
   const ui = registry.getPlugin<UIPlugin>(UIPlugin.id)!.provides();
   const schema = ui.getSchema();
   const toolbar = schema.toolbars["annotation-toolbar"];
@@ -176,7 +191,7 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
   ])) });
   return { save: flush, copy,
     navigate(value: AnnotationTarget, nonce: string) { target = { value, nonce }; locate(); },
-    dispose() { restoreCommitReducer(); clearTimeout(saveTimer); disposed = true; offEvent(); offState(); offHistory(); offLayout(); offBegin();
+    dispose() { offAgentWrite(); restoreCommitReducer(); clearTimeout(saveTimer); disposed = true; offEvent(); offState(); offHistory(); offLayout(); offBegin();
       window.removeEventListener("pointerup", finishCrossPage); window.removeEventListener("beforeunload", beforeUnload); },
   };
 }
