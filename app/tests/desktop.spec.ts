@@ -2123,7 +2123,7 @@ test("引用工具真实模型读搜、解释、按要求写笔记和创建评�
   await fs.writeFile("test-results/real-model/ste96-evidence.json", JSON.stringify({ states, resolved }, null, 2));
 });
 
-test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页并回查", async () => {
+test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页", async () => {
   test.setTimeout(240000);
   test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || (!process.env.PAPER30MIN_REAL_CONFIG && !process.env.PAPER30MIN_REAL_PROFILE),
     "需显式提供本机真实视觉模型配置文件或加密配置目录，trace 必须关闭。");
@@ -2163,7 +2163,7 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
   await page.getByLabel("Agent 消息").fill(
     "请实际调用 read_pdf 核对 text/paper.pdf 第8页的翻译结果表，再读取第4页整页核对注意力公式。" +
     (scan ? `另读取参考材料 ${scan} 第1页，这是论文第3页的扫描图，无文本层，请依据图像解释编码器和解码器结构的区别。` : "") +
-    "最终简要报告英德 BLEU 分数、注意力公式与结构区别，每项给出工具返回的原文引用链接。禁止通过 read/bash/web_search 旁路读取资料。",
+    "最终简要报告英德 BLEU 分数、注意力公式与结构区别，每项说明文件路径与页码；本工程尚无引用，不生成引用链接。禁止通过 read/bash/web_search 旁路读取资料。",
   );
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
@@ -2180,17 +2180,13 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页�
     expect(info).not.toHaveProperty("text");
     expect(info).not.toHaveProperty("textStatus");
     expect(info).not.toHaveProperty("textTruncated");
+    for (const field of ["citation", "link", "markdown"]) expect(info).not.toHaveProperty(field);
+    expect(info).toMatchObject({ width: expect.any(Number), height: expect.any(Number) });
   }
   const reply = states.flatMap((state) => state.messages).filter((message) => message.role === "assistant").at(-1)!.text;
   expect(reply).toContain("28.4");
   const links = page.locator('.message-text a[href^="paper://cite/"]');
-  expect(await links.count()).toBeGreaterThanOrEqual(2);
-  for (const link of await links.all()) {
-    const href = await link.getAttribute("href");
-    await page.evaluate(({ root, link }) => window.desktop.invoke({ type: "resolveCitation", root, link }), { root, link: href! });
-  }
-  await links.first().click();
-  await expectPdfRendered();
+  await expect(links).toHaveCount(0);
   await page.screenshot({ path: "test-results/real-model/ste94-pdf.png" });
   await fs.writeFile("test-results/real-model/ste94-evidence.json", JSON.stringify({
     model: modelId, thinking: "high", reply, calls: successful.map((tool) => ({ args: tool.arguments, pdf: (tool.details as any).pdf })),
@@ -2343,9 +2339,8 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
   }
 });
 
-test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可点击引用及重开", async () => {
+test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口且不登记引用并可重开", async () => {
   let index = 0;
-  let returnedLink = "";
   const images: string[] = [];
   const results: any[] = [];
   const server = createServer(async (request, response) => {
@@ -2356,7 +2351,6 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可
     if (tools.length > results.length) {
       const info = JSON.parse(tools.at(-1).content.split("\n")[0]);
       results.push(info);
-      returnedLink = info.link;
     }
     const imageUrls = payload.messages.flatMap((message: any) => Array.isArray(message.content)
       ? message.content.flatMap((block: any) => block.type === "image_url" ? [block.image_url.url] : []) : []);
@@ -2367,7 +2361,7 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     const delta = args ? { tool_calls: [{ index: 0, id: `pdf-${index}`, type: "function",
       function: { name: "read_pdf", arguments: JSON.stringify(args) } }] }
-      : { content: `[核对公式图表](${returnedLink})` };
+      : { content: "已核对 text/paper.pdf 第 1、3 页的公式图表；暂无可用引用。" };
     for (const [value, finish] of [[delta, null], [{}, args ? "tool_calls" : "stop"]])
       response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`);
     response.end("data: [DONE]\n\n");
@@ -2377,6 +2371,8 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可
     const source = path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf");
     await create(source, path.join(sandbox, "projects"), "PDF 工具工程", true);
     const root = path.join(sandbox, "projects", "PDF 工具工程");
+    const citationPath = path.join(root, ".paper30min-citations.json");
+    const citationsBefore = await fs.readFile(citationPath, "utf8").catch(() => null);
     await expectPdfRendered();
     await jumpPdfPage(2);
     await setPdfZoom("125");
@@ -2389,41 +2385,38 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可
       settings.models[0].vision = true;
       await window.desktop.agent({ type: "saveSettings", settings, apiKey: "pdf-fixture-key" });
     }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
-    await page.getByLabel("Agent 消息").fill("核对工程论文原页和公式图表，返回原文引用。");
+    await page.getByLabel("Agent 消息").fill("核对工程论文原页和公式图表，说明来源文件和页码。");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    const link = page.locator('.message-text a[href^="paper://cite/"]');
-    await expect(link).toHaveText("核对公式图表");
+    await expect(page.locator(".message-text.chat-markdown").last()).toContainText("暂无可用引用");
     await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
     expect(results).toHaveLength(2);
     for (const result of results) {
       expect(result).not.toHaveProperty("text");
       expect(result).not.toHaveProperty("textStatus");
       expect(result).not.toHaveProperty("textTruncated");
+      for (const field of ["citation", "link", "markdown"]) expect(result).not.toHaveProperty(field);
     }
     expect(images).toHaveLength(2);
     const { PNG } = await import("pngjs");
     const crop = PNG.sync.read(Buffer.from(images[1].split(",")[1], "base64"));
     expect([crop.width, crop.height]).toEqual([1224, 1584]);
-    expect(results[1].citation.kind).toBe("page");
-    expect(results[1].citation.pages[0].rects).toEqual([]);
+    expect(results[1]).toMatchObject({ path: "text/paper.pdf", page: 3, width: 612, height: 792, scale: 2 });
+    expect(await fs.readFile(citationPath, "utf8").catch(() => null)).toBe(citationsBefore);
     expect(JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf).toEqual(before);
     await expect(page.getByRole("tab", { name: "paper.pdf", exact: true })).toHaveCount(0);
     await expect(page.locator('[data-tool="read_pdf"][data-status="done"]')).toHaveCount(2);
-    await link.click();
-    await expectPdfRendered();
-    await expectPdfRendered();
-    await expect(pdfPage()).toHaveValue("3");
-    await expect(page.locator('[data-citation-page]')).toHaveCount(0);
-    await page.screenshot({ path: "test-results/ste94-citation.png" });
+    await expect(page.locator('.message-text a[href^="paper://cite/"]')).toHaveCount(0);
+    await page.screenshot({ path: "test-results/ste94-read-only.png" });
     await desktop.close();
     await launch();
     await page.getByRole("button", { name: /PDF 工具工程/ }).click();
     await expect(page.locator('[data-tool="read_pdf"][data-status="done"]')).toHaveCount(2);
-    await expect(page.locator('.message-text a[href^="paper://cite/"]')).toHaveAttribute("href", returnedLink);
+    await expect(page.locator(".message-text.chat-markdown").last()).toContainText("暂无可用引用");
+    await expect(page.locator('.message-text a[href^="paper://cite/"]')).toHaveCount(0);
     const sessionFiles = await fs.readdir(path.join(root, ".pi/sessions"));
     const history = await fs.readFile(path.join(root, ".pi/sessions", sessionFiles[0]), "utf8");
     expect(history).toContain('"type":"image"');
-    expect(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8")).not.toContain("base64");
+    expect(await fs.readFile(citationPath, "utf8").catch(() => null)).toBe(citationsBefore);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

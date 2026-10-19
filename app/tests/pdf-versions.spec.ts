@@ -26,20 +26,12 @@ test("连续批注保存后读取当前 PDF，已读取的可信版本仍可登�
     } }) as Project;
     const first = await annotate(projects, root);
     const second = await annotate(projects, root);
-    const dispatch = projects.dispatch.bind(projects);
-    let saveBeforeCitation = true;
-    projects.dispatch = async (command, signal) => {
-      if (command.type === "createCitation" && saveBeforeCitation) {
-        saveBeforeCitation = false;
-        await annotate(projects, root);
-      }
-      return dispatch(command, signal);
-    };
     const tool = createPdfTools(root, projects, true, () => true)[0];
     const read = await tool.execute("old-call", { path: "text/paper.pdf", page: 1, sha256: first.sha256 } as any,
       undefined, undefined, {} as any);
     expect(JSON.parse((read.content[0] as any).text).sha256).toBe(second.sha256);
-    expect(saveBeforeCitation).toBe(false);
+    expect(JSON.parse((read.content[0] as any).text)).not.toHaveProperty("citation");
+    await annotate(projects, root);
     const input = { sha256: first.sha256, kind: "page" as const, text: "",
       pages: [{ page: 1, width: 612, height: 792, rects: [] }] };
     await projects.dispatch({ type: "createCitation", root, path: "text/paper.pdf", input, sourceDocument: first.document });

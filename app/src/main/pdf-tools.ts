@@ -5,12 +5,6 @@ import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { PdfTask } from "@embedpdf/models";
 import type { PdfSource } from "../shared/contracts.js";
-import {
-  citationLink,
-  citationMarkdown,
-  validateCitation,
-  type Citation,
-} from "../shared/citations.js";
 import { ProjectService } from "./project-service.js";
 
 export function createPdfTools(
@@ -25,7 +19,7 @@ export function createPdfTools(
       name: "read_pdf",
       label: "查看 PDF 图像",
       description:
-        "Visually inspect a complete PDF page in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real full-page PNG, page count and dimensions, PDF version, and a reusable page citation link. Pages are 1-based. Omit page to inspect page 1. No region cropping, PDF text extraction or OCR. Read the parsed manuscript for document text. Reuse returned links verbatim; never invent citation IDs.",
+        "Visually inspect a complete PDF page in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real full-page PNG, registered path and document ID, PDF version, page number and count, width and height in PDF points, and actual rendering scale. Pages are 1-based. Omit page to inspect page 1. Does not create or return citations or links. No region cropping, PDF text extraction or OCR. Read the parsed manuscript for document text and reuse its existing citation links when available; never invent links, citation IDs or coordinates.",
       parameters: Type.Object({
         path: Type.String({
           description:
@@ -121,20 +115,6 @@ export function createPdfTools(
           const page = doc.pages[pageNumber - 1];
           if (!page)
             throw new Error(`PDF 页码越界：共 ${doc.pages.length} 页。`);
-          const input = {
-            sha256: source.sha256,
-            kind: "page" as const,
-            text: "",
-            pages: [
-              {
-                page: pageNumber,
-                width: page.size.width,
-                height: page.size.height,
-                rects: [],
-              },
-            ],
-          };
-          validateCitation(input);
           const size = page.size;
           const actualScale = Math.min(
             scale,
@@ -148,20 +128,14 @@ export function createPdfTools(
             }),
           );
           check();
-          const citation = (await projects.dispatch(
-            { type: "createCitation", root, path: args.path, input, sourceDocument: record },
-            signal,
-          )) as Citation;
-          check();
           const info = {
             path: args.path,
             documentId: record.id,
             sha256: source.sha256,
             page: pageNumber,
             pageCount: doc.pages.length,
-            citation,
-            link: citationLink(citation.id),
-            markdown: citationMarkdown(citation),
+            width: size.width,
+            height: size.height,
             source: "PDF 原文件；PDFium 渲染，未提取文本层，未使用解析稿或 OCR",
             granularity: "页面",
             scale: actualScale,

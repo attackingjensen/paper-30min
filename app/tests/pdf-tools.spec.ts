@@ -7,7 +7,7 @@ import { ProjectService } from "../src/main/project-service";
 import { createPdfTools } from "../src/main/pdf-tools";
 import type { Project } from "../src/shared/contracts";
 
-test("旋转页按阅读器的未旋转坐标取证并登记可回查的尺寸", async () => {
+test("旋转页按阅读器的未旋转坐标返回尺寸和图像", async () => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-rotated-"),
   );
@@ -64,7 +64,7 @@ test("旋转页按阅读器的未旋转坐标取证并登记可回查的尺寸",
       {} as any,
     );
     const info = JSON.parse((result.content[0] as any).text);
-    expect(info.citation.pages[0]).toMatchObject({ width: 300, height: 200 });
+    expect(info).toMatchObject({ width: 300, height: 200 });
     const image = PNG.sync.read(
       Buffer.from((result.content[1] as any).data, "base64"),
     );
@@ -72,22 +72,13 @@ test("旋转页按阅读器的未旋转坐标取证并登记可回查的尺寸",
     for (let i = 0; i < image.data.length; i += 4)
       if (image.data[i] < 128) ink++;
     expect(ink).toBeGreaterThan(1000);
-    const resolved = (await service.dispatch({
-      type: "resolveCitation",
-      root,
-      link: info.link,
-    })) as any;
-    expect(resolved.citation.pages[0]).toMatchObject({
-      width: 300,
-      height: 200,
-    });
   } finally {
     await service.close();
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
 
-test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读器或解析稿", async () => {
+test("read_pdf 只读完整页图与定位信息，不登记引用或依赖阅读器和解析稿", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-pdf-"));
   const service = new ProjectService(
     path.join(directory, "config.json"),
@@ -108,7 +99,9 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
     })) as Project;
     const root = project.root;
     let active = true;
-    const tool = createPdfTools(root, service, true, () => active)[0];
+    const readPages: { documentId: string; page: number }[] = [];
+    const tool = createPdfTools(root, service, true, () => active,
+      (documentId, page) => readPages.push({ documentId, page }))[0];
     const run = (args: any, signal?: AbortSignal) =>
       tool.execute(
         "call",
@@ -120,6 +113,8 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
     const before = await fs
       .readFile(path.join(root, ".paper30min-reading.json"), "utf8")
       .catch(() => null);
+    const citationPath = path.join(root, ".paper30min-citations.json");
+    const beforeCitations = await fs.readFile(citationPath, "utf8").catch(() => null);
     const page = await run({});
     const info = JSON.parse((page.content[0] as any).text);
     expect(info).not.toHaveProperty("text");
@@ -127,6 +122,10 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
     expect(info).not.toHaveProperty("textTruncated");
     expect(info.pageCount).toBeGreaterThan(1);
     expect(info.granularity).toBe("页面");
+    expect(info).toMatchObject({ path: "text/paper.pdf", documentId: project.manifest.paper.id,
+      page: 1, width: 612, height: 792, scale: 1.5 });
+    expect(info.sha256).toMatch(/^[a-f0-9]{64}$/);
+    for (const field of ["citation", "link", "markdown"]) expect(info).not.toHaveProperty(field);
     const image = PNG.sync.read(
       Buffer.from((page.content[1] as any).data, "base64"),
     );
@@ -142,18 +141,9 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
       Buffer.from((enlarged.content[1] as any).data, "base64"),
     );
     expect([crop.width, crop.height]).toEqual([1583, 2048]);
-    expect(enlargedInfo.link).toBe(info.link);
-    const resolved = (await service.dispatch({
-      type: "resolveCitation",
-      root,
-      link: enlargedInfo.link,
-    })) as any;
-    expect(resolved.citation.kind).toBe("page");
-    expect(resolved.citation.pages[0].rects).toEqual([]);
+    expect(enlargedInfo).toMatchObject({ width: 612, height: 792, scale: 2048 / 792 });
     const repeated = await run(args);
-    expect(JSON.parse((repeated.content[0] as any).text).link).toBe(
-      enlargedInfo.link,
-    );
+    expect(JSON.parse((repeated.content[0] as any).text)).toEqual(enlargedInfo);
     const reopened = new ProjectService(
       path.join(directory, "config2.json"),
       async () => {},
@@ -171,18 +161,12 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
         undefined,
         {} as any,
       );
-      expect(JSON.parse((again.content[0] as any).text).link).toBe(
-        enlargedInfo.link,
-      );
+      expect(JSON.parse((again.content[0] as any).text)).toEqual(enlargedInfo);
     } finally {
       await reopened.close();
     }
-    const dictionary = await fs.readFile(
-      path.join(root, ".paper30min-citations.json"),
-      "utf8",
-    );
-    expect(dictionary).not.toContain("base64");
-    expect(dictionary.length).toBeLessThan(5000);
+    expect(await fs.readFile(citationPath, "utf8").catch(() => null)).toBe(beforeCitations);
+    expect(readPages).toEqual(Array.from({ length: 3 }, () => ({ documentId: info.documentId, page: 1 })));
     expect(
       await fs
         .readFile(path.join(root, ".paper30min-reading.json"), "utf8")
@@ -200,8 +184,8 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
       ),
     ).rejects.toThrow("视觉输入");
     expect(
-      await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"),
-    ).toBe(dictionary);
+      await fs.readFile(citationPath, "utf8").catch(() => null),
+    ).toBe(beforeCitations);
     const canceled = new AbortController();
     canceled.abort();
     await expect(run({}, canceled.signal)).rejects.toThrow();
@@ -220,7 +204,7 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
   }
 });
 
-test("公式页和扫描页均只返回实际图像与定位信息，取消不登记迟到引用", async () => {
+test("公式页和扫描页均只返回实际图像与定位信息，取消不返回迟到图像", async () => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-scan-"),
   );
@@ -274,7 +258,7 @@ test("公式页和扫描页均只返回实际图像与定位信息，取消不�
     const before = await fs.readFile(
       path.join(root, ".paper30min-citations.json"),
       "utf8",
-    );
+    ).catch(() => null);
     const controller = new AbortController();
     const stopped = invoke(
       { ...args, page: 2 },
@@ -283,32 +267,7 @@ test("公式页和扫描页均只返回实际图像与定位信息，取消不�
     controller.abort();
     await expect(stopped).rejects.toThrow();
     expect(
-      await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"),
-    ).toBe(before);
-    // A canceled queued registration must not mutate the dictionary later.
-    await expect(
-      service.dispatch(
-        {
-          type: "createCitation",
-          root,
-          path: args.path,
-          input: {
-            ...info.citation,
-            pages: [
-              {
-                ...info.citation.pages[0],
-                rects: [
-                  { origin: { x: 1, y: 1 }, size: { width: 50, height: 50 } },
-                ],
-              },
-            ],
-          },
-        },
-        controller.signal,
-      ),
-    ).rejects.toThrow();
-    expect(
-      await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"),
+      await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8").catch(() => null),
     ).toBe(before);
   } finally {
     await service.close();

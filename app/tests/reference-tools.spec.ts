@@ -45,8 +45,11 @@ test("Agent 分段读搜解析稿、直接复用块链接写笔记、展开引�
     await fs.appendFile(path.join(root, "notes/理解.md"), "用户补充\n");
     const conflict = await call("edit", { path: "notes/理解.md", edits: [{ oldText: "# 理解", newText: "# 更新" }] });
     expect(conflict.details).toMatchObject({ failed: true, conflict: { current: note + "用户补充\n" } });
+    const citationPath = path.join(root, ".paper30min-citations.json");
+    const citations = await fs.readFile(citationPath, "utf8");
     const image = await call("read_pdf", { path: resolved.path, page: resolved.pages[0].page });
     expect(image.content[1].type).toBe("image");
+    expect(await fs.readFile(citationPath, "utf8")).toBe(citations);
     expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(before);
     const created = info(await call("create_annotation", { link, comment: "讨论：编码器与解码器的职责不同。" }));
     expect(created.link).toMatch(/^text\/paper.pdf#annotation=/);
