@@ -101,22 +101,32 @@ export function App() {
   const layout = usePanelLayout(left, right);
   const [settings, setSettingsState] = useState<string | null>(null);
   const pdfPending = useRef(false);
-  function mayLeavePdf() {
-    if (!pdfPending.current) return true;
-    setError("批注尚未保存，请先保存到 PDF；保存失败时可通过阅读器下载按钮导出副本。当前批注已保留。");
-    return false;
+  const navigationRequest = useRef(0);
+  const flushPdf = useRef<(() => Promise<void>) | null>(null);
+  const [showPdfUses, setShowPdfUses] = useState(false);
+  async function mayLeavePdf() {
+    try { await flushPdf.current?.(); return true; }
+    catch (error) { setError(`PDF 自动保存失败，当前批注已保留：${(error as Error).message}`); return false; }
   }
-  function setSettings(value: string | null) { if (mayLeavePdf()) setSettingsState(value); }
+  async function setSettings(value: string | null) {
+    const request = ++navigationRequest.current;
+    if (await mayLeavePdf() && request === navigationRequest.current) setSettingsState(value);
+  }
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
   const [legacyImport, setLegacyImport] = useState(false);
   const [content, setContent] = useState<string | null>(null);
-  const [citationVisit, setCitationVisit] = useState<(ResolvedCitation & { from: string; nonce: string }) | null>(null);
-  const [annotationVisit, setAnnotationVisit] = useState<{ target: AnnotationTarget; from: string; nonce: string; selectOnly?: boolean } | null>(null);
-  const [usageVisit, setUsageVisit] = useState<{ use: CitationUse; from: string; pdfPath: string; position?: PdfPosition; nonce: string; annotation?: AnnotationTarget } | null>(null);
-  const [pdfRestore, setPdfRestore] = useState(0);
+  const [citationVisit, setCitationVisit] = useState<(ResolvedCitation & { nonce: string }) | null>(null);
+  const [annotationVisit, setAnnotationVisit] = useState<{ target: AnnotationTarget; nonce: string } | null>(null);
+  const [usageVisit, setUsageVisit] = useState<{ use: CitationUse; nonce: string } | null>(null);
+  useEffect(() => {
+    if (settings || citationVisit?.path !== active) setCitationVisit(null);
+    if (settings || annotationVisit?.target.path !== active) setAnnotationVisit(null);
+    if (settings || usageVisit?.use.path !== active) setUsageVisit(null);
+    setShowPdfUses(false);
+  }, [active, settings]);
   const [selectedAgent, setSelectedAgent] = useState<{ root: string; id: string }>();
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
@@ -236,41 +246,44 @@ export function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh, busy, creating]);
 
-  function openTab(tab: Tab) {
-    if (tab.key !== active && !mayLeavePdf()) return;
+  async function openTab(tab: Tab, activate?: () => void, request = ++navigationRequest.current) {
+    if (tab.key !== active && !(await mayLeavePdf())) return;
+    if (request !== navigationRequest.current || activeRoot.current !== root) return;
+    activate?.();
     setTabs((old) =>
       old.some((t) => t.key === tab.key) ? old : [...old, tab],
     );
     setActive(tab.key);
   }
-  function openPath(filePath: string) {
-    openTab({
+  function openPath(filePath: string, activate?: () => void, request?: number) {
+    return openTab({
       key: filePath,
       path: filePath,
       title: filePath.split("/").at(-1)!,
-    });
+    }, activate, request);
   }
   async function openCitation(link: string, base = "") {
     if (!root) return;
     const originRoot = root;
+    const request = ++navigationRequest.current;
     await run(async () => {
       if (isAnnotationLink(link)) {
         const target = resolveAnnotationLink(link, base);
         try { await desktop.invoke({ type: "resolveFile", root, path: target.path }); }
         catch { throw new Error(`批注 PDF 已缺失或移动：${target.path}`); }
         if (activeRoot.current !== originRoot) return;
-        if (active !== target.path && !mayLeavePdf()) return;
-        setCitationVisit(null);
-        setAnnotationVisit({ target, from: active, nonce: crypto.randomUUID() });
-        openPath(target.path);
+        await openPath(target.path, () => {
+          setCitationVisit(null);
+          setAnnotationVisit({ target, nonce: crypto.randomUUID() });
+        }, request);
         return;
       }
       const resolved = await desktop.invoke<ResolvedCitation>({ type: "resolveCitation", root, link });
       if (activeRoot.current !== originRoot) return;
-      if (active !== resolved.path && !mayLeavePdf()) return;
-      setCitationVisit({ ...resolved, from: active, nonce: crypto.randomUUID() });
-      setAnnotationVisit(null);
-      openPath(resolved.path);
+      await openPath(resolved.path, () => {
+        setCitationVisit({ ...resolved, nonce: crypto.randomUUID() });
+        setAnnotationVisit(null);
+      }, request);
     });
   }
   function enter(p: Project) {
@@ -294,20 +307,24 @@ export function App() {
         ? p.reading.active
         : (restored[0]?.key ?? tab.key),
     );
-    setSettings(null);
+    setSettingsState(null);
   }
-  function closeTab(key: string) {
-    if (key === active && !mayLeavePdf()) return;
+  async function closeTab(key: string) {
+    navigationRequest.current++;
+    if (key === active && !(await mayLeavePdf())) return;
     const path = tabs.find((t) => t.key === key)?.path;
-    if (path && !documents.mayLeave(path)) return;
+    if (path && !(await documents.mayLeave(path))) return;
     if (path) documents.forget(path);
-    const remaining = tabs.filter((t) => t.key !== key);
-    setTabs(remaining);
-    if (active === key) setActive(remaining.at(-1)?.key ?? "");
+    if (activeRoot.current !== root) return;
+    setTabs((currentTabs) => {
+      const remaining = currentTabs.filter((t) => t.key !== key);
+      setActive((currentActive) => currentActive === key ? (remaining.at(-1)?.key ?? "") : currentActive);
+      return remaining;
+    });
   }
   async function openProject(folder?: string) {
-    if (!mayLeavePdf()) return;
-    if (!documents.mayLeave()) return;
+    if (!(await mayLeavePdf())) return;
+    if (!(await documents.mayLeave())) return;
     await run(async () => {
       const selected = folder ?? (await desktop.choose("folder"));
       if (!selected) return;
@@ -317,8 +334,8 @@ export function App() {
     });
   }
   async function newProject() {
-    if (!mayLeavePdf()) return;
-    if (!documents.mayLeave()) return;
+    if (!(await mayLeavePdf())) return;
+    if (!(await documents.mayLeave())) return;
     await run(async () => {
       const source = await desktop.choose("pdf");
       if (!source) return;
@@ -348,9 +365,9 @@ export function App() {
     setCreating(null);
   }
   async function update(command: Command) {
-    if (!mayLeavePdf()) return;
-    if (command.type === "move" && [...documents.drafts.values()].some(isDirty)) {
-      setError("移动文件前请先保存所有 Markdown 编辑，以便更新批注相对链接。");
+    if (!(await mayLeavePdf())) return;
+    if (command.type === "move" && !(await documents.flush())) {
+      setError("Markdown 自动保存尚未完成或存在冲突，暂不能移动文件。");
       return;
     }
     return run(async () => {
@@ -504,7 +521,7 @@ export function App() {
           root={root!}
           draft={draft}
           usageTarget={usageVisit?.use.path === current.path ? usageVisit : undefined}
-          onChange={documents.notify}
+          onChange={() => documents.changed(draft)}
           onSave={() => void documents.save(draft)}
           onOpen={openPath}
           onCitation={(link) => void openCitation(link, current.path)}
@@ -555,20 +572,19 @@ export function App() {
     if (current.path && /\.pdf$/i.test(current.path))
       return (
         <PdfReader
-          key={root + "/" + current.path + ":" + pdfRestore}
+          key={root + "/" + current.path}
           root={root!}
           path={current.path}
           revision={project}
           annotationTarget={annotationVisit?.target.path === current.path ? annotationVisit : undefined}
           onPending={(pending) => { pdfPending.current = pending; }}
-          onUse={(use) => {
-            if (!mayLeavePdf()) return;
+          onBeforeLeave={(save) => { flushPdf.current = save; }}
+          showUses={showPdfUses} onCloseUses={() => setShowPdfUses(false)}
+          onUse={(use) => void openPath(use.path, () => {
             setCitationVisit(null);
             setAnnotationVisit(null);
-            setUsageVisit({ use, from: active, pdfPath: current.path!, position: positions.current[root!]?.[current.path!], nonce: crypto.randomUUID(),
-              ...(isAnnotationLink(use.id) && { annotation: resolveAnnotationLink(use.id) }) });
-            openPath(use.path);
-          }}
+            setUsageVisit({ use, nonce: crypto.randomUUID() });
+          })}
           citationNonce={citationVisit?.nonce}
           citation={citationVisit?.path === current.path ? citationVisit.citation : undefined}
           position={positions.current[root!]?.[current.path]}
@@ -828,9 +844,9 @@ export function App() {
               <button
                 className="nav"
                 disabled={busy}
-                onClick={() => {
-                  if (!mayLeavePdf()) return;
-                  if (!documents.mayLeave()) return;
+                onClick={async () => {
+                  if (!(await mayLeavePdf())) return;
+                  if (!(await documents.mayLeave())) return;
                   setProject(null);
                   setTabs([]);
                   setActive("");
@@ -945,7 +961,7 @@ export function App() {
                       role="tab"
                       aria-selected={active === t.key}
                       title={t.title}
-                      onClick={() => { if (t.key === active || mayLeavePdf()) setActive(t.key); }}
+                      onClick={() => void openTab(t)}
                     >
                       <FileText />
                       <span>
@@ -975,6 +991,8 @@ export function App() {
                     <span>{current?.title ?? "文档"}</span>
                   </div>
                   <div className="toolbar-actions">
+                    {current?.path && /\.pdf$/i.test(current.path) && <button aria-label="文档引用使用位置" aria-expanded={showPdfUses}
+                      onClick={() => setShowPdfUses((value) => !value)}>文档引用</button>}
                     {current?.key === "notes" && (
                       <button
                         onClick={() =>
@@ -1024,32 +1042,6 @@ export function App() {
                     )}
                   </div>
                 </div>
-                {usageVisit && <div className="citation-return">
-                  <button onClick={() => {
-                    if (!mayLeavePdf()) return;
-                    if (usageVisit.position) savePosition(root!, usageVisit.pdfPath, usageVisit.position);
-                    setPdfRestore((value) => value + 1);
-                    if (tabs.some((tab) => tab.key === usageVisit.from)) setActive(usageVisit.from);
-                    setCitationVisit(null);
-                    if (usageVisit.annotation) setAnnotationVisit({ target: usageVisit.annotation, from: usageVisit.use.path,
-                      nonce: crypto.randomUUID(), selectOnly: true });
-                    setUsageVisit(null);
-                  }}>返回 PDF 阅读位置</button>
-                </div>}
-                {citationVisit && <div className="citation-return">
-                  <button onClick={() => {
-                    if (!mayLeavePdf()) return;
-                    if (tabs.some((tab) => tab.key === citationVisit.from)) setActive(citationVisit.from);
-                    setCitationVisit(null);
-                  }}>返回引用处</button>
-                </div>}
-                {annotationVisit && <div className="citation-return">
-                  <button onClick={() => {
-                    if (!mayLeavePdf()) return;
-                    if (tabs.some((tab) => tab.key === annotationVisit.from)) setActive(annotationVisit.from);
-                    setAnnotationVisit(null);
-                  }}>返回引用处</button>
-                </div>}
                 {contentView()}
               </main>
               {right && (

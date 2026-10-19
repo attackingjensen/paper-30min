@@ -6,6 +6,7 @@ import { citationMarkdown, type Citation, type CitationInput, type CitationPage,
 export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfContainer, options: {
   root: string; path: string; sha256: string; target?: Citation;
   onStatus: (message: string) => void;
+  beforeCopy: () => Promise<void>;
 }) {
   const documentId = "reading";
   const selection = registry.getPlugin<SelectionPlugin>(SelectionPlugin.id)!.provides();
@@ -41,6 +42,9 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
         if (!wholePage) throw new Error("请先选中文字或框选区域；整页引用请使用「整页引用」。");
         input = { sha256: options.sha256, kind: "page", pages: [page(selectedPage ?? scroll.forDocument(documentId).getCurrentPage() - 1, [])], text: "" };
       }
+      await options.beforeCopy();
+      if (disposed) return;
+      input.sha256 = options.sha256;
       const citation = await window.desktop.invoke<Citation>({ type: "createCitation", root: options.root, path: options.path, input });
       if (disposed) return;
       await navigator.clipboard.writeText(citationMarkdown(citation));
@@ -64,14 +68,13 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
     options.onStatus("区域已选中，点击「复制引用链接」或右键复制。");
     draw();
   });
-  const offSelection = selection.onBeginSelection(() => { region = undefined; selectedPage = undefined; targetValid = false; draw(); });
+  const offSelection = selection.onBeginSelection(() => { region = undefined; selectedPage = undefined; draw(); });
   commands.registerCommand({ id: "paper:copy-citation", label: "复制引用链接", icon: "copy", action: () => void copy() });
 
   function cancel() {
     region = undefined;
     selectedPage = undefined;
     selectingRegion = false;
-    targetValid = false;
     selection.forDocument(documentId).clear();
     interaction.forDocument(documentId).activateDefaultMode();
     options.onStatus("");
@@ -91,7 +94,7 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
     options.onStatus("已选择当前整页，点击「复制引用链接」；按 Esc 取消。");
   }
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "Escape" && (region || selectingRegion || selectedPage !== undefined || targetValid || selection.forDocument(documentId).getFormattedSelection().length)) {
+    if (event.key === "Escape" && (region || selectingRegion || selectedPage !== undefined || selection.forDocument(documentId).getFormattedSelection().length)) {
       event.preventDefault();
       cancel();
     }
@@ -200,8 +203,9 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
     }
     const first = target.pages[0];
     targetValid = true;
+    options.onStatus("");
     scroll.forDocument(documentId).scrollToPage({ pageNumber: first.page, pageCoordinates: first.rects[0]?.origin, behavior: "instant", alignY: 25 });
-    options.onStatus(target.kind === "page" ? "已定位到引用页面（页级引用）。" : "已定位并高亮引用。");
+
     draw();
   }
   const offReady = scroll.onLayoutReady((event) => {
@@ -215,6 +219,7 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
   const offScroll = viewport.onScrollChange(draw);
   return {
     navigate,
+    clearTarget: () => { options.target = undefined; targetValid = false; draw(); },
     setVersion: (sha256: string) => { options.sha256 = sha256; },
     copy,
     selectRegion, cancel,

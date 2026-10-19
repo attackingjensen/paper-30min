@@ -4,6 +4,7 @@ import { annotationHref, type AnnotationTarget } from "../shared/annotation-link
 import { copyAnnotationMarkdown } from "./annotation-clipboard";
 import { SelectionPlugin } from "@embedpdf/plugin-selection";
 import { InteractionManagerPlugin } from "@embedpdf/plugin-interaction-manager";
+import { preserveConcurrentAnnotationEdits } from "./pdf-annotation-commit";
 import { HistoryPlugin } from "@embedpdf/plugin-history";
 
 export interface AnnotationView {
@@ -22,6 +23,7 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
   onStatus: (message: string) => void;
 }) {
   const documentId = "reading";
+  const restoreCommitReducer = preserveConcurrentAnnotationEdits(registry, documentId);
   const annotations = registry.getPlugin<AnnotationPlugin>(AnnotationPlugin.id)!.provides().forDocument(documentId);
   const exporter = registry.getPlugin<ExportPlugin>(ExportPlugin.id)!.provides().forDocument(documentId);
   const scroll = registry.getPlugin<ScrollPlugin>(ScrollPlugin.id)!.provides();
@@ -50,7 +52,17 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
   let disposed = false;
   let error = "";
   let saving: Promise<void> | undefined;
-  let target: { value: AnnotationTarget; nonce: string; selectOnly?: boolean } | undefined;
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    if (!disposed && !error) saveTimer = setTimeout(() => void flush().catch(() => {}), 600);
+  }
+  async function flush() {
+    clearTimeout(saveTimer);
+    if (!loaded && generation === savedGeneration) return;
+    do { await save(); } while (generation !== savedGeneration);
+  }
+  let target: { value: AnnotationTarget; nonce: string } | undefined;
   let shown = "";
   function selected() { return loaded ? annotations.getSelectedAnnotations().filter((a) => a.commitState !== "deleted") : []; }
   function notify() {
@@ -68,18 +80,19 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
     }
     annotations.setActiveTool(null);
     const { object } = annotation;
-    if (!target.selectOnly) scroll.forDocument(documentId).scrollToPage({ pageNumber: object.pageIndex + 1,
+    scroll.forDocument(documentId).scrollToPage({ pageNumber: object.pageIndex + 1,
       pageCoordinates: object.rect.origin, behavior: "instant", alignY: 30 });
     annotations.selectAnnotation(object.pageIndex, object.id);
-    options.onStatus(`已定位并选中批注 · 第 ${object.pageIndex + 1} 页`);
+    options.onStatus("");
+
   }
   const offEvent = annotations.onAnnotationEvent((event) => {
     if (event.type === "loaded") { loaded = true; notify(); locate(); }
-    else if (!event.committed) { generation++; error = ""; notify(); }
+    else if (!event.committed) { generation++; error = ""; notify(); scheduleSave(); }
   });
   const offState = annotations.onStateChange(() => notify());
   const offHistory = registry.getPlugin<HistoryPlugin>(HistoryPlugin.id)!.provides().forDocument(documentId).onHistoryChange((topic) => {
-    if (loaded && (topic === "annotations" || topic === undefined)) { generation++; error = ""; notify(); }
+    if (loaded && (topic === "annotations" || topic === undefined)) { generation++; error = ""; notify(); scheduleSave(); }
   });
   const offLayout = scroll.onLayoutReady((event) => {
     if (event.documentId === documentId) { layoutReady = true; locate(); }
@@ -112,7 +125,7 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
     try {
       const items: TrackedAnnotation[] = selected();
       if (!items.length) throw new Error("请先选中一个或多个批注。");
-      do { await save(); } while (generation !== savedGeneration);
+      await flush();
       const markdown = items.map(({ object }) => {
         if (!annotations.getAnnotationById(object.id) || annotations.getAnnotationById(object.id)?.commitState === "deleted")
           throw new Error("选中的批注已删除，请重新选择。");
@@ -150,15 +163,20 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
     action: () => void exportCopy() });
   commands.registerCommand({ id: "paper:copy-annotation", label: "复制批注链接", icon: "link", action: () => void copy() });
   const ui = registry.getPlugin<UIPlugin>(UIPlugin.id)!.provides();
+  const schema = ui.getSchema();
+  const toolbar = schema.toolbars["annotation-toolbar"];
+  if (toolbar) ui.mergeSchema({ toolbars: { "annotation-toolbar": { ...toolbar, items: [
+    { type: "command-button", id: "paper-copy-annotation-toolbar", commandId: "paper:copy-annotation", variant: "icon" }, ...toolbar.items,
+  ] } } });
   const menus = ui.getSchema().selectionMenus;
   ui.mergeSchema({ selectionMenus: Object.fromEntries(Object.entries(menus).map(([id, menu]) => [id,
     id === "selection" ? menu : { ...menu, items: [
       { type: "command-button", id: `paper-copy-annotation-${id}`, commandId: "paper:copy-annotation", variant: "icon" }, ...menu.items,
     ] },
   ])) });
-  return { save, copy,
-    navigate(value: AnnotationTarget, nonce: string, selectOnly = false) { target = { value, nonce, selectOnly }; locate(); },
-    dispose() { disposed = true; offEvent(); offState(); offHistory(); offLayout(); offBegin();
+  return { save: flush, copy,
+    navigate(value: AnnotationTarget, nonce: string) { target = { value, nonce }; locate(); },
+    dispose() { restoreCommitReducer(); clearTimeout(saveTimer); disposed = true; offEvent(); offState(); offHistory(); offLayout(); offBegin();
       window.removeEventListener("pointerup", finishCrossPage); window.removeEventListener("beforeunload", beforeUnload); },
   };
 }

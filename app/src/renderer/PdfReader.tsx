@@ -15,17 +15,19 @@ import type { PdfSource, PdfPosition } from "../shared/contracts";
 import type { Citation, CitationUse, UsedCitation } from "../shared/citations";
 import { connectPdfCitations } from "./pdf-citations";
 import type { EmbedPdfContainer } from "@embedpdf/react-pdf-viewer";
-import { Save, Link, Search, X, RefreshCw } from "lucide-react";
+import { X } from "lucide-react";
 import { connectPdfAnnotations, type AnnotationView } from "./pdf-annotations";
 import { resolveAnnotationLink, type AnnotationTarget } from "../shared/annotation-links";
 
-export function PdfReader({ root, path, position, onPosition, citation, revision, onUse, citationNonce, annotationTarget, onPending }: {
+export function PdfReader({ root, path, position, onPosition, citation, revision, onUse, citationNonce, annotationTarget, onPending, onBeforeLeave, showUses, onCloseUses }: {
   root: string; path: string; position?: PdfPosition;
   citation?: Citation; revision: unknown; onUse: (use: CitationUse) => void;
   onPosition: (position: PdfPosition) => void;
   citationNonce?: string;
-  annotationTarget?: { target: AnnotationTarget; nonce: string; selectOnly?: boolean };
+  annotationTarget?: { target: AnnotationTarget; nonce: string };
   onPending: (pending: boolean) => void;
+  onBeforeLeave: (save: (() => Promise<void>) | null) => void;
+  showUses: boolean; onCloseUses: () => void;
 }) {
   const [source, setSource] = useState<PdfSource | null>(null);
   const [error, setError] = useState("");
@@ -73,19 +75,21 @@ export function PdfReader({ root, path, position, onPosition, citation, revision
   return <section className="pdf-workspace">
     {external && <div className="notice error" role="alert">{external}</div>}
     <PdfDocument key={epoch} root={root} source={source} path={path} saved={saved} onPosition={onPosition}
-        citation={citation} revision={revision} onUse={onUse} citationNonce={citationNonce} annotationTarget={annotationTarget} onReload={() => void reload()}
+        citation={citation} revision={revision} onUse={onUse} citationNonce={citationNonce} annotationTarget={annotationTarget} onReload={() => void reload()} onBeforeLeave={onBeforeLeave} showUses={showUses} onCloseUses={onCloseUses}
         onSaved={(sha256, bytes) => { const value = { sha256, bytes }; sourceRef.current = value; setSource(value); }}
         onPending={(dirty, saving = false) => { pending.current = { dirty, saving }; onPending(dirty); }} />
   </section>;
 }
 
-function PdfDocument({ root, source, path, saved, onPosition, citation, revision, onUse, citationNonce, annotationTarget, onPending, onSaved, onReload }: {
+function PdfDocument({ root, source, path, saved, onPosition, citation, revision, onUse, citationNonce, annotationTarget, onPending, onSaved, onReload, onBeforeLeave, showUses, onCloseUses }: {
   root: string; citation?: Citation; revision: unknown; onUse: (use: CitationUse) => void;
   source: PdfSource; path: string; saved?: PdfPosition; onPosition: (p: PdfPosition) => void;
-  citationNonce?: string; annotationTarget?: { target: AnnotationTarget; nonce: string; selectOnly?: boolean };
+  citationNonce?: string; annotationTarget?: { target: AnnotationTarget; nonce: string };
   onPending: (pending: boolean, saving?: boolean) => void;
   onSaved: (sha256: string, bytes: Uint8Array) => void;
   onReload: () => void;
+  onBeforeLeave: (save: (() => Promise<void>) | null) => void;
+  showUses: boolean; onCloseUses: () => void;
 }) {
   const cleanup = useRef<(() => void) | null>(null);
   const viewer = useRef<EmbedPdfContainer | null>(null);
@@ -98,19 +102,17 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
   latestTarget.current = annotationTarget;
   useEffect(() => {
     if (annotationTarget) {
-      citations.current?.cancel();
-      annotations.current?.navigate(annotationTarget.target, annotationTarget.nonce, annotationTarget.selectOnly);
+      citations.current?.cancel(); citations.current?.clearTarget();
+      annotations.current?.navigate(annotationTarget.target, annotationTarget.nonce);
     }
   }, [annotationTarget]);
   const [annotationView, setAnnotationView] = useState<AnnotationView>({ items: [], selected: [], dirty: false, saving: false, loaded: false, error: "" });
   const [annotationUses, setAnnotationUses] = useState<CitationUse[]>([]);
-  const [showUses, setShowUses] = useState(false);
-  const [focusedAnnotation, setFocusedAnnotation] = useState<string[]>([]);
   const usesPanel = useRef<HTMLElement | null>(null);
   const selectedAnnotationIds = annotationView.selected.map((a) => a.id).join("\n");
   useEffect(() => {
     if (showUses) usesPanel.current?.querySelector("section.selected")?.scrollIntoView({ block: "nearest" });
-  }, [showUses, selectedAnnotationIds, focusedAnnotation]);
+  }, [showUses, selectedAnnotationIds]);
   const flushPosition = useRef(() => {});
   const [used, setUsed] = useState<UsedCitation[]>([]);
   const [usageError, setUsageError] = useState("");
@@ -127,23 +129,28 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
       setUsageError([items, uses].flatMap((result) => result.status === "rejected" ? [String(result.reason.message ?? result.reason)] : []).join("；"));
     });
     return () => { disposed = true; };
-  }, [root, path, revision, showUses, focusedAnnotation]);
+  }, [root, path, revision, showUses]);
   useEffect(() => { if (citation) citations.current?.navigate(citation); }, [citation, citationNonce]);
   const cards = [
     ...used.map(({ citation: value, uses }) => ({ id: value.id,
       label: `${value.kind === "page" ? "整页引用" : value.kind === "region" ? "区域引用" : "文字引用"} · 第 ${value.pages.map((p) => p.page).join("、")} 页`,
       text: value.text, uses, locate: () => citations.current?.navigate(value), selected: false,
     })),
-    ...[...new Set([...annotationUses.map((use) => resolveAnnotationLink(use.id).id), ...focusedAnnotation])].map((id) => {
+    ...[...new Set([...annotationUses.map((use) => resolveAnnotationLink(use.id).id), ...annotationView.selected.map((a) => a.id)])].map((id) => {
       const item = annotationView.items.find((a) => a.id === id);
       return { id, label: item ? `原生批注 · 第 ${item.page} 页` : "原生批注 · 已删除或不可用",
         text: item?.comment ?? "", uses: annotationUses.filter((use) => resolveAnnotationLink(use.id).id === id),
-        locate: () => { citations.current?.cancel(); annotations.current?.navigate({ path, id }, crypto.randomUUID()); },
+        locate: () => { citations.current?.cancel(); citations.current?.clearTarget(); annotations.current?.navigate({ path, id }, crypto.randomUUID()); },
         selected: annotationView.selected.some((a) => a.id === id),
       };
     }),
   ];
   const [status, setStatus] = useState("");
+  useEffect(() => {
+    if (!status.startsWith("已复制")) return;
+    const timer = setTimeout(() => setStatus(""), 1800);
+    return () => clearTimeout(timer);
+  }, [status]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const onPositionRef = useRef(onPosition);
   onPositionRef.current = onPosition;
@@ -164,7 +171,7 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
     ...(saved?.spreadMode && { spread: { defaultSpreadMode: saved.spreadMode as SpreadMode } }),
     ...(saved?.rotation !== undefined && { rotation: { defaultRotation: saved.rotation } }),
   }), [saved]);
-  useEffect(() => () => { annotations.current?.dispose(); citations.current?.dispose(); cleanup.current?.(); }, []);
+  useEffect(() => () => { onBeforeLeave(null); annotations.current?.dispose(); citations.current?.dispose(); cleanup.current?.(); }, []);
 
   function ready(registry: PluginRegistry) {
     const manager = registry.getPlugin<DocumentManagerPlugin>(DocumentManagerPlugin.id)!.provides();
@@ -231,8 +238,9 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
       onChange: (view) => { setAnnotationView(view); onPending(view.dirty || view.saving, view.saving); },
       onSaved: (sha256, bytes) => { hash.current = sha256; citations.current?.setVersion(sha256); onSaved(sha256, bytes); flushPosition.current(); },
     });
-    if (latestTarget.current) annotations.current.navigate(latestTarget.current.target, latestTarget.current.nonce, latestTarget.current.selectOnly);
-    citations.current = connectPdfCitations(registry, viewer.current!, { root, path, sha256: source.sha256, target: latestCitation.current, onStatus: setStatus });
+    onBeforeLeave(() => annotations.current!.save());
+    if (latestTarget.current) annotations.current.navigate(latestTarget.current.target, latestTarget.current.nonce);
+    citations.current = connectPdfCitations(registry, viewer.current!, { root, path, sha256: source.sha256, target: latestCitation.current, onStatus: setStatus, beforeCopy: () => annotations.current!.save() });
     // Let the native Viewer handle password prompts, malformed files, and retries.
     void manager.openDocumentBuffer({
       buffer: new Uint8Array(source.bytes).buffer, name: path, documentId, scale: saved?.zoom ?? 1,
@@ -241,22 +249,14 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
   }
 
   return <div className="pdf-reader" onClick={() => setContextMenu(null)}>
-    <div className="annotation-actions">
-      <button className="icon" aria-label="重新载入 PDF" title="重新载入 PDF" onClick={onReload}><RefreshCw /></button>
-      <span aria-label="批注保存状态">{annotationView.saving ? "正在保存批注…" : annotationView.dirty ? "批注未保存" : "批注已保存到 PDF"}</span>
-      <button className="icon" title="保存批注到 PDF" aria-label="保存批注到 PDF" disabled={!annotationView.loaded || !annotationView.dirty || annotationView.saving}
-        onClick={() => void annotations.current?.save().catch(() => {})}><Save /></button>
-      <button className="icon" title="复制批注链接" aria-label="复制批注链接" disabled={!annotationView.selected.length || annotationView.saving}
-        onClick={() => void annotations.current?.copy()}><Link /></button>
-      <button className="icon" title="查找批注使用位置" aria-label="查找批注使用位置" disabled={!annotationView.selected.length}
-        onClick={() => { setFocusedAnnotation(annotationView.selected.map((a) => a.id)); setShowUses(true); }}><Search /></button>
-      <button aria-label="文档引用使用位置" aria-expanded={showUses} onClick={() => { setFocusedAnnotation([]); setShowUses(!showUses); }}>文档引用</button>
-      {annotationView.selected.length > 0 && <small>已选批注 · 第 {annotationView.selected.map((a) => a.page).join("、")} 页</small>}
-    </div>
-    {annotationView.error && <div className="citation-status" role="alert">{annotationView.error}</div>}
+    {annotationView.error && <div className="notice error" role="alert">
+      <span>{annotationView.error}，当前批注已保留。</span>
+      <button disabled={annotationView.saving} onClick={() => void annotations.current?.save().catch(() => {})}>重试自动保存</button>
+      <button onClick={onReload}>重新载入 PDF</button>
+    </div>}
     {usageError && <div className="citation-status" role="alert">文档引用加载失败：{usageError}</div>}
     {showUses && <aside ref={usesPanel} className="citation-uses" aria-label="文档引用使用位置">
-      <header><strong>文档引用</strong><button className="icon" aria-label="关闭文档引用列表" onClick={() => setShowUses(false)}><X /></button></header>
+      <header><strong>文档引用</strong><button className="icon" aria-label="关闭文档引用列表" onClick={onCloseUses}><X /></button></header>
       {!cards.length && <p>没有文档引用此 PDF。</p>}
       {cards.map((card) => <section key={card.id} aria-label={card.label} className={card.selected ? "selected" : ""}>
         <button className="citation-source" onClick={card.locate}><strong>{card.label}</strong>{card.text && <span>{card.text}</span>}</button>

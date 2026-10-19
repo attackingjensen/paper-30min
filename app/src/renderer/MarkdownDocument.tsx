@@ -121,6 +121,8 @@ export function MarkdownDocument({
           markdown(),
           EditorView.lineWrapping,
           EditorView.domEventHandlers({
+            compositionstart() { draft.composing = true; callbacks.current.onChange(); },
+            compositionend() { draft.composing = false; callbacks.current.onChange(); },
             paste(event, view) {
               if (!event.clipboardData) return false;
               try {
@@ -220,8 +222,9 @@ export function MarkdownDocument({
       view.dom.removeEventListener("click", openCitation);
       view.dom.removeEventListener("mousedown", preserveCursor, true);
       view.destroy();
+      if (draft.composing) { draft.composing = false; callbacks.current.onChange(); }
     };
-  }, [draft, editing, draft.file?.version]);
+  }, [draft, editing, draft.loading, draft.revision]);
   useEffect(() => {
     if (preview.current) preview.current.scrollTop = draft.readScroll;
   }, [draft, draft.mode, draft.loading]);
@@ -280,7 +283,7 @@ export function MarkdownDocument({
     const { use } = usageTarget;
     if (draft.file.version !== use.version || isDirty(draft)) {
       visited.current = usageTarget.nonce;
-      setLinkError("文档已变化或有未保存编辑，请保存后返回 PDF 刷新引用列表再定位。当前内容已保留。");
+      setLinkError("文档已变化或有未保存编辑，请重新打开 PDF 引用列表再定位。当前内容已保留。");
       return;
     }
     if (draft.mode === "edit") { draft.mode = "read"; onChange(); return; }
@@ -329,28 +332,13 @@ export function MarkdownDocument({
                 </button>
               ))}
             </div>
-            <span className="muted markdown-save-state">
-              {draft.saving
-                ? "正在保存…"
-                : isDirty(draft)
-                  ? "未保存"
-                  : "已保存"}
-            </span>
-            <button
-              className="borderbtn"
-              disabled={
-                !isDirty(draft) || draft.saving || draft.external !== undefined
-              }
-              onClick={onSave}
-            >
-              保存
-            </button>
           </>
         )}
       </div>
       {(draft.error || linkError) && (
         <div className="notice error" role="alert">
           {draft.error || linkError}
+          {draft.error && draft.external === undefined && isDirty(draft) && <button onClick={onSave} disabled={draft.saving}>重试自动保存</button>}
         </div>
       )}
       {draft.external !== undefined && (

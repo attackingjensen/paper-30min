@@ -19,6 +19,10 @@ export interface MarkdownDraft {
   scroll: number;
   readScroll: number;
   cursor: number;
+  revision: number;
+  composing?: boolean;
+  saveTimer?: ReturnType<typeof setTimeout>;
+  pendingSave?: Promise<void>;
 }
 export const isMarkdown = (path?: string) =>
   !!path && /\.(md|markdown)$/i.test(path);
@@ -50,12 +54,13 @@ export function useMarkdownDocuments(
         path: draft.path,
       });
       if (!alive() || draft.file !== baseline || draft.saving) return;
-      draft.error = "";
       if (!draft.file || !isDirty(draft) || draft.text === file.text) {
         if (draft.text !== file.text) {
           draft.text = file.text;
           draft.editor = undefined;
+          draft.revision++;
         }
+        draft.error = "";
         draft.file = file;
         draft.external = undefined;
       } else
@@ -83,6 +88,7 @@ export function useMarkdownDocuments(
       if (!draft) {
         draft = {
           path: tab.path!,
+          revision: 0,
           text: "",
           loading: true,
           saving: false,
@@ -98,8 +104,22 @@ export function useMarkdownDocuments(
     }
   }, [root, tabs, revision]);
 
-  async function save(draft: MarkdownDraft) {
-    if (!draft.file || draft.saving || !isDirty(draft)) return;
+  function changed(draft: MarkdownDraft) {
+    clearTimeout(draft.saveTimer);
+    if (isDirty(draft) && !draft.composing && draft.external === undefined)
+      draft.saveTimer = setTimeout(() => void save(draft), 600);
+    notify();
+  }
+  async function save(draft: MarkdownDraft): Promise<void> {
+    clearTimeout(draft.saveTimer);
+    if (draft.pendingSave) { await draft.pendingSave; return; }
+    if (!draft.file || draft.composing || draft.external !== undefined || !isDirty(draft)) return;
+    draft.pendingSave = persist(draft);
+    await draft.pendingSave;
+    draft.pendingSave = undefined;
+    if (isDirty(draft) && !draft.error && draft.external === undefined && !draft.composing) changed(draft);
+  }
+  async function persist(draft: MarkdownDraft) {
     draft.saving = true;
     draft.error = "";
     notify();
@@ -110,7 +130,7 @@ export function useMarkdownDocuments(
         root: root!,
         path: draft.path,
         text,
-        version: draft.file.version,
+        version: draft.file!.version,
       });
       if (!alive()) return;
       if (result.saved) {
@@ -127,6 +147,7 @@ export function useMarkdownDocuments(
       notify();
     }
   }
+  useEffect(() => () => { for (const draft of drafts.values()) clearTimeout(draft.saveTimer); }, [drafts]);
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if ([...drafts.values()].some((d) => isDirty(d) || d.saving)) {
@@ -138,7 +159,15 @@ export function useMarkdownDocuments(
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [drafts]);
 
-  function mayLeave(path?: string) {
+  async function flush(path?: string) {
+    const selected = path ? [drafts.get(path)].filter((d): d is MarkdownDraft => !!d) : [...drafts.values()];
+    await Promise.all(selected.map(async (draft) => {
+      do { await save(draft); } while (isDirty(draft) && !draft.error && draft.external === undefined && !draft.composing);
+    }));
+    return !selected.some((draft) => isDirty(draft) || draft.saving);
+  }
+  async function mayLeave(path?: string) {
+    if (await flush(path)) return true;
     const selected = path
       ? [drafts.get(path)].filter((d): d is MarkdownDraft => !!d)
       : [...drafts.values()];
@@ -154,9 +183,11 @@ export function useMarkdownDocuments(
   return {
     drafts,
     notify,
+    changed,
     save,
+    flush,
     mayLeave,
-    forget: (path: string) => drafts.delete(path),
+    forget: (path: string) => { clearTimeout(drafts.get(path)?.saveTimer); drafts.delete(path); },
     retarget: (from: string, to: string) => {
       const draft = drafts.get(from);
       if (draft) {

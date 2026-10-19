@@ -25,7 +25,16 @@ async function nativeAnnotations() {
   });
 }
 
+async function expectAnnotationSelected(id?: string) {
+  await expect.poll(() => page.locator("embedpdf-container").evaluate(async (element, wanted) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    const selected = registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").getSelectedAnnotations();
+    return wanted ? selected.filter((a) => a.object.id === wanted).length : selected.length;
+  }, id)).toBeGreaterThan(0);
+}
+
 async function nativeHighlight() {
+  const count = (await nativeAnnotations()).length;
   await page.getByRole("button", { name: "批注", exact: true }).click();
   await page.getByRole("button", { name: "高亮", exact: true }).first().click();
   const image = await pdfImage().boundingBox();
@@ -33,7 +42,7 @@ async function nativeHighlight() {
   await page.mouse.down();
   await page.mouse.move(image!.x + 300, image!.y + 230, { steps: 20 });
   await page.mouse.up();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注未保存");
+  await expect.poll(async () => (await nativeAnnotations()).length).toBe(count + 1);
 }
 
 let sandbox: string;
@@ -363,7 +372,7 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
         })
         .toBe(true);
       await page
-        .getByRole("button", { name: "返回引用处", exact: true })
+        .getByRole("tab", { name: path.basename(run!.candidate!), exact: true })
         .click();
       await expect(
         page.getByRole("group", { name: "Markdown 视图" }),
@@ -587,7 +596,7 @@ test("真实百度服务生成可回查候选并记录格式与耗时", async ()
         path: path.join(output, `ste82-real-${label}.png`),
       });
       await page
-        .getByRole("button", { name: "返回引用处", exact: true })
+        .getByRole("tab", { name: path.basename(run!.candidate!), exact: true })
         .click();
     }
     await fs.writeFile(
@@ -655,8 +664,9 @@ test("窗口关闭保护保留草稿，测试清理自动放弃临时编辑", as
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
   await editor.press("Control+End");
+  await fs.chmod(note, 0o444);
   await editor.pressSequentially("未保存草稿");
-  await expect(page.locator(".markdown-save-state")).toHaveText("未保存");
+  await expect(page.getByRole("alert")).toContainText("保存失败");
 
   const prompt = await desktop.evaluate(({ BrowserWindow, dialog }) =>
     new Promise<string>((resolve) => {
@@ -673,6 +683,7 @@ test("窗口关闭保护保留草稿，测试清理自动放弃临时编辑", as
 
   await closeDesktopForCleanup();
   expect(desktopProcess.exitCode).toBe(0);
+  await fs.chmod(note, 0o666);
   expect(await fs.readFile(note, "utf8")).toBe(original);
 });
 
@@ -2121,7 +2132,7 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
     await page.getByRole("button", { name: "编辑", exact: true }).click();
     await page.locator(".cm-content").press("Control+End");
     await page.keyboard.insertText("\nUser correction.\n");
-    await page.getByRole("button", { name: "保存", exact: true }).click();
+
     await expect.poll(() => fs.readFile(path.join(root, batch.candidate!), "utf8")).toContain("User correction.");
     expect((await progress()).reviewedThroughPage).toBe(batch.pageCount);
     await page.screenshot({ path: "test-results/ste83-reviewed-desktop.png", animations: "disabled" });
@@ -2203,7 +2214,7 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口并可
     await expect(page.locator('[data-tool="read_pdf"][data-status="done"]')).toHaveCount(2);
     await link.click();
     await expectPdfRendered();
-    await expect(page.getByRole("status")).toContainText("已定位到引用页面（页级引用）");
+    await expectPdfRendered();
     await expect(pdfPage()).toHaveValue("3");
     await expect(page.locator('[data-citation-page]')).toHaveCount(0);
     await page.screenshot({ path: "test-results/ste94-citation.png" });
@@ -3836,7 +3847,7 @@ test("工作台真实文件树、标签复用与设置返回，桌面和窄窗�
   ).toBeVisible();
 });
 
-test("PDF 引用复制、原生粘贴撤销、定位高亮与返回草稿", async () => {
+test("PDF 引用复制、原生粘贴撤销、定位高亮与标签往返", async () => {
   const parent = path.join(sandbox, "projects");
   await create(fixture, parent);
   const root = path.join(parent, "研究工程");
@@ -3906,7 +3917,7 @@ test("PDF 引用复制、原生粘贴撤销、定位高亮与返回草稿", asyn
   await page.getByRole("button", { name: "分屏", exact: true }).click();
   await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
   await expectPdfRendered();
-  await expect(page.getByRole("status")).toContainText("已定位并高亮");
+  await expect(page.locator("[data-citation-page]").first()).toBeVisible();
   const mark = page.locator('[aria-label="引用高亮"] [data-citation-page="1"]');
   await expect(mark).toHaveCount(1);
   await expect.poll(async () => {
@@ -3936,19 +3947,18 @@ test("PDF 引用复制、原生粘贴撤销、定位高亮与返回草稿", asyn
     return marked && image ? marked.y - image.y : undefined;
   }).toBeCloseTo(60 * 1.5, 0);
   await page.screenshot({ path: "test-results/citation-rotated.png" });
-  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await page.getByRole("tab", { name: "引用.md", exact: true }).click();
   await expect(editor).toContainText(link);
-  await expect(page.locator(".markdown-save-state")).toHaveText("未保存");
   await editor.getByText(/paper:\/\/cite\//).click({ modifiers: ["Control"] });
-  await expect(page.getByRole("status")).toContainText("已定位并高亮");
-  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.locator("[data-citation-page]").first()).toBeVisible();
+  await page.getByRole("tab", { name: "引用.md", exact: true }).click();
+
   await expect.poll(() => fs.readFile(path.join(root, "notes/引用.md"), "utf8")).toContain(link);
   await desktop.close();
   await launch();
   await page.getByRole("button", { name: /研究工程/ }).click();
   await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("已定位并高亮");
+  await expect(page.locator("[data-citation-page]").first()).toBeVisible();
 });
 
 test("PDF 初始化期间连续点击引用保留最新目标", async () => {
@@ -4018,7 +4028,6 @@ test("同一阅读器共用批注与无痕引用，保存后可继续取证且�
   await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   const list = page.getByRole("complementary", { name: "文档引用使用位置" });
   await list.getByRole("button", { name: /整页引用/ }).click();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注未保存");
   expect((await nativeAnnotations())[0].id).toBe(before.id);
   await page.getByRole("button", { name: "关闭文档引用列表", exact: true }).click();
   await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
@@ -4027,9 +4036,17 @@ test("同一阅读器共用批注与无痕引用，保存后可继续取证且�
   await fs.appendFile(path.join(root, "notes/混合.md"), annotation.replace("text/paper.pdf", "../text/paper.pdf"));
   await page.getByRole("button", { name: "引用", exact: true }).click();
   await page.getByRole("button", { name: "整页引用", exact: true }).click();
+  await page.locator("embedpdf-container").evaluate(async (element, id) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").updateAnnotation(0, id, { contents: "Saved alongside citation" });
+  }, before.id);
   await page.getByRole("button", { name: "复制引用链接", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("已复制引用链接");
   const after = await desktop.evaluate(({ clipboard }) => clipboard.readText());
+  const currentPdf = await page.evaluate((root) => window.desktop.invoke<{ sha256: string }>({ type: "readPdf", root, path: "text/paper.pdf" }), root);
+  const dictionary = JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"));
+  expect(dictionary.citations[after.match(/cite\/([a-f0-9]+)/)![1]].sha256).toBe(currentPdf.sha256);
+
   expect(after).toContain("paper://cite/");
   expect(after).not.toBe(invisible);
   await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
@@ -4038,11 +4055,11 @@ test("同一阅读器共用批注与无痕引用，保存后可继续取证且�
   await expect(list).toContainText("原生批注 · 第 1 页");
   await expect(page.locator("[data-document-citation], [data-citation-uses-page]")).toHaveCount(0);
   await list.getByRole("button", { name: /原生批注 · 第/ }).click();
-  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await expectAnnotationSelected();
   await list.locator("section").filter({ hasText: "原生批注" }).getByRole("button", { name: /混合笔记/ }).click();
   await expect(page.locator(".citation-use-target")).toContainText("PDF 第 1 页批注");
-  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
+  await expectPdfRendered();
 });
 
 test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", async () => {
@@ -4057,9 +4074,6 @@ test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", a
   await page.mouse.down();
   await page.mouse.move(image!.x + 300, image!.y + 230, { steps: 20 });
   await page.mouse.up();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注未保存");
-  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
   await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
   await expect(page.getByRole("status")).toContainText("已复制 1 个批注链接");
   const markdown = await desktop.evaluate(({ clipboard }) => clipboard.readText());
@@ -4084,20 +4098,18 @@ test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", a
   await editor.press("Control+v");
   await page.getByRole("button", { name: "分屏", exact: true }).click();
   await page.locator('.markdown-preview a[href*="#annotation="]').click();
-  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
-  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await expectAnnotationSelected();
+  await page.getByRole("tab", { name: "批注.md", exact: true }).click();
   await expect(editor).toContainText("../text/paper.pdf#annotation=");
-  await expect(page.locator(".markdown-save-state")).toHaveText("未保存");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.locator(".markdown-save-state")).toHaveText("已保存");
+
   await page.locator('.markdown-preview a[href*="#annotation="]').click();
-  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
-  await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
+  await expectAnnotationSelected();
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   const uses = page.getByRole("complementary", { name: "文档引用使用位置" });
   await expect(uses.locator("section > button:not(.citation-source)")).toHaveCount(3);
   await uses.getByRole("button", { name: /第二篇/ }).nth(1).click();
   await expect(page.locator(".citation-use-target")).toContainText("PDF 第 1 页批注");
-  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
   await expectPdfRendered();
   await desktop.close();
   await launch();
@@ -4105,7 +4117,7 @@ test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", a
   await page.getByRole("button", { name: "笔记", exact: true }).click();
   await page.getByRole("button", { name: "批注.md", exact: true }).click();
   await page.locator('.markdown-preview a[href*="#annotation="]').first().click();
-  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await expectAnnotationSelected();
   const reopened = await nativeAnnotations();
   expect(reopened).toHaveLength(1);
   expect(reopened[0].id).toBe(decodeURIComponent(markdown.match(/#annotation=([^)]*)/)![1]));
@@ -4137,7 +4149,7 @@ test("原生批注在 Markdown 与已有会话中随 PDF 和文档移动更新�
   const chatLink = page.locator('.chat-message a[href*="#annotation="]');
   await expect(chatLink).toHaveCount(1);
   await chatLink.click();
-  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
+  await expectAnnotationSelected();
   await page.getByRole("button", { name: "改名或移动", exact: true }).click();
   await page.getByLabel("工程内相对路径").fill("text/批注 甲.pdf");
   await page.getByRole("dialog").getByRole("button", { name: "保存", exact: true }).click();
@@ -4157,11 +4169,10 @@ test("原生批注在 Markdown 与已有会话中随 PDF 和文档移动更新�
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await page.getByRole("textbox", { name: "Markdown 源码", exact: true }).locator(".cm-line")
     .filter({ hasText: "[再次][a\\]]" }).click({ modifiers: ["Control"] });
-  await expect(page.getByRole("status")).toContainText("已定位并选中批注");
-  await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
+  await expectAnnotationSelected();
+  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   await expect(page.getByRole("complementary", { name: "文档引用使用位置" }).locator("section > button:not(.citation-source)")).toHaveCount(2);
   await fs.writeFile(path.join(root, "map/deep/移动.md"), "# 已移除链接\n");
-  await page.getByRole("button", { name: "查找批注使用位置", exact: true }).click();
   await expect(page.getByRole("complementary", { name: "文档引用使用位置" })).toContainText("没有文档使用此批注");
   expect((await nativeAnnotations()).map((a) => a.id)).toContain(id);
   await fs.rename(path.join(root, "text/批注 甲.pdf"), path.join(root, "text/external.pdf"));
@@ -4183,16 +4194,14 @@ test("原生批注保存保护外部版本、失败现场和并发写入，旧�
   const original = await fs.readFile(file);
   const external = Buffer.concat([original, Buffer.from("\n% external edit\n")]);
   await fs.writeFile(file, external);
-  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: "批注保存失败" })).toBeVisible();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注未保存");
   expect(await fs.readFile(file)).toEqual(external);
   await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await expect(page.locator(".notice.error").filter({ hasText: "批注尚未保存，请先保存" })).toBeVisible();
+  await expect(page.locator(".notice.error").filter({ hasText: "PDF 自动保存失败" })).toBeVisible();
   await expect(page.locator(".pdf-reader")).toBeVisible();
   await fs.writeFile(file, original);
-  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
+  await page.getByRole("button", { name: "重试自动保存", exact: true }).click();
+  await expect.poll(async () => (await fs.readFile(file)).equals(original)).toBe(false);
   expect(await page.evaluate(({ root, id }) => window.desktop.invoke<{ path: string }>({ type: "resolveCitation", root, link: "paper://cite/" + id }), { root, id: old.id })).toMatchObject({ path: "text/paper.pdf" });
   const source = await page.evaluate((root) => window.desktop.invoke<{ bytes: Uint8Array; sha256: string }>({ type: "readPdf", root, path: "text/paper.pdf" }), root);
   const outcomes = await page.evaluate(async ({ root, bytes, sha256 }) => {
@@ -4206,8 +4215,60 @@ test("原生批注保存保护外部版本、失败现场和并发写入，旧�
   await page.getByRole("button", { name: "笔记", exact: true }).click();
   await page.getByRole("button", { name: "保存前出处.md", exact: true }).click();
   await page.getByRole("link", { name: "保存前出处", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("页级引用");
   await expectPdfRendered();
+  await expectPdfRendered();
+
+});
+
+test("批注提交期间继续编辑，较新评论也写入 PDF", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  await expectPdfRendered();
+  // Reproduce a new edit after PDFium writes the old snapshot, before SDK cleanup.
+  await page.locator("embedpdf-container").evaluate(async (element) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    const api = registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading");
+    const off = api.onAnnotationEvent((event) => {
+      if (event.type !== "create" || !event.committed) return;
+      off();
+      api.updateAnnotation(event.pageIndex, event.annotation.id, { contents: "Edit during commit" });
+    });
+  });
+  await nativeHighlight();
+  await expect.poll(async () => (await nativeAnnotations())[0]?.contents).toBe("Edit during commit");
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "笔记", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
+  await expectPdfRendered();
+  await expect.poll(async () => (await nativeAnnotations())[0]?.contents).toBe("Edit during commit");
+  const restoredId = (await nativeAnnotations())[0].id;
+  await page.getByRole("button", { name: "批注", exact: true }).click();
+  await page.locator("embedpdf-container").evaluate(async (element, id) => {
+    const registry = await (element as EmbedPdfContainer).registry;
+    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").selectAnnotation(0, id);
+    const original = Worker.prototype.postMessage as (this: Worker, message: unknown, options?: Transferable[] | StructuredSerializeOptions) => void;
+    const pending: (() => void)[] = [];
+    Worker.prototype.postMessage = function (message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+      pending.push(() => original.call(this, message, options));
+    };
+    window.addEventListener("release-pdf-delete", () => {
+      Worker.prototype.postMessage = original;
+      for (const send of pending) send();
+    }, { once: true });
+  }, restoredId);
+  try {
+    await page.getByRole("button", { name: "删除选中的批注", exact: true }).click();
+    // Hold the real worker beyond the autosave debounce, then undo in flight.
+    await page.waitForTimeout(800);
+    await page.getByRole("button", { name: "撤销", exact: true }).click();
+    expect((await nativeAnnotations()).map((item) => item.id)).toContain(restoredId);
+  } finally {
+    await page.evaluate(() => window.dispatchEvent(new Event("release-pdf-delete")));
+  }
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "笔记", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
+  await expectPdfRendered();
+  await expect.poll(async () => (await nativeAnnotations()).find((item) => item.id === restoredId)?.contents).toBe("Edit during commit");
 
 });
 
@@ -4236,13 +4297,17 @@ test("原生批注真实论文渲染、原生评论与窄窗口可操作", async
   await page.getByPlaceholder("新增评论...", { exact: true }).fill("Real paper comment");
   await page.getByPlaceholder("新增评论...", { exact: true }).press("Enter");
   await expect.poll(async () => (await nativeAnnotations()).find((item) => item.id === id)?.contents).toBe("Real paper comment");
-  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "笔记", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
+  await expectPdfRendered();
+  await expect.poll(async () => (await nativeAnnotations()).find((item) => item.id === id)?.contents).toBe("Real paper comment");
+  await expect(page.locator(".annotation-actions")).toHaveCount(0);
   await page.screenshot({ path: "test-results/native-real-paper-desktop.png" });
   await page.getByRole("button", { name: "收起 Agent", exact: true }).click();
   await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
   await page.setViewportSize({ width: 560, height: 780 });
-  await expect(page.getByRole("button", { name: "保存批注到 PDF", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "文档引用使用位置", exact: true })).toBeVisible();
   await expectPdfRendered();
   await page.screenshot({ path: "test-results/native-real-paper-narrow.png" });
 });
@@ -4305,22 +4370,19 @@ test("原生批注跨页选字产生逐页链接，下划线、重叠、评论�
     api.selectAnnotation(target.pageIndex, target.id);
     api.updateAnnotation(target.pageIndex, target.id, { contents: "A durable comment", strokeColor: "#ff0000" });
   }, annotations[0]);
-  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
   await page.locator("embedpdf-container").evaluate(async (element, target) => {
     const registry = await (element as EmbedPdfContainer).registry;
     registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading")
       .updateAnnotation(0, target.id, { rect: { ...target.rect, origin: { ...target.rect.origin, y: target.rect.origin.y + 25 } },
         segmentRects: (target as { segmentRects: typeof target.rect[] }).segmentRects.map((rect) => ({ ...rect, origin: { ...rect.origin, y: rect.origin.y + 25 } })) });
   }, underline);
-  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
   const root = path.join(sandbox, "projects/研究工程");
   await fs.writeFile(path.join(root, "notes/跨页.md"), links.replaceAll("text/paper.pdf", "../text/paper.pdf"));
   await page.getByRole("button", { name: "笔记", exact: true }).click();
   await page.getByRole("button", { name: "跨页.md", exact: true }).click();
   await page.locator('.markdown-preview a[href*="#annotation="]').nth(0).click();
-  await expect(page.getByRole("status")).toContainText("第 1 页");
+  await expect(pdfPage()).toHaveValue("1");
+  await expectAnnotationSelected();
   expect((await nativeAnnotations()).find((a) => a.id === annotations[0].id)?.contents).toBe("A durable comment");
   expect((await nativeAnnotations()).find((a) => a.id === annotations[0].id)).toMatchObject({ strokeColor: "#ff0000" });
   await page.getByRole("button", { name: "删除选中的批注", exact: true }).click();
@@ -4329,14 +4391,13 @@ test("原生批注跨页选字产生逐页链接，下划线、重叠、评论�
   await expect.poll(async () => (await nativeAnnotations()).map((item) => item.id)).toContain(annotations[0].id);
   await page.getByRole("button", { name: "恢复", exact: true }).click();
   await expect.poll(async () => (await nativeAnnotations()).map((item) => item.id)).not.toContain(annotations[0].id);
-  await page.getByRole("button", { name: "保存批注到 PDF", exact: true }).click();
-  await expect(page.getByLabel("批注保存状态")).toHaveText("批注已保存到 PDF");
-  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await page.getByRole("tab", { name: "跨页.md", exact: true }).click();
   await page.locator('.markdown-preview a[href*="#annotation="]').nth(0).click();
   await expect(page.getByRole("status")).toContainText("找不到目标批注");
-  await page.getByRole("button", { name: "返回引用处", exact: true }).click();
+  await page.getByRole("tab", { name: "跨页.md", exact: true }).click();
   await page.locator('.markdown-preview a[href*="#annotation="]').nth(1).click();
-  await expect(page.getByRole("status")).toContainText("第 2 页");
+  // Both short pages fit in the viewport; assert the actual selected page-2 annotation.
+  await expectAnnotationSelected(annotations[1].id);
   await page.screenshot({ path: "test-results/native-annotation-cross-page.png" });
 });
 
@@ -4388,7 +4449,7 @@ test("文字多行引用保留原句与多个区域，整页引用不伪装精�
   await page.getByRole("button", { name: "原句.md", exact: true }).click();
   await expect(page.getByRole("link", { name: "Citation alpha [one] (two…", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("页级引用");
+  await expectPdfRendered();
   await expect(page.locator('[data-citation-page]')).toHaveCount(0);
 });
 
@@ -4503,16 +4564,17 @@ test("PDF 无痕引用侧边反查、临时定位、外部更新与重开", asyn
   await list.getByRole("button", { name: /文字引用/ }).click();
   await expect(page.locator("[data-citation-page]")).toHaveCount(4);
   await page.keyboard.press("Escape");
-  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
+  await pdfViewport().click({ position: { x: 40, y: 300 } });
+  await expect(page.locator("[data-citation-page]")).toHaveCount(4);
+  await expect(page.locator(".citation-return, .annotation-actions")).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "已定位" })).toHaveCount(0);
   await page.screenshot({ path: "test-results/citation-uses.png" });
   const position = await pdfViewport().evaluate((e) => e.scrollTop);
   await list.getByRole("button").filter({ hasText: "第二处" }).click();
   await expect(page.locator(".citation-use-target")).toHaveAttribute("data-citation-use", `${textCitation.id}:1`);
   await expect(page.locator(".citation-use-target")).toBeInViewport();
-  // A second trip through the document's forward link must not replace the original PDF return point.
-  await page.locator(".citation-use-target").click();
-  await expectPdfRendered();
-  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
+  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
   await expectPdfRendered();
   await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeCloseTo(position, 0);
   await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
@@ -4523,10 +4585,11 @@ test("PDF 无痕引用侧边反查、临时定位、外部更新与重开", asyn
   await list.getByRole("button").filter({ hasText: "第二处" }).click();
   await page.getByRole("tab", { name: "paper.pdf" }).click();
   await jumpPdfPage(2);
-  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await page.getByRole("tab", { name: "甲.md", exact: true }).click();
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
   await expectPdfRendered();
-  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeCloseTo(position, 0);
-  await jumpPdfPage(2);
+  await expect(pdfPage()).toHaveValue("2");
+  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "文档引用使用位置", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(4);
@@ -4546,7 +4609,7 @@ test("PDF 无痕引用侧边反查、临时定位、外部更新与重开", asyn
   expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(pdfBefore);
 });
 
-test("文档反查保护未保存编辑，整页引用与失效字典明确处理", async () => {
+test("文档反查读取自动保存结果，整页引用与失效字典明确处理", async () => {
   const parent = path.join(sandbox, "projects");
   await create(fixture, parent);
   const root = path.join(parent, "研究工程");
@@ -4563,7 +4626,8 @@ test("文档反查保护未保存编辑，整页引用与失效字典明确处�
   const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
   await editor.click();
   await page.keyboard.press("Control+End");
-  await page.keyboard.type("UNSAVED");
+  await page.keyboard.type("AUTOSAVED");
+  await expect.poll(() => fs.readFile(path.join(root, "notes/稿.md"), "utf8")).toContain("AUTOSAVED");
   await page.getByRole("tab", { name: "paper.pdf" }).click();
   await expectPdfRendered();
   await expect(page.locator("[data-document-citation]")).toHaveCount(0);
@@ -4571,14 +4635,14 @@ test("文档反查保护未保存编辑，整页引用与失效字典明确处�
   const list = page.getByRole("complementary", { name: "文档引用使用位置" });
   await expect(list).toContainText("整页引用");
   await list.getByRole("button").filter({ hasText: "我的文档" }).click();
-  await expect(page.getByRole("alert")).toContainText("未保存编辑");
-  await expect(editor).toContainText("UNSAVED");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
-  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await expect(page.locator(".citation-use-target")).toHaveText("页证据");
+  await expect(page.locator(".markdown-preview")).toContainText("AUTOSAVED");
+
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
   await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   await list.getByRole("button").filter({ hasText: "我的文档" }).click();
   await expect(page.locator(".citation-use-target")).toHaveText("页证据");
-  await page.getByRole("button", { name: "返回 PDF 阅读位置", exact: true }).click();
+  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
   await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
   await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   await expect(list.locator("section")).toHaveCount(1);
@@ -4593,7 +4657,6 @@ test("文档反查保护未保存编辑，整页引用与失效字典明确处�
   await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
   await fs.appendFile(path.join(root, "text/paper.pdf"), "\nchanged");
   await expect(page.getByRole("alert").filter({ hasText: "已重新载入" })).toBeVisible();
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   await expect(list.locator("section")).toHaveCount(1);
   await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
   await expect(page.getByRole("alert").filter({ hasText: "文档引用加载失败" })).toHaveCount(0);
@@ -4640,7 +4703,7 @@ test("Markdown 三种视图、真实文件保真、图片公式与多标签草�
   await editor.press("Control+z");
   await expect(
     page.getByRole("button", { name: "保存", exact: true }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await editor.press("Control+End");
   await editor.pressSequentially("用户补充");
   await page.getByRole("button", { name: "分屏", exact: true }).click();
@@ -4655,12 +4718,12 @@ test("Markdown 三种视图、真实文件保真、图片公式与多标签草�
   await editor.pressSequentially("独立草稿");
   await page.getByRole("tab", { name: /原始.md/ }).click();
   await expect(editor).toContainText("用户补充");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+
   await expect
     .poll(() => fs.readFile(path.join(root, "notes/原始.md"), "utf8"))
     .toBe(original + "用户补充");
   await page.getByRole("tab", { name: /另一篇/ }).click();
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+
   await expect
     .poll(() => fs.readFile(path.join(root, "notes/另一篇(1).md"), "utf8"))
     .toBe("# 另一篇\n独立草稿");
@@ -4704,7 +4767,7 @@ test("Markdown 外部变更自动同步，冲突与文件消失保留用户输�
   ).toHaveValue("# Agent 再次修改\n");
   await expect(
     page.getByRole("button", { name: "保存", exact: true }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await fs.writeFile(note, "# 第三次外部更新\n");
   await expect(
     page.getByRole("textbox", { name: "当前磁盘内容", exact: true }),
@@ -4745,27 +4808,32 @@ test("Markdown 组合输入、撤销与保存失败不破坏原文件", async ()
     selectionStart: 4,
     selectionEnd: 4,
   });
+  await page.waitForTimeout(800);
+  expect(await fs.readFile(note, "utf8")).toBe("# 中文输入\r\n原文\r\n");
   await cdp.send("Input.insertText", { text: "中文组合" });
   await expect(editor).toContainText("中文组合");
+  await expect.poll(() => fs.readFile(note, "utf8")).toBe("# 中文输入\r\n原文\r\n中文组合");
   await page.getByRole("button", { name: "分屏", exact: true }).click();
   await page.screenshot({ path: "test-results/markdown-split.png" });
   await editor.press("Control+z");
   await expect(editor).not.toContainText("中文组合");
   await expect(
     page.getByRole("button", { name: "保存", exact: true }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await editor.press("Control+End");
-  await editor.pressSequentially("恢复输入");
+  await expect.poll(() => fs.readFile(note, "utf8")).toBe("# 中文输入\r\n原文\r\n");
   await fs.chmod(note, 0o444);
+  await editor.pressSequentially("恢复输入");
   try {
-    await page.getByRole("button", { name: "保存", exact: true }).click();
+
     await expect(page.getByRole("alert")).toContainText("保存失败");
     expect(await fs.readFile(note, "utf8")).toBe("# 中文输入\r\n原文\r\n");
     await expect(editor).toContainText("恢复输入");
   } finally {
     await fs.chmod(note, 0o666);
   }
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+
+  await page.getByRole("button", { name: "重试自动保存", exact: true }).click();
   await expect
     .poll(() => fs.readFile(note, "utf8"))
     .toBe("# 中文输入\r\n原文\r\n恢复输入");
