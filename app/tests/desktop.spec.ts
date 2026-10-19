@@ -4543,7 +4543,7 @@ test("PDF 无痕引用侧边反查、临时定位、外部更新与重开", asyn
   const link = `paper://cite/${textCitation.id}`;
   const regionLink = `paper://cite/${regionCitation.id}`;
   const unusedLink = `paper://cite/${unused.id}`;
-  const uses = () => page.evaluate(({ root }) => window.desktop.invoke<any[]>({ type: "citationUses", root, path: "text/paper.pdf" }), { root });
+  const uses = () => page.evaluate(({ root }) => window.desktop.invoke<{ citations: any[] }>({ type: "pdfUses", root, path: "text/paper.pdf" }).then((result) => result.citations), { root });
   await fs.mkdir(path.join(root, ".pi/sessions"), { recursive: true });
   await fs.writeFile(path.join(root, ".pi/sessions/chat.jsonl"), JSON.stringify({ role: "user", content: unusedLink }));
   await fs.writeFile(path.join(root, "text/parsed.md"), Array(100).fill(`[解析预建](${unusedLink})`).join("\n"));

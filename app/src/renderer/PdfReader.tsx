@@ -12,7 +12,7 @@ import wasmUrl from "@embedpdf/pdfium/pdfium.wasm?url";
 import stampManifest from "@embedpdf/default-stamps/zh-CN/manifest.json?raw";
 import stampsUrl from "@embedpdf/default-stamps/zh-CN/stamps.pdf?url";
 import type { PdfSource, PdfPosition } from "../shared/contracts";
-import type { Citation, CitationUse, UsedCitation } from "../shared/citations";
+import type { Citation, CitationUse, UsedCitation, PdfUses } from "../shared/citations";
 import { connectPdfCitations } from "./pdf-citations";
 import type { EmbedPdfContainer } from "@embedpdf/react-pdf-viewer";
 import { X } from "lucide-react";
@@ -119,14 +119,15 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
   useEffect(() => {
     if (!showUses) return;
     let disposed = false;
-    void Promise.allSettled([
-      window.desktop.invoke<UsedCitation[]>({ type: "citationUses", root, path }),
-      window.desktop.invoke<CitationUse[]>({ type: "annotationUses", root, path }),
-    ]).then(([items, uses]) => {
+    void window.desktop.invoke<PdfUses>({ type: "pdfUses", root, path }).then((result) => {
       if (disposed) return;
-      setUsed(items.status === "fulfilled" ? items.value : []);
-      setAnnotationUses(uses.status === "fulfilled" ? uses.value : []);
-      setUsageError([items, uses].flatMap((result) => result.status === "rejected" ? [String(result.reason.message ?? result.reason)] : []).join("；"));
+      setUsed(result.citations);
+      setAnnotationUses(result.annotations);
+      setUsageError(result.citationError);
+    }).catch((error: Error) => {
+      if (disposed) return;
+      setUsed([]); setAnnotationUses([]);
+      setUsageError(error.message);
     });
     return () => { disposed = true; };
   }, [root, path, revision, showUses]);

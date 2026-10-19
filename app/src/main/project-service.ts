@@ -4,9 +4,9 @@ import { createReadStream, createWriteStream, constants } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation } from "../shared/citations.js";
+import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation, type CitationUse } from "../shared/citations.js";
 import { markdownRenderer, markCitationUses } from "../shared/markdown-references.js";
-import { isAnnotationLink, annotationKey, resolveAnnotationLink, annotationHref, rewriteAnnotationLinks } from "../shared/annotation-links.js";
+import { isAnnotationLink, resolveAnnotationLink, annotationHref, rewriteAnnotationLinks } from "../shared/annotation-links.js";
 import {
   prepareDocumentReferences,
   type DocumentReferenceProcessor,
@@ -1032,23 +1032,9 @@ export class ProjectService {
       // Preserve provenance hashes; citation navigation follows document identity, not byte equality.
       return { sha256: createHash("sha256").update(bytes).digest("hex") };
     }
-    if (command.type === "annotationUses") {
-      await this.resolve(root, command.path);
-      const uses = [];
-      const wanted = command.ids && new Set(command.ids.map((id) => annotationKey({ path: command.path, id })));
-      for (const entry of (await this.snapshot(root)).files) {
-        if (entry.directory || !/\.(md|markdown)$/i.test(entry.path) || /^(text|sources)\//i.test(entry.path)) continue;
-        const file = await this.markdown(root, entry.path);
-        const tokens = markdownRenderer.parse(file.text.replace(/^\uFEFF/, ""), {});
-        const heading = tokens.findIndex((token) => token.type === "heading_open");
-        const title = heading >= 0 ? tokens[heading + 1].content : path.basename(entry.path);
-        for (const use of markCitationUses(tokens, entry.path))
-          if (wanted ? wanted.has(use.id) : isAnnotationLink(use.id) && resolveAnnotationLink(use.id).path === command.path) uses.push({ ...use, path: entry.path, title, version: file.version });
-      }
-      return uses;
-    }
-    if (command.type === "createCitation" || command.type === "resolveCitation" || command.type === "citationUses") {
+    if (command.type === "createCitation" || command.type === "resolveCitation" || command.type === "pdfUses") {
       let dictionary: CitationDictionary = { formatVersion: 1, projectId: m.id, citations: {} };
+      let citationError = "";
       try {
         const file = path.join(root, citationName);
         if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("引用字典不能是符号链接。");
@@ -1063,12 +1049,16 @@ export class ProjectService {
           validateCitation(item);
         }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          if (command.type !== "pdfUses") throw error;
+          citationError = (error as Error).message;
+          dictionary = { formatVersion: 1, projectId: m.id, citations: {} };
+        }
       }
-      if (command.type === "citationUses") {
+      if (command.type === "pdfUses") {
         const record = [m.paper, ...m.materials].find((r) => r.path === command.path);
-        if (!record) return [];
-        await this.resolve(root, record.path);
+        await this.resolve(root, command.path);
+        const annotations: CitationUse[] = [];
         const used = new Map<string, UsedCitation>();
         const { files } = await this.snapshot(root);
         for (const entry of files) {
@@ -1083,15 +1073,20 @@ export class ProjectService {
           const tokens = markdownRenderer.parse(file.text.replace(/^\uFEFF/, ""), {});
           const heading = tokens.findIndex((token) => token.type === "heading_open");
           const title = heading >= 0 ? tokens[heading + 1].content : path.basename(entry.path);
-          for (const use of markCitationUses(tokens)) {
+          for (const use of markCitationUses(tokens, entry.path)) {
+            if (isAnnotationLink(use.id)) {
+              if (resolveAnnotationLink(use.id).path === command.path)
+                annotations.push({ ...use, path: entry.path, title, version: file.version });
+              continue;
+            }
             const citation = dictionary.citations[use.id];
-            if (!citation || citation.documentId !== record.id) continue;
+            if (!citation || citation.documentId !== record?.id) continue;
             let item = used.get(use.id);
             if (!item) { item = { citation, uses: [] }; used.set(use.id, item); }
             item.uses.push({ ...use, path: entry.path, title, version: file.version });
           }
         }
-        return [...used.values()];
+        return { citations: [...used.values()], annotations, citationError };
       }
       const existing = command.type === "resolveCitation" ? dictionary.citations[citationId(command.link)] : undefined;
       if (command.type === "resolveCitation" && !existing) throw new Error("找不到此引用，可能属于其他工程或字典已缺失。");

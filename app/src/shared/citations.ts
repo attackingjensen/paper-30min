@@ -80,3 +80,9 @@ export function validateCitation(input: CitationInput): void {
     }
   }
 }
+
+export interface PdfUses {
+  citations: UsedCitation[];
+  annotations: CitationUse[];
+  citationError: string;
+}

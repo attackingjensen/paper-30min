@@ -121,10 +121,9 @@ export type Command =
   | { type: "readAsset"; root: string; path: string }
   | { type: "readPdf"; root: string; path: string }
   | { type: "savePdf"; root: string; path: string; bytes: Uint8Array; version: string }
-  | { type: "annotationUses"; root: string; path: string; ids?: string[] }
   | { type: "createCitation"; root: string; path: string; input: CitationInput }
   | { type: "resolveCitation"; root: string; link: string }
-  | { type: "citationUses"; root: string; path: string }
+  | { type: "pdfUses"; root: string; path: string }
   | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
   | {
       type: "savePdfPosition";

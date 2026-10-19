@@ -277,16 +277,18 @@ export function MarkdownDocument({
     return renderer.renderer.render(tokens, renderer.options, {});
   }, [draft.text, draft.path, root]);
 
+  // Drafts are mutable: location checks must use the snapshot that produced the preview.
+  const { loading, file, text, mode: viewMode } = draft;
   const visited = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!usageTarget || draft.loading || !draft.file || visited.current === usageTarget.nonce) return;
+    if (!usageTarget || loading || !file || visited.current === usageTarget.nonce) return;
     const { use } = usageTarget;
-    if (draft.file.version !== use.version || isDirty(draft)) {
+    if (file.version !== use.version || text !== file.text) {
       visited.current = usageTarget.nonce;
       setLinkError("文档已变化或有未保存编辑，请重新打开 PDF 引用列表再定位。当前内容已保留。");
       return;
     }
-    if (draft.mode === "edit") { draft.mode = "read"; onChange(); return; }
+    if (viewMode === "edit") { draft.mode = "read"; onChange(); return; }
     const link = preview.current?.querySelector<HTMLElement>(`[data-citation-use="${CSS.escape(`${use.id}:${use.occurrence}`)}"]`);
     visited.current = usageTarget.nonce;
     if (!link) { setLinkError("引用使用位置已变化，请返回 PDF 刷新引用列表。"); return; }
@@ -294,7 +296,7 @@ export function MarkdownDocument({
     preview.current?.querySelectorAll(".citation-use-target").forEach((node) => node.classList.remove("citation-use-target"));
     link.classList.add("citation-use-target");
     link.scrollIntoView({ block: "center" });
-  }, [usageTarget, draft.loading, draft.file, draft.mode, html]);
+  }, [usageTarget, loading, file, text, viewMode, html]);
 
   function mode(value: MarkdownDraft["mode"]) {
     draft.mode = value;
