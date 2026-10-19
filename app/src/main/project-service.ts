@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation, type CitationUse } from "../shared/citations.js";
 import { markdownRenderer, markCitationUses } from "../shared/markdown-references.js";
+import { canReusePdfEvidence, isKnownPdfVersion } from "../shared/pdf-versions.js";
 import { isAnnotationLink, resolveAnnotationLink, annotationHref, rewriteAnnotationLinks } from "../shared/annotation-links.js";
 import {
   prepareDocumentReferences,
@@ -74,7 +75,6 @@ function validateReading(value: ReadingState): ReadingState {
     relativePath(file);
     if (
       !p ||
-      !/^[a-f0-9]{64}$/.test(p.sha256) ||
       !Number.isInteger(p.page) ||
       p.page < 1 ||
       !Number.isFinite(p.x) ||
@@ -678,7 +678,8 @@ export class ProjectService {
           const project = await this.snapshot(previous.root);
           if (project.manifest.id === previous.projectId &&
               project.manifest.paper.sha256 === sha256 &&
-              await digest(await this.resolve(previous.root, project.manifest.paper.path), signal) === sha256) {
+              isKnownPdfVersion(project.manifest.paper,
+                await digest(await this.resolve(previous.root, project.manifest.paper.path), signal))) {
             signal.throwIfAborted();
             await this.remember(project);
             return { root: project.root, name: project.manifest.name, existing: true };
@@ -1032,11 +1033,11 @@ export class ProjectService {
       } finally { await fs.rm(temporary, { force: true }); }
       // Preserve provenance hashes; citation navigation follows document identity, not byte equality.
       const sha256 = createHash("sha256").update(bytes).digest("hex");
-      if (command.version === (record.annotationSha256 ?? record.sha256)) {
+      if (isKnownPdfVersion(record, command.version)) {
         record.annotationSha256 = sha256;
         await atomicJson(path.join(root, manifestName), m);
       }
-      return { sha256 };
+      return { sha256, document: record };
     }
     if (command.type === "createCitation" || command.type === "resolveCitation" || command.type === "pdfUses") {
       let dictionary: CitationDictionary = { formatVersion: 1, projectId: m.id, citations: {} };
@@ -1107,10 +1108,10 @@ export class ProjectService {
         throw error;
       }
       if (!/\.pdf$/i.test(file)) throw new Error("引用目标必须是 PDF。");
-      if (!existing) {
+      if (command.type === "createCitation") {
         const current = await digest(file, signal);
-        const fromOriginal = input.sha256 === record.sha256 && current === record.annotationSha256;
-        if (current !== input.sha256 && !fromOriginal)
+        if (!canReusePdfEvidence({ sha256: input.sha256, document: command.sourceDocument ?? record },
+          { sha256: current, document: record }))
           throw new Error("PDF 已被替换或版本无法确认，请重新选择后创建引用。");
       }
       if (existing) return { citation: existing, path: record.path };
@@ -1298,7 +1299,7 @@ export class ProjectService {
       if (!(await this.snapshot(root)).missing.includes(record.id))
         throw new Error("文档仍存在，无需重新关联。");
       const sha256 = await digest(command.source);
-      if (sha256 !== record.sha256)
+      if (!isKnownPdfVersion(record, sha256))
         throw new Error("文件内容与原文档不同，不能将其他文件关联为同一文档。");
       const relative = path
         .relative(root, await fs.realpath(command.source))

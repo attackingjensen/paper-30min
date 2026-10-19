@@ -7,6 +7,7 @@ import type { ParsingMapping, ParsingRun, ParsedBlock } from "../shared/parsing.
 import { annotationHref, resolveAnnotationLink } from "../shared/annotation-links.js";
 import type { AnnotationWriter, ReferenceRequest, ResolvedReference } from "../shared/references.js";
 import type { ProjectService } from "./project-service.js";
+import { canReusePdfEvidence } from "../shared/pdf-versions.js";
 
 async function openPdf(source: PdfSource) {
   const [{ init }, { PdfEngine, PdfiumNative }] = await Promise.all([
@@ -45,7 +46,11 @@ export class ReferenceService {
     }
   }
 
-  async resolve(root: string, request: ReferenceRequest, signal?: AbortSignal): Promise<ResolvedReference> {
+  async resolve(root: string, request: ReferenceRequest, signal?: AbortSignal) {
+    return (await this.resolveSource(root, request, signal)).reference;
+  }
+
+  private async resolveSource(root: string, request: ReferenceRequest, signal?: AbortSignal): Promise<{ reference: ResolvedReference; source: PdfSource }> {
     signal?.throwIfAborted();
     const project = await this.projects.dispatch({ type: "refresh", root }) as Project;
     let pages: CitationPage[] = [];
@@ -53,10 +58,12 @@ export class ReferenceService {
     let excerptSource: ResolvedReference["excerptSource"] = null;
     let block: ParsedBlock | undefined;
     let target: { path: string; id: string } | undefined;
+    let expectedDocumentId: string | undefined;
     let pdfPath: string;
     if (request.link.startsWith("paper://cite/")) {
       const resolved = await this.projects.dispatch({ type: "resolveCitation", root, link: request.link }) as ResolvedCitation;
       pdfPath = resolved.path;
+      expectedDocumentId = resolved.citation.documentId;
       pages = resolved.citation.pages;
       if (resolved.citation.text) { excerpt = resolved.citation.text; excerptSource = "selection"; }
       block = await this.block(root, project, resolved.citation);
@@ -69,9 +76,10 @@ export class ReferenceService {
       target = resolveAnnotationLink(request.link, request.sourceDocument);
       pdfPath = target.path;
     }
-    const record = [project.manifest.paper, ...project.manifest.materials].find((item) => item.path === pdfPath);
-    if (!record) throw new Error("引用对应的 PDF 身份不存在，请先将 PDF 加入工程材料。");
     const source = await this.projects.dispatch({ type: "readPdf", root, path: pdfPath }) as PdfSource;
+    const record = source.document;
+    if (!record) throw new Error("引用对应的 PDF 身份不存在，请先将 PDF 加入工程材料。");
+    if (expectedDocumentId && record.id !== expectedDocumentId) throw new Error("引用对应的 PDF 身份已变化。");
     const { engine, doc } = await openPdf(source);
     try {
       signal?.throwIfAborted();
@@ -98,16 +106,16 @@ export class ReferenceService {
           throw new Error("引用页面尺寸与当前 PDF 不符。");
       }
       signal?.throwIfAborted();
-      return { kind: target ? "annotation" : "citation", status: "available", path: pdfPath,
+      return { source, reference: { kind: target ? "annotation" : "citation", status: "available", path: pdfPath,
         documentId: record.id, sha256: source.sha256, pages, excerpt, excerptSource, comment, annotation,
-        ...(block ? { block: { id: block.id, label: block.label } } : {}) };
+        ...(block ? { block: { id: block.id, label: block.label } } : {}) } };
     } finally { await engine.destroy().toPromise(); }
   }
 
   async create(root: string, request: ReferenceRequest & { comment: string }, signal?: AbortSignal) {
     if (typeof request.comment !== "string" || !request.comment.trim() || request.comment.length > 100000)
       throw new Error("评论正文须为 1 至 100000 个字符。");
-    const resolved = await this.resolve(root, request, signal);
+    const { reference: resolved, source: resolvedSource } = await this.resolveSource(root, request, signal);
     const page = resolved.pages[0];
     if (!resolved.block || resolved.pages.length !== 1 || !page.rects.length)
       throw new Error("定位不足：需要解析稿中已登记且具有可靠区域的块级引用，页级引用不能创建评论。");
@@ -120,10 +128,11 @@ export class ReferenceService {
       rect: { origin: { x: Math.min(anchor.origin.x, page.width - width), y: Math.min(anchor.origin.y, page.height - height) },
         size: { width, height } } };
     signal?.throwIfAborted();
-    const written = await this.writer?.({ root, path: resolved.path, sha256: resolved.sha256, annotation }, signal);
+    const written = await this.writer?.({ root, path: resolved.path, sha256: resolved.sha256,
+      document: resolvedSource.document, annotation }, signal);
     if (!written) {
       const source = await this.projects.dispatch({ type: "readPdf", root, path: resolved.path }) as PdfSource;
-      if (source.sha256 !== resolved.sha256) throw new Error("PDF 已在外部修改，请重读引用后重试。");
+      if (!canReusePdfEvidence(resolvedSource, source)) throw new Error("PDF 已在外部修改，请重读引用后重试。");
       const { engine, doc } = await openPdf(source);
       try {
         signal?.throwIfAborted();

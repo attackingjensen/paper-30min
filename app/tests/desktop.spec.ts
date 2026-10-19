@@ -3310,6 +3310,13 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
     .click();
   await page.getByRole("button", { name: "原始论文", exact: true }).click();
   await expect(pdfPage()).toHaveValue("2");
+  await page.evaluate(async (root) => {
+    const source = await window.desktop.invoke<PdfSource>({ type: "readPdf", root, path: "text/paper.pdf" });
+    const suffix = new TextEncoder().encode("\n% annotation saved without moving viewport\n");
+    const bytes = new Uint8Array(source.bytes.length + suffix.length);
+    bytes.set(source.bytes); bytes.set(suffix, source.bytes.length);
+    await window.desktop.invoke({ type: "savePdf", root, path: "text/paper.pdf", version: source.sha256, bytes });
+  }, root);
   await desktop.close();
   await launch();
   await page.getByRole("button", { name: /研究工程/ }).click();

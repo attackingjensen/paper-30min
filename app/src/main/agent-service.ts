@@ -461,7 +461,7 @@ export class AgentService {
         this.projects,
         selected.vision === true,
         () => c.state.busy && !c.state.stopping && !this.closing,
-        (documentId, _sha256, page) => {
+        (documentId, page) => {
           // completeReviewPage checks the current trusted PDF version again.
           if (review && documentId === review.document.id) readPages.add(page);
         },

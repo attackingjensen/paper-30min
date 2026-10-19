@@ -1,5 +1,6 @@
 import type { PdfTextAnnoObject } from "@embedpdf/models";
 import type { CitationPage } from "./citations.js";
+import type { DocumentRecord } from "./contracts.js";
 
 export interface ReferenceRequest {
   link: string;
@@ -25,6 +26,7 @@ export interface AnnotationWrite {
   root: string;
   path: string;
   sha256: string;
+  document?: DocumentRecord;
   annotation: PdfTextAnnoObject;
 }
 

@@ -69,14 +69,14 @@ export function PdfReader({ root, path, position, onPosition, citation, revision
       setSource(value); setEpoch((n) => n + 1); setExternal("");
     } catch (error) { setExternal(`重新载入失败：${(error as Error).message}`); }
   }
-  const saved = source?.sha256 === initialPosition.current?.sha256 ? initialPosition.current : undefined;
+  const saved = initialPosition.current;
   if (error) return <div className="pdf-error" role="alert">PDF 打开失败：{error}</div>;
   if (!source) return <div className="empty">正在打开 PDF…</div>;
   return <section className="pdf-workspace">
     {external && <div className="notice error" role="alert">{external}</div>}
     <PdfDocument key={epoch} root={root} source={source} path={path} saved={saved} onPosition={onPosition}
         citation={citation} revision={revision} onUse={onUse} citationNonce={citationNonce} annotationTarget={annotationTarget} onReload={() => void reload()} onBeforeLeave={onBeforeLeave} showUses={showUses} onCloseUses={onCloseUses}
-        onSaved={(sha256, bytes) => { const value = { sha256, bytes }; sourceRef.current = value; setSource(value); }}
+        onSaved={(value) => { sourceRef.current = value; setSource(value); }}
         onPending={(dirty, saving = false) => { pending.current = { dirty, saving }; onPending(dirty); }} />
   </section>;
 }
@@ -86,7 +86,7 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
   source: PdfSource; path: string; saved?: PdfPosition; onPosition: (p: PdfPosition) => void;
   citationNonce?: string; annotationTarget?: { target: AnnotationTarget; nonce: string };
   onPending: (pending: boolean, saving?: boolean) => void;
-  onSaved: (sha256: string, bytes: Uint8Array) => void;
+  onSaved: (source: PdfSource) => void;
   onReload: () => void;
   onBeforeLeave: (save: (() => Promise<void>) | null) => void;
   showUses: boolean; onCloseUses: () => void;
@@ -95,7 +95,6 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
   const viewer = useRef<EmbedPdfContainer | null>(null);
   const citations = useRef<ReturnType<typeof connectPdfCitations> | null>(null);
   const annotations = useRef<ReturnType<typeof connectPdfAnnotations> | null>(null);
-  const hash = useRef(source.sha256);
   const latestCitation = useRef(citation);
   latestCitation.current = citation;
   const latestTarget = useRef(annotationTarget);
@@ -198,7 +197,7 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
       const metrics = scroll.forDocument(documentId).getMetrics();
       const view = viewport.forDocument(documentId).getMetrics();
       pending = {
-        sha256: hash.current, page: metrics.currentPage,
+        page: metrics.currentPage,
         x: view.scrollLeft, y: view.scrollTop,
         zoom: zoom.forDocument(documentId).getState().currentZoomLevel,
         scrollStrategy: scrollStore.getState().documents[documentId].strategy,
@@ -235,13 +234,14 @@ function PdfDocument({ root, source, path, saved, onPosition, citation, revision
       flush(); offResize(); offReady(); offScroll(); offZoom(); offLayout();
       window.removeEventListener("beforeunload", flush);
     };
-    annotations.current = connectPdfAnnotations(registry, { root, path, sha256: source.sha256, onStatus: setStatus,
+    annotations.current = connectPdfAnnotations(registry, { root, path, sha256: source.sha256, document: source.document, onStatus: setStatus,
       onChange: (view) => { setAnnotationView(view); onPending(view.dirty || view.saving, view.saving); },
-      onSaved: (sha256, bytes) => { hash.current = sha256; citations.current?.setVersion(sha256); onSaved(sha256, bytes); flushPosition.current(); },
+      onSaved: (value) => { citations.current?.setVersion(value.sha256, value.document); onSaved(value); flushPosition.current(); },
     });
     onBeforeLeave(() => annotations.current!.save());
     if (latestTarget.current) annotations.current.navigate(latestTarget.current.target, latestTarget.current.nonce);
-    citations.current = connectPdfCitations(registry, viewer.current!, { root, path, sha256: source.sha256, target: latestCitation.current, onStatus: setStatus, beforeCopy: () => annotations.current!.save() });
+    citations.current = connectPdfCitations(registry, viewer.current!, { root, path, sha256: source.sha256, document: source.document,
+      target: latestCitation.current, onStatus: setStatus, beforeCopy: () => annotations.current!.save() });
     // Let the native Viewer handle password prompts, malformed files, and retries.
     void manager.openDocumentBuffer({
       buffer: new Uint8Array(source.bytes).buffer, name: path, documentId, scale: saved?.zoom ?? 1,

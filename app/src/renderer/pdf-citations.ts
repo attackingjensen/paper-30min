@@ -1,10 +1,11 @@
 import { CommandsPlugin, UIPlugin, SelectionPlugin, InteractionManagerPlugin, DocumentManagerPlugin,
   ScrollPlugin, ViewportPlugin, type PluginRegistry, type EmbedPdfContainer, type ToolbarItem, type SelectionMenuItem } from "@embedpdf/react-pdf-viewer";
 import { citationMarkdown, type Citation, type CitationInput, type CitationPage, type CitationRect } from "../shared/citations";
+import type { DocumentRecord } from "../shared/contracts";
 
 /** All evidence coordinates come from plugin capabilities, never DOM text/selection geometry. */
 export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfContainer, options: {
-  root: string; path: string; sha256: string; target?: Citation;
+  root: string; path: string; sha256: string; document?: DocumentRecord; target?: Citation;
   onStatus: (message: string) => void;
   beforeCopy: () => Promise<void>;
 }) {
@@ -45,7 +46,8 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
       await options.beforeCopy();
       if (disposed) return;
       input.sha256 = options.sha256;
-      const citation = await window.desktop.invoke<Citation>({ type: "createCitation", root: options.root, path: options.path, input });
+      const citation = await window.desktop.invoke<Citation>({ type: "createCitation", root: options.root, path: options.path,
+        input, sourceDocument: options.document });
       if (disposed) return;
       await navigator.clipboard.writeText(citationMarkdown(citation));
       options.onStatus("已复制引用链接，可粘贴到 Markdown 文档。");
@@ -220,7 +222,7 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
   return {
     navigate,
     clearTarget: () => { options.target = undefined; targetValid = false; draw(); },
-    setVersion: (sha256: string) => { options.sha256 = sha256; },
+    setVersion: (sha256: string, document?: DocumentRecord) => { options.sha256 = sha256; options.document = document; },
     copy,
     selectRegion, cancel,
     dispose: () => {

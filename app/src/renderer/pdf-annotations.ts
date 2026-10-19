@@ -6,6 +6,8 @@ import { SelectionPlugin } from "@embedpdf/plugin-selection";
 import { InteractionManagerPlugin } from "@embedpdf/plugin-interaction-manager";
 import { preserveConcurrentAnnotationEdits } from "./pdf-annotation-commit";
 import { HistoryPlugin } from "@embedpdf/plugin-history";
+import type { DocumentRecord, PdfSource } from "../shared/contracts";
+import { canReusePdfEvidence } from "../shared/pdf-versions";
 
 export interface AnnotationView {
   items: { id: string; page: number; comment: string }[];
@@ -17,9 +19,9 @@ export interface AnnotationView {
 }
 
 export function connectPdfAnnotations(registry: PluginRegistry, options: {
-  root: string; path: string; sha256: string;
+  root: string; path: string; sha256: string; document?: DocumentRecord;
   onChange: (view: AnnotationView) => void;
-  onSaved: (sha256: string, bytes: Uint8Array) => void;
+  onSaved: (source: PdfSource) => void;
   onStatus: (message: string) => void;
 }) {
   const documentId = "reading";
@@ -45,6 +47,7 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
   };
   window.addEventListener("pointerup", finishCrossPage);
   let version = options.sha256;
+  let sourceDocument = options.document;
   let generation = 0;
   let savedGeneration = 0;
   let loaded = false;
@@ -108,11 +111,12 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
       try {
         await annotations.commit().toPromise();
         const buffer = await exporter.saveAsCopy().toPromise();
-        const result = await window.desktop.invoke<{ sha256: string }>({ type: "savePdf", root: options.root,
+        const result = await window.desktop.invoke<{ sha256: string; document: DocumentRecord }>({ type: "savePdf", root: options.root,
           path: options.path, bytes: new Uint8Array(buffer), version });
         version = result.sha256;
+        sourceDocument = result.document;
         savedGeneration = snapshot;
-        options.onSaved(version, new Uint8Array(buffer));
+        options.onSaved({ sha256: version, document: sourceDocument, bytes: new Uint8Array(buffer) });
       } catch (reason) {
         error = `批注保存失败：${reason instanceof Error ? reason.message : String((reason as { message?: string }).message ?? reason)}`;
         throw new Error(error);
@@ -166,12 +170,11 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
     if (request.root !== options.root || request.path !== options.path) return null;
     if (!loaded || disposed) throw new Error("阅读器批注尚未加载完成，请稍后重试。");
     checkActive();
-    // A pending reader save may legitimately change the hash after resolution.
-    if (request.sha256 !== version && !saving)
-      throw new Error("阅读器 PDF 版本与磁盘不一致，请重新载入后重试。");
     await flush();
     checkActive();
     if (disposed) throw new Error("阅读器已关闭，请重试。");
+    if (!canReusePdfEvidence(request, { sha256: version, document: sourceDocument }))
+      throw new Error("阅读器 PDF 版本与磁盘不一致，请重新载入后重试。");
     annotations.createAnnotation(request.annotation.pageIndex, request.annotation);
     await flush();
     if (!annotations.getAnnotationById(request.annotation.id)) throw new Error("批注创建失败。");

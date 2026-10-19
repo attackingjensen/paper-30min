@@ -55,7 +55,6 @@ export interface ProjectAsset {
   mime: string;
 }
 export interface PdfPosition {
-  sha256: string;
   page: number;
   x: number;
   y: number;
@@ -126,7 +125,7 @@ export type Command =
   | { type: "readAsset"; root: string; path: string }
   | { type: "readPdf"; root: string; path: string }
   | { type: "savePdf"; root: string; path: string; bytes: Uint8Array; version: string }
-  | { type: "createCitation"; root: string; path: string; input: CitationInput }
+  | { type: "createCitation"; root: string; path: string; input: CitationInput; sourceDocument?: DocumentRecord }
   | { type: "resolveCitation"; root: string; link: string }
   | ({ type: "resolveReference"; root: string } & ReferenceRequest)
   | { type: "pdfUses"; root: string; path: string }

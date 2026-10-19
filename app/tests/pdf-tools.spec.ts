@@ -135,7 +135,6 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
     const args = {
       page: 1,
       scale: 3,
-      sha256: info.sha256,
     };
     const enlarged = await run(args);
     const enlargedInfo = JSON.parse((enlarged.content[0] as any).text);
@@ -190,8 +189,7 @@ test("read_pdf 返回完整页图并复用持久页级引用，不依赖阅读�
         .catch(() => null),
     ).toBe(before);
     await expect(run({ page: 999 })).rejects.toThrow("越界");
-    await expect(run({ sha256: "0".repeat(64) })).rejects.toThrow("版本");
-    await expect(run({ path: "../outside.pdf" })).rejects.toThrow("身份");
+    await expect(run({ path: "../outside.pdf" })).rejects.toThrow("路径");
     await expect(
       createPdfTools(root, service, false, () => true)[0].execute(
         "text",

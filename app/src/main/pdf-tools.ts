@@ -4,7 +4,7 @@ import { PNG } from "pngjs";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { PdfTask } from "@embedpdf/models";
-import type { PdfSource, Project } from "../shared/contracts.js";
+import type { PdfSource } from "../shared/contracts.js";
 import {
   citationLink,
   citationMarkdown,
@@ -18,7 +18,7 @@ export function createPdfTools(
   projects: ProjectService,
   vision: boolean,
   active: () => boolean,
-  onRead?: (documentId: string, sha256: string, page: number) => void,
+  onRead?: (documentId: string, page: number) => void,
 ) {
   return [
     defineTool({
@@ -38,12 +38,6 @@ export function createPdfTools(
             maximum: 4,
             description:
               "Pixels per PDF point; default 1.5; maximum image edge 2048 pixels. Always renders the complete page.",
-          }),
-        ),
-        sha256: Type.Optional(
-          Type.String({
-            description:
-              "Expected PDF version from a previous read; reject replacement",
           }),
         ),
       }),
@@ -69,24 +63,15 @@ export function createPdfTools(
           throw new Error(
             "read_pdf 需要支持视觉输入的模型，请切换模型并启用视觉输入；不提供文本层降级。",
           );
-        const project = (await projects.dispatch({
-          type: "refresh",
-          root,
-        })) as Project;
-        const record = [
-          project.manifest.paper,
-          ...project.manifest.materials,
-        ].find((item) => item.path === args.path);
-        if (!record)
-          throw new Error("PDF 身份不存在，请先将 PDF 加入工程材料。");
         const source = (await projects.dispatch({
           type: "readPdf",
           root,
           path: args.path,
         })) as PdfSource;
+        const record = source.document;
+        if (!record)
+          throw new Error("PDF 身份不存在，请先将 PDF 加入工程材料。");
         check();
-        if (args.sha256 && source.sha256 !== args.sha256)
-          throw new Error("PDF 版本不一致，文件已被替换，不能读取旧引用。");
         const pageNumber = args.page ?? 1;
         if (!Number.isSafeInteger(pageNumber) || pageNumber < 1)
           throw new Error("PDF 页码必须是从 1 开始的整数。");
@@ -164,7 +149,7 @@ export function createPdfTools(
           );
           check();
           const citation = (await projects.dispatch(
-            { type: "createCitation", root, path: args.path, input },
+            { type: "createCitation", root, path: args.path, input, sourceDocument: record },
             signal,
           )) as Citation;
           check();
@@ -182,7 +167,7 @@ export function createPdfTools(
             scale: actualScale,
             image: "实际 PNG 整页图，非原生 PDF 输入",
           };
-          onRead?.(record.id, source.sha256, pageNumber);
+          onRead?.(record.id, pageNumber);
           return {
             content: [
               { type: "text" as const, text: JSON.stringify(info) },

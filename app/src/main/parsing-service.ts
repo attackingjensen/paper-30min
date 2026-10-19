@@ -18,6 +18,7 @@ import type {
 import type { ParsingConfig } from "./parsing-settings.js";
 import { ProjectService } from "./project-service.js";
 import { buildCandidate, checkParsingPdf } from "./baidu-candidate.js";
+import { isKnownPdfVersion } from "../shared/pdf-versions.js";
 
 const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -59,7 +60,7 @@ export class ParsingService {
     const source = await this.projects.dispatch({ type: "readPdf", root, path: expected.path }) as PdfSource;
     const document = source.document;
     if (!document || document.id !== expected.id || document.sha256 !== expected.sha256 ||
-        source.sha256 !== (document.annotationSha256 ?? document.sha256))
+        !isKnownPdfVersion(document, source.sha256))
       throw new Error("PDF 已被替换或版本无法确认，解析及审阅已失效。");
     return source;
   }
