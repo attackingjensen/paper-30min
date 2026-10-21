@@ -372,7 +372,7 @@ export function AgentPanel({
         ))}
         {current?.queued.map((message, i) => (
           <div className="queued-message" key={i}>
-            待补充：{message}
+            待补充：<AgentMessage text={message} role="user" onError={setError} onCitation={onCitation} />
           </div>
         ))}
         {(error || current?.error) && (

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { loadSkillsFromDir, stripFrontmatter } from "@earendil-works/pi-coding-agent";
-import { extractChatSources, type ChatAttachment } from "../shared/chat-input.js";
+import { extractChatSources, sourceSnapshotLabel, type ChatAttachment } from "../shared/chat-input.js";
 import type { Project, PdfSource } from "../shared/contracts.js";
 import type { ProjectService } from "./project-service.js";
 import type { ReferenceService } from "./reference-service.js";
@@ -34,7 +34,7 @@ export async function prepareChatInput(projects: ProjectService, references: Ref
     seen.add(key);
     if (item.kind === "source") {
       const source = await references.resolve(root, { link: item.value });
-      sections.push(`[来源](<${item.value}>)\n\n发送时的来源快照（选区为关注范围；正文请按位置 read，按需 read_pdf）：\n\n\`\`\`json\n${JSON.stringify(source, null, 2)}\n\`\`\``);
+      sections.push(`[来源](<${item.value}>)\n\n${sourceSnapshotLabel}\n\n\`\`\`json\n${JSON.stringify(source, null, 2)}\n\`\`\``);
     } else if (item.kind === "document") {
       const project = await projects.dispatch({ type: "refresh", root }) as Project;
       if (!project.files.some(file => !file.directory && file.path === item.value)) throw new Error(`指定文档已缺失或移动：${item.value}`);

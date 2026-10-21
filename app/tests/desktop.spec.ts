@@ -2570,7 +2570,7 @@ test("STE-95 聊天来源预览、去重、文档与 Skill 组合发送及历史
     await create(fixture, parent, "聊天材料");
     const root = path.join(parent, "聊天材料");
     const { link, run } = await seedBlockParsing(root);
-    reply = `已核对[原文](${link})。`;
+    reply = `已核对[原文](${link})。\n\n\`\`\`json\n{"回答": "保留助手代码"}\n\`\`\``;
     await fs.mkdir(path.join(root, "notes"), { recursive: true });
     await fs.writeFile(path.join(root, "notes/问题(中文).md"), "不应自动发送的全文");
     await page.evaluate(async base => {
@@ -2617,6 +2617,7 @@ test("STE-95 聊天来源预览、去重、文档与 Skill 组合发送及历史
     await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
     await input.press("Enter");
     await expect(page.locator(".chat-attachments > span")).toHaveCount(5);
+    await input.fill('解释这里\n\n```json\n{"问题": "保留用户代码"}\n```');
     await page.screenshot({ path: "test-results/ste95-composer.png" });
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await expect(page.locator(".chat-message.assistant")).toContainText("已核对");
@@ -2632,6 +2633,12 @@ test("STE-95 聊天来源预览、去重、文档与 Skill 组合发送及历史
     expect(sent).toContain("SHA-256");
     expect(sent).toContain("你是一位资深研究员");
     expect(sent).not.toContain("image_url");
+    await expect(page.locator(".chat-message.user")).not.toContainText("来源快照");
+    await expect(page.locator(".chat-message.user")).not.toContainText("startLine");
+    await expect(page.locator(".chat-message.user pre").first()).toHaveText('{"问题": "保留用户代码"}');
+    await expect(page.locator(".chat-message.assistant pre")).toHaveText('{"回答": "保留助手代码"}');
+    await expect(page.locator(".chat-message.user").getByRole("link", { name: "来源", exact: true })).toHaveCount(3);
+    await page.screenshot({ path: "test-results/ste95-source-display.png" });
     await page.locator(".chat-message.user a").first().click();
     await expect(page.getByRole("tab", { name: "paper.pdf" })).toHaveAttribute("aria-selected", "true");
     await page.locator(".chat-message.assistant a").click();
@@ -2693,12 +2700,16 @@ test("STE-95 来源失败保留草稿，移除后可发送，停止和模型失�
     await expect(page.locator(".chat-message.assistant")).toContainText("处理中");
     await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
     await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
-    await page.getByLabel("Agent 消息").fill("停止前排队的来源");
+    await page.getByLabel("Agent 消息").fill("停止前排队的来源\n\n```python\nprint(1)");
     await page.getByRole("button", { name: "补充消息", exact: true }).click();
     await expect(page.locator(".queued-message")).toContainText("停止前排队的来源");
+    await expect(page.locator(".queued-message")).not.toContainText("来源快照");
+    await expect(page.locator(".queued-message pre")).toHaveText("print(1)");
+    await expect(page.locator(".queued-message").getByRole("link", { name: "来源", exact: true })).toHaveCount(1);
     await page.getByRole("button", { name: "停止回复", exact: true }).click();
     await expect(page.getByRole("button", { name: "停止回复", exact: true })).toHaveCount(0);
-    await expect(page.locator(".chat-message.user").first()).toContainText("来源快照");
+    await expect(page.locator(".chat-message.user").first()).not.toContainText("来源快照");
+    await expect(page.locator(".chat-message.user").first().getByRole("link", { name: "来源", exact: true })).toHaveCount(1);
     await expect(page.locator(".chat-message.user").last()).toContainText("尚未送达模型");
     await fs.writeFile(path.join(root, "notes/即将移动.md"), "指定材料");
     await page.getByLabel("Agent 消息").fill("读取 @即将移动");
@@ -2735,7 +2746,8 @@ test("STE-95 来源失败保留草稿，移除后可发送，停止和模型失�
     await desktop.close(); await launch();
     await page.getByRole("button", { name: /失败材料/ }).click();
     await expect(page.locator(".chat-message.user")).toHaveCount(3);
-    await expect(page.locator(".chat-message.user").last()).toContainText("来源快照");
+    await expect(page.locator(".chat-message.user").last()).not.toContainText("来源快照");
+    await expect(page.locator(".chat-message.user").last().getByRole("link", { name: "来源", exact: true })).toHaveCount(1);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 

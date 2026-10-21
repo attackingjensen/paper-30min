@@ -2,7 +2,7 @@ import { memo, useMemo } from "react";
 import MarkdownIt from "markdown-it";
 import katex from "@vscode/markdown-it-katex";
 import "katex/dist/katex.min.css";
-import { isSourceLink } from "../shared/chat-input";
+import { isSourceLink, userMessageDisplayText } from "../shared/chat-input";
 
 const mathPlugin =
   typeof katex === "function"
@@ -29,7 +29,7 @@ export const AgentMessage = memo(function AgentMessage({
   onCitation: (link: string) => void;
 }) {
   const html = useMemo(
-    () => markdown.render(text),
+    () => markdown.render(role === "user" ? userMessageDisplayText(text) : text),
     [text, role],
   );
   return (
