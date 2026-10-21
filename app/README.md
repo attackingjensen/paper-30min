@@ -24,7 +24,7 @@ npm test
 
 GitHub 的 `Electron CI` 使用 Node.js 24 和 `npm ci`，在 Windows、Linux 上运行 `npm run build`（包含类型检查），随后仅在 Windows 上运行 `npx playwright test --reporter=list,html`，避免重复构建。Windows 回归使用隐藏窗口和受控服务，不配置真实模型或百度服务凭据；HTML 报告、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天。可从 Actions 页面手动运行工作流。Linux 构建通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
 
-桌面回归默认隐藏原生窗口，不显示任务栏按钮，也不抢占桌面焦点；后台仍进行真实渲染和截图，并通过 CDP 保持浏览器输入与剪贴板 API 可用。需要现场视觉检查或验证原生焦点时，只显式显示所选用例：
+桌面回归默认隐藏原生窗口，不显示任务栏按钮，也不抢占桌面焦点；每次启动将原生窗口内容区设为 1440 × 960，避免 runner 的小屏幕改变桌面测试布局，用例内仍可调整为窄窗口。后台仍进行真实渲染和截图，并通过 CDP 保持浏览器输入与剪贴板 API 可用。需要现场视觉检查或验证原生焦点时，只显式显示所选用例：
 
 ```powershell
 $env:PAPER30MIN_TEST_WINDOW='visible'

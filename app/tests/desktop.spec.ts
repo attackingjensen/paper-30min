@@ -112,9 +112,16 @@ async function launch() {
   errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   if (!visible) {
+    // Windows runners can clamp the initial window to their 1024px desktop.
+    // Resize the native window so later native-resize tests keep working.
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setContentSize(1440, 960),
+    );
     // Keep browser input/clipboard APIs active without taking native desktop focus.
     const session = await page.context().newCDPSession(page);
     await session.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await expect.poll(() => page.evaluate(() => [innerWidth, innerHeight]))
+      .toEqual([1440, 960]);
   }
   await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible();
   expect(await desktop.evaluate(({ BrowserWindow }) =>
