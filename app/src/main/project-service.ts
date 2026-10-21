@@ -5,6 +5,7 @@ import { pipeline } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import type { MappingPlan } from "../shared/mapping.js";
 import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation, type CitationUse } from "../shared/citations.js";
 import { markdownRenderer, markCitationUses } from "../shared/markdown-references.js";
 import { canReusePdfEvidence, isKnownPdfVersion } from "../shared/pdf-versions.js";
@@ -42,7 +43,7 @@ export interface AgentFile {
   bytes: Buffer;
   version: string;
 }
-export type WriteScope = { candidateDirectory?: string };
+export type WriteScope = { candidateDirectory?: string; outputDirectory?: string };
 
 function validateReading(value: ReadingState): ReadingState {
   if (
@@ -283,7 +284,11 @@ export class ProjectService {
     if (relative.split("/").some((part) => part.startsWith(".")))
       throw new Error("不能写入工程内部文件。");
     const lower = relative.toLowerCase();
-    if (scope.candidateDirectory) {
+    if (scope.outputDirectory) {
+      if (!/^tmp\/mapping-[a-f0-9]{32}$/.test(scope.outputDirectory) ||
+          !relative.startsWith(scope.outputDirectory + "/"))
+        throw new Error("建图只能写入本次候选目录，正式成果由应用完整校验后发布。");
+    } else if (scope.candidateDirectory) {
       const candidate = relativePath(scope.candidateDirectory).toLowerCase();
       if (
         (!candidate.startsWith("text/candidates/") && !/^text\/[a-f0-9]{32}$/.test(candidate)) ||
@@ -346,6 +351,109 @@ export class ProjectService {
       const relative = this.agentPath(root, absolute);
       await this.writablePath(root, relative, scope);
       return this.saveText(root, relative, text, version, signal);
+    });
+  }
+
+  createMappingPlan(root: string, manuscript: string): Promise<MappingPlan> {
+    return this.serialize(async () => {
+      const manifest = await this.manifest(root);
+      const id = randomUUID().replaceAll("-", "");
+      const targets = [...(manifest.map ? [manifest.map] : []), ...manifest.explanations];
+      const files: MappingPlan["files"] = {};
+      for (const file of [...new Set([manuscript, ...targets])]) {
+        try { files[file] = (await this.markdown(root, file)).version; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT" || file === manuscript) throw error;
+          files[file] = null;
+        }
+      }
+      return { id, directory: `tmp/mapping-${id}`, manuscript, targets, files,
+        manifestVersion: await digest(path.join(root, manifestName)) };
+    });
+  }
+
+  publishMapping(root: string, plan: MappingPlan, signal: AbortSignal): Promise<{ files: string[]; warning?: string }> {
+    return this.serialize(async () => {
+      signal.throwIfAborted();
+      if (!/^[a-f0-9]{32}$/.test(plan.id) || plan.directory !== `tmp/mapping-${plan.id}`)
+        throw new Error("建图任务身份无效。");
+      const result = JSON.parse((await this.textFile(root, `${plan.directory}/result.json`)).text) as { map: string; explanations: string[] };
+      if (!result || result.map !== "map.md" || !Array.isArray(result.explanations) ||
+          !result.explanations.length || result.explanations.length > 500 ||
+          result.explanations.some(file => typeof file !== "string" || !/^explanations\/[^/]+\.md$/.test(file)) ||
+          new Set(result.explanations.map(file => file.toLowerCase())).size !== result.explanations.length)
+        throw new Error("建图结果清单无效，须包含地图和按原文顺序排列的精解文件。");
+      const candidates = [result.map, ...result.explanations];
+      const outputs = [
+        `map/${plan.id}/阅读地图.md`,
+        ...result.explanations.map(file => `explanations/${plan.id}/${file.slice("explanations/".length)}`),
+      ];
+      const contents: MarkdownFile[] = [];
+      for (const file of candidates) {
+        const content = await this.markdown(root, `${plan.directory}/${relativePath(file)}`);
+        if (!content.text.trim()) throw new Error(`建图成果为空：${file}`);
+        // Validate actual source links before any output becomes authoritative.
+        const citations = new Set<string>();
+        for (const block of markdownRenderer.parse(content.text, {})) {
+          for (const token of block.children ?? []) {
+            const href = String(token.attrGet("href") ?? "");
+            const id = token.type === "link_open" && href.startsWith("paper://cite/") ? citationId(href) : null;
+            if (id) citations.add(id);
+          }
+        }
+        if (!citations.size) throw new Error(`建图成果缺少可回查的原文引用：${file}`);
+        for (const id of citations) await this.execute({ type: "resolveCitation", root, link: `paper://cite/${id}` });
+        contents.push(content);
+      }
+      const checkBaseline = async () => {
+        signal.throwIfAborted();
+        await this.manifest(root);
+        if (await digest(path.join(root, manifestName)) !== plan.manifestVersion)
+          throw new Error(`工程清单已变化，旧成果保留。新建图保存在 ${plan.directory}。`);
+        for (const [file, version] of Object.entries(plan.files)) {
+          let current: string | null = null;
+          try { current = (await this.markdown(root, file)).version; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+          if (current !== version) throw new Error(`生成期间 ${file} 已变化，旧成果保留。新建图保存在 ${plan.directory}。`);
+        }
+      };
+      await checkBaseline();
+      const created: string[] = [];
+      try {
+        for (const [index, file] of outputs.entries()) {
+          const saved = await this.saveText(root, file, contents[index].text, null, signal);
+          if (!saved.saved) throw new Error("正式建图目标已存在，本次未替换。");
+          created.push(file);
+        }
+        await checkBaseline();
+        const manifest = await this.manifest(root);
+        manifest.map = outputs[0];
+        manifest.explanations = outputs.slice(1);
+        await atomicJson(path.join(root, manifestName), manifest, signal);
+      } catch (error) {
+        // Only our new, unregistered files can be removed. Candidates remain for recovery.
+        for (const [index, file] of created.entries()) {
+          try {
+            if ((await this.markdown(root, file)).text === contents[index].text)
+              await fs.unlink(await this.resolve(root, file));
+          } catch { /* Preserve files that changed or cannot safely be removed. */ }
+        }
+        throw error;
+      }
+      let warning: string | undefined;
+      for (const file of plan.targets) {
+        try {
+          if (plan.files[file] && (await this.markdown(root, file)).version === plan.files[file])
+            await this.trashFile(await this.resolve(root, file));
+        } catch { warning = "新成果已发布，部分旧文件未能移入回收站，已保留。"; }
+      }
+      for (const [index, file] of candidates.entries()) {
+        try {
+          if ((await this.markdown(root, `${plan.directory}/${file}`)).version === contents[index].version)
+            await fs.unlink(await this.resolve(root, `${plan.directory}/${file}`));
+        } catch { warning = "新成果已发布，部分临时文件已保留。"; }
+      }
+      return { files: outputs, warning };
     });
   }
 

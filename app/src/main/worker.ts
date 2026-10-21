@@ -7,6 +7,8 @@ import type { ParsingConfig } from "./parsing-settings.js";
 import { ParsingService } from "./parsing-service.js";
 import { ReferenceService } from "./reference-service.js";
 import type { AnnotationWrite } from "../shared/references.js";
+import path from "node:path";
+import { ProductSkills } from "./product-skills.js";
 
 const port = process.parentPort!;
 let nextId = 0;
@@ -42,6 +44,7 @@ const agent = new AgentService(
   service,
   parsing,
   references,
+  new ProductSkills(path.join(path.dirname(process.argv[2]), "product-skills")),
 );
 
 port.on(
@@ -97,14 +100,14 @@ port.on(
         )
           throw new Error("无效的模型命令。");
         const project =
-          command.command.type === "stop"
+          !("root" in command.command) ? undefined : command.command.type === "stop"
             ? { root: command.command.root }
             : ((await service.dispatch({
                 type: "refresh",
                 root: command.command.root,
               })) as { root: string });
         value = await agent.dispatch(
-          { ...command.command, root: project.root },
+          project ? { ...command.command, root: project.root } as typeof command.command : command.command,
           command.config,
         );
       } else if (command?.type === "resolveReference") {

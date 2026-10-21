@@ -1,26 +1,18 @@
-import * as fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
-import { loadSkillsFromDir, stripFrontmatter } from "@earendil-works/pi-coding-agent";
 import { extractChatSources, sourceSnapshotLabel, type ChatAttachment } from "../shared/chat-input.js";
 import type { Project, PdfSource } from "../shared/contracts.js";
 import type { ProjectService } from "./project-service.js";
 import type { ReferenceService } from "./reference-service.js";
+import { ProductSkills } from "./product-skills.js";
 
-// Only product prompts shipped with the app; never discover user/development skills.
-const skillDirectory = fileURLToPath(new URL("../../../skills/", import.meta.url));
-function productSkills() {
-  return loadSkillsFromDir({ dir: skillDirectory, source: "paper30min" }).skills;
-}
-export async function chatMaterials(projects: ProjectService, root: string): Promise<ChatAttachment[]> {
+export async function chatMaterials(projects: ProjectService, root: string, skills: ProductSkills): Promise<ChatAttachment[]> {
   const project = await projects.dispatch({ type: "refresh", root }) as Project;
   return [
     ...project.files.filter(file => !file.directory && /\.(md|txt|pdf)$/i.test(file.path)).map(file => ({ kind: "document" as const, value: file.path, label: file.path })),
-    ...productSkills().map(skill => ({ kind: "skill" as const, value: path.relative(skillDirectory, skill.filePath).replaceAll("\\", "/"), label: skill.name })),
+    ...(await skills.list()).filter(skill => skill.id !== "paper-map.md").map(skill => ({ kind: "skill" as const, value: skill.id, label: skill.name })),
   ];
 }
-export async function prepareChatInput(projects: ProjectService, references: ReferenceService, root: string, text: string, attachments: ChatAttachment[] = []) {
+export async function prepareChatInput(projects: ProjectService, references: ReferenceService, root: string, text: string, attachments: ChatAttachment[] = [], skills = new ProductSkills()) {
   if (!Array.isArray(attachments) || attachments.length > 50) throw new Error("每条消息最多包含 50 个附件。");
   const extracted = extractChatSources(text);
   attachments = [...attachments, ...extracted.attachments];
@@ -44,11 +36,8 @@ export async function prepareChatInput(projects: ProjectService, references: Ref
       const identity = [project.manifest.paper, ...project.manifest.materials].find(record => record.path === item.value)?.id;
       sections.push(`指定工程文档：${JSON.stringify(item.value)}${identity ? `（文档 ID：${identity}）` : ""}，发送时 SHA-256 ${version}。按需读取，未附加全文；后续读取若版本变化应说明。`);
     } else if (item.kind === "skill") {
-      const skill = productSkills().find(skill => path.relative(skillDirectory, skill.filePath).replaceAll("\\", "/") === item.value);
-      if (!skill) throw new Error(`产品 Skill 缺失或加载失败：${item.value}`);
-      const content = await fs.readFile(skill.filePath, "utf8");
-      const version = createHash("sha256").update(content).digest("hex");
-      sections.push(`本轮指定产品 Skill：${skill.name}（${item.value}，SHA-256 ${version}）。以下是本轮指令原文；模板中未提供的材料须按需读取，不得假称已提供。\n\n<skill name=${JSON.stringify(skill.name)}>\n${stripFrontmatter(content).trim()}\n</skill>`);
+      const skill = await skills.read(item.value);
+      sections.push(`本轮指定产品 Skill：${skill.name}（${item.value}，SHA-256 ${skill.version}）。以下是本轮指令原文；材料须按需读取，不得假称已提供。\n\n<skill name=${JSON.stringify(skill.name)}>\n${skill.content}\n</skill>`);
     } else throw new Error("未知的聊天附件类型。");
   }
   return sections.join("\n\n");

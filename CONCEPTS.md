@@ -63,15 +63,28 @@
 
 阅读协议的实现见 [protocol.rs](legacy/v1/app/src-tauri/src/protocol.rs)，分层产物、文本协议工具调用与按实际结构组织精读的决策见 [ADR-0002](docs/adr/0002-follow-paper-structure.md) 与 [ADR-0003](docs/adr/0003-three-layer-reading-protocol.md)。阅读契约的历史规格见 [#48](https://github.com/attackingjensen/paper-30min/issues/48)、[#51](https://github.com/attackingjensen/paper-30min/issues/51)、[#52](https://github.com/attackingjensen/paper-30min/issues/52)、[#55](https://github.com/attackingjensen/paper-30min/issues/55)、[#56](https://github.com/attackingjensen/paper-30min/issues/56) 及 [#74](https://github.com/attackingjensen/paper-30min/issues/74) 修订；旧术语中「建图须备齐页图」的表述已被性能调整替代。
 
-## v2.0 规划中的阅读模型
+## v2 阅读模型
 
-以下是已确认的 v2 产品方向。归档客户端使用上文的节薄摘要协议，新版生成能力由后续切片实施。
+归档客户端使用上文的节薄摘要协议，新版使用阅读地图与论文精解。
 
 ### 论文精解
 一篇论文中按精读部分组织的可编辑讲解的整体，帮助读者比通读原文更快理解论文。各节讲解解释论点、方法和证据，并提供原文回查入口；论文精解不包含独立的阅读地图，也不是全文译文。
 *Avoid: 把节薄摘要或逐段改写称为论文精解*
 
 v2.0 的建图生成阅读地图与论文精解，不另产节薄摘要。两类成果分别归入工程的 `map/` 与 `explanations/`；「30 分钟」不是讲解的时长或字数上限。见 [ADR-0007](docs/adr/0007-paper-explanations.md)。
+
+### 建图与阅读地图
+建图以已审阅的当前正文生成阅读地图和逐节论文精解。地图提供全文问题、方法、贡献、证据、局限与章节导航；精解按原文实际顺序解释各部分，覆盖有实质内容的附录。必要讲解在精解中完成，进一步追问使用普通对话。
+*Avoid: 先薄摘要再深挖、固定四段模板*
+
+### 记忆卡片
+用户按需指定值得保留的原文内容或讨论理解，经整理得到的可编辑 Markdown。卡片保留理解所需的解释、推理、适用条件与未解决问题，区分论文事实、讨论理解和推测，已有来源可回查。
+
+记忆卡片不要求固定问答模板，不自动生成，也不承担全文复述、卡片管理或复习调度。
+*Avoid: 自动记忆服务、复述稿、强制问答卡*
+
+### 产品 Skill
+用户可编辑的阅读任务提示词。新版提供「建图」与「记忆卡片」；提示词作用于明确发起的任务，普通讨论不因内容有价值就自动写卡片。产品 Skill 与开发工作所用的 NexusKit 技能分属不同用途。
 
 ### 旧 PDF 导入
 以旧书库的原始 PDF 为唯一内容输入，为每份 PDF 创建独立的新工程。工程使用复制进来的 PDF；旧笔记、成果、附件、会话、阅读状态和元数据均不导入，创建本身不触发解析或生成。见 [ADR-0009](docs/adr/0009-pdf-only-legacy-import.md)。

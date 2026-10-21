@@ -44,6 +44,9 @@ import { Type } from "typebox";
 import { ParsingService } from "./parsing-service.js";
 import { chatMaterials, prepareChatInput } from "./chat-materials.js";
 import type { ChatAttachment } from "../shared/chat-input.js";
+import { ProductSkills } from "./product-skills.js";
+import type { ProductSkill } from "../shared/product-skills.js";
+import type { MappingPlan } from "../shared/mapping.js";
 
 interface Conversation {
   manager: SessionManager;
@@ -55,6 +58,8 @@ interface Conversation {
   initializing?: boolean;
   activeModelId?: string;
   stopRevision?: number;
+  mappingPlan?: MappingPlan;
+  runController?: AbortController;
 }
 
 function textOf(message: { content: unknown }) {
@@ -191,11 +196,13 @@ export class AgentService {
   private conversations = new Map<string, Conversation>();
   private closing = false;
   private movingFiles = new Set<string>();
+  private mappingPlans = new Map<string, { root: string; plan: MappingPlan }>();
   constructor(
     private publish: (state: ChatSession) => void,
     private projects: ProjectService,
     private parsing = new ParsingService(projects),
     private references = new ReferenceService(projects),
+    private skills = new ProductSkills(),
   ) {}
   private key(root: string, id: string) {
     return root + "\0" + id;
@@ -231,6 +238,12 @@ export class AgentService {
     for (const entry of c.manager.getBranch()) {
       if (entry.type === "custom" && entry.customType === "paper30min-review")
         c.state.reviewBatchId = (entry.data as { batchId: string }).batchId;
+      if (entry.type === "custom" && entry.customType === "paper30min-mapping") {
+        c.mappingPlan = entry.data as MappingPlan;
+        c.state.mapping = { directory: c.mappingPlan.directory, status: "pending" };
+      }
+      if (entry.type === "custom" && entry.customType === "paper30min-mapping-published" && c.state.mapping)
+        c.state.mapping = { ...c.state.mapping, status: "published", files: (entry.data as { files: string[] }).files };
       if (entry.type !== "message") continue;
       const m = entry.message;
       if (m.role === "toolResult") {
@@ -277,9 +290,23 @@ export class AgentService {
             : undefined,
       });
     }
+    // Tool calls describe staging writes; file buttons follow the published locations.
+    if (c.mappingPlan && c.state.mapping?.status === "published") {
+      const files = c.state.mapping.files ?? [];
+      for (const message of messages) for (const tool of message.tools ?? []) {
+        const details = tool.details as { change?: { path: string; patch: string } } | undefined;
+        const change = details?.change;
+        if (!change) continue;
+        const source = change.path;
+        const destination = source === `${c.mappingPlan.directory}/map.md` ? files[0]
+          : files.find(file => file.startsWith(`explanations/${c.mappingPlan!.id}/`) &&
+            source === `${c.mappingPlan!.directory}/explanations/${path.posix.basename(file)}`);
+        if (destination) tool.details = { ...details, change: { ...change, path: destination } };
+      }
+    }
     c.state.messages = messages;
     c.state.title =
-      c.state.reviewBatchId ? "解析审阅" :
+      c.state.reviewBatchId ? "解析审阅" : c.state.mapping ? "建图" :
       c.state.messages.find((m) => m.role === "user")?.text.slice(0, 40) ||
       "新会话";
   }
@@ -473,6 +500,7 @@ export class AgentService {
         this.projects,
         () => c.state.busy && !c.state.stopping && !this.closing,
         secrets,
+        c.mappingPlan && c.state.mapping?.status === "pending" ? { outputDirectory: c.mappingPlan.directory } : {},
       ),
       ...createWebTools(
         c.manager,
@@ -608,17 +636,28 @@ export class AgentService {
       { type: "settings" | "saveSettings" | "selectModel" }
     >,
     config: ModelConfig,
-  ): Promise<ChatSession | ChatSession[] | ChatAttachment[]> {
+  ): Promise<ChatSession | ChatSession[] | ChatAttachment[] | ProductSkill | ProductSkill[] | MappingPlan> {
     if (this.closing) throw new Error("应用正在退出。");
+    if (command.type === "listSkills") return this.skills.list();
+    if (command.type === "saveSkill") return this.skills.save(command.id, command.content, command.version);
     const root = command.root;
     if (this.movingFiles.has(root)) throw new Error("工程正在移动文件，请稍后再操作会话。");
-    if (command.type === "materials") return chatMaterials(this.projects, root);
+    if (command.type === "materials") return chatMaterials(this.projects, root, this.skills);
+    if (command.type === "mappingPlan") {
+      const run = await this.parsing.requireReviewed(root);
+      const plan = await this.projects.createMappingPlan(root, run.candidate!);
+      // A confirmation is short-lived UI state; accepted plans live in the Pi session.
+      for (const [id, item] of this.mappingPlans) if (item.root === root) this.mappingPlans.delete(id);
+      this.mappingPlans.set(plan.id, { root, plan });
+      return plan;
+    }
     if (command.type === "stop") {
       const c = this.conversations.get(this.key(root, command.id));
       if (!c) throw new Error("找不到此会话。");
       c.stopRevision = (c.stopRevision ?? 0) + 1;
       if (c.state.busy) {
         c.state.stopping = true;
+        c.runController?.abort();
         c.state.queued = [];
         this.emit(c);
         const queued = c.session?.clearQueue().followUp ?? [];
@@ -639,10 +678,33 @@ export class AgentService {
       }
       return [...this.conversations.values()]
         .filter((c) => c.state.root === root)
+        .sort((a, b) => (b.manager.getHeader()?.timestamp ?? "").localeCompare(a.manager.getHeader()?.timestamp ?? ""))
         .map((c) => c.state);
     }
     if (command.type === "create")
       return this.add(root, SessionManager.create(root, dir)).state;
+    if (command.type === "mapping") {
+      const accepted = this.mappingPlans.get(command.planId);
+      if (!accepted || accepted.root !== root) throw new Error("建图确认已失效，请重新选择生成。");
+      if ([...this.conversations.values()].some(item => item.state.root === root && item.state.busy && item.mappingPlan))
+        throw new Error("此工程已有建图正在运行。");
+      await this.parsing.requireReviewed(root);
+      this.mappingPlans.delete(command.planId);
+      const { plan } = accepted;
+      const c = this.add(root, SessionManager.create(root, dir));
+      c.manager.appendCustomEntry("paper30min-mapping", plan);
+      this.sync(c);
+      return this.dispatch({ type: "send", root, id: c.state.id, attachments: [{ kind: "skill", value: "paper-map.md", label: "建图" }],
+        text: [
+          "请为工程论文生成完整阅读地图和逐节论文精解。",
+          `当前已审阅正文：${plan.manuscript}。用 read 按需读取。`,
+          `本次唯一可写候选目录：${plan.directory}/。正式成果发布前不要修改旧成果或解析正文。`,
+          `地图写 ${plan.directory}/map.md；精解写 ${plan.directory}/explanations/<名称>.md。`,
+          `地图正式路径为 map/${plan.id}/阅读地图.md，精解正式目录为 explanations/${plan.id}/；文档内图片和文件导航按这些最终路径计算相对链接。`,
+          `先保存并 read 核查所有文档，最后 write ${plan.directory}/result.json，内容为 {"map":"map.md","explanations":["explanations/01-引言.md","explanations/02-方法.md"]}。示例名称不代表原文结构，数组须按实际顺序列出全部精解，含附录。`,
+          "应用将在本轮成功结束后校验完整性、真实引用与用户确认时的基线，再一次登记正式地图和精解；缺少任何部分不得写完成清单。最终回复简要说明实际完成内容，不冒充已发布。",
+        ].join("\n") }, config);
+    }
     if (command.type === "review") {
       const model = config.models.find((item) => item.id === config.selectedModelId);
       if (!model?.vision) throw new Error("审阅需要支持视觉输入的 Agent 模型，请先在设置中启用视觉输入。");
@@ -672,6 +734,7 @@ export class AgentService {
     if (command.type === "open") return c.state;
     if (command.type === "branch") {
       if (c.state.reviewBatchId) throw new Error("审阅请使用继续审阅创建新会话，避免分支重复标记进度。");
+      if (c.state.mapping) throw new Error("建图会话不支持分支；请继续当前建图，或新建普通会话讨论成果。");
       if (c.state.busy) throw new Error("请先停止此会话再分支。");
       const entry = c.manager.getEntry(command.messageId);
       if (!entry || entry.type !== "message")
@@ -697,7 +760,9 @@ export class AgentService {
     const reviewing = c.state.reviewBatchId && this.parsing.isReviewActive(root, c.state.reviewBatchId, c.state.id);
     const stopRevision = c.stopRevision;
     if (!reviewing) await this.parsing.requireReviewed(root);
-    const prompt = await prepareChatInput(this.projects, this.references, root, command.text, command.attachments);
+    if (c.state.mapping?.status === "pending" && [...this.conversations.values()].some(item => item !== c && item.state.root === root && item.state.busy && item.mappingPlan))
+      throw new Error("此工程已有建图正在运行，请先停止后再继续。");
+    const prompt = await prepareChatInput(this.projects, this.references, root, command.text, command.attachments, this.skills);
     if (this.closing || this.movingFiles.has(root) || c.state.stopping || c.initializing || c.stopRevision !== stopRevision)
       throw new Error("会话正在准备、停止或退出，请稍后再试。");
     if (c.state.busy) {
@@ -719,6 +784,7 @@ export class AgentService {
     if (!model?.model || !service?.baseUrl || !config.keys[service.id])
       throw new Error("请先在设置中配置 Agent 模型与 API 密钥。");
     c.initializing = true;
+    c.runController = new AbortController();
     c.activeModelId = config.selectedModelId;
     c.state.busy = true;
     c.state.error = undefined;
@@ -735,6 +801,18 @@ export class AgentService {
       c.initializing = false;
       if (!this.closing && !c.state.stopping)
         await c.session!.prompt(prompt);
+      if (c.mappingPlan && c.state.mapping?.status === "pending" && !this.closing && !c.state.stopping && !c.state.error) {
+        try {
+          const last = c.manager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "assistant");
+          if (!last || last.type !== "message" || last.message.role !== "assistant" || last.message.stopReason !== "stop")
+            throw new Error("本轮生成未完整结束，候选已保留，可在当前会话继续。");
+          const run = await this.parsing.requireReviewed(root);
+          if (run.candidate !== c.mappingPlan.manuscript) throw new Error("当前解析批次已变化，建图候选已保留。");
+          const result = await this.projects.publishMapping(root, c.mappingPlan, c.runController!.signal);
+          c.manager.appendCustomEntry("paper30min-mapping-published", result);
+          c.state.error = result.warning;
+        } catch (error) { c.state.error = (error as Error).message; }
+      }
     })()
       .catch(() => {
         c.state.error = failure();
@@ -753,6 +831,7 @@ export class AgentService {
         c.network = undefined;
         c.initializing = false;
         c.activeModelId = undefined;
+        c.runController = undefined;
         if (reviewing) {
           try {
             await this.parsing.finishReview(root, c.state.reviewBatchId!, c.state.id, c.state.stopping || this.closing ? "已停止审阅，可从下一页继续。" : c.state.error);
@@ -771,6 +850,7 @@ export class AgentService {
     this.closing = true;
     await Promise.all(
       [...this.conversations.values()].map(async (c) => {
+        c.runController?.abort();
         c.unsubscribe?.();
         const queued = c.session?.clearQueue().followUp ?? [];
         await c.session?.abort();

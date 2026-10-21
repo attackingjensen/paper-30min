@@ -2516,7 +2516,262 @@ test("Pi 普通对话可写入文件和运行 Shell", async () => {
   }
 });
 
-test("STE-95 真实模型使用来源、指定文档与产品 Skill", async () => {
+test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件会话重开", async () => {
+  const requests: any[] = [];
+  let root: string;
+  let manuscript: string;
+  let link: string;
+  let mode: "map" | "card" | "chat" | "pause" = "map";
+  let missingMapCitation = false;
+  let step = 0;
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const payload = JSON.parse(body); requests.push(payload);
+    if (mode === "pause") {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write(`data: ${JSON.stringify({ id: "paused", choices: [{ index: 0, delta: { content: "正在准备建图" }, finish_reason: null }] })}\n\n`);
+      return;
+    }
+    const text = JSON.stringify(payload.messages.filter((message: any) => message.role === "user"));
+    const directory = /tmp\/mapping-[a-f0-9]{32}/.exec(text)?.[0];
+    let calls: { name: string; args: unknown }[] = [];
+    if (mode !== "chat" && step === 0) calls = [{ name: "read", args: { path: manuscript } }];
+    if (mode === "map" && step === 0 && directory) {
+      const explanations = await fs.readdir(path.join(root, directory, "explanations")).catch(() => []);
+      for (const file of ["map.md", ...explanations.map(file => `explanations/${file}`), "result.json"]) {
+        if (await fs.stat(path.join(root, directory, file)).catch(() => null))
+          calls.push({ name: "read", args: { path: `${directory}/${file}` } });
+      }
+    }
+    if (mode === "map" && step === 1) {
+      const explanations = [...Array.from({ length: 12 }, (_, index) => `explanations/${index + 1}.md`), "explanations/附录.md"];
+      calls = [
+        { name: "write", args: { path: `${directory}/map.md`, content: missingMapCitation ? "# 尚无引用的地图" : `# 阅读地图\n\n方法与[证据](${link})。` } },
+        ...explanations.map((file, index) => ({ name: "write", args: { path: `${directory}/${file}`, content: `# ${index === 12 ? "附录" : `第${index + 1}节`}\n\n论点、方法与[证据](${link})。` } })),
+        { name: "write", args: { path: `${directory}/result.json`, content: JSON.stringify({ map: "map.md", explanations }) } },
+      ];
+    }
+    if (mode === "card" && step === 1) calls = [{ name: "write", args: {
+      path: "memories/注意力机制.md", content: `# 注意力机制\n\n论文事实：该方法使用注意力。[原文](${link})\n\n讨论理解：值得关注信息之间的关联。\n\n待核实：扩展到其他任务的条件。`,
+    } }];
+    step++;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const chunk = (delta: unknown, finish_reason: string | null = null) => response.write(`data: ${JSON.stringify({ id: "research", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+    if (calls.length) {
+      chunk({ tool_calls: calls.map((call, index) => ({ index, id: `research-${step}-${index}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.args) } })) });
+      chunk({}, "tool_calls");
+    } else { chunk({ content: mode === "card" ? "已整理 memories/注意力机制.md。" : "已完成本轮任务。" }); chunk({}, "stop"); }
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "研究成果");
+    root = path.join(sandbox, "projects/研究成果");
+    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
+    await expect(page.locator(".mapping-panel")).toContainText("请先");
+    await expect(page.locator(".mapping-panel").getByRole("button", { name: "论文解析", exact: true })).toBeVisible();
+    const seeded = await seedBlockParsing(root); manuscript = seeded.run.candidate!; link = seeded.link;
+    await page.evaluate(async base => {
+      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+      await window.desktop.agent({ type: "saveSettings", settings: { ...settings,
+        services: [{ id: "research", name: "受控模型", api: "openai-completions", baseUrl: base, hasKey: false }],
+        models: [{ id: "research", serviceId: "research", name: "受控模型", model: "fixture", contextWindow: 32000, maxTokens: 4096, thinking: "off", availableThinking: ["off"] }], selectedModelId: "research" }, apiKeys: { research: "test-key" } });
+    }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "生成地图与精解" })).toBeVisible();
+    await page.getByRole("button", { name: "开始建图", exact: true }).click();
+    await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
+    await expect(page.getByRole("button", { name: "从此消息分支", exact: true })).toHaveCount(0);
+    const manifest = await readManifest(root);
+    expect(manifest.explanations.map((file: string) => path.posix.basename(file))).toEqual(["1.md", "2.md", "3.md", "4.md", "5.md", "6.md", "7.md", "8.md", "9.md", "10.md", "11.md", "12.md", "附录.md"]);
+    await expect(page.locator(".document-row")).toHaveCount(1);
+    await page.getByRole("button", { name: "论文精解", exact: true }).click();
+    await expect(page.locator(".document-row")).toHaveCount(13);
+    await page.getByRole("button", { name: "10.md", exact: true }).click();
+    await expect(page.locator(".markdown-preview")).toContainText("第10节");
+    await page.screenshot({ path: "test-results/ste84-mapping.png" });
+    expect(await fs.readdir(path.join(root, "memories"))).toEqual([]);
+    missingMapCitation = true; step = 0;
+    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
+    await page.getByRole("button", { name: "确认替换并生成", exact: true }).click();
+    await expect(page.locator(".mapping-panel")).toContainText("建图成果缺少可回查的原文引用：map.md");
+    expect(await readManifest(root)).toEqual(manifest);
+    missingMapCitation = false; step = 0;
+    await page.getByRole("button", { name: "继续建图", exact: true }).click();
+    await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
+    expect(JSON.stringify(requests.at(-1))).toContain("上一轮应用报告");
+    expect(JSON.stringify(requests.at(-1))).toContain("地图本身也须");
+    const continuedManifest = await readManifest(root);
+    mode = "pause";
+    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
+    await expect(page.getByRole("dialog").locator("li")).toHaveCount(14);
+    await page.getByRole("button", { name: "确认替换并生成", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止建图", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "停止建图", exact: true }).click();
+    await expect(page.getByRole("button", { name: "继续建图", exact: true })).toBeVisible();
+    expect(await readManifest(root)).toEqual(continuedManifest);
+    await desktop.close(); await launch(); await choose(root);
+    await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
+    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+    await expect(page.getByRole("button", { name: "继续建图", exact: true })).toBeVisible();
+    mode = "map"; step = 0;
+    await page.getByRole("button", { name: "继续建图", exact: true }).click();
+    await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
+    await page.getByRole("button", { name: "设置", exact: true }).click();
+    await page.getByRole("button", { name: "产品 Skill", exact: true }).click();
+    await page.getByLabel("产品 Skill", { exact: true }).selectOption("memory-card.md");
+    const skill = page.getByLabel("提示词", { exact: true });
+    const content = await skill.inputValue();
+    await skill.fill(" ");
+    await page.getByRole("button", { name: "保存提示词", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("不能为空");
+    await expect(skill).toHaveValue(" ");
+    await skill.fill(content + "\n本轮编辑核验：保留讨论适用条件。");
+    await page.getByRole("button", { name: "保存提示词", exact: true }).click();
+    await expect(page.getByRole("status")).toHaveText("已保存");
+    await page.getByRole("button", { name: "返回工作台", exact: true }).click();
+    mode = "chat"; step = 0;
+    await page.getByRole("button", { name: "新会话", exact: true }).click();
+    await page.getByLabel("Agent 消息").fill("这段方法的适用条件是什么？只讨论。");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await expect(page.locator(".chat-message.assistant")).toContainText("已完成本轮任务");
+    expect(await fs.readdir(path.join(root, "memories"))).toEqual([]);
+    mode = "card"; step = 0;
+    const input = page.getByLabel("Agent 消息");
+    await input.fill("把刚才讨论的注意力机制整理为记忆卡片 @");
+    await input.pressSequentially("记忆卡片");
+    await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+    await input.press("Enter");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".chat-message.assistant").last()).toContainText("已整理");
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    expect(JSON.stringify(requests.at(-1))).toContain("本轮编辑核验");
+    const card = await fs.readFile(path.join(root, "memories/注意力机制.md"), "utf8");
+    expect(card).toContain(link);
+    const writeTool = page.locator('.tool-process[data-tool="write"]').last();
+    await writeTool.locator("summary").click();
+    await expect(writeTool.locator(".tool-diff")).toContainText("讨论理解");
+    await writeTool.getByRole("button", { name: "memories/注意力机制.md", exact: true }).click();
+    await expect(page.getByRole("tab", { name: "注意力机制.md", exact: true })).toBeVisible();
+    await page.locator(".markdown-preview a").filter({ hasText: "原文" }).click();
+    await expect(page.getByRole("tab", { name: "paper.pdf" })).toHaveAttribute("aria-selected", "true");
+    const sessionId = await page.getByLabel("会话", { exact: true }).inputValue();
+    await desktop.close(); await launch(); await choose(root);
+    await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
+    await page.getByLabel("会话", { exact: true }).selectOption(sessionId);
+    await expect(page.locator(".chat-message.assistant").last()).toContainText("已整理");
+    expect(await fs.readFile(path.join(root, "memories/注意力机制.md"), "utf8")).toBe(card);
+    await page.getByRole("tab", { name: "注意力机制.md", exact: true }).click();
+    await expect(page.locator(".markdown-preview")).toContainText("讨论理解");
+    await page.screenshot({ path: "test-results/ste99-memory-card.png" });
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+test("STE-84 真实模型从论文全文生成地图和逐节精解", async () => {
+  test.setTimeout(1800000);
+  test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || !process.env.PAPER30MIN_REAL_PROFILE, "需真实模型隔离配置，关闭 trace。");
+  await desktop.close();
+  for (const file of ["agent-settings.json", "Local State"])
+    await fs.copyFile(path.join(process.env.PAPER30MIN_REAL_PROFILE!, file), path.join(sandbox, "profile", file));
+  await launch();
+  await page.evaluate(async modelName => {
+    const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+    const selected = settings.models.find(model => model.id === settings.selectedModelId)!;
+    if (modelName) selected.model = modelName;
+    selected.maxTokens = Math.max(selected.maxTokens, 16384);
+    await window.desktop.agent({ type: "saveSettings", settings });
+  }, process.env.PAPER30MIN_REAL_MAPPING_MODEL);
+  const root = path.join(sandbox, "projects/真实建图");
+  if (process.env.PAPER30MIN_REAL_MAPPING_PROJECT) {
+    await fs.cp(process.env.PAPER30MIN_REAL_MAPPING_PROJECT, root, { recursive: true });
+    await choose(root);
+    await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
+  } else {
+    await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf"), path.join(sandbox, "projects"), "真实建图");
+    const run = await seedParsing(root);
+    const { ProjectService } = await import("../src/main/project-service");
+    const { buildCandidate } = await import("../src/main/baidu-candidate");
+    const { createHash } = await import("node:crypto");
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const projects = new ProjectService(path.join(sandbox, "fixture-preferences.json"), async () => {});
+    try {
+      const source = await projects.dispatch({ type: "readPdf", root, path: run.document.path }) as PdfSource;
+      const raw = await fs.readFile("../legacy/v1/app/src-tauri/tests/fixtures/aistudio/1512.03385.jsonl");
+      const candidate = await buildCandidate({ root, run, source, raw, projects, signal: new AbortController().signal,
+        download: async () => { throw new Error("此录制正文无需下载外部图片。"); }, progress: async () => {} });
+      // The recorded OCR fixture is deliberately excerpted. Use complete PDF text
+      // with truthful page citations for this generation test, not as OCR review evidence.
+      const { stdout } = await promisify(execFile)("pdftotext", ["-enc", "UTF-8", path.join(root, run.document.path), "-"], { maxBuffer: 4 * 1024 * 1024 });
+      const pages = stdout.split("\f");
+      if (!pages.at(-1)?.trim()) pages.pop();
+      expect(pages).toHaveLength(run.pageCount);
+      const blocks: ParsingMapping["blocks"] = [];
+      const manuscript: string[] = ["# Deep Residual Learning for Image Recognition"];
+      for (const [index, text] of pages.entries()) {
+        const page = index + 1;
+        const dimensions = candidate.mapping.blocks.flatMap(block => block.citation.pages).find(item => item.page === page)!;
+        const citation = await projects.dispatch({ type: "createCitation", root, path: run.document.path, input: {
+          sha256: source.sha256, kind: "page", text: "", pages: [{ page, width: dimensions.width, height: dimensions.height, rects: [] }],
+        } }) as ParsingMapping["blocks"][number]["citation"];
+        blocks.push({ id: `${run.batchId}:p${page}:b0`, vendorIds: [], label: "text", text, citation, images: [], limitation: "整页文本转录，引用仅定位到页" });
+        manuscript.push(`## 原文第 ${page} 页\n\n${text.trim()}\n\n[第 ${page} 页原文](paper://cite/${citation.id})`);
+      }
+      candidate.mapping.blocks = blocks;
+      candidate.markdown = manuscript.join("\n\n");
+      const mapping = Buffer.from(JSON.stringify(candidate.mapping));
+      run.mappingSha256 = createHash("sha256").update(mapping).digest("hex");
+      run.markdownSha256 = createHash("sha256").update(candidate.markdown).digest("hex");
+      await fs.writeFile(path.join(root, run.candidate!), candidate.markdown);
+      await fs.writeFile(path.join(root, ".paper30min/parsing", run.batchId, "mapping.json"), mapping);
+      await fs.writeFile(path.join(root, ".paper30min/parsing", run.batchId, "run.json"), JSON.stringify(run));
+    } finally { await projects.close(); }
+  }
+  await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+  const sessions = await page.evaluate(root => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
+  if (sessions[0]?.mapping?.status === "pending") {
+    await page.getByRole("button", { name: "继续建图", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
+    await page.getByRole("button", { name: "开始建图", exact: true }).click();
+  }
+  await expect(page.getByRole("button", { name: "停止建图", exact: true })).toBeVisible();
+  try {
+    await expect(page.getByRole("button", { name: "停止建图", exact: true })).toHaveCount(0, { timeout: 1680000 });
+  } finally {
+    // Preserve expensive real-model work for inspection or continuation even on timeout.
+    await fs.cp(root, path.join("test-results/real-model", `ste84-project-${path.basename(sandbox)}`), { recursive: true });
+  }
+  const states = await page.evaluate(root => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
+  const manifest = await readManifest(root);
+  const documents = await Promise.all([...(manifest.map ? [manifest.map] : []), ...manifest.explanations].map(async file => ({
+    path: file, content: await fs.readFile(path.join(root, file), "utf8"),
+  })));
+  await fs.writeFile("test-results/real-model/ste84-evidence.json", JSON.stringify({ states, manifest, documents }, null, 2));
+  await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
+  expect(manifest.explanations.length).toBeGreaterThanOrEqual(5);
+  expect(documents.every(document => document.content.includes("paper://cite/"))).toBe(true);
+  const { markdownRenderer } = await import("../src/shared/markdown-references");
+  const mapDocument = documents.find(document => document.path === manifest.map)!;
+  const navigation = markdownRenderer.parse(mapDocument.content, {}).flatMap(block => block.children ?? [])
+    .filter(token => token.type === "link_open").map(token => String(token.attrGet("href") ?? ""))
+    .filter(href => !/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith("#") && !href.startsWith("//"))
+    .map(href => ({ href, path: decodeURIComponent(new URL(href, `https://project.local/${mapDocument.path}`).pathname.slice(1)) }));
+  expect(navigation.map(item => item.path)).toEqual(expect.arrayContaining(manifest.explanations));
+  for (const item of navigation) expect((await fs.stat(path.join(root, item.path))).isFile()).toBe(true);
+  await page.getByRole("button", { name: "阅读地图.md", exact: true }).click();
+  const firstLink = navigation.find(item => item.path === manifest.explanations[0])!;
+  await page.locator(`.markdown-preview a[href=${JSON.stringify(firstLink.href)}]`).first().click();
+  await expect(page.getByRole("tab", { name: path.posix.basename(manifest.explanations[0]), exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.screenshot({ path: "test-results/real-model/ste84-map.png" });
+});
+
+test("STE-99 真实模型按需整理指定原文与讨论为记忆卡片", async () => {
   test.setTimeout(180000);
   test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || !process.env.PAPER30MIN_REAL_PROFILE, "需真实模型隔离配置，关闭 trace。");
   await desktop.close();
@@ -2528,14 +2783,14 @@ test("STE-95 真实模型使用来源、指定文档与产品 Skill", async () =
   const { link } = await seedBlockParsing(root);
   await fs.writeFile(path.join(root, "notes/阅读问题.md"), "本轮只研究编码器和解码器的职责。核验词：松柏七号。");
   const input = page.getByLabel("Agent 消息");
-  await input.fill("请按所选 Skill 的四段式结构简短解释选中原文，不超过300字。先 read 来源中的解析稿行号与指定笔记，包含笔记核验词和已有原文链接。材料不足如实说明；模板中的全文和图片并未预先提供，不调用旧版工具、不写文件。 ");
+  await input.fill("请把指定原文与阅读问题整理为 memories/编码器与解码器.md 记忆卡片。先 read 来源中的解析稿行号与指定笔记，保留笔记核验词和已有原文链接。论文事实、讨论理解和待核实问题应区分。只整理给出的范围，不假称已读完整论文。 ");
   await input.evaluate((element, link) => {
     const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", `[选中原文](${link})`);
     element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
   }, link);
   await input.press("End"); await input.pressSequentially(" @阅读问题");
   await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
-  await input.press("Enter"); await input.press("End"); await input.pressSequentially(" @深挖");
+  await input.press("Enter"); await input.press("End"); await input.pressSequentially(" @记忆卡片");
   await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
   await input.press("Enter");
   await expect(page.locator(".chat-attachments > span")).toHaveCount(3);
@@ -2546,11 +2801,12 @@ test("STE-95 真实模型使用来源、指定文档与产品 Skill", async () =
   const states = await page.evaluate(root => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
   expect(states.flatMap(state => state.messages.flatMap(message => message.tools ?? [])).some(tool => tool.name === "read" && tool.status === "done")).toBe(true);
   const answer = states.flatMap(state => state.messages).filter(message => message.role === "assistant").map(message => message.text).join("\n");
-  expect(answer).toContain("松柏七号");
-  expect(answer).toContain(link);
-  expect(answer).toContain("核心论点");
-  await fs.writeFile("test-results/real-model/ste95-evidence.json", JSON.stringify(states, null, 2));
-  await page.screenshot({ path: "test-results/real-model/ste95-chat.png" });
+  const card = await fs.readFile(path.join(root, "memories/编码器与解码器.md"), "utf8");
+  expect(card).toContain("松柏七号");
+  expect(card).toContain(link);
+  expect(answer).toContain("memories/");
+  await fs.writeFile("test-results/real-model/ste99-evidence.json", JSON.stringify({ states, card }, null, 2));
+  await page.screenshot({ path: "test-results/real-model/ste99-chat.png" });
 });
 
 test("STE-95 聊天来源预览、去重、文档与 Skill 组合发送及历史重开", async () => {
@@ -2613,7 +2869,7 @@ test("STE-95 聊天来源预览、去重、文档与 Skill 组合发送及历史
     await input.press("Enter");
     await expect(input).toHaveValue("解释这里 ");
     await input.press("End");
-    await input.pressSequentially("@深挖");
+    await input.pressSequentially("@记忆卡片");
     await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
     await input.press("Enter");
     await expect(page.locator(".chat-attachments > span")).toHaveCount(5);
@@ -2631,7 +2887,7 @@ test("STE-95 聊天来源预览、去重、文档与 Skill 组合发送及历史
     expect(sent).toContain("问题(中文).md");
     expect(sent).not.toContain("不应自动发送的全文");
     expect(sent).toContain("SHA-256");
-    expect(sent).toContain("你是一位资深研究员");
+    expect(sent).toContain("# 记忆卡片");
     expect(sent).not.toContain("image_url");
     await expect(page.locator(".chat-message.user")).not.toContainText("来源快照");
     await expect(page.locator(".chat-message.user")).not.toContainText("startLine");

@@ -40,6 +40,8 @@ import { MarkdownDocument } from "./MarkdownDocument";
 import { AgentPanel } from "./AgentPanel";
 import type { ChatAttachment } from "../shared/chat-input";
 import { AgentSettingsForm } from "./AgentSettingsForm";
+import { ProductSkillsForm } from "./ProductSkillsForm";
+import { MappingPanel } from "./MappingPanel";
 import { LegacyImport } from "./LegacyImport";
 import { ParsingPanel, ParsingSettingsForm } from "./ParsingPanel";
 import type { ResolvedCitation, CitationUse } from "../shared/citations";
@@ -101,6 +103,7 @@ export function App() {
   const [right, setRight] = useState(window.innerWidth >= 900);
   const layout = usePanelLayout(left, right);
   const [settings, setSettingsState] = useState<string | null>(null);
+  const skillDirty = useRef(false);
   const pdfPending = useRef(false);
   const navigationRequest = useRef(0);
   const flushPdf = useRef<(() => Promise<void>) | null>(null);
@@ -110,6 +113,7 @@ export function App() {
     catch (error) { setError(`PDF 自动保存失败，当前批注已保留：${(error as Error).message}`); return false; }
   }
   async function setSettings(value: string | null) {
+    if (settings === "skills" && value !== settings && skillDirty.current && !window.confirm("放弃尚未保存的提示词编辑并离开？")) return;
     const request = ++navigationRequest.current;
     if (await mayLeavePdf() && request === navigationRequest.current) setSettingsState(value);
   }
@@ -635,6 +639,11 @@ export function App() {
     return (
       <article className="article">
         <h1>{current.title}</h1>
+        {(current.key === "map" || current.key === "explanations") && root && <MappingPanel key={root} root={root}
+          beforeStart={() => documents.flush()}
+          onParsing={() => openTab({ key: "parsing", title: "论文解析" })}
+          onSession={id => { setSelectedAgent({ root, id }); setRight(true); }}
+          onPublished={refresh} />}
         {paths.length ? (
           paths.map((p) => (
             <button
@@ -697,6 +706,7 @@ export function App() {
               ["projects", "工程文件夹"],
               ["agent", "Agent 模型"],
               ["search", "Agent 网络搜索"],
+              ["skills", "产品 Skill"],
               ["parsing", "解析模型"],
               ["proxy", "代理配置"],
             ].map(([id, name]) => (
@@ -725,6 +735,8 @@ export function App() {
                     ? "Agent 模型"
                     : settings === "search"
                       ? "Agent 网络搜索"
+                      : settings === "skills"
+                        ? "产品 Skill"
                       : settings === "parsing"
                         ? "解析模型"
                         : "代理配置"}
@@ -779,6 +791,8 @@ export function App() {
                 settings === "proxy" ||
                 settings === "search" ? (
                 <AgentSettingsForm key={settings} section={settings} />
+              ) : settings === "skills" ? (
+                <ProductSkillsForm onDirty={dirty => { skillDirty.current = dirty; }} />
               ) : settings === "parsing" ? (
                 <ParsingSettingsForm />
               ) : (

@@ -935,3 +935,9 @@ body:has(.notice) .settings-workspace {
 .citation-use-target { background: #e5dfff; outline: 2px solid #8674b6; border-radius: 3px; }
 
 .citation-uses section.selected { border-left: 3px solid #b27700; padding-left: 8px; }
+.product-skills-form { display: grid; gap: 12px; min-width: 0; }
+.product-skills-form textarea { width: 100%; min-height: 360px; resize: vertical; font: 14px/1.6 Consolas, monospace; padding: 12px; }
+.mapping-panel { margin-bottom: 24px; }
+.mapping-panel .row { flex-wrap: wrap; }
+.mapping-targets { max-height: 240px; overflow: auto; padding-left: 20px; }
+.mapping-targets li { overflow-wrap: anywhere; }
