@@ -1555,7 +1555,7 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
       .fill("帮我梳理论文的核心思路。保留 **我的原始输入**。");
     await composer.press("Enter");
     await expect(page.locator(".chat-markdown h2")).toHaveText("先看核心思路");
-    await expect(page.locator(".chat-markdown strong")).toHaveText("局部信息");
+    await expect(page.locator(".chat-message.assistant .chat-markdown strong")).toHaveText("局部信息");
     await expect(page.locator(".chat-markdown .katex")).toHaveCount(1);
     await expect(page.locator(".chat-markdown table")).toHaveCount(1);
     await expect(page.locator(".chat-markdown pre code")).toHaveText(
@@ -1565,8 +1565,8 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
       page.locator(".chat-markdown img, .chat-markdown script"),
     ).toHaveCount(0);
     await expect(
-      page.locator(".chat-message.user .message-text"),
-    ).toContainText("**我的原始输入**");
+      page.locator(".chat-message.user .message-text strong"),
+    ).toHaveText("我的原始输入");
     const chat = page.locator(".chat");
     await chat.evaluate((el) => {
       el.scrollTop = 0;
@@ -2514,6 +2514,229 @@ test("Pi 普通对话可写入文件和运行 Shell", async () => {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test("STE-95 真实模型使用来源、指定文档与产品 Skill", async () => {
+  test.setTimeout(180000);
+  test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || !process.env.PAPER30MIN_REAL_PROFILE, "需真实模型隔离配置，关闭 trace。");
+  await desktop.close();
+  for (const file of ["agent-settings.json", "Local State"])
+    await fs.copyFile(path.join(process.env.PAPER30MIN_REAL_PROFILE!, file), path.join(sandbox, "profile", file));
+  await launch();
+  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"), path.join(sandbox, "projects"), "真实聊天材料");
+  const root = path.join(sandbox, "projects/真实聊天材料");
+  const { link } = await seedBlockParsing(root);
+  await fs.writeFile(path.join(root, "notes/阅读问题.md"), "本轮只研究编码器和解码器的职责。核验词：松柏七号。");
+  const input = page.getByLabel("Agent 消息");
+  await input.fill("请按所选 Skill 的四段式结构简短解释选中原文，不超过300字。先 read 来源中的解析稿行号与指定笔记，包含笔记核验词和已有原文链接。材料不足如实说明；模板中的全文和图片并未预先提供，不调用旧版工具、不写文件。 ");
+  await input.evaluate((element, link) => {
+    const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", `[选中原文](${link})`);
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+  }, link);
+  await input.press("End"); await input.pressSequentially(" @阅读问题");
+  await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+  await input.press("Enter"); await input.press("End"); await input.pressSequentially(" @深挖");
+  await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+  await input.press("Enter");
+  await expect(page.locator(".chat-attachments > span")).toHaveCount(3);
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 135000 });
+  await expect(page.locator(".agent-error")).toHaveCount(0);
+  const states = await page.evaluate(root => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
+  expect(states.flatMap(state => state.messages.flatMap(message => message.tools ?? [])).some(tool => tool.name === "read" && tool.status === "done")).toBe(true);
+  const answer = states.flatMap(state => state.messages).filter(message => message.role === "assistant").map(message => message.text).join("\n");
+  expect(answer).toContain("松柏七号");
+  expect(answer).toContain(link);
+  expect(answer).toContain("核心论点");
+  await fs.writeFile("test-results/real-model/ste95-evidence.json", JSON.stringify(states, null, 2));
+  await page.screenshot({ path: "test-results/real-model/ste95-chat.png" });
+});
+
+test("STE-95 聊天来源预览、去重、文档与 Skill 组合发送及历史重开", async () => {
+  const requests: { messages: { role: string; content: unknown }[] }[] = [];
+  let reply = "";
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    requests.push(JSON.parse(body));
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(`data: ${JSON.stringify({ id: "sources", choices: [{ index: 0, delta: { content: reply }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ id: "sources", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const parent = path.join(sandbox, "projects");
+    await create(fixture, parent, "聊天材料");
+    const root = path.join(parent, "聊天材料");
+    const { link, run } = await seedBlockParsing(root);
+    reply = `已核对[原文](${link})。`;
+    await fs.mkdir(path.join(root, "notes"), { recursive: true });
+    await fs.writeFile(path.join(root, "notes/问题(中文).md"), "不应自动发送的全文");
+    await page.evaluate(async base => {
+      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+      await window.desktop.agent({ type: "saveSettings", settings: { ...settings, services: [{ id: "sources", name: "受控模型", api: "openai-completions", baseUrl: base, hasKey: false }],
+        models: [{ id: "sources", serviceId: "sources", name: "受控模型", model: "fixture", contextWindow: 32000, maxTokens: 1024, thinking: "off", availableThinking: ["off"] }], selectedModelId: "sources" }, apiKeys: { sources: "test-key" } });
+    }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+    const input = page.getByLabel("Agent 消息");
+    await input.fill("解释这里 ");
+    const paste = async (text: string) => input.evaluate((element, value) => {
+      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", value);
+      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+    }, text);
+    await paste(`[原文](${link}) [重复](${link})`);
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+    await expect(input).toHaveValue("解释这里 原文 重复");
+    await paste(` [**这个定理为什么成立**][r]\n\n[r]: ${link}\n[r]: paper://cite/${"0".repeat(32)}`);
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+    await expect(input).toHaveValue(/这个定理为什么成立/);
+    await page.locator(".chat-attachments button").first().click();
+    await expect(page.getByRole("region", { name: "附件预览" })).toContainText(run.candidate!);
+    await expect(page.getByRole("region", { name: "附件预览" })).toContainText("第 3–5 行（链接第 5 行）");
+    await page.getByText("关闭预览", { exact: true }).click();
+    await expectPdfRendered();
+    await page.getByRole("button", { name: "引用", exact: true }).click();
+    await page.getByRole("button", { name: "整页引用", exact: true }).click();
+    await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(2);
+    expect(await nativeAnnotations()).toHaveLength(0);
+    await nativeHighlight();
+    const annotationId = (await nativeAnnotations())[0].id;
+    await page.locator("embedpdf-container").evaluate(async (element, id) => {
+      const registry = await (element as EmbedPdfContainer).registry;
+      registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").updateAnnotation(0, id, { contents: "发送当时的讨论" });
+    }, annotationId);
+    await page.getByRole("button", { name: "批注加入聊天", exact: true }).first().click();
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(3);
+    await input.fill("解释这里 @问题");
+    await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+    await input.press("Enter");
+    await expect(input).toHaveValue("解释这里 ");
+    await input.press("End");
+    await input.pressSequentially("@深挖");
+    await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+    await input.press("Enter");
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(5);
+    await page.screenshot({ path: "test-results/ste95-composer.png" });
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".chat-message.assistant")).toContainText("已核对");
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    expect(requests).toHaveLength(1);
+    const sent = JSON.stringify(requests[0].messages.filter(message => message.role === "user"));
+    expect(sent).toContain(run.candidate!);
+    expect(sent).toContain("startLine");
+    expect(sent).toContain("discussions");
+    expect(sent).toContain("发送当时的讨论");
+    expect(sent).toContain("问题(中文).md");
+    expect(sent).not.toContain("不应自动发送的全文");
+    expect(sent).toContain("SHA-256");
+    expect(sent).toContain("你是一位资深研究员");
+    expect(sent).not.toContain("image_url");
+    await page.locator(".chat-message.user a").first().click();
+    await expect(page.getByRole("tab", { name: "paper.pdf" })).toHaveAttribute("aria-selected", "true");
+    await page.locator(".chat-message.assistant a").click();
+    await page.locator("embedpdf-container").evaluate(async (element, id) => {
+      const registry = await (element as EmbedPdfContainer).registry;
+      registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").updateAnnotation(0, id, { contents: "讨论后来改写" });
+    }, annotationId);
+    await page.getByRole("button", { name: "笔记", exact: true }).click();
+    await expect(page.getByRole("tab", { name: "笔记", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("embedpdf-container")).toHaveCount(0);
+    await fs.writeFile(path.join(root, "notes/问题(中文).md"), "后来修改");
+    const original = await page.locator(".chat-message.user .message-text").textContent();
+    await desktop.close(); await launch();
+    await page.getByRole("button", { name: /聊天材料/ }).click();
+    await expect(page.locator(".chat-message.user .message-text")).toHaveText(original!);
+    await page.getByRole("button", { name: "从此消息分支" }).nth(1).click();
+    await expect(page.locator(".chat-message.user .message-text")).toHaveText(original!);
+    await page.getByLabel("Agent 消息").fill("保留代码 ");
+    await page.getByLabel("Agent 消息").evaluate((element, link) => {
+      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", `\`${link}\`\n\n\`\`\`\n[代码](${link})\n\`\`\``);
+      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+    }, link);
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(0);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+test("STE-95 来源失败保留草稿，移除后可发送，停止和模型失败保留材料", async () => {
+  let fail = false;
+  const requests: unknown[] = [];
+  const server = createServer(async (request, response) => {
+    let body = ""; for await (const chunk of request) body += chunk;
+    requests.push(JSON.parse(body));
+    if (fail) { response.writeHead(401); response.end("unauthorized"); return; }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(`data: ${JSON.stringify({ id: "stop", choices: [{ index: 0, delta: { content: "处理中" }, finish_reason: null }] })}\n\n`);
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "失败材料");
+    const root = path.join(sandbox, "projects/失败材料");
+    await page.evaluate(async base => {
+      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+      await window.desktop.agent({ type: "saveSettings", settings: { ...settings, services: [{ id: "sources", name: "受控模型", api: "openai-completions", baseUrl: base, hasKey: false }],
+        models: [{ id: "sources", serviceId: "sources", name: "受控模型", model: "fixture", contextWindow: 32000, maxTokens: 1024, thinking: "off", availableThinking: ["off"] }], selectedModelId: "sources" }, apiKeys: { sources: "test-key" } });
+    }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+    await expectPdfRendered();
+    await page.getByRole("button", { name: "引用", exact: true }).click();
+    await page.getByRole("button", { name: "整页引用", exact: true }).click();
+    await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+    await page.getByLabel("Agent 消息").fill("保留我的问题");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".agent-error")).toContainText("解析");
+    await expect(page.getByLabel("Agent 消息")).toHaveValue("保留我的问题");
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+    expect(requests).toHaveLength(0);
+    await seedParsing(root);
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".chat-message.assistant")).toContainText("处理中");
+    await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+    await page.getByLabel("Agent 消息").fill("停止前排队的来源");
+    await page.getByRole("button", { name: "补充消息", exact: true }).click();
+    await expect(page.locator(".queued-message")).toContainText("停止前排队的来源");
+    await page.getByRole("button", { name: "停止回复", exact: true }).click();
+    await expect(page.getByRole("button", { name: "停止回复", exact: true })).toHaveCount(0);
+    await expect(page.locator(".chat-message.user").first()).toContainText("来源快照");
+    await expect(page.locator(".chat-message.user").last()).toContainText("尚未送达模型");
+    await fs.writeFile(path.join(root, "notes/即将移动.md"), "指定材料");
+    await page.getByLabel("Agent 消息").fill("读取 @即将移动");
+    await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+    await page.getByLabel("Agent 消息").press("Enter");
+    await fs.rename(path.join(root, "notes/即将移动.md"), path.join(root, "notes/已移动.md"));
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".agent-error")).toContainText("指定文档已缺失或移动");
+    expect(requests).toHaveLength(1);
+    await page.getByRole("button", { name: "移除 notes/即将移动.md", exact: true }).click();
+    await page.getByLabel("Agent 消息").fill("");
+    await page.getByLabel("Agent 消息").evaluate(element => {
+      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", "https://example.com/a.pdf#annotation=note-1 paper://cite/" + "0".repeat(32) + "/extra");
+      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+    });
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(0);
+    await expect(page.getByLabel("Agent 消息")).toHaveValue(/https:\/\/example.com\/a.pdf#annotation=note-1 paper:\/\/cite\/0+\/extra/);
+    await page.getByLabel("Agent 消息").fill("缺失来源 ");
+    await page.getByLabel("Agent 消息").evaluate(element => {
+      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", "[不存在](paper://cite/" + "0".repeat(32) + ")");
+      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+    });
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".agent-error")).toBeVisible();
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+    expect(requests).toHaveLength(1);
+    await page.getByRole("button", { name: "移除 不存在", exact: true }).click();
+    fail = true;
+    await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".agent-error")).toContainText("认证失败");
+    await expect(page.locator(".chat-message.user")).toHaveCount(3);
+    await desktop.close(); await launch();
+    await page.getByRole("button", { name: /失败材料/ }).click();
+    await expect(page.locator(".chat-message.user")).toHaveCount(3);
+    await expect(page.locator(".chat-message.user").last()).toContainText("来源快照");
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
 test("Pi 原生对话流式回复、补充、分支及搬迁重开，密钥留本机", async () => {
@@ -4287,7 +4510,9 @@ test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", a
   const root = path.join(sandbox, "projects/研究工程");
   await expect(fs.readFile(path.join(root, ".paper30min-citations.json"))).rejects.toThrow();
   await page.getByLabel("Agent 消息").press("Control+v");
-  await expect(page.getByLabel("Agent 消息")).toHaveValue(markdown);
+  await expect(page.getByLabel("Agent 消息")).toHaveValue("PDF 第 1 页批注");
+  await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+  await expect(page.locator(".chat-attachments button").first()).toHaveAttribute("title", markdown.match(/\]\((.*)\)$/)![1]);
   await fs.writeFile(path.join(root, "notes/批注.md"), "# 我的笔记\n\n");
   await fs.mkdir(path.join(root, "map/deep"));
   const deepLink = markdown.replace("text/paper.pdf", "../../text/paper.pdf");

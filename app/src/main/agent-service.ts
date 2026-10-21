@@ -42,6 +42,8 @@ import { ReferenceService } from "./reference-service.js";
 import { createReferenceTools } from "./reference-tools.js";
 import { Type } from "typebox";
 import { ParsingService } from "./parsing-service.js";
+import { chatMaterials, prepareChatInput } from "./chat-materials.js";
+import type { ChatAttachment } from "../shared/chat-input.js";
 
 interface Conversation {
   manager: SessionManager;
@@ -606,10 +608,11 @@ export class AgentService {
       { type: "settings" | "saveSettings" | "selectModel" }
     >,
     config: ModelConfig,
-  ): Promise<ChatSession | ChatSession[]> {
+  ): Promise<ChatSession | ChatSession[] | ChatAttachment[]> {
     if (this.closing) throw new Error("应用正在退出。");
     const root = command.root;
     if (this.movingFiles.has(root)) throw new Error("工程正在移动文件，请稍后再操作会话。");
+    if (command.type === "materials") return chatMaterials(this.projects, root);
     if (command.type === "stop") {
       const c = this.conversations.get(this.key(root, command.id));
       if (!c) throw new Error("找不到此会话。");
@@ -618,9 +621,10 @@ export class AgentService {
         c.state.stopping = true;
         c.state.queued = [];
         this.emit(c);
-        c.session?.clearQueue();
+        const queued = c.session?.clearQueue().followUp ?? [];
         await c.session?.abort();
         await c.run;
+        this.preserveQueued(c, queued);
       }
       return c.state;
     }
@@ -684,7 +688,7 @@ export class AgentService {
     }
     if (
       typeof command.text !== "string" ||
-      !command.text.trim() ||
+      (!command.text.trim() && !command.attachments?.length) ||
       command.text.length > 100000
     )
       throw new Error("消息不能为空或超过 100,000 字符。");
@@ -693,12 +697,13 @@ export class AgentService {
     const reviewing = c.state.reviewBatchId && this.parsing.isReviewActive(root, c.state.reviewBatchId, c.state.id);
     const stopRevision = c.stopRevision;
     if (!reviewing) await this.parsing.requireReviewed(root);
+    const prompt = await prepareChatInput(this.projects, this.references, root, command.text, command.attachments);
     if (this.closing || this.movingFiles.has(root) || c.state.stopping || c.initializing || c.stopRevision !== stopRevision)
       throw new Error("会话正在准备、停止或退出，请稍后再试。");
     if (c.state.busy) {
       if (c.activeModelId !== config.selectedModelId)
         throw new Error("已切换模型，请等待当前回复完成后再发送。");
-      await c.session!.followUp(command.text);
+      await c.session!.followUp(prompt);
       c.state.queued = c.session!.getFollowUpMessages().slice();
       this.emit(c);
       return c.state;
@@ -721,19 +726,25 @@ export class AgentService {
     c.state.messages.push({
       id: "pending-user",
       role: "user",
-      text: command.text,
+      text: prompt,
     });
     this.emit(c);
+    const previousUser = c.manager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "user")?.id;
     c.run = (async () => {
       await this.prepare(c, config);
       c.initializing = false;
       if (!this.closing && !c.state.stopping)
-        await c.session!.prompt(command.text);
+        await c.session!.prompt(prompt);
     })()
       .catch(() => {
         c.state.error = failure();
       })
       .finally(async () => {
+        // Pi normally persists at message_start. Keep the accepted input even if
+        // preparation fails or stop arrives before that event.
+        if (c.manager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "user")?.id === previousUser)
+          c.manager.appendMessage({ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() });
+        this.preserveQueued(c, c.session?.clearQueue().followUp ?? []);
         c.unsubscribe?.();
         c.unsubscribe = undefined;
         c.session?.dispose();
@@ -761,12 +772,19 @@ export class AgentService {
     await Promise.all(
       [...this.conversations.values()].map(async (c) => {
         c.unsubscribe?.();
-        c.session?.clearQueue();
+        const queued = c.session?.clearQueue().followUp ?? [];
         await c.session?.abort();
         await c.run;
+        this.preserveQueued(c, queued);
         c.session?.dispose();
         await c.network?.destroy();
       }),
     );
+  }
+  private preserveQueued(c: Conversation, messages: string[]) {
+    if (!messages.length) return;
+    for (const text of messages) c.manager.appendMessage({ role: "user", content: [{ type: "text", text: "本条排队消息尚未送达模型，未执行。保留提交时的材料：\n\n" + text }], timestamp: Date.now() });
+    this.sync(c);
+    this.emit(c);
   }
 }

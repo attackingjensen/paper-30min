@@ -27,7 +27,7 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
     if (!p) throw new Error("PDF 页面尚未就绪。");
     return { page: index + 1, width: p.size.width, height: p.size.height, rects };
   };
-  async function copy(wholePage = selectedPage !== undefined) {
+  async function copy(wholePage = selectedPage !== undefined, chat = false) {
     if (copying) return;
     copying = true;
     try {
@@ -49,8 +49,9 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
       const citation = await window.desktop.invoke<Citation>({ type: "createCitation", root: options.root, path: options.path,
         input, sourceDocument: options.document });
       if (disposed) return;
-      await navigator.clipboard.writeText(citationMarkdown(citation));
-      options.onStatus("已复制引用链接，可粘贴到 Markdown 文档。");
+      if (chat) window.dispatchEvent(new CustomEvent("paper30min-chat-source", { detail: { root: options.root, markdown: citationMarkdown(citation) } }));
+      else await navigator.clipboard.writeText(citationMarkdown(citation));
+      options.onStatus(chat ? "已加入聊天，尚未发送。" : "已复制引用链接，可粘贴到 Markdown 文档。");
     } catch (error) { if (!disposed) options.onStatus(`复制引用链接失败：${(error as Error).message}`); }
     finally { copying = false; }
   }
@@ -72,6 +73,7 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
   });
   const offSelection = selection.onBeginSelection(() => { region = undefined; selectedPage = undefined; draw(); });
   commands.registerCommand({ id: "paper:copy-citation", label: "复制引用链接", icon: "copy", action: () => void copy() });
+  commands.registerCommand({ id: "paper:chat-citation", label: "引用加入聊天", icon: "comment", action: () => void copy(undefined, true) });
 
   function cancel() {
     region = undefined;
@@ -125,7 +127,7 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
       id: "paper-citation-toolbar", position: { placement: "top", slot: "secondary", order: 0 }, permanent: false,
       items: [
         { type: "spacer", id: "citation-start", flex: true },
-        ...["region", "page", "copy", "cancel"].map((name): ToolbarItem => ({
+        ...["region", "page", "copy", "chat", "cancel"].map((name): ToolbarItem => ({
           type: "command-button", id: `paper-citation-${name}`, commandId: `paper:${name}-citation`, variant: "icon",
         })),
         { type: "spacer", id: "citation-end", flex: true },
@@ -140,6 +142,7 @@ export function connectPdfCitations(registry: PluginRegistry, viewer: EmbedPdfCo
       .map((item) => item.type === "group" ? { ...item, items: removeLink(item.items) } : item);
     ui.mergeSchema({ selectionMenus: { ...schema.selectionMenus, selection: { ...menu, items: [
       { type: "command-button", id: "paper-copy-citation", commandId: "paper:copy-citation", variant: "icon-text" },
+      { type: "command-button", id: "paper-chat-citation", commandId: "paper:chat-citation", variant: "icon-text" },
       ...removeLink(menu.items),
     ] } } });
   }

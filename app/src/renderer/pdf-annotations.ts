@@ -125,7 +125,7 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
     notify();
     return saving;
   }
-  async function copy() {
+  async function copy(chat = false) {
     try {
       const items: TrackedAnnotation[] = selected();
       if (!items.length) throw new Error("请先选中一个或多个批注。");
@@ -135,8 +135,9 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
           throw new Error("选中的批注已删除，请重新选择。");
         return `[PDF 第 ${object.pageIndex + 1} 页批注](${annotationHref({ path: options.path, id: object.id })})`;
       }).join("\n");
-      await copyAnnotationMarkdown(markdown, options.root);
-      options.onStatus(`已复制 ${items.length} 个批注链接`);
+      if (chat) window.dispatchEvent(new CustomEvent("paper30min-chat-source", { detail: { root: options.root, markdown } }));
+      else await copyAnnotationMarkdown(markdown, options.root);
+      options.onStatus(chat ? "已加入聊天，尚未发送。" : `已复制 ${items.length} 个批注链接`);
     } catch (reason) { options.onStatus((reason as Error).message); }
   }
   async function exportCopy(): Promise<void> {
@@ -166,6 +167,7 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
   commands.registerCommand({ id: "document:export", label: "导出 PDF 副本", icon: "download", categories: ["document", "document-export"],
     action: () => void exportCopy() });
   commands.registerCommand({ id: "paper:copy-annotation", label: "复制批注链接", icon: "link", action: () => void copy() });
+  commands.registerCommand({ id: "paper:chat-annotation", label: "批注加入聊天", icon: "comment", action: () => void copy(true) });
   const offAgentWrite = window.desktop.handleAnnotationWrite(async (request, checkActive) => {
     if (request.root !== options.root || request.path !== options.path) return null;
     if (!loaded || disposed) throw new Error("阅读器批注尚未加载完成，请稍后重试。");
@@ -184,11 +186,13 @@ export function connectPdfAnnotations(registry: PluginRegistry, options: {
   const schema = ui.getSchema();
   const toolbar = schema.toolbars["annotation-toolbar"];
   if (toolbar) ui.mergeSchema({ toolbars: { "annotation-toolbar": { ...toolbar, items: [
+    { type: "command-button", id: "paper-chat-annotation-toolbar", commandId: "paper:chat-annotation", variant: "icon" },
     { type: "command-button", id: "paper-copy-annotation-toolbar", commandId: "paper:copy-annotation", variant: "icon" }, ...toolbar.items,
   ] } } });
   const menus = ui.getSchema().selectionMenus;
   ui.mergeSchema({ selectionMenus: Object.fromEntries(Object.entries(menus).map(([id, menu]) => [id,
     id === "selection" ? menu : { ...menu, items: [
+      { type: "command-button", id: `paper-chat-annotation-${id}`, commandId: "paper:chat-annotation", variant: "icon" },
       { type: "command-button", id: `paper-copy-annotation-${id}`, commandId: "paper:copy-annotation", variant: "icon" }, ...menu.items,
     ] },
   ])) });

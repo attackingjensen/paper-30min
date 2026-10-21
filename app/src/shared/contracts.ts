@@ -1,6 +1,7 @@
 import type { CitationInput } from "./citations.js";
 import type { AnnotationWrite, ReferenceRequest } from "./references.js";
 import type { ParsingCommand } from "./parsing.js";
+import type { ChatAttachment } from "./chat-input.js";
 
 export interface DocumentRecord {
   id: string;
@@ -260,6 +261,7 @@ export type AgentCommand =
     }
   | { type: "selectModel"; modelId: string; thinking?: ThinkingLevel }
   | { type: "list"; root: string }
+  | { type: "materials"; root: string }
   | { type: "create"; root: string }
   | { type: "review"; root: string; batchId: string }
   | { type: "open"; root: string; id: string }
@@ -269,5 +271,6 @@ export type AgentCommand =
       root: string;
       id: string;
       text: string;
+      attachments?: ChatAttachment[];
     }
   | { type: "stop"; root: string; id: string };

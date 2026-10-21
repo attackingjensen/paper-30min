@@ -38,6 +38,7 @@ import { usePanelLayout } from "./usePanelLayout";
 import { PdfReader } from "./PdfReader";
 import { MarkdownDocument } from "./MarkdownDocument";
 import { AgentPanel } from "./AgentPanel";
+import type { ChatAttachment } from "../shared/chat-input";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { LegacyImport } from "./LegacyImport";
 import { ParsingPanel, ParsingSettingsForm } from "./ParsingPanel";
@@ -130,11 +131,18 @@ export function App() {
   const [selectedAgent, setSelectedAgent] = useState<{ root: string; id: string }>();
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
+  useEffect(() => {
+    const receive = (event: Event) => {
+      if ((event as CustomEvent<{ root: string }>).detail.root === root) setRight(true);
+    };
+    window.addEventListener("paper30min-chat-source", receive);
+    return () => window.removeEventListener("paper30min-chat-source", receive);
+  }, [root]);
   const activeRoot = useRef(root);
   activeRoot.current = root;
   const documents = useMarkdownDocuments(root, tabs, project);
   const positions = useRef<Record<string, Record<string, PdfPosition>>>({});
-  const agentViews = useRef<Record<string, { active: string; text: string }>>(
+  const agentViews = useRef<Record<string, { active: string; text: string; attachments?: ChatAttachment[] }>>(
     {},
   );
   useEffect(() => {

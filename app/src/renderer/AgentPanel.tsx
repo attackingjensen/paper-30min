@@ -24,6 +24,8 @@ import {
 import { AgentMessage } from "./AgentMessage";
 import { copiedAnnotationText, setAnnotationClipboard } from "./annotation-clipboard";
 import { isAnnotationLink } from "../shared/annotation-links";
+import { extractChatSources, type ChatAttachment } from "../shared/chat-input";
+import type { ResolvedReference } from "../shared/references";
 import "./agent.css";
 import type {
   AgentCommand,
@@ -45,8 +47,8 @@ export function AgentPanel({
 }: {
   root: string;
   onSettings: () => void;
-  initialView?: { active: string; text: string };
-  onViewChange: (view: { active: string; text: string }) => void;
+  initialView?: { active: string; text: string; attachments?: ChatAttachment[] };
+  onViewChange: (view: { active: string; text: string; attachments?: ChatAttachment[] }) => void;
   onOpenFile: (path: string) => void;
   onCitation: (link: string) => void;
   selectedSession?: string;
@@ -55,6 +57,49 @@ export function AgentPanel({
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [active, setActive] = useState(initialView?.active ?? "");
   const [text, setText] = useState(initialView?.text ?? "");
+  const [attachments, setAttachments] = useState<ChatAttachment[]>(initialView?.attachments ?? []);
+  const [materials, setMaterials] = useState<ChatAttachment[]>([]);
+  const [mention, setMention] = useState<{ from: number; to: number; query: string }>();
+  const [choice, setChoice] = useState(0);
+  const [preview, setPreview] = useState<{ title: string; text: string }>();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const choices = materials.filter(item => `${item.label} ${item.value}`.toLowerCase().includes(mention?.query.toLowerCase() ?? ""));
+  function addAttachments(items: ChatAttachment[]) {
+    setAttachments(old => [...old, ...items.filter(item => !old.some(value => value.kind === item.kind && value.value === item.value))]);
+  }
+  function ingest(value: string) {
+    const parsed = extractChatSources(value);
+    setText(parsed.text);
+    addAttachments(parsed.attachments);
+  }
+  function choose(item: ChatAttachment) {
+    if (!mention) return;
+    setText(text.slice(0, mention.from) + text.slice(mention.to));
+    addAttachments([item]); setMention(undefined); inputRef.current?.focus();
+  }
+  function updateMention(input: HTMLTextAreaElement) {
+    const end = input.selectionStart;
+    const match = /(?:^|\s)@([^\s@]*)$/.exec(input.value.slice(0, end));
+    setMention(match ? { from: end - match[1].length - 1, to: end, query: match[1] } : undefined);
+    setChoice(0);
+  }
+  const mentionOpen = !!mention;
+  useEffect(() => {
+    if (!mentionOpen) return;
+    let disposed = false;
+    void window.desktop.agent<ChatAttachment[]>({ type: "materials", root }).then(items => { if (!disposed) setMaterials(items); }).catch(error => { if (!disposed) setError(error.message); });
+    return () => { disposed = true; };
+  }, [root, mentionOpen]);
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const detail = (event as CustomEvent<{ root: string; markdown: string }>).detail;
+      if (detail.root !== root) return;
+      const parsed = extractChatSources(detail.markdown);
+      addAttachments(parsed.attachments); requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    window.addEventListener("paper30min-chat-source", receive);
+    return () => window.removeEventListener("paper30min-chat-source", receive);
+  }, [root]);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [catalog, setCatalog] = useState<AgentSettings>();
@@ -86,8 +131,8 @@ export function AgentPanel({
     return () => { disposed = true; clearTimeout(timer); };
   }, [root]);
   useEffect(() => {
-    onViewChange({ active, text });
-  }, [active, text, onViewChange]);
+    onViewChange({ active, text, attachments });
+  }, [active, text, attachments, onViewChange]);
   const update = useCallback(
     (state: ChatSession) => {
       if (state.root !== root) return;
@@ -182,7 +227,7 @@ export function AgentPanel({
     }
   }
   async function send() {
-    if (!text.trim() || pending) return;
+    if ((!text.trim() && !attachments.length) || pending) return;
     follow.current = true;
     setAwayFromBottom(false);
     const conversation =
@@ -194,9 +239,10 @@ export function AgentPanel({
         root,
         id: conversation.id,
         text,
+        attachments,
       })
     )
-      setText("");
+      { setText(""); setAttachments([]); setPreview(undefined); }
   }
   return (
     <aside className="right">
@@ -214,6 +260,7 @@ export function AgentPanel({
                   setAwayFromBottom(false);
                   setActive(e.target.value);
                   setText("");
+                  setAttachments([]); setPreview(undefined); setMention(undefined);
                   setError("");
                 }}
               >
@@ -236,6 +283,7 @@ export function AgentPanel({
           disabled={pending}
           onClick={() => {
             setText("");
+            setAttachments([]); setPreview(undefined); setMention(undefined);
             void command({ type: "create", root }, true);
           }}
         >
@@ -371,16 +419,41 @@ export function AgentPanel({
           )}
         </div>
         <div className="composer">
+          <div className="chat-attachments">
+            {attachments.map((item) => <span key={`${item.kind}:${item.value}`}>
+              <button title={item.value} onClick={async () => {
+                try {
+                  if (item.kind !== "source") { setPreview({ title: item.label, text: item.value }); return; }
+                  const result = await window.desktop.invoke<ResolvedReference>({ type: "resolveReference", root, link: item.value });
+                  setPreview({ title: item.label, text: [
+                    `${result.path} · 第 ${result.pages.map(page => page.page).join("、")} 页`,
+                    result.excerpt ? `关注文字：${result.excerpt}` : "",
+                    ...result.manuscript.locations.map(location => `解析稿：${location.path}，第 ${location.startLine}–${location.endLine} 行（链接第 ${location.linkLine} 行）`),
+                    result.manuscript.reason ?? "",
+                    ...result.discussions.map((discussion, index) => `讨论 ${index + 1}（${discussion.status}）：\n` + discussion.entries.map(entry => `${entry.parentId ? "回复 " + entry.parentId : "根批注"} [${entry.id}]：${entry.comment ?? "（无文字）"}`).join("\n")),
+                    ...result.warnings,
+                  ].filter(Boolean).join("\n\n") });
+                } catch (error) { setError((error as Error).message); }
+              }}>{item.kind === "source" ? "来源" : item.kind === "skill" ? "Skill" : "文档"} · {item.label}</button>
+              <button aria-label={`移除 ${item.label}`} onClick={() => { setAttachments(old => old.filter(value => value !== item)); setPreview(undefined); }}>×</button>
+            </span>)}
+          </div>
+          {preview && <section className="chat-source-preview" aria-label="附件预览"><button onClick={() => setPreview(undefined)}>关闭预览</button><pre>{preview.text}</pre></section>}
+          {mention && <div className="mention-menu" role="listbox" aria-label="选择文档或 Skill">
+            {(["document", "skill"] as const).map(kind => <section key={kind}><strong>{kind === "document" ? "工程文档" : "产品 Skills"}</strong>
+              {choices.filter(item => item.kind === kind).map(item => <button role="option" aria-selected={choices.indexOf(item) === choice} key={item.value} onMouseDown={event => event.preventDefault()} onClick={() => choose(item)}>{item.label}<small>{item.value}</small></button>)}
+            </section>)}
+            {!choices.length && <p>没有匹配材料</p>}
+          </div>}
           <textarea
+            ref={inputRef}
             onPaste={(event) => {
               try {
                 const pasted = copiedAnnotationText(event.clipboardData, root, "");
-                if (pasted === null) return;
                 event.preventDefault();
                 const input = event.currentTarget;
                 const start = input.selectionStart;
-                setText(input.value.slice(0, start) + pasted + input.value.slice(input.selectionEnd));
-                requestAnimationFrame(() => input.setSelectionRange(start + pasted.length, start + pasted.length));
+                ingest(input.value.slice(0, start) + (pasted ?? event.clipboardData.getData("text/plain")) + input.value.slice(input.selectionEnd));
               } catch (error) { event.preventDefault(); setError((error as Error).message); }
             }}
             onCopy={(event) => {
@@ -395,8 +468,17 @@ export function AgentPanel({
             title="Enter 发送，Ctrl+Enter 换行"
             value={text}
             maxLength={100000}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              updateMention(e.target);
+            }}
+            onSelect={event => updateMention(event.currentTarget)}
             onKeyDown={(event) => {
+              if (mention && !event.nativeEvent.isComposing) {
+                if (event.key === "Escape") { event.preventDefault(); setMention(undefined); return; }
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setChoice(value => (value + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % Math.max(1, choices.length)); return; }
+                if ((event.key === "Enter" || event.key === "Tab") && choices[choice]) { event.preventDefault(); choose(choices[choice]); return; }
+              }
               if (
                 event.key !== "Enter" ||
                 event.nativeEvent.isComposing ||
@@ -417,7 +499,7 @@ export function AgentPanel({
                 void send();
               }
             }}
-            disabled={current?.stopping}
+            disabled={pending || current?.stopping}
           />
           <div className="composer-foot">
             <div className="composer-config">
@@ -537,7 +619,7 @@ export function AgentPanel({
                 className="icon"
                 title={current?.busy ? "补充消息" : "发送消息"}
                 aria-label={current?.busy ? "补充消息" : "发送消息"}
-                disabled={pending || !text.trim() || current?.stopping}
+                disabled={pending || (!text.trim() && !attachments.length) || current?.stopping}
                 onClick={() => void send()}
               >
                 <ArrowUp />

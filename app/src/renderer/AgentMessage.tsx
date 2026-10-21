@@ -2,7 +2,7 @@ import { memo, useMemo } from "react";
 import MarkdownIt from "markdown-it";
 import katex from "@vscode/markdown-it-katex";
 import "katex/dist/katex.min.css";
-import { annotationLinkSpans, isAnnotationLink } from "../shared/annotation-links";
+import { isSourceLink } from "../shared/chat-input";
 
 const mathPlugin =
   typeof katex === "function"
@@ -29,22 +29,9 @@ export const AgentMessage = memo(function AgentMessage({
   onCitation: (link: string) => void;
 }) {
   const html = useMemo(
-    () => role === "assistant" ? markdown.render(text) : "",
+    () => markdown.render(text),
     [text, role],
   );
-  const userContent = useMemo(() => {
-    if (role !== "user") return null;
-    let from = 0;
-    const content = annotationLinkSpans(text).flatMap((link) => {
-      const preceding = text.slice(from, link.from);
-      from = link.to;
-      return [preceding, <a key={link.from} href={link.href} onClick={(event) => {
-        event.preventDefault(); onCitation(link.href);
-      }}>{text.slice(link.from, link.to)}</a>];
-    });
-    return [...content, text.slice(from)];
-  }, [text, role, onCitation]);
-  if (role === "user") return <div className="message-text">{userContent}</div>;
   return (
     <div
       className="message-text chat-markdown"
@@ -54,7 +41,7 @@ export const AgentMessage = memo(function AgentMessage({
         if (!link) return;
         event.preventDefault();
         const href = link.getAttribute("href") ?? "";
-        if (href.startsWith("paper:") || isAnnotationLink(href)) {
+        if (isSourceLink(href)) {
           onCitation(href);
         } else if (/^https?:\/\//i.test(href)) {
           void window.desktop

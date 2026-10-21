@@ -1049,3 +1049,13 @@
     opacity: 1;
   }
 }
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px; }
+.chat-attachments > span { display: flex; max-width: 100%; border: 1px solid #d0d5df; border-radius: 8px; }
+.chat-attachments button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; padding: 5px; font-size: 12px; }
+.chat-source-preview { max-height: 260px; overflow: auto; padding: 8px; }
+.chat-source-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.mention-menu { max-height: 240px; overflow: auto; padding: 8px; }
+.mention-menu strong { display: block; font-size: 12px; }
+.mention-menu button { display: block; width: 100%; text-align: left; padding: 6px; }
+.mention-menu button[aria-selected="true"] { background: #e6edf7; }
+.mention-menu small { display: block; opacity: .65; }
