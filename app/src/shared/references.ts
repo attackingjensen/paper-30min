@@ -16,10 +16,22 @@ export interface ResolvedReference {
   sha256: string;
   pages: CitationPage[];
   excerpt: string | null;
-  excerptSource: "selection" | "parser" | null;
+  excerptSource: "selection" | null;
   comment: string | null;
   annotation?: { id: string; type: string };
   block?: { id: string; label: string };
+  manuscript: {
+    status: "matched" | "multiple" | "ambiguous" | "unmatched";
+    locations: { blockId: string; link: string; path: string; linkLine: number; startLine: number; endLine: number }[];
+    reason?: string;
+  };
+  discussions: {
+    rootId: string | null;
+    status: "complete" | "missing-parent" | "cycle";
+    blockIds: string[];
+    entries: { id: string; parentId?: string; replyType?: number; type: string; comment: string | null; author?: string; target: boolean }[];
+  }[];
+  warnings: string[];
 }
 
 export interface AnnotationWrite {

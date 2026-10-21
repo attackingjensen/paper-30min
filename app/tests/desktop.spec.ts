@@ -2010,7 +2010,7 @@ test("Agent 引用工具复用块链接写笔记，保存阅读器待存批注�
     expect(outputs.some((item) => String(item.content).includes("定位不足"))).toBe(true);
     expect(await fs.readFile(path.join(root, "notes/Agent笔记.md"), "utf8")).toContain(link);
     const invoke = (href: string) => page.evaluate(({ root, link }) => window.desktop.invoke<any>({ type: "resolveReference", root, link }), { root, link: href });
-    expect((await invoke(link)).excerptSource).toBe("parser");
+    expect((await invoke(link)).manuscript).toMatchObject({ status: "matched", locations: [{ linkLine: 5 }] });
     expect((await invoke("text/paper.pdf#annotation=reader-existing")).comment).toBe("用户待保存评论也要保留");
     expect((await invoke(created!.link)).comment).toContain("Agent 块级评论");
     expect(await page.evaluate((root) => window.desktop.parsing({ type: "readiness", root }), root)).toMatchObject({ ready: true });
@@ -4240,12 +4240,11 @@ test("同一阅读器共用批注与无痕引用，保存后可继续取证且�
   await page.getByRole("button", { name: "复制引用链接", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("已复制引用链接");
   const after = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  const currentPdf = await page.evaluate((root) => window.desktop.invoke<{ sha256: string }>({ type: "readPdf", root, path: "text/paper.pdf" }), root);
   const dictionary = JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"));
-  expect(dictionary.citations[after.match(/cite\/([a-f0-9]+)/)![1]].sha256).toBe(currentPdf.sha256);
+  expect(dictionary.citations[after.match(/cite\/([a-f0-9]+)/)![1]]).not.toHaveProperty("sha256");
 
   expect(after).toContain("paper://cite/");
-  expect(after).not.toBe(invisible);
+  expect(after).toBe(invisible);
   await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
   await expect(list.locator("section")).toHaveCount(2);
   await expect(list).toContainText("整页引用");

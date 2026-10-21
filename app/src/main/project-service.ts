@@ -1054,6 +1054,8 @@ export class ProjectService {
           if (!item || !/^[a-f0-9]{32}$/.test(id) || item.id !== id || typeof item.documentId !== "string")
             throw new Error("引用字典已损坏。");
           validateCitation(item);
+          // Read old dictionaries without carrying their obsolete PDF hash forward.
+          delete (item as Citation & { sha256?: string }).sha256;
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -1109,8 +1111,9 @@ export class ProjectService {
       }
       if (!/\.pdf$/i.test(file)) throw new Error("引用目标必须是 PDF。");
       if (command.type === "createCitation") {
+        if (!/^[a-f0-9]{64}$/.test(command.input.sha256)) throw new Error("引用创建需要有效的 PDF 版本。");
         const current = await digest(file, signal);
-        if (!canReusePdfEvidence({ sha256: input.sha256, document: command.sourceDocument ?? record },
+        if (!canReusePdfEvidence({ sha256: command.input.sha256, document: command.sourceDocument ?? record },
           { sha256: current, document: record }))
           throw new Error("PDF 已被替换或版本无法确认，请重新选择后创建引用。");
       }
@@ -1118,7 +1121,7 @@ export class ProjectService {
       // Compare evidence, not object serialization or approximate geometry. Reuse
       // happens inside the project queue and only after verifying the current PDF.
       const reusable = Object.values(dictionary.citations).find((item) =>
-        item.documentId === record.id && item.sha256 === input.sha256 &&
+        item.documentId === record.id &&
         item.kind === input.kind && item.text === input.text &&
         item.pages.length === input.pages.length && item.pages.every((p, i) => {
           const other = input.pages[i];
@@ -1130,7 +1133,8 @@ export class ProjectService {
             });
         }));
       if (reusable) return reusable;
-      const citation: Citation = { ...input, id: randomUUID().replaceAll("-", ""), documentId: record.id };
+      const citation: Citation = { kind: input.kind, text: input.text, pages: input.pages,
+        id: randomUUID().replaceAll("-", ""), documentId: record.id };
       dictionary.citations[citation.id] = citation;
       if (Buffer.byteLength(JSON.stringify(dictionary, null, 2) + "\n") > 32 * 1024 * 1024)
         throw new Error("引用字典超过 32 MiB，本次引用未保存。");

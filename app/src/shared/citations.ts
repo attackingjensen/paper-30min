@@ -15,7 +15,7 @@ export interface CitationInput {
   pages: CitationPage[];
   text: string;
 }
-export interface Citation extends CitationInput {
+export interface Citation extends Omit<CitationInput, "sha256"> {
   id: string;
   documentId: string;
 }
@@ -57,8 +57,8 @@ export function citationMarkdown(citation: Citation): string {
     .replace(/[\\`*{}\[\]()<>!_~&$]/g, "\\$&");
   return `[${label}](${citationLink(citation.id)})`;
 }
-export function validateCitation(input: CitationInput): void {
-  if (!input || !/^[a-f0-9]{64}$/.test(input.sha256) ||
+export function validateCitation(input: Omit<CitationInput, "sha256">): void {
+  if (!input ||
       !["text", "region", "page"].includes(input.kind) ||
       typeof input.text !== "string" || input.text.length > 100000 ||
       !Array.isArray(input.pages) || !input.pages.length || input.pages.length > 1000)

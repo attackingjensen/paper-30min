@@ -10,7 +10,7 @@ export function createReferenceTools(root: string, references: ReferenceService,
   const check = (signal?: AbortSignal) => { signal?.throwIfAborted(); if (!active()) throw new Error("任务已停止。"); };
   return [
     defineTool({ name: "resolve_reference", label: "读取引用与批注",
-      description: "Read an existing project citation or native PDF annotation as structured text. Returns actual PDF identity, pages/regions, available excerpt (selection or parser), and annotation comment separately. Does not create citations, render images, extract PDF text or write files. Reuse complete links from read/search verbatim; use read_pdf only when a page image is needed.",
+      description: "Resolve a citation or native annotation to current manuscript paths and live 1-based link/body line ranges, plus complete related PDF discussion threads. Use read at manuscript.locations to read authoritative current text; parser snapshots are not returned. Manual selections and annotations are matched to parsed blocks by page/region, replies follow their parent to the root. Multiple/ambiguous/unmatched locations and broken reply relationships are explicit. Selection excerpt and comments are not manuscript text. Does not write files, create citations or render images; use read_pdf only when the full page image is needed.",
       parameters: Type.Object(fields),
       async execute(_id, args, signal) {
         check(signal);
