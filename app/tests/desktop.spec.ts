@@ -4407,7 +4407,11 @@ test("原生批注保存保护外部版本、失败现场和并发写入，旧�
   await expect(page.locator(".pdf-reader")).toBeVisible();
   await fs.writeFile(file, original);
   await page.getByRole("button", { name: "重试自动保存", exact: true }).click();
-  await expect.poll(async () => (await fs.readFile(file)).equals(original)).toBe(false);
+  // Leaving the reader waits for its pending save; polling the PDF can itself
+  // prevent Windows from replacing it while the test holds a read handle.
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await expect(page.locator(".pdf-reader")).not.toBeVisible();
+  expect((await fs.readFile(file)).equals(original)).toBe(false);
   expect(await page.evaluate(({ root, id }) => window.desktop.invoke<{ path: string }>({ type: "resolveCitation", root, link: "paper://cite/" + id }), { root, id: old.id })).toMatchObject({ path: "text/paper.pdf" });
   const source = await page.evaluate((root) => window.desktop.invoke<{ bytes: Uint8Array; sha256: string }>({ type: "readPdf", root, path: "text/paper.pdf" }), root);
   const outcomes = await page.evaluate(async ({ root, bytes, sha256 }) => {

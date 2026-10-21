@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { createReadStream, createWriteStream, constants } from "node:fs";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation, type CitationUse } from "../shared/citations.js";
@@ -1027,9 +1028,18 @@ export class ProjectService {
         const handle = await fs.open(temporary, "wx", (await fs.stat(file)).mode);
         try { await handle.writeFile(bytes); await handle.sync(); }
         finally { await handle.close(); }
-        await unchanged();
-        signal?.throwIfAborted();
-        await fs.rename(temporary, file);
+        // Windows readers can briefly prevent replacement. Keep the original
+        // intact and recheck its version before every bounded retry.
+        for (let attempt = 0; ; attempt++) {
+          signal?.throwIfAborted();
+          await unchanged();
+          signal?.throwIfAborted();
+          try { await fs.rename(temporary, file); break; }
+          catch (error) {
+            if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM" || attempt >= 5) throw error;
+            await delay(100 * (attempt + 1), undefined, { signal });
+          }
+        }
       } finally { await fs.rm(temporary, { force: true }); }
       // Preserve provenance hashes; citation navigation follows document identity, not byte equality.
       const sha256 = createHash("sha256").update(bytes).digest("hex");
