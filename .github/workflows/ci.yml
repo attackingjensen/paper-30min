@@ -1,48 +1,59 @@
-name: CI
+name: Electron CI
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: electron-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: ${{ matrix.os }}
+  electron:
+    name: v2 / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # windows-latest 是产品基准环境；ubuntu-latest 检查路径、文件名大小写与跨平台假设。
+        # Windows 验证真实桌面行为；Linux 仅验证类型和构建。
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: app
+    env:
+      PAPER30MIN_TEST_WINDOW: hidden
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
 
-      - uses: actions/setup-python@v5
+      - name: Install dependencies
+        run: npm ci
+
+      # build 已包含 typecheck；先构建一次，再直接运行 Playwright。
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Run Windows Electron tests
+        if: runner.os == 'Windows'
+        run: npx playwright test --reporter=list,html
+
+      - name: Upload test evidence
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
         with:
-          python-version: '3.11'
-
-      - name: Run tests
-        run: npm test
-        working-directory: legacy/v1/app
-
-      # 内存编译检查，不生成 __pycache__ 等缓存文件。
-      - name: Python compile check
-        run: >-
-          python -c "import pathlib; files = ['tools/mock_llm.py', 'tools/make_sample_pdf.py']; [compile(pathlib.Path(f).read_text(encoding='utf-8'), f, 'exec') for f in files]; print('python compile check passed: ' + str(len(files)) + ' files')"
-
-      # 纯语法检查，不执行代码；覆盖未被测试导入的入口文件，排除 legacy/v1/app/ui/vendor/。
-      - name: JavaScript syntax check
-        run: node tools/check_syntax.mjs
-
-      - name: Rust contract tests
-        if: runner.os == 'Windows'
-        run: cargo test
-        working-directory: legacy/v1/app/src-tauri
-
-      - name: Native bridge smoke
-        if: runner.os == 'Windows'
-        run: npm run smoke
-        working-directory: legacy/v1/app
+          name: electron-test-evidence-${{ matrix.os }}
+          path: |
+            app/playwright-report/
+            app/test-results/
+          retention-days: 14
+          if-no-files-found: warn
