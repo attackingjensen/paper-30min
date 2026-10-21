@@ -2384,6 +2384,9 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口且不
     await jumpPdfPage(2);
     await setPdfZoom("125");
     await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
+    await expect.poll(async () => JSON.parse(
+      await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8"),
+    ).pdf["text/paper.pdf"]).toMatchObject({ page: 2, zoom: 1.25 });
     const before = JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf;
     await page.evaluate(async (endpoint) => {
       const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
