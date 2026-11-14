@@ -26,3 +26,10 @@ legacy/v1/app/src-tauri/tests/fixtures/regression/manifest.dump.json
 
 # 上游只读源码副本（研读用，不作为依赖或子模块）
 /.upstream/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

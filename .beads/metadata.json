@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "paper_30min",
+  "project_id": "2cf383f9-411f-445c-be85-22a095145d88"
+}
