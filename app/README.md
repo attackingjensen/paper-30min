@@ -40,21 +40,11 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 详见 [工程文件契约](../docs/project-format.md)。`src/main/project-service.ts` 是界面及后续 Agent 共享的文件操作入口，由 Node utility process 执行；主进程负责系统选择器、回收站和外部打开，React 通过受限 preload 调用。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统。
 
-当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。停止输入约 600 毫秒后自动保存，标签和设置往返中保留编辑位置与撤销历史；Ctrl+S 仍可立即保存。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析生成可编辑正文，Agent 可逐页核对并记录进度，正式启动页由 STE-92 承接。
+当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。停止输入约 600 毫秒后自动保存，标签和设置往返中保留编辑位置与撤销历史；Ctrl+S 仍可立即保存。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析生成可编辑正文，Agent 可逐页核对并记录进度。
 
-## 原生批注试用（STE-101）
+## 原生批注与无痕引用
 
-在 `codex/annotation-phase1` 工作树构建后，以独立配置启动：
-
-```powershell
-cd app
-npm run build
-$env:PAPER30MIN_PROFILE = Join-Path $PWD '../.orca/annotation-trial-profile'
-npm start
-Remove-Item Env:PAPER30MIN_PROFILE
-```
-
-对照使用 `codex/v2.0.0`，两边分别打开独立的工程副本。复制工程时包含隐藏文件；新建工程也可分别导入同一份原 PDF。不要让两边打开同一工程目录。当前工作树将原生批注与无痕引用整合在同一阅读器中，既有引用字典、链接和解析块定位继续保留。
+原生批注与无痕引用已整合在同一阅读器中，既有引用字典、链接和解析块定位继续保留。
 
 PDF 无需切换模式，即可复制无痕引用或使用 EmbedPDF 的高亮、下划线和评论工具，两者均不依赖解析稿。批注变更后自动写回工程文件；离开 PDF 标签或复制批注链接前完成待保存写入。复制链接入口位于原生「批注」工具栏与选中批注的浮动菜单中。跨页选区产生逐页批注，选中多个批注时复制多条带页码的链接。颜色和评论修改沿用原批注 ID。
 
@@ -137,7 +127,7 @@ Remove-Item Env:PAPER30MIN_REAL_MODEL
 
 `read_pdf` 的真实视觉测试支持通过 `PAPER30MIN_REAL_PROFILE` 指定包含 Electron 加密配置 `agent-settings.json` 及其配套 `Local State` 的本机目录，复制到隔离测试目录并重新启动后使用，不修改原配置。也可通过 `PAPER30MIN_REAL_CONFIG` 指定本机 JSON 文件（字段为 `baseUrl`、`model`、`apiKey`），同时指定时优先使用 JSON。用 `PAPER30MIN_REAL_SCAN` 指定扫描 PDF，并设置 `PAPER30MIN_REAL_MODEL=1` 后运行 `npx playwright test -g 'read_pdf 真实视觉模型'`。该测试使用 high 思考强度与视觉输入，产物不包含密钥。明文凭据文件应放在仓库外，完成后删除；临时工程与隔离配置仍由测试清理。只有显式指定 `PAPER30MIN_REAL_SAVE_PROFILE` 时才把 Electron 加密后的配置及配套 `Local State` 复制到该目录。
 
-Viewer 的 WASM 和中文预置印章使用本地资源，界面字体使用系统字体，不加载默认远端字体。原生批注试用自动保存到工程 PDF，尚未接入 Agent 自动创建批注或原文取证流程。
+Viewer 的 WASM 和中文预置印章使用本地资源，界面字体使用系统字体，不加载默认远端字体。原生批注自动保存到工程 PDF；Agent 可通过 `read_pdf` 取证，并在用户明确要求时使用 `create_annotation` 创建评论批注。
 
 真实模型验证仅覆盖实际使用的供应商、模型与场景，不代表所有协议或图文、工具能力都已验证；公式文字仍需对照原页核验。当前检查不覆盖安装包、v1 升级或持续内存表现；触控板的实际手感需在设备上体验。旧客户端测试不构成新版验证证据，远端验证以对应提交的 `Electron CI` 实际结果为准。
 

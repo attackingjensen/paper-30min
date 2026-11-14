@@ -1,6 +1,6 @@
 # Paper30Min：核心概念
 
-本文帮助开发者和 agent 理解现有产品，不规定开发步骤。概念来自既有术语、决策和实现；涉及行为变更时再查对应源码、测试及 Issue 修订。关键决策见 [docs/adr/](docs/adr/)；具体工作由 Linear ticket 或 GitHub Issue 承载；历史背景与验证记录见 Git 历史 35324e7（`docs/background/`、`docs/draft/`）。
+本文帮助开发者和 agent 理解现有产品，不规定开发步骤。概念来自既有术语、决策和实现；涉及行为变更时再查对应源码、测试及 Issue 修订。关键决策见 [docs/adr/](docs/adr/)；当前具体工作由 beads 承载，GitHub Issue 仅保留外部问题记录，Linear 仅作历史参考；历史背景与验证记录见 Git 历史 35324e7（`docs/background/`、`docs/draft/`）。
 
 ## v2 本地工程
 
@@ -12,7 +12,7 @@
 
 `paper30min.json` 维护论文身份、成果顺序和相对路径，正文文件为权威；普通新增文件直接进入文件树。附加参考材料可改名、移动、重新关联和移入系统回收站，相关研究成果保留。默认工程文件夹与最近工程是本机偏好，不随工程搬迁。
 
-格式与当前实现边界见 [工程文件契约](docs/project-format.md)。Node 工程进程处理文件操作与 Pi 对话，React 工作台经 Electron 桥调用；首版无 SQLite。已接入内嵌阅读器、编辑器、本机模型配置和原生文本会话，Agent 取证及工程修改由后续切片交付。
+格式与当前实现边界见 [工程文件契约](docs/project-format.md)。Node 工程进程处理文件操作与 Pi 对话，React 工作台经 Electron 桥调用；v2 无 SQLite。内嵌阅读器、编辑器、本机模型配置、持久会话、Agent 取证及工程修改均已接入，具体能力边界以 [app README](app/README.md) 和工程契约为准。
 
 ## 旧客户端阅读模型
 
