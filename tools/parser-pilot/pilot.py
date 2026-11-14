@@ -9,8 +9,8 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-SIDECAR = ROOT / "app/src-tauri/sidecar/pdfparse"
-CORPUS = ROOT / "app/src-tauri/tests/fixtures/regression/corpus"
+SIDECAR = ROOT / "legacy/v1/app/src-tauri/sidecar/pdfparse"
+CORPUS = ROOT / "legacy/v1/app/src-tauri/tests/fixtures/regression/corpus"
 PAPERS = ("1412.6980", "1503.02531", "1512.03385", "1603.02754")
 
 

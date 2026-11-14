@@ -1,0 +1,413 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { invertedEffects } from "@codemirror/commands";
+import { EditorState, StateField, StateEffect } from "@codemirror/state";
+import { EditorView, keymap } from "@codemirror/view";
+import { basicSetup } from "codemirror";
+import { markdown } from "@codemirror/lang-markdown";
+import { syntaxTree } from "@codemirror/language";
+import { markdownRenderer as renderer, markCitationUses } from "../shared/markdown-references";
+import type { CitationUse } from "../shared/citations";
+import { annotationLinkSpans, isAnnotationLink } from "../shared/annotation-links";
+import { copiedAnnotationText, setAnnotationClipboard } from "./annotation-clipboard";
+import "katex/dist/katex.min.css";
+import { isDirty, type MarkdownDraft } from "./useMarkdownDocuments";
+import "./markdown.css";
+
+const normalize = (text: string) => text.replace(/\r\n?|\n/g, "\n");
+// Keep original line endings in CM state, including the native undo/redo history.
+const restoreEndings = StateEffect.define<readonly string[]>();
+const lineEndings = StateField.define<readonly string[]>({
+  create: () => [],
+  update(value, transaction) {
+    const restored = transaction.effects
+      .filter((effect) => effect.is(restoreEndings))
+      .at(-1);
+    if (restored) return restored.value;
+    if (!transaction.docChanged) return value;
+    let next: string[] = [];
+    let end = 0;
+    transaction.changes.iterChanges((from, to, _newFrom, _newTo, inserted) => {
+      const startLine = transaction.startState.doc.lineAt(from).number - 1;
+      next = next.concat(
+        value.slice(end, startLine),
+        Array<string>(inserted.lines - 1).fill(value[0] ?? "\n"),
+      );
+      end = transaction.startState.doc.lineAt(to).number - 1;
+    });
+    return next.concat(value.slice(end));
+  },
+});
+function localPath(documentPath: string, href: string): string | null {
+  if (
+    /^[a-z][a-z0-9+.-]*:/i.test(href) ||
+    href.startsWith("//") ||
+    href.includes("\\")
+  )
+    return null;
+  const base = new URL(
+    "https://project/" +
+      documentPath.split("/").map(encodeURIComponent).join("/"),
+  );
+  const resolved = new URL(href, base);
+  if (resolved.origin !== base.origin) return null;
+  return decodeURIComponent(resolved.pathname.slice(1));
+}
+
+export function MarkdownDocument({
+  root,
+  draft,
+  onChange,
+  onSave,
+  onOpen,
+  onCitation,
+  usageTarget,
+  onPosition,
+}: {
+  root: string;
+  usageTarget?: { use: CitationUse; nonce: string };
+  draft: MarkdownDraft;
+  onChange: () => void;
+  onSave: () => void;
+  onOpen: (path: string) => void;
+  onCitation: (link: string) => void;
+  onPosition: (position: {
+    mode: MarkdownDraft["mode"];
+    scroll: number;
+    readScroll: number;
+    cursor: number;
+  }) => void;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  const preview = useRef<HTMLElement>(null);
+  const [showConflict, setShowConflict] = useState(false);
+  const [linkError, setLinkError] = useState("");
+  const callbacks = useRef({ onChange, onSave, onPosition, onCitation });
+  callbacks.current = { onChange, onSave, onPosition, onCitation };
+  const positionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  function recordPosition() {
+    clearTimeout(positionTimer.current);
+    positionTimer.current = setTimeout(
+      () =>
+        callbacks.current.onPosition({
+          mode: draft.mode,
+          scroll: draft.scroll,
+          readScroll: draft.readScroll,
+          cursor: draft.cursor,
+        }),
+      180,
+    );
+  }
+  const readOnly = /^sources\//i.test(draft.path);
+  const editing = !readOnly && draft.mode !== "read";
+  useEffect(() => {
+    if (!host.current || !editing || !draft.file) return;
+    const state =
+      draft.editor ??
+      EditorState.create({
+        doc: normalize(draft.text),
+        selection: {
+          anchor: Math.min(draft.cursor, normalize(draft.text).length),
+        },
+        extensions: [
+          basicSetup,
+          lineEndings.init(() => draft.text.match(/\r\n|\r|\n/g) ?? []),
+          invertedEffects.of((transaction) =>
+            transaction.docChanged
+              ? [restoreEndings.of(transaction.startState.field(lineEndings))]
+              : [],
+          ),
+          markdown(),
+          EditorView.lineWrapping,
+          EditorView.domEventHandlers({
+            compositionstart() { draft.composing = true; callbacks.current.onChange(); },
+            compositionend() { draft.composing = false; callbacks.current.onChange(); },
+            paste(event, view) {
+              if (!event.clipboardData) return false;
+              try {
+                const text = copiedAnnotationText(event.clipboardData, root, draft.path);
+                if (text === null) return false;
+                event.preventDefault();
+                view.dispatch(view.state.replaceSelection(normalize(text)), { scrollIntoView: true, userEvent: "input.paste" });
+              } catch (error) { event.preventDefault(); setLinkError((error as Error).message); }
+              return true;
+            },
+            copy(event, view) {
+              const selected = view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to);
+              if (!event.clipboardData || !isAnnotationLink(selected)) return false;
+              event.preventDefault();
+              setAnnotationClipboard(event.clipboardData, selected, root, draft.path);
+              return true;
+            },
+          }),
+          EditorView.contentAttributes.of({
+            "aria-label": "Markdown 源码",
+            spellcheck: "false",
+          }),
+          keymap.of([
+            {
+              key: "Mod-s",
+              run: () => {
+                callbacks.current.onSave();
+                return true;
+              },
+            },
+          ]),
+          EditorView.theme({
+            "&": { height: "100%", fontSize: "14px" },
+            ".cm-scroller": {
+              overflow: "auto",
+              fontFamily: "Consolas, 'Microsoft YaHei', monospace",
+            },
+            ".cm-content": { padding: "18px 0" },
+            "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection":
+              { backgroundColor: "#dcd8ef !important" },
+          }),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) {
+              const endings = update.state.field(lineEndings);
+              let index = 0;
+              draft.text = update.state.doc
+                .toString()
+                .replace(/\n/g, () => endings[index++]);
+              callbacks.current.onChange();
+            }
+            draft.editor = update.state;
+            draft.cursor = update.state.selection.main.head;
+          }),
+        ],
+      });
+    const view = new EditorView({ state, parent: host.current });
+    const citationAt = (event: MouseEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return null;
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (pos === null) return null;
+      const annotation = annotationLinkSpans(view.state.doc.toString()).find((link) => pos >= link.from && pos <= link.to);
+      if (annotation) return annotation.href;
+      let node = syntaxTree(view.state).resolveInner(pos, 1);
+      while (node.parent && node.name !== "Link") node = node.parent;
+      if (node.name !== "Link") return null;
+      const url = node.getChild("URL");
+      const link = url && view.state.sliceDoc(url.from, url.to);
+      return link && (link.startsWith("paper:") || isAnnotationLink(link)) ? link : null;
+    };
+    const preserveCursor = (event: MouseEvent) => {
+      if (citationAt(event)) { event.preventDefault(); event.stopPropagation(); }
+    };
+    const openCitation = (event: MouseEvent) => {
+      const link = citationAt(event);
+      if (link) {
+        event.preventDefault();
+        callbacks.current.onCitation(link);
+      }
+    };
+    view.dom.addEventListener("mousedown", preserveCursor, true);
+    view.dom.addEventListener("click", openCitation);
+    view.scrollDOM.scrollTop = draft.scroll;
+    const scrolled = () => {
+      draft.scroll = view.scrollDOM.scrollTop;
+      recordPosition();
+    };
+    view.scrollDOM.addEventListener("scroll", scrolled);
+    return () => {
+      draft.scroll = view.scrollDOM.scrollTop;
+      callbacks.current.onPosition({
+        mode: draft.mode,
+        scroll: draft.scroll,
+        readScroll: draft.readScroll,
+        cursor: draft.cursor,
+      });
+      view.scrollDOM.removeEventListener("scroll", scrolled);
+      view.dom.removeEventListener("click", openCitation);
+      view.dom.removeEventListener("mousedown", preserveCursor, true);
+      view.destroy();
+      if (draft.composing) { draft.composing = false; callbacks.current.onChange(); }
+    };
+  }, [draft, editing, draft.loading, draft.revision]);
+  useEffect(() => {
+    if (preview.current) preview.current.scrollTop = draft.readScroll;
+  }, [draft, draft.mode, draft.loading]);
+  useEffect(() => {
+    const flush = () => {
+      clearTimeout(positionTimer.current);
+      callbacks.current.onPosition({
+        mode: draft.mode,
+        scroll: draft.scroll,
+        readScroll: draft.readScroll,
+        cursor: draft.cursor,
+      });
+    };
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      flush();
+    };
+  }, [draft]);
+
+  const html = useMemo(() => {
+    const tokens = renderer.parse(draft.text.replace(/^\uFEFF/, ""), {});
+    markCitationUses(tokens, draft.path);
+    const visit = (list: typeof tokens) => {
+      for (const token of list) {
+        if (token.type === "image") {
+          const source = String(token.attrGet("src") ?? "");
+          try {
+            const relative = localPath(draft.path, source);
+            token.attrSet(
+              "src",
+              relative
+                ? "paper30min://project/image?" +
+                    new URLSearchParams({ root, path: relative })
+                : "",
+            );
+            if (!relative)
+              token.attrSet(
+                "alt",
+                (token.content || "图片") + "（请使用工程内图片）",
+              );
+          } catch {
+            token.attrSet("src", "");
+          }
+        }
+        if (token.children) visit(token.children);
+      }
+    };
+    visit(tokens);
+    return renderer.renderer.render(tokens, renderer.options, {});
+  }, [draft.text, draft.path, root]);
+
+  // Drafts are mutable: location checks must use the snapshot that produced the preview.
+  const { loading, file, text, mode: viewMode } = draft;
+  const visited = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!usageTarget || loading || !file || visited.current === usageTarget.nonce) return;
+    const { use } = usageTarget;
+    if (file.version !== use.version || text !== file.text) {
+      visited.current = usageTarget.nonce;
+      setLinkError("文档已变化或有未保存编辑，请重新打开 PDF 引用列表再定位。当前内容已保留。");
+      return;
+    }
+    if (viewMode === "edit") { draft.mode = "read"; onChange(); return; }
+    const link = preview.current?.querySelector<HTMLElement>(`[data-citation-use="${CSS.escape(`${use.id}:${use.occurrence}`)}"]`);
+    visited.current = usageTarget.nonce;
+    if (!link) { setLinkError("引用使用位置已变化，请返回 PDF 刷新引用列表。"); return; }
+    setLinkError("");
+    preview.current?.querySelectorAll(".citation-use-target").forEach((node) => node.classList.remove("citation-use-target"));
+    link.classList.add("citation-use-target");
+    link.scrollIntoView({ block: "center" });
+  }, [usageTarget, loading, file, text, viewMode, html]);
+
+  function mode(value: MarkdownDraft["mode"]) {
+    draft.mode = value;
+    onChange();
+    onPosition({
+      mode: value,
+      scroll: draft.scroll,
+      readScroll: draft.readScroll,
+      cursor: draft.cursor,
+    });
+  }
+  if (draft.loading) return <div className="empty">正在读取文档…</div>;
+  return (
+    <section className="markdown-document">
+      <div className="markdown-actions">
+        {readOnly ? (
+          <span className="muted">只读出处字典</span>
+        ) : (
+          <>
+            <div className="switch" role="group" aria-label="Markdown 视图">
+              {(
+                [
+                  ["read", "阅读"],
+                  ["edit", "编辑"],
+                  ["split", "分屏"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  aria-pressed={draft.mode === id}
+                  className={draft.mode === id ? "active" : ""}
+                  onClick={() => mode(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      {(draft.error || linkError) && (
+        <div className="notice error" role="alert">
+          {draft.error || linkError}
+          {draft.error && draft.external === undefined && isDirty(draft) && <button onClick={onSave} disabled={draft.saving}>重试自动保存</button>}
+        </div>
+      )}
+      {draft.external !== undefined && (
+        <div className="markdown-conflict" role="alert">
+          <span>文档已在外部修改。你的编辑已保留，尚未覆盖磁盘文件。</span>
+          <button
+            className="borderbtn"
+            onClick={() => setShowConflict(!showConflict)}
+          >
+            查看双方内容
+          </button>
+          <small>Agent 整合将在后续接入。</small>
+        </div>
+      )}
+      {showConflict && draft.external !== undefined && (
+        <div className="markdown-conflict-inputs">
+          <label>
+            我的未保存内容
+            <textarea aria-label="我的未保存内容" readOnly value={draft.text} />
+          </label>
+          <label>
+            当前磁盘内容
+            <textarea
+              aria-label="当前磁盘内容"
+              readOnly
+              value={draft.external?.text ?? "文件已不存在"}
+            />
+          </label>
+        </div>
+      )}
+      <div className={"markdown-panes " + (readOnly ? "read" : draft.mode)}>
+        {editing && <div ref={host} className="markdown-editor" />}
+        {(readOnly || draft.mode !== "edit") && (
+          <article
+            ref={preview}
+            className="markdown-preview"
+            aria-label="Markdown 阅读"
+            onScroll={(event) => {
+              draft.readScroll = event.currentTarget.scrollTop;
+              recordPosition();
+            }}
+            onClick={(event) => {
+              const anchor = (event.target as HTMLElement).closest("a");
+              if (!anchor) return;
+              event.preventDefault();
+              setLinkError("");
+              const href = anchor.getAttribute("href") ?? "";
+              if (href.startsWith("paper:") || isAnnotationLink(href)) { onCitation(href); return; }
+              if (/^https?:\/\//i.test(href)) {
+                void window.desktop
+                  .openLink(href)
+                  .catch((error) => setLinkError(error.message));
+                return;
+              }
+              if (href.startsWith("#")) return;
+              try {
+                const relative = localPath(draft.path, href);
+                if (relative) onOpen(relative);
+                else setLinkError("此链接类型尚未接入。");
+              } catch {
+                setLinkError("链接路径无效。");
+              }
+            }}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        )}
+      </div>
+    </section>
+  );
+}

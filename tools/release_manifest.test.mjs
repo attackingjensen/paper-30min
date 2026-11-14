@@ -205,7 +205,7 @@ test('从 tauri.conf.json 解析更新器公钥并完成验签', async (t) => {
 
 test('create 与 verify 命令在验签失败时不产出或确认清单', (t) => {
   const dir = tempDir(t);
-  const version = JSON.parse(readFileSync(resolve(repoRoot, 'app/package.json'), 'utf8')).version;
+  const version = JSON.parse(readFileSync(resolve(repoRoot, 'legacy/v1/app/package.json'), 'utf8')).version;
   const installer = join(dir, `Paper30Min_${version}_x64-setup.exe`);
   const content = Buffer.from('installer-bytes-A');
   writeFileSync(installer, content);

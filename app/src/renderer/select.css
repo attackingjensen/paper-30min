@@ -1,0 +1,87 @@
+/* Use Chromium's accessible picker, including its keyboard and focus handling. */
+:root {
+  --select-surface: #fdfcfe;
+  --select-border: #e2dbe9;
+  --select-hover: #f4f0f8;
+  --select-chosen: #ece5f3;
+  --select-ink: #655373;
+}
+select:not([multiple]):not([size]),
+select:not([multiple]):not([size])::picker(select) {
+  appearance: base-select;
+}
+select:not([multiple]):not([size]) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  font: inherit;
+  border-radius: 7px;
+}
+select:not([multiple]):not([size]):focus-visible {
+  outline: 2px solid #b6a3cb;
+  outline-offset: 2px;
+}
+select:not([multiple]):not([size])::picker(select) {
+  padding: 5px;
+  margin-block: 5px;
+  border: 1px solid var(--select-border);
+  border-radius: 8px;
+  background: var(--select-surface);
+  color: #51475a;
+  box-shadow:
+    0 6px 24px #38234614,
+    0 1px 3px #38234608;
+  max-height: min(320px, 60dvh);
+  max-width: calc(100vw - 24px);
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d3c7df transparent;
+}
+select:not([multiple]):not([size]) option {
+  min-height: 32px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  gap: 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: #655c6e;
+  background: transparent;
+  cursor: pointer;
+}
+select:not([multiple]):not([size]) option:checked {
+  background: var(--select-chosen);
+  color: var(--select-ink);
+  font-weight: 550;
+}
+select:not([multiple]):not([size]) option:hover,
+select:not([multiple]):not([size]) option:focus {
+  background: var(--select-hover);
+  color: var(--select-ink);
+  outline: none;
+}
+select:not([multiple]):not([size]) option:checked:hover,
+select:not([multiple]):not([size]) option:checked:focus {
+  background: var(--select-chosen);
+}
+select:not([multiple]):not([size]) option::checkmark {
+  color: #947bab;
+  font-size: 12px;
+}
+select:not([multiple]):not([size])::picker-icon {
+  color: #9c8bab;
+  font-size: 11px;
+}
+/* The compact session switch already has a Lucide chevron. */
+.session-switch select::picker-icon {
+  display: none;
+}
+select:not([multiple]):not([size]):disabled,
+select:not([multiple]):not([size]) option:disabled {
+  cursor: default;
+  color: #b1a8b9;
+}

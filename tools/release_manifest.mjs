@@ -10,11 +10,11 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const repo = 'attackingjensen/paper-30min';
 
 export function releaseVersions() {
-  const app = JSON.parse(readFileSync(resolve(root, 'app/package.json'), 'utf8')).version;
-  const config = JSON.parse(readFileSync(resolve(root, 'app/src-tauri/tauri.conf.json'), 'utf8')).version;
+  const app = JSON.parse(readFileSync(resolve(root, 'legacy/v1/app/package.json'), 'utf8')).version;
+  const config = JSON.parse(readFileSync(resolve(root, 'legacy/v1/app/src-tauri/tauri.conf.json'), 'utf8')).version;
   const metadata = JSON.parse(execFileSync('cargo', [
     'metadata', '--no-deps', '--format-version', '1', '--manifest-path',
-    resolve(root, 'app/src-tauri/Cargo.toml'),
+    resolve(root, 'legacy/v1/app/src-tauri/Cargo.toml'),
   ], { encoding: 'utf8' }));
   const rust = metadata.packages.find(pkg => pkg.name === 'paper30min')?.version;
   if (!app || app !== config || app !== rust) {
@@ -98,7 +98,7 @@ export function parseUpdaterPublicKey(pubkeyBase64) {
   };
 }
 
-export function loadUpdaterPublicKey(configPath = resolve(root, 'app/src-tauri/tauri.conf.json')) {
+export function loadUpdaterPublicKey(configPath = resolve(root, 'legacy/v1/app/src-tauri/tauri.conf.json')) {
   const pubkey = JSON.parse(readFileSync(configPath, 'utf8'))?.plugins?.updater?.pubkey;
   if (!pubkey) throw new Error('tauri.conf.json 缺少 plugins.updater.pubkey');
   return parseUpdaterPublicKey(pubkey);
@@ -167,7 +167,7 @@ async function artifactInputs(values) {
   await verifyInstallerSignature(installer, signature, loadUpdaterPublicKey(), version);
   const componentPath = resolve(values.component);
   const componentManifest = JSON.parse(readFileSync(resolve(values['component-manifest']), 'utf8'));
-  const trusted = JSON.parse(readFileSync(resolve(root, 'app/src-tauri/component-release.json'), 'utf8'));
+  const trusted = JSON.parse(readFileSync(resolve(root, 'legacy/v1/app/src-tauri/component-release.json'), 'utf8'));
   verifyComponentRelease(componentManifest, trusted, basename(componentPath), statSync(componentPath).size,
     await fileSha256(componentPath));
   return {

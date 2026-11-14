@@ -7,3 +7,5 @@
 代价是接受多次模型调用的编排复杂度与提示词工程成本，换来 token 预算可控（跨节上下文来自地图与薄摘要）与产物可核验。
 
 来源：[#35](https://github.com/attackingjensen/paper-30min/issues/35)、[#41](https://github.com/attackingjensen/paper-30min/issues/41)、[#46](https://github.com/attackingjensen/paper-30min/issues/46)、[#48](https://github.com/attackingjensen/paper-30min/issues/48)、[#55](https://github.com/attackingjensen/paper-30min/issues/55)；转写自 Git 历史 35324e7 的 ADR-0006，编号重排为 0003。
+
+v2.0 的阅读产物与建图目标由 [ADR-0007](0007-paper-explanations.md) 取代；本 ADR 仍描述当前客户端实现。

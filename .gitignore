@@ -19,7 +19,17 @@ paper-list/
 Thumbs.db
 
 # 回归夹具 dump 临时产物（#60）
-app/src-tauri/tests/fixtures/regression/manifest.dump.json
+legacy/v1/app/src-tauri/tests/fixtures/regression/manifest.dump.json
 
 # Orca 托管会话与工作树产物
 /.orca/
+
+# 上游只读源码副本（研读用，不作为依赖或子模块）
+/.upstream/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

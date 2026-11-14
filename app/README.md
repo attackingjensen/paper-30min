@@ -1,186 +1,136 @@
-# 论文精读 Windows 正式客户端（`app/`）
+# Paper30Min v2 桌面客户端
 
-基于 Tauri 的 Windows 正式客户端。Rust 承担本地能力、模型请求与阅读协议运行，JavaScript 承担界面与前端状态。支持导入、建图、深挖、复述稿和论文问答。云端同步尚未实现，任务注册表为内存态。
+Electron + React / TypeScript 客户端。新版代码在本目录，旧 Tauri 客户端保留在 [legacy/v1/app](../legacy/v1/app/) 供只读参考。
 
-## 代码入口
+## 开发与验证
 
-- [bridge.rs](src-tauri/src/bridge.rs)：版本化命令与任务入口。
-- [library.rs](src-tauri/src/library.rs)：本地书库与持久化。
-- [protocol.rs](src-tauri/src/protocol.rs)、[model.rs](src-tauri/src/model.rs)：阅读协议运行与模型请求。
-- [tasks.rs](src-tauri/src/tasks.rs)：任务生命周期。
-- [pdfparse.rs](src-tauri/src/pdfparse.rs)、[pdfpool.rs](src-tauri/src/pdfpool.rs)、[pdfassets.rs](src-tauri/src/pdfassets.rs)：解析侧车、常驻池与页图/裁切图。
+在 Windows 上使用 Node.js 24 和 npm，依赖版本由 `package-lock.json` 锁定。
 
-以下桥接说明用于入门，命令与任务类型以代码和契约测试为准。
-
-## 桥接形状
-
-- `bridge_invoke(command, input)`：短时、幂等或事务性操作。命令名带版本后缀（`app.info@1`、
-  `bridge.echo@1`、`tasks.*@1`、`library.*@1`、`files.*@1`、`migration.*@1`、`settings.*@1`、
-  `skills.list@1`、`exports.write@1`、`dialog.*@1`、`app.close-window@1`）。
-- `bridge_start(taskKind, input)`：长任务，返回 `{ schemaVersion, taskId }`；
-  事件经 `task:{taskId}` 通道推送（`chunk` / `progress` / `status`），终态可用 `tasks.get@1` 查询。
-  任务类型：`model.chat@1`（流式模型调用）、`model.test@1`（连接测试）、
-  `net.fetch-text@1`（网页文本抓取）、`files.download@1`（整文件下载落附件）、`demo.*@1`（演示）。
-  模型与网络失败按统一策略自动重试（retry_waiting → 退避 → 重试，共 3 次）；
-  流式 chat 一旦已产出内容块即不再自动重试，避免重复内容。
-- `model.chat@1` 成功终态的 `result.text` 保留完整正文，用于补齐事件订阅建立前漏收的 chunk；流式预览仍由 chunk 驱动。
-- 与接口规格措辞的对应：`invoke` → `bridge_invoke`，`start` → `bridge_start`，
-  `subscribe(taskId)` → 监听 `task:{taskId}` 事件，`getTask(taskId)` → `tasks.get@1`。
-- 每个响应包含 `schemaVersion`；错误统一为 `{ code, message, retryable, details }`。
-- 任务状态：`queued`、`running`、`succeeded`、`failed`、`cancel_requested`、`cancelled`、`retry_waiting`；
-  取消请求幂等，只在安全检查点停止。
-- 窗口关闭时若仍有运行中任务，Rust 阻止关闭并发出 `app:close-requested` 事件；
-  前端选择“等待任务完成”（任务全部结束后自动退出）或“停止任务并退出”。
-
-## 运行与验证
-
-```bash
+```powershell
 cd app
-npm install            # 安装 @tauri-apps/cli
-
-npm run tauri dev      # 开发模式（带控制台）
-npm run tauri build    # 安装包：src-tauri/target/release/bundle/nsis/*-setup.exe
-
-npm test               # JavaScript 桥接客户端契约测试（node --test）
-npm run test:rust      # Rust 桥接与任务生命周期测试（cargo test）
-npm run smoke          # 不开窗口的桥接冒烟检查（debug 构建，退出码 0/1）
+npm ci
+npm run dev
 ```
 
-发布构建不带控制台；`--bridge-smoke` 请用 debug 构建运行。
-
-### PDF 原生窗口验收
-
-Windows 上安装项目 npm 依赖，以及 Python `pypdf`、`Pillow`、`pymupdf` 后运行：
+`dev` 编译 Node 入口、启动 Vite 和真实 Electron 窗口。React 修改即时更新；修改 `src/main/` 或共享契约后重新启动命令。Vite 地址默认是 `http://127.0.0.1:5173`，需通过 Electron 使用本机工程能力。`npm run build` 生成运行目录，`npm start` 打开该构建；这里的构建不是 Windows 安装包。
 
 ```powershell
-npm run test:pdf-webview
+npm run typecheck
+npm run build
+npm test
 ```
 
-此命令用专用 Tauri 测试宿主运行真实 WebView2、Rust 桥、SQLite 和附件存储，页面使用未修改的 `ui/`，模型请求发往临时本机 SSE 服务。使用独立应用标识并先核对原生书库目录；不读取正常书库或模型凭据。测试程序从临时目录启动，避免迁移开发目录旁的旧解析组件。窗口尺寸调整权限只存在于测试配置，正式客户端权限不变。不要与物理窗口走查同时运行，窗口失焦会按真实取消规则中断拖动。
+`npm test` 先构建，再运行 Playwright 的真实 Electron 高层测试。测试只替代系统文件选择器，使用生产 preload、IPC、Node 工程进程和真实磁盘操作；回收站调用也使用 Electron 系统接口。默认测试使用临时配置与可控模型服务，覆盖流式回复、代理、失败恢复、并发停止和迟到事件。失败保留 trace，布局截图位于 `test-results/`。
 
-运行记录和截图保存在仓库根 `tmp/pdf-webview-<时间戳>/`；独立测试书库路径记录于 `report.json`，保留供失败排查。测试退出会关闭自己的窗口与本机服务，并恢复普通配置的库构建。正常 `node --test` 不启动此窗口。夹具包含真实双栏论文、由 10 篇论文合并的 150 页 PDF、混合页尺寸、位图扫描页和图形公式。
+GitHub 的 `Electron CI` 使用 Node.js 24 和 `npm ci`，在 Windows、Linux 上运行 `npm run build`（包含类型检查），随后仅在 Windows 上运行 `npx playwright test --reporter=list,html`，避免重复构建。Windows 回归使用隐藏窗口和受控服务，不配置真实模型或百度服务凭据；HTML 报告、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天。可从 Actions 页面手动运行工作流。Linux 构建通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
 
-CDP 合成鼠标、滚轮及 DOM Range 证明原生交互链路，不能代替物理鼠标、触控板或真实图像模型质量验收。旧 schema 迁移仍由 Rust 契约测试覆盖；窗口里的旧页码 DTO 恢复单独检查。该命令也不证明安装版升级和签名更新路径。
-
-阅读画布每页最多 400 万像素（RGBA 约 16 MiB），高倍缩放超过预算时降低位图分辨率，文字层和选区坐标保持原缩放。测试另用 12 页、300 DPI 模拟扫描论文执行短序列，记录进程树工作集、私有内存、单进程归因（按 paper30min 与 WebView2 进程角色聚合的峰值/末值）、停止交互后的占用及 idle 后半段最小值（settled 稳态），不以固定进程内存阈值判定通过。解读时区分两个口径：压力期峰值是缩放输入密度决定的瞬时占用，Chromium GPU 缓存归还周期长于 5 秒，短 idle 会把"尚未归还"计成"占用"；评估稳态用 `PAPER30MIN_PDF_MEM_IDLE_MS`（默认 5000）拉长等待、`PAPER30MIN_PDF_MEM_TEARDOWN=1` 在 idle 前返回书库（产品行为保留 viewer，仅切换视图）。默认只测当前代码；设置 `PAPER30MIN_PDF_BASELINE_REF` 为修改前的 Git 提交时，分别冷启动旧阅读器和当前阅读器做同输入对照。仅阅读器模块替换为指定提交，其余模块均使用当前代码；报告记录基线提交及源码摘要。这是 Debug 宿主测量，不代表安装版 Release 的内存表现。
-
-针对性复测可用 `PAPER30MIN_PDF_CHECK_FILTER` 正则筛选检查名（例如 `reader raster` 仅执行资源与内存检查）；报告保留过滤条件及跳过项，不视为完整套件通过。
-
-### 主界面窄窗口验收
-
-Windows 上运行 `npm run test:layout-webview`，使用隔离的原生 WebView2 宿主，检查书库、已建图阅读页与原文页在 430×760 等价视口下没有文档级横向溢出，并检查恢复到 1280×900 后的左右栏布局。程序同时调整原生窗口与 CDP 视口，以避免 Windows 非整数 DPI 尺寸舍入影响断言；报告及截图位于根目录 `tmp/com.paper30min.layout-<时间戳>/`。不读取正常书库或模型凭据。
-
-### 安装版矩阵与阅读性能基线
-
-Windows 上安装 npm 依赖及 Python `pypdf`、`Pillow`、`pymupdf` 后运行 `npm run test:installed-webview`。从本地 `main` 和当前 `HEAD` 的 Git 快照分别构建 1.3.0 与 1.4.0-beta.1 的 Release NSIS 包；使用独立产品名称、应用标识及临时测试签名，不读取正常书库或正式私钥。未提交的产品改动不在构建范围内。先执行签名字节校验，再通过 NSIS 静默安装验证默认路径、自选含空格路径、安装后启动和重启，以及旧版独立创建书库后的原地升级；升级核对笔记、阅读位置和全部 PDF 字节。
-
-矩阵还验证两种路径的保留书库卸载与重装、历史 1.3.0 卸载器产生的孤立安装目录记录恢复，以及残留程序和其他产品身份的拒绝保护。卸载使用正常临时复制流程，等待程序文件及卸载项清理完成，再检查安装身份；验收和复测准备均不手动清理孤立注册表记录。只复测安装行为时设置 `PAPER30MIN_INSTALL_ONLY=1`，跳过阅读性能测量。
-
-只验证连续缩放时设置 `PAPER30MIN_ZOOM_ONLY=1`：从当前 `HEAD` 构建并安装隔离的新版包，逐份执行滚动、100 次缩放及停止后的再次缩放，省去旧版构建和安装矩阵。停止输入后最多等待 10 秒，要求每个可见页都有匹配最终尺寸的画布、内容非空且加载提示已隐藏；高倍缩放的目标尺寸遵循每页 4 Mi 像素预算。该模式仍记录输入区间 FPS/P95 和进程树内存，性能分诊线不决定缩放验收结果。复用同一 `HEAD` 的缩放安装时，同时将 `PAPER30MIN_READING_REPORT` 指向该模式的报告。
-
-提交前验证安装器修改可设置 `PAPER30MIN_INSTALLED_NSIS_WORKTREE=1`：仅将当前工作区的 `windows/installer.nsi` 覆盖到新版 Git 快照，报告记录该文件的 SHA256，其余产品代码仍取 `HEAD`；该选项不能与安装包复用同时启用。之后按下文复用这类报告时，还会核对当前安装器模板与报告中的 SHA256，防止复用过期的工作区产物。
-
-提交前验证阅读器修改可设置 `PAPER30MIN_INSTALLED_READER_WORKTREE=1`，同样仅覆盖 `ui/js/pdf-reader.js`，记录并在复用时核对 SHA256；该选项不能与安装包复用同时启用。
-
-在升级后的安装版窗口中，测量 150 页合并论文、3 页混合尺寸 PDF 和由真实 ResNet 论文栅格化的 12 页 300 DPI 模拟扫描版。通过 CDP 合成滚轮与缩放按钮输入，记录 `requestAnimationFrame` 回调帧率、帧间隔 P95，以及应用和 WebView2 进程树工作集与私有内存采样峰值。内存采样间隔为 500 ms 等待加进程枚举时间，以采样文件的实际时间戳为准；工作集相加包含进程间共享页的重复计数，不是系统物理内存独占量。缩放统计包含最终重绘等待。分诊线为低于 45 FPS、P95 超过 50 ms 或工作集超过 1 GiB；超标仅记录，不自动优化。报告、内存采样和截图位于根目录 `tmp/installed-<时间戳>/`，结论归 Linear。
-
-物理窗口使用系统当前 DPI，不覆盖其他 Windows 显示缩放档位。回调帧率不能替代物理显示呈现帧率；模拟扫描版不能替代真实扫描质量验收。该入口也不证明正式签名、远端附件、应用内更新或组件安装。测试不会上传安装包。结束后保留隔离测试安装与书库供排查，临时私钥自动清除。需要复测时，可将 `PAPER30MIN_INSTALLED_ARTIFACTS` 指向同一 `HEAD` 的既有 `report.json`，重新核对包哈希与签名后复用安装包；会卸载该报告的独立测试安装并移出其测试书库，重新执行矩阵。只补测性能时，用 `PAPER30MIN_READING_REPORT` 指向安装矩阵报告；保留原矩阵证据，仅重新启动其隔离安装并测量。报告分别保存输入区间和含最终重绘等待的整体帧率，性能分诊使用输入区间指标。
-
-### 更新停流原生窗口验收
-
-Windows 上安装项目 npm 依赖后运行：
+桌面回归默认隐藏原生窗口，不显示任务栏按钮，也不抢占桌面焦点；每次启动将原生窗口内容区设为 1440 × 960，避免 runner 的小屏幕改变桌面测试布局，用例内仍可调整为窄窗口。后台仍进行真实渲染和截图，并通过 CDP 保持浏览器输入与剪贴板 API 可用。需要现场视觉检查或验证原生焦点时，只显式显示所选用例：
 
 ```powershell
-npm run test:updater-webview
+$env:PAPER30MIN_TEST_WINDOW='visible'
+npx playwright test -g '需要检查的用例名称'
+Remove-Item Env:PAPER30MIN_TEST_WINDOW
 ```
 
-复用隔离 WebView2 宿主和真实更新命令，本机端点分别模拟检查响应停流、下载响应头停流、下载正文停流和签名不匹配。检查入口及安装前二次检查的期限为 20 秒；下载以实际非零字节进展重置 30 秒空闲期限，不设置整包总时长。验签成功后才发送下载完成事件并调用插件安装；安装期间持续占用准入，不施加下载空闲期限。
+隐藏测试不代替原生焦点或人工交互验收；涉及复制的用例仍会使用系统剪贴板。普通开发和正式启动默认显示窗口。
 
-验收检查超时后 UI 重试、下载连接关闭、任务与组件互斥及恢复，并保存 1280 px 原生宽窗口和 CDP 模拟的 430 px 窄视口截图。测试配置使用独立应用标识、测试公钥和本机更新端点，正常书库、正式公钥及更新端点不变。夹具仅替换确认对话框的 IPC 响应，验证安装确认和活动任务二次确认的接受与取消；原生确认框的显示和实际点击未验证。更新入口通过现有 `dialog.message` 的 `OkCancel` 结果等待确认，不调用插件中已失效的 `window.confirm` 替换实现。
+可用 `PAPER30MIN_PROFILE` 指定独立本机配置目录，用于隔离试用；普通启动使用 Electron 的 `userData`。启动运行器会移除宿主的 `ELECTRON_RUN_AS_NODE`，防止 Electron 被当成 Node 启动。
 
-原生夹具的完整下载故意篡改字节，使签名验证失败，不执行安装器；持续慢速分块、正确签名和版本验证、安装边界的准入保持由 Rust 更新器测试覆盖。真实签名安装包的升级、安装路径和旧书库保留仍须另行验收。
+## 工程格式
 
-运行记录保存在根目录 `tmp/updater-webview-<时间戳>/report.json`；退出关闭自己的宿主与服务，并恢复普通配置的库构建。普通 `node --test` 不启动该窗口。Rust 测试使用 Tauri mock runtime；构建脚本为 Windows 测试程序生成 Common Controls v6 manifest，隔离窗口宿主显式嵌入该 manifest 后从临时目录启动。
+详见 [工程文件契约](../docs/project-format.md)。`src/main/project-service.ts` 是界面及后续 Agent 共享的文件操作入口，由 Node utility process 执行；主进程负责系统选择器、回收站和外部打开，React 通过受限 preload 调用。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统。
 
-### 解析结果安全发布验收
+当前支持从 PDF 创建、打开与最近工程、默认位置、材料管理和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索、侧栏和批注等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。停止输入约 600 毫秒后自动保存，标签和设置往返中保留编辑位置与撤销历史；Ctrl+S 仍可立即保存。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析生成可编辑正文，Agent 可逐页核对并记录进度。
 
-解析方式由设置页全局二选一决定：选择百度后，只有回到设置页改选本地才能使用本地组件。未安装本地组件不能选本地，未配置云端凭据与上传确认不能选云端；右侧箭头仍可进入配置。阅读页不提供解析方式选择或历史浏览；“重新解析”与“重新建图”并排，重新解析读取设置中的服务，成功后覆盖当前结果，失败或取消保留原结果。解析结果先封存为不可变批次，完整候选校验通过后再在 SQLite 事务中切换当前指针。普通保存携带原批次身份，迟到写入不能覆盖新解析。同一解析补全视觉资源保留已有建图成果；首次本地解析仍允许模型先于图片就绪。
+## 原生批注与无痕引用
 
-书库导出使用版本 2，包含当前及历史批次、选区截图和回想卡图片。原生导入校验资源摘要、大小与引用，兼容版本 1 及无版本旧书库；浏览器导入不能恢复原生批次时明确拒绝。旧本地模型没有原始 Docling 来源、且无法从可信缓存恢复时，需要重新解析才能发布新的视觉批次。
+原生批注与无痕引用已整合在同一阅读器中，既有引用字典、链接和解析块定位继续保留。
+
+PDF 无需切换模式，即可复制无痕引用或使用 EmbedPDF 的高亮、下划线和评论工具，两者均不依赖解析稿。批注变更后自动写回工程文件；离开 PDF 标签或复制批注链接前完成待保存写入。复制链接入口位于原生「批注」工具栏与选中批注的浮动菜单中。跨页选区产生逐页批注，选中多个批注时复制多条带页码的链接。颜色和评论修改沿用原批注 ID。
+
+链接为 `相对路径.pdf#annotation=<id>`，Markdown 相对所在文档，对话相对工程根目录；应用内复制、粘贴会换算路径基准。点击链接定位并选中批注；点击文件标题栏的「文档引用」查看无痕引用和批注的统一侧边卡片，选中的批注会在列表中突出显示。卡片列出来源与文档上下文，点击来源定位 PDF，点击文档跳转实际链接。PDF 不显示常驻引用框或页角按钮，引用跳转显示黄色定位框，在 PDF 内操作时保留，离开 PDF 标签后清除，再切回不重放；框选预览仍可用 Esc 或取消按钮清除。通过普通标签切换回到文档或 PDF，各自保留阅读位置。列表不包含 `text/`、`sources/` 或聊天记录，不新增持久化映射表。应用内移动 PDF 或 Markdown 会更新文档与已有会话链接，会先完成 Markdown 自动保存，并需等待 Agent 空闲。外部移动或删除会明确报错。
+
+保存批注会改变 PDF 字节和 SHA-256，但已有引用按工程文档身份定位，不再因哈希变化拒绝跳转或反查。引用仍检查页码与页面尺寸；替换正文或插删页面可能使坐标指向错误内容，不承诺自动重定位。清单和解析记录保留原哈希用于版本判断；引用字典不再保存或比较 PDF 哈希，旧字典保持可读；解析及审阅接受原始文件或最新应用内批注版本，外部修改仍会使版本校验失败。引用创建和 Agent 评论保留读取时的文档快照，连续应用内保存不再使已有定位证据失效。阅读位置按工程内 PDF 路径恢复，不受批注字节变化影响；旧库重复导入和缺失文件重新关联也接受最新已登记批注版本。保存 PDF 的外部修改与并发冲突检查继续启用。保存失败时保留内存批注，阻止离开阅读器；可从 Viewer 文件菜单导出副本，确认下载后再重新载入磁盘文件。导出不等于已保存到工程。
+
+## 百度解析
+
+在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token，再从工程「论文解析」选择已登记 PDF 并确认上传。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置。每批次只生成一份完整 Markdown：`text/<batchId>/paper.md`，图片就地出现，段尾「原文」链接回查 PDF；恢复状态、原始返回和块映射保存在隐藏目录 `.paper30min/parsing/<batchId>/`。已有旧布局继续原位读取，不删除旧成果。结果可离线重开和整体搬迁。
+
+解析完成后点击「开始审阅」，使用支持视觉的 Agent 模型自主对照整页 PDF，将原文逐字逐句完整、忠实地还原到同一份 Markdown。校对覆盖文字、公式符号、表格单元格、原图与图注、脚注及参考文献等内容，不用摘要、改写、翻译或学术评价替代原文。每页修正保存后重读核对，再标记完成；无法辨认且重新读取后仍未解决时在会话报告并暂停，不标记该页完成。审阅会话在右侧普通历史可见，可查看工具过程、停止并继续；每完成一页保存进度，中断后点击「继续审阅」，新会话从下一未完成页重审。普通会话与审阅均使用 Pi 原生自动上下文压缩。工程论文全部审阅完成后开放日常 Agent，手动阅读、编辑和引用始终可用。
+
+正文在审阅前后均可通过编辑器及 Agent read/write/edit 纠错；提示词要求无必要不修改 `text/`，解释、翻译和扩写另写成果。PDF、图片与内部字典仍受保护。后续纠错不清空完成进度；PDF 替换会使旧结果失效。映射中的 `text` 保留解析时的摘录，当前 Markdown 才是正文，旧摘录不能冒充修正后内容。引用 ID 保留原目标，增补内容可复用已登记区域或页级链接。
+
+接口沿用 [百度官方异步任务服务](https://ai.baidu.com/ai-doc/AISTUDIO/Mml7n69e7)：向 `/api/v2/ocr/jobs` 提交 multipart PDF，收到 `data.jobId` 后查询 `data.state`，完成后下载 `data.resultUrl.jsonUrl`。实际 JSONL 按返回顺序包含 `result.layoutParsingResults`（`prunedResult`、`markdown.text/images`）及 `result.dataInfo`；块含 `block_id`、`block_label`、`block_content`、`block_bbox`、`group_id` 等。图片实际支持签名 HTTPS 地址和 Base64，不假设 Gemini 格式。
+
+本机上传上限为 50 MiB、1 至 1000 页；请求超时 120 秒，单轮查询最长 30 分钟，超时可恢复原任务。原始 JSONL 上限 256 MiB、单张图片 32 MiB、图片合计 256 MiB，PNG 像素上限 1600 万，候选 Markdown 上限 2 MiB。超预算保留可恢复现场，不截断后报成功。配额及服务端实际模型版本由百度账户和服务决定，请求模型名不等于服务端版本证据。
+
+停止会保留云端任务号；提交回执未到时显示等待回执，应用退出可能留下「提交结果不明」。此时需从百度控制台取得任务号并关联，不能自动重传，避免重复调用。OCR 位置是块区域引用；页面旋转、裁切、预处理或区域无效时明确降为页级。当前不能检测同尺寸页面的语义换位，公式和表格质量仍需对照原页审阅。四份旧版真实 JSONL 与对应 PDF 共 49 页由新版公共接口回归，真实服务质量证据记录在 STE-82。
+
+真实解析测试默认跳过；可使用本机加密配置及同目录配套的 Electron `Local State`（两者均须来自本机同一配置目录），测试自动关闭 trace，临时工程和原始返回保存在被忽略的 `tmp/ste82-real/`。配置和产物路径均不应提交：
 
 ```powershell
-$env:PAPER30MIN_U6 = '1'
-node tests/integration/cloudassets-webview.mjs
-Remove-Item Env:PAPER30MIN_U6
+$env:PAPER30MIN_REAL_PARSING_CONFIG='C:\local\parsing-settings.json'
+npx playwright test -g '真实百度服务生成'
+Remove-Item Env:PAPER30MIN_REAL_PARSING_CONFIG
 ```
 
-复用隔离 WebView2 宿主与已有离线百度结果，验证发布拒绝、过期保存、重启、完整依赖导出导入及阅读界面。报告与截图位于根目录 `tmp/com.paper30min.cloudassets-webview-<时间戳>/`。这不证明真实云服务质量或安装版升级；本地 WebP 校验覆盖容器、尺寸与摘要，不是完整像素解码。
+可用 `PAPER30MIN_REAL_PARSING_SOURCE` 指定扫描 PDF、`PAPER30MIN_REAL_PARSING_PROJECT` 复用已有真实候选或恢复原任务、`PAPER30MIN_REAL_PARSING_OUTPUT` 隔离证据目录。只复查完整候选时无需再次提交或提供 Token。真实调用另验质量，受控服务测试覆盖停止、提交不明、下载失败、重开恢复、区域降级、图片完整性与搬迁。
 
-补验阅读界面时，可将 `PAPER30MIN_U6_READER_REPORT` 指向已通过的完整 `report.json`，复用其隔离书库及真实封存资源，仅重跑阅读和离线显示检查。新报告的 `reusedReport` 标明来源；准备、发布和迁移结果仍以原报告为准。
+## 导入旧 PDF
 
-### 云端解析设置与恢复原生窗口验收
+先在「设置 → 工程文件夹」选择默认位置，再从启动页或该设置页进入「导入旧 PDF」。选择旧书库根目录（默认 `%APPDATA%/com.paper30min.reader`），确认或修改逐篇工程名后开始。旧版把原始文件统一存为 `attachments/<论文 ID>/pdf`，默认工程名因此取 `pdf-<论文 ID>`；同名目录追加序号，不覆盖已有文件。
 
-Windows 上安装项目 npm 依赖后运行：
+每份 PDF 复制进独立工程，其他旧内容全部不导入，不访问旧数据库，不自动解析或调用模型。可停止导入或重试未完成项；重启后再次导入同一来源会核验并跳过成功项。本机 `legacy-imports.json` 用于重试识别，不随工程搬迁。强制中断留下的未完成目录保留，重试使用新目录。源 PDF 及旧书库不移动、不修改、不删除。完整约定见 [工程文件契约](../docs/project-format.md)。
+
+## Agent 对话与模型
+
+设置页可保存 Agent 协议、端点、模型名称和 token 预算，支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 的 Pi 适配器。OpenAI 端点填写 API 基地址（通常以 `/v1` 结尾）；Anthropic 填写服务根地址（例如 `https://api.anthropic.com`），SDK 自行添加 `/v1/messages`。API 密钥由 Electron `safeStorage` 加密，保存在本机 `agent-settings.json`，不返回界面、不写入工程。替换密钥需要重新输入，留空保留已保存密钥；也可明确移除。配置损坏或无法解密时，可在设置页重新填写配置和密钥，或移除旧密钥后保存。
+
+代理可选直连、环境变量或自定义 HTTP/HTTPS 地址。环境变量模式使用启动进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，不读取 Windows 系统代理设置。修改模型或代理在下一次空闲发送时生效，当前回复及其补充消息继续使用原配置。
+
+右侧 Agent 可发送消息、查看流式回复、补充下一条消息、停止和从已保存消息创建分支。会话自动保存为工程内 `.pi/sessions/*.jsonl`，重开或整体搬迁后可继续；设置往返保留当前会话和输入草稿。停止清空尚未执行的补充消息，保留已收到的内容及已完成文件修改。各会话可独立运行和停止。可粘贴引用链接或通过 `@` 选择工程文档和产品 Skill；标签提供实际来源，Agent 按需读取，不自动加载当前文档，也不加载本机全局 Pi 扩展或技能。
+
+普通对话即可根据用户请求读取、编辑成果、运行脚本与搜索网页，无需切换模式。思考过程和工具调用使用统一的可展开卡片；网络搜索密钥在「Agent 网络搜索」设置页独立配置。Pi 原生 read、write、edit、bash 已接入，工具卡片显示参数、过程、输出、失败、实际改动及新文件入口，历史重开仍保留工具调用与结果。read 当前支持 2 MiB 内 UTF-8 工程文本。
+
+`read_pdf` 将已登记 PDF 的指定整页渲染为实际 PNG，不接受区域坐标或预期哈希参数，每次读取当前文件，无需打开 PDF 标签或等待解析，也不改变阅读位置。除图像外，只返回路径、文档身份、文件版本、页码、总页数、顶层 `width` / `height`（PDF 点单位）、实际缩放和来源信息；不创建或返回引用，也不改动历史引用。不提取文本层、不执行 OCR，也不负责块内短句定位。正文阅读与已有块链接使用工程解析稿；无可用引用时说明文件路径、页码与引用缺失，不猜链接或坐标。模型设置中的「支持视觉输入」须与服务实际能力一致；未启用时明确报错，不提供文本降级。每次调用独立释放 PDFium 与图像，不保留跨调用图像缓存，图像保留在 Pi 工具结果中。
+
+从「阅读地图」或「论文精解」发起建图，生成独立地图和按原文顺序组织的充分精解。未完成解析审阅时先进入「论文解析」；重新生成前确认全部替换目标。生成使用普通可见会话，停止或失败保留旧成果与临时候选，重开后可继续。候选完整且基线未变才切换导航，随后回收旧目标文件；期间用户修改会阻止发布。
+
+在讨论中用 `@记忆卡片` 指定值得保留的原文或讨论，Agent 将其整理为 `memories/` 下的普通 Markdown，保留必要解释、适用条件、疑问与真实来源。卡片使用现有编辑、引用和文件能力，不自动生成或安排复习。地图与精解之外的深入理解通过普通追问完成。新版提示词位于 `app/skills/`，可在「设置 → 产品 Skill」修改，覆盖保存在本机配置目录；调用时会话记录实际提示词和版本。旧根目录 `skills/` 仅供旧版使用。
+
+真实建图与记忆卡片验证复用本机加密配置，关闭 trace，在隔离工程中运行：
 
 ```powershell
-npm run test:cloudparse-webview
+$env:PAPER30MIN_REAL_MODEL='1'
+$env:PAPER30MIN_REAL_PROFILE='C:\local\paper30min-profile'
+npx playwright test -g 'STE-(84|99) 真实模型' --trace=off
+Remove-Item Env:PAPER30MIN_REAL_MODEL, Env:PAPER30MIN_REAL_PROFILE
 ```
 
-复用隔离 WebView2 宿主与未修改的 `ui/`，覆盖 14 项检查：云端桥接命令注册与凭据脱敏、本地组件与云端配置的分设入口、解析方式选择保存与重载保持、缺失上传确认时三个导入入口均落入设置且不改书库、中断任务带 jobId 恢复、远端失败重新提交的计费确认、设置读取失败重试与并发导入只启动一次，以及离线云端候选建图后回叠原始 PDF 来源。云端提交、arXiv 下载与系统确认框由页面内夹具替代，设置、书库与附件处理保持真实原生链路；真实百度调用与原生确认框显示不在此验证。
+建图实测需本机 Poppler 的 `pdftotext`：从真实 ResNet PDF 提取完整文字并登记真实页级引用，保留录制解析样本的图像，注入已审阅状态作为入口前提。模型可使用原页补查；此用例另验生成、发布与回链，不代表已验证正文的自动解析或审阅质量。真实模型运行可能较长，测试保留工程现场供检查或继续；受控回归另覆盖十节以上及附录顺序、停止续接和冲突保护。
 
-运行记录与截图保存在仓库根 `tmp/com.paper30min.cloudparse-webview-<时间戳>/`；退出关闭自己的窗口与服务，并恢复普通配置的库构建。正常 `node --test` 不启动此窗口。
+建图实测在隔离副本中保留原配置的思考强度，将单轮输出预算设为至少 16,384 token，为推理和文档输出留出空间；不修改原配置。可用 `PAPER30MIN_REAL_MAPPING_MODEL` 指定同一服务上的模型名称，或用 `PAPER30MIN_REAL_MAPPING_PROJECT` 传入保留的测试工程，复制后从已有未完成建图会话继续。
 
-### 网络代理与直连
+Agent 可直接复用解析稿中的完整块链接，在普通回复或用户要求写入的文档中引用原文。`resolve_reference` 以结构化文本展开无痕引用和原生批注，区分已有摘录、解析块摘录与评论；不支持视觉的模型也能使用。相对批注链接来自 Markdown 时须传入 `sourceDocument`，聊天链接以工程根目录为基准。`create_annotation` 仅在用户要求批注时，使用已有可靠解析块位置保存原生评论并返回链接；阅读器待存批注一并保存，外部修改或保存失败明确报错。应用内批注保存不会使已审阅解析稿失效，外部修改仍需重新核对。完整契约见 [工程格式](../docs/project-format.md)。
 
-设置的「网络代理」页可选择「自动代理」或「直连」，点击保存后写入本机书库。旧书库默认自动代理；自动模式沿用进程环境变量及 Windows 系统代理 / 绕过规则。直连跳过这些代理配置，适用于模型连接测试、普通对话、阅读协议、文本抓取、论文附件下载、解析组件 ZIP 下载及应用更新检查 / 下载。保存后后续请求立即采用新模式，已经发出的请求继续使用其原模式。
+Windows 的 bash 工具实际执行 PowerShell。使用本机可用的 PowerShell，默认超时 120 秒，工具参数可指定其他期限。输出截断与非零退出码沿用 Pi；子进程置于 Windows Job Object 中，Shell 退出或被取消时清理整棵进程树。只传递运行所需的系统环境变量，不继承模型密钥、代理凭据或 Orca/Codex 会话变量；已知模型密钥在输出、工具结果和持久会话前脱敏。
 
-模式不改变 API 端点或操作系统路由，不能保证国内出口，也不绕过系统级 VPN / TUN。PDF 解析侧车是独立 Python 进程，其 Hugging Face 模型下载仍使用侧车自己的网络配置；外部链接使用系统浏览器。本次没有实现手动代理地址。
+Shell 是用户授权的受信任主机执行，**没有文件权限沙箱**。工程服务的只读保护强制应用于 write/edit 和界面保存；Shell 规则通过任务授权及模型指令约束，不能保证恶意脚本无法按绝对路径越界或覆盖保护文件，也不能保证拦截脚本自行上传内容。模型正常读取与发送工程上下文属于配置模型的授权；工程外访问、系统修改、上传和发布须符合用户明确任务。该取舍已在 STE-81 实施中经用户确认，Windows Job Object 仅解决进程生命周期。
 
-Windows 原生验证入口：
+真实模型测试须单独启用，当前测试会只读旧 Windows Paper30Min 保存的模型配置，并使用临时工程和隔离配置目录；运行前确认允许使用该服务及其费用。此模式关闭 trace，凭据不写入测试产物：
 
 ```powershell
-npm run test:network-webview
+$env:PAPER30MIN_REAL_MODEL='1'
+npx playwright test -g '用本机旧配置运行真实 Pi'
+Remove-Item Env:PAPER30MIN_REAL_MODEL
 ```
 
-隔离 WebView2 宿主继承本机夹具代理变量，验证自动模式进入代理、直连到达本机模型和下载端点、运行中切换、页面重载及 1280 / 430 px 设置页布局。更新包使用故意篡改的签名字节，验证下载路径但不执行安装器。组件下载的代理 / 直连由 Rust 子进程契约验证，避免修改并行测试的代理环境。报告与截图位于根目录 `tmp/com.paper30min.network-webview-<时间戳>/`。本机夹具不能证明真实百炼端点可用，需用户使用原端点复测。
+`read_pdf` 的真实视觉测试支持通过 `PAPER30MIN_REAL_PROFILE` 指定包含 Electron 加密配置 `agent-settings.json` 及其配套 `Local State` 的本机目录，复制到隔离测试目录并重新启动后使用，不修改原配置。也可通过 `PAPER30MIN_REAL_CONFIG` 指定本机 JSON 文件（字段为 `baseUrl`、`model`、`apiKey`），同时指定时优先使用 JSON。用 `PAPER30MIN_REAL_SCAN` 指定扫描 PDF，并设置 `PAPER30MIN_REAL_MODEL=1` 后运行 `npx playwright test -g 'read_pdf 真实视觉模型'`。该测试使用 high 思考强度与视觉输入，产物不包含密钥。明文凭据文件应放在仓库外，完成后删除；临时工程与隔离配置仍由测试清理。只有显式指定 `PAPER30MIN_REAL_SAVE_PROFILE` 时才把 Electron 加密后的配置及配套 `Local State` 复制到该目录。
 
-## Windows 更新与发版核对
+Viewer 的 WASM 和中文预置印章使用本地资源，界面字体使用系统字体，不加载默认远端字体。原生批注自动保存到工程 PDF；Agent 可通过 `read_pdf` 取证，并在用户明确要求时使用 `create_annotation` 创建评论批注。
 
-v1.4.0 正式版仅更新主程序；本地解析组件继续使用 v1.2.0-beta.1 的 ZIP、内置哈希及下载地址，不重新打包。v1.1.0 用户需手动运行新版安装包；Beta 用户也可手动升级。更新沿用 `com.paper30min.reader` 的 currentUser NSIS 安装身份，书库仍位于 Tauri 应用数据目录。主程序安装包不含 Docling：新安装用户可在设置的「服务」页按需下载或选择本地 ZIP 安装解析组件。未安装组件时仍可查看 PDF 与已有阅读内容，也可配置百度凭据使用云端解析及离线视觉资源；本地解析仍需要组件。v1.1.0 原地升级时安装器锁定旧安装目录并保留旧侧车，首次启动复制到用户本地组件目录；迁移失败可在设置中重试。安装前应备份现有书库，并等待生成任务完成或确认取消。
+真实模型验证仅覆盖实际使用的供应商、模型与场景，不代表所有协议或图文、工具能力都已验证；公式文字仍需对照原页核验。当前检查不覆盖安装包、v1 升级或持续内存表现；触控板的实际手感需在设备上体验。旧客户端测试不构成新版验证证据，远端验证以对应提交的 `Electron CI` 实际结果为准。
 
-1. 将 Tauri updater 私钥及密码保存在仓库外并独立备份；公钥在 `src-tauri/tauri.conf.json`。私钥丢失后，已安装版本将无法验证后续更新。Windows 代码签名与 updater 的 `.sig` 是不同事项，应分别核对。不要把私钥、密码或组件包提交到仓库。
-2. 核对 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 都是同一版本。使用 `TAURI_SIGNING_PRIVATE_KEY`（私钥路径或内容）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量运行 `npm run tauri build`，不要把凭据写进 `.env`、命令日志或仓库。
-3. 核对已发布的 Beta.1 组件 ZIP 和清单与 `src-tauri/component-release.json` 一致；本次不重新生成或上传组件包。后者的 SHA-256 编入主程序，用于下载安装和本地 ZIP 安装校验。
-4. 核对 `src-tauri/target/release/bundle/nsis/Paper30Min_<version>_x64-setup.exe` 与相邻 `.sig`。在仓库根目录运行以下检查；`verify` 会用更新器公钥核对安装包字节、签名注释中的文件名及清单一致性：
+解析记录卡片支持「删除解析」：确认后将该批次正文、图片和任务记录移入系统回收站，保留原 PDF 与工程引用字典。运行中的批次须先停止；删除本机记录不会取消云端任务。新旧解析目录均支持，回收失败会保留剩余记录以便重试。
 
-   ```powershell
-   node tools/release_manifest.mjs create --installer app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0_x64-setup.exe --component app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --component-manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json --tag v1.2.0 --manifest app/src-tauri/target/release/latest.json
-   node tools/release_manifest.mjs verify --installer app/src-tauri/target/release/bundle/nsis/Paper30Min_1.2.0_x64-setup.exe --component app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.zip --component-manifest app/src-tauri/target/release/component/Paper30Min_pdfparse_1.2.0-beta.1_windows-x86_64.manifest.json --tag v1.2.0 --manifest app/src-tauri/target/release/latest.json
-   ```
-
-5. 用 `src-tauri/tauri.test-updater.conf.json` 构建隔离安装身份，并由本机测试端点 `127.0.0.1:18437` 提供较新版本的签名清单和安装包，实际走查下载、签名拒绝、安装及书库保留。正式构建不使用该测试配置。
-6. 完成最终差异审查后发布正式版，并如实记录未完成的安装版走查。正式版 Release 仅附主程序安装包、`.sig` 和 `latest.json`；解析组件继续从 Beta.1 Release 下载。发布前重新核对安装包字节签名与清单。本机与 GitHub CI 的实际检查状态分别记录，CI 因账户问题不可用时不记为通过。
-
-## 界面结构（`ui/`）
-
-- `ui/index.html` + `ui/style.css` + `ui/js/main.js`：阅读界面（书库 / 阅读 / 任务中心三个视图）。
-- `ui/js/` 领域模块：`papers.js`（论文记录生命周期）、`generation.js`（精读生成编排）、
-  `skills.js`、`markdown.js`、`parser.js`（PDF/arXiv/文本解析）在客户端内维护；
-  `store.js` 负责 `library.*@1`/`files.*@1` 存储适配，`model.js` 负责设置缓存与 `model.*@1` 任务封装。
-- `ui/vendor/` 内置 pdf.js、MathJax，`ui/samples/` 内置示例论文；技能文件由 Rust 编译期内嵌
-  （`skills.list@1`），内置技能副本有同步测试防漂移。
-- 任务中心从主导航进入，显示全部任务的七态与进度，支持取消与失败重试；
-  阅读位置（视图/精读部分/PDF 页码）经 `library.*ReadingPosition@1` 持久化，重开论文时恢复。
-
-## 数据位置
-
-应用数据目录由 Tauri 管理（`app_data_dir`，标识 `com.paper30min.reader`）。首次启动会创建
-`database/`、`attachments/`、`operations/`、`exports/`，并在 `database/library.sqlite`
-建立版本化书库（v3 起含 settings 表：模型设置与技能覆盖；API Key 只存此处，
-不进入论文 DTO、迁移数据与整库导出）。JavaScript 只通过 `library.*@1`、`files.*@1` 与 `migration.*@1` 命令读写领域 DTO，
-不依赖表结构，也不接触附件绝对路径。PDF 和其他附件按 `attachments/{paperId}/` 分区保存，
-写入使用临时文件后原子改名；`files.readRange@1` 提供按字节范围读取，供在线阅读按页取数。
-浏览器书库通过 `migration.inspect@1` 预检整库 JSON（不修改书库），再用 `migration.commit@1`
-提交对应预检令牌；按论文 ID 合并记录与附件，不导入 API Key 或应用设置。源文件变化或令牌过期
-必须重新预检；提交失败不改写原导出文件。导入文件上限 512 MB。预检由 Rust 读取导出文件，
-结果 DTO 不含绝对路径；提交前请自行保留原导出文件。
+引用与批注的 Agent 读取以当前解析稿位置为入口：resolve_reference 返回文件路径、实时链接行号和正文范围，Agent 再用 read 阅读。手动选区和批注按 PDF 区域关联解析块，追评沿原生回复关系找到根批注；返回同段完整讨论并保留独立回复树。跨块、歧义和缺失明确反馈，不用解析时文字冒充当前稿。

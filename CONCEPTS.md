@@ -1,15 +1,27 @@
 # Paper30Min：核心概念
 
-本文帮助开发者和 agent 理解现有产品，不规定开发步骤。概念来自既有术语、决策和实现；涉及行为变更时再查对应源码、测试及 Issue 修订。关键决策见 [docs/adr/](docs/adr/)；具体工作由 Linear ticket 或 GitHub Issue 承载；历史背景与验证记录见 Git 历史 35324e7（`docs/background/`、`docs/draft/`）。
+本文帮助开发者和 agent 理解现有产品，不规定开发步骤。概念来自既有术语、决策和实现；涉及行为变更时再查对应源码、测试及 Issue 修订。关键决策见 [docs/adr/](docs/adr/)；当前具体工作由 beads 承载，GitHub Issue 仅保留外部问题记录，Linear 仅作历史参考；历史背景与验证记录见 Git 历史 35324e7（`docs/background/`、`docs/draft/`）。
 
-## 阅读模型
+## v2 本地工程
+
+### 工程与工程论文
+
+可直接编辑和搬迁的本地文件夹，围绕创建时的固定论文组织正文、成果、参考材料与会话。创建时将用户 PDF 复制到工程内，外部原文件不构成运行依赖。工程论文身份保持固定，不能用参考材料替换。
+
+### 工程清单与参考材料
+
+`paper30min.json` 维护论文身份、成果顺序和相对路径，正文文件为权威；普通新增文件直接进入文件树。附加参考材料可改名、移动、重新关联和移入系统回收站，相关研究成果保留。默认工程文件夹与最近工程是本机偏好，不随工程搬迁。
+
+格式与当前实现边界见 [工程文件契约](docs/project-format.md)。Node 工程进程处理文件操作与 Pi 对话，React 工作台经 Electron 桥调用；v2 无 SQLite。内嵌阅读器、编辑器、本机模型配置、持久会话、Agent 取证及工程修改均已接入，具体能力边界以 [app README](app/README.md) 和工程契约为准。
+
+## 旧客户端阅读模型
 
 ### 论文、原文章节、精读部分
 论文是阅读对象；原文章节沿用作者的组织结构；精读部分是独立阅读单元，可包含摘要。
 *Avoid: 固定的预设四段模板*
 
 ### 文本块
-带出处的可寻址原文单位，如段落、公式占位和图表占位。
+带引用的可寻址原文单位，如段落、公式占位和图表占位。
 *Avoid: 任意字符串切片*
 
 ### 阅读地图（L1）
@@ -17,7 +29,7 @@
 *Avoid: 目录、全文复述*
 
 ### 节薄摘要（L2）
-原文章节的主旨、带出处要点和关键图表指针；为地图和深挖共享上下文。
+原文章节的主旨、带引用要点和关键图表指针；为地图和深挖共享上下文。
 
 ### 建图
 生成全部节薄摘要与阅读地图；当前只要求块模型就绪，不等所有页图和裁切图完成。
@@ -29,13 +41,17 @@
 ### 复述稿
 综合阶段手动生成的全文级产物，按问题、方法、证据和边界组织；未核验部分明确标注。
 
-### 取证与出处
+### 引用与引用链接
+
+界面、文档、spec 和 ticket 统一使用「引用」「引用链接」「引用 ID」「引用字典」。引用表示对原文内容的指向或对应记录；引用链接是可复制、粘贴和点击的地址。定位目标称为「原文位置」，证据来源仍称为「来源」。
+
+### 取证与引用
 抓取原文证据并保留可回到文本块、图表或页面的位置；页级定位只确认所在页，精确高亮还须有可信的页内区域或文字匹配。
-*Avoid: 把页码当精确出处、把推测冒充已提取事实*
+*Avoid: 把页码当精确引用、把推测冒充已提取事实*
 
 ### PDF 选区
 读者在 PDF 中选中的文字或框选区域；可用于临时翻译与提问，实际选中文字或截图是提问对象，附近原文块只是上下文。
-*Avoid: 把附近原文块冒充精确出处*
+*Avoid: 把附近原文块冒充精确引用*
 
 ### 绑定提问、全文提问
 围绕指定章节或选中片段提问，与面向整篇论文提问；属于论文问答。
@@ -45,14 +61,41 @@
 阅读阶段提示词与章节关注点，位于 `skills/`，客户端内可编辑。
 *Avoid: 与开发所用 NexusKit 技能混用*
 
-阅读协议的实现见 [protocol.rs](app/src-tauri/src/protocol.rs)，分层产物、文本协议工具调用与按实际结构组织精读的决策见 [ADR-0002](docs/adr/0002-follow-paper-structure.md) 与 [ADR-0003](docs/adr/0003-three-layer-reading-protocol.md)。阅读契约的历史规格见 [#48](https://github.com/attackingjensen/paper-30min/issues/48)、[#51](https://github.com/attackingjensen/paper-30min/issues/51)、[#52](https://github.com/attackingjensen/paper-30min/issues/52)、[#55](https://github.com/attackingjensen/paper-30min/issues/55)、[#56](https://github.com/attackingjensen/paper-30min/issues/56) 及 [#74](https://github.com/attackingjensen/paper-30min/issues/74) 修订；旧术语中「建图须备齐页图」的表述已被性能调整替代。
+阅读协议的实现见 [protocol.rs](legacy/v1/app/src-tauri/src/protocol.rs)，分层产物、文本协议工具调用与按实际结构组织精读的决策见 [ADR-0002](docs/adr/0002-follow-paper-structure.md) 与 [ADR-0003](docs/adr/0003-three-layer-reading-protocol.md)。阅读契约的历史规格见 [#48](https://github.com/attackingjensen/paper-30min/issues/48)、[#51](https://github.com/attackingjensen/paper-30min/issues/51)、[#52](https://github.com/attackingjensen/paper-30min/issues/52)、[#55](https://github.com/attackingjensen/paper-30min/issues/55)、[#56](https://github.com/attackingjensen/paper-30min/issues/56) 及 [#74](https://github.com/attackingjensen/paper-30min/issues/74) 修订；旧术语中「建图须备齐页图」的表述已被性能调整替代。
+
+## v2 阅读模型
+
+归档客户端使用上文的节薄摘要协议，新版使用阅读地图与论文精解。
+
+### 论文精解
+一篇论文中按精读部分组织的可编辑讲解的整体，帮助读者比通读原文更快理解论文。各节讲解解释论点、方法和证据，并提供原文回查入口；论文精解不包含独立的阅读地图，也不是全文译文。
+*Avoid: 把节薄摘要或逐段改写称为论文精解*
+
+v2.0 的建图生成阅读地图与论文精解，不另产节薄摘要。两类成果分别归入工程的 `map/` 与 `explanations/`；「30 分钟」不是讲解的时长或字数上限。见 [ADR-0007](docs/adr/0007-paper-explanations.md)。
+
+### 建图与阅读地图
+建图以已审阅的当前正文生成阅读地图和逐节论文精解。地图提供全文问题、方法、贡献、证据、局限与章节导航；精解按原文实际顺序解释各部分，覆盖有实质内容的附录。必要讲解在精解中完成，进一步追问使用普通对话。
+*Avoid: 先薄摘要再深挖、固定四段模板*
+
+### 记忆卡片
+用户按需指定值得保留的原文内容或讨论理解，经整理得到的可编辑 Markdown。卡片保留理解所需的解释、推理、适用条件与未解决问题，区分论文事实、讨论理解和推测，已有来源可回查。
+
+记忆卡片不要求固定问答模板，不自动生成，也不承担全文复述、卡片管理或复习调度。
+*Avoid: 自动记忆服务、复述稿、强制问答卡*
+
+### 产品 Skill
+用户可编辑的阅读任务提示词。新版提供「建图」与「记忆卡片」；提示词作用于明确发起的任务，普通讨论不因内容有价值就自动写卡片。产品 Skill 与开发工作所用的 NexusKit 技能分属不同用途。
+
+### 旧 PDF 导入
+以旧书库的原始 PDF 为唯一内容输入，为每份 PDF 创建独立的新工程。工程使用复制进来的 PDF；旧笔记、成果、附件、会话、阅读状态和元数据均不导入，创建本身不触发解析或生成。见 [ADR-0009](docs/adr/0009-pdf-only-legacy-import.md)。
+*Avoid: 旧书库整体迁移、旧成果重建*
 
 ## 解析方式
 
 以下概念表达已确认的扩展方向，不代表当前客户端已全部实现。
 
 ### 云端解析
-用户主动选择将论文或页面图像发送到所配置的解析服务，取得可用于精读的结构化内容和出处信息；解析结果与必要视觉资源保存到本地书库。
+用户主动选择将论文或页面图像发送到所配置的解析服务，取得可用于精读的结构化内容和引用信息；解析结果与必要视觉资源保存到本地书库。
 *Avoid: 把云端当作论文内容权威来源、与建图深挖所用的模型服务混为一谈*
 
 ### 本地基础解析
@@ -87,7 +130,7 @@
 ### 中断部分结果
 被中断生成中保留下来的不完整内容；不构成已读完标记或阅读进度。
 
-进度与产物的数据模型决策见 [ADR-0004](docs/adr/0004-progress-and-products-data-model.md)，实现见 [library.rs](app/src-tauri/src/library.rs) 与 [进度域修复 #92](https://github.com/attackingjensen/paper-30min/issues/92)。历史记录 parts、产物与标记可能存在迁移差异，改动时不要假设三者始终一一对应。
+进度与产物的数据模型决策见 [ADR-0004](docs/adr/0004-progress-and-products-data-model.md)，实现见 [library.rs](legacy/v1/app/src-tauri/src/library.rs) 与 [进度域修复 #92](https://github.com/attackingjensen/paper-30min/issues/92)。历史记录 parts、产物与标记可能存在迁移差异，改动时不要假设三者始终一一对应。
 
 ## 尚未实现的方向
 
@@ -100,3 +143,12 @@
 供移动端读取的内容副本；Windows 仍是论文内容来源。
 
 详细契约见 [#25](https://github.com/attackingjensen/paper-30min/issues/25)、[#26](https://github.com/attackingjensen/paper-30min/issues/26)，重新启动时需结合现行实现复核。
+
+## Retired
+
+### 旧成果重建
+原指 Agent 参考旧生成成果、回查 PDF 后重建新版成果的工作；新版已改为仅导入原始 PDF，不再提供该能力，见 [ADR-0009](docs/adr/0009-pdf-only-legacy-import.md)。
+
+### 链接读取与讨论
+
+当前解析稿是 Agent 原文阅读的权威，PDF 原生批注是评论与追评的权威。引用／批注链接展开后返回当前解析稿路径、实时行号与相关讨论；PDF 坐标承担位置关联和回查。用户选区表达关注范围，跨段返回多个块，不冒充逐字解析匹配。讨论保留根批注和回复 ID；同段可有多条独立讨论。引用字典只负责定位，不以 PDF 全文件哈希定义引用身份或去重。
