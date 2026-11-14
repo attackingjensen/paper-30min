@@ -23,6 +23,29 @@ export interface Manifest {
   translations: Record<string, string>;
 }
 
+export interface ProjectManifest {
+  formatVersion: 2;
+  id: string;
+  name: string;
+  paper: {
+    id: string;
+    currentRevision: string | null;
+  };
+}
+
+export interface ProjectImportRecord {
+  formatVersion: 1;
+  id: string;
+  projectId: string;
+  paperId: string;
+}
+
+export interface ProjectCoreSnapshot {
+  root: string;
+  manifest: ProjectManifest;
+  importRecord: ProjectImportRecord | null;
+}
+
 export interface FileEntry {
   path: string;
   directory: boolean;
