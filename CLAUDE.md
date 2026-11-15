@@ -35,16 +35,14 @@ GitHub 的 `Electron CI` 在 Windows 上运行类型检查、构建和隐藏窗�
 - 技能或命令不可用时说明情况，不谎称已调用；按改动范围选择检查，无法运行时如实记录。
 - 小型明确修复不为凑流程创建计划或额外产物；较大工作按 NexusKit 技能拆分并进入 beads。
 - OpenViking 接收完整会话并整理过程记录，仓库不另建逐轮审查流水账。审查结论、验证结果与未解决项写入对应 PR / beads，最终发布证据与限制写入发布说明。
-- 涉及设计取舍、非琐碎实现或排障时，先语义检索 OpenViking 既有结论；复盘与记忆修订由用户触发，不因完成普通任务自动建档。
+- 涉及设计取舍、非琐碎实现或排障时，先语义检索 OpenViking 既有结论；
 
 ## Beads 任务跟踪
 
-- 使用 `bd` 进行全部任务跟踪，不使用 TodoWrite、TaskCreate 或 markdown TODO 列表。
 - 运行 `bd prime` 获取完整工作流上下文；项目自定义模板见 `.beads/PRIME.md`。
 - **禁用 `bd remember` / `bd memories`**：持久知识由 OpenViking 管理，不写入 beads 记忆。
 - 常用命令：`bd ready`、`bd show <id>`、`bd update <id> --claim`、`bd close <id>`。
 - 图规则：只允许一层 parent-child；checkpoint 只有入边；不建 root epic。详见 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)。
-- Git 策略保守：不自动 commit、push 或 Dolt sync，除非用户明确要求。
 
 ## 快速导航
 
