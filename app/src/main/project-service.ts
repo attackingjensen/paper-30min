@@ -2,18 +2,10 @@ import * as fs from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { createReadStream, createWriteStream, constants } from "node:fs";
 import { pipeline } from "node:stream/promises";
-import { setTimeout as delay } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { MappingPlan } from "../shared/mapping.js";
-import { citationId, validateCitation, type Citation, type CitationDictionary, type UsedCitation, type CitationUse } from "../shared/citations.js";
-import { markdownRenderer, markCitationUses } from "../shared/markdown-references.js";
-import { canReusePdfEvidence, isKnownPdfVersion } from "../shared/pdf-versions.js";
-import { isAnnotationLink, resolveAnnotationLink, annotationHref, rewriteAnnotationLinks } from "../shared/annotation-links.js";
-import {
-  prepareDocumentReferences,
-  type DocumentReferenceProcessor,
-} from "./document-references.js";
+import { isKnownPdfVersion } from "../shared/pdf-versions.js";
 import type {
   Command,
   CreateInput,
@@ -32,7 +24,6 @@ const manifestName = "paper30min.json";
 const directories = ["map", "explanations", "text", "notes", "memories", "tmp"];
 const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
 const readingName = ".paper30min-reading.json";
-const citationName = ".paper30min-citations.json";
 interface LegacyImportRecord {
   source: string;
   sha256: string;
@@ -233,7 +224,6 @@ export class ProjectService {
   constructor(
     private configFile: string,
     private trashFile: (file: string) => Promise<void>,
-    private references: DocumentReferenceProcessor = prepareDocumentReferences,
   ) {}
 
   async close() {
@@ -392,17 +382,6 @@ export class ProjectService {
       for (const file of candidates) {
         const content = await this.markdown(root, `${plan.directory}/${relativePath(file)}`);
         if (!content.text.trim()) throw new Error(`建图成果为空：${file}`);
-        // Validate actual source links before any output becomes authoritative.
-        const citations = new Set<string>();
-        for (const block of markdownRenderer.parse(content.text, {})) {
-          for (const token of block.children ?? []) {
-            const href = String(token.attrGet("href") ?? "");
-            const id = token.type === "link_open" && href.startsWith("paper://cite/") ? citationId(href) : null;
-            if (id) citations.add(id);
-          }
-        }
-        if (!citations.size) throw new Error(`建图成果缺少可回查的原文引用：${file}`);
-        for (const id of citations) await this.execute({ type: "resolveCitation", root, link: `paper://cite/${id}` });
         contents.push(content);
       }
       const checkBaseline = async () => {
@@ -976,10 +955,6 @@ export class ProjectService {
       (version !== null && !/^[a-f0-9]{64}$/.test(version))
     )
       throw new Error("正文或保存基线无效，正文上限为 2 MiB。");
-    if (/\.(md|markdown)$/i.test(relative))
-      text = await this.references(root, text);
-    if (Buffer.byteLength(text, "utf8") > budget)
-      throw new Error("转换后的正文超过保存预算。");
     const readCurrent = async () => {
       try {
         return await this.textFile(root, relative, budget);
@@ -1052,55 +1027,6 @@ export class ProjectService {
     }
   }
 
-  private async movedLinkEdits(root: string, from: string, to: string) {
-    const edits: { path: string; before: MarkdownFile; text: string; budget: number }[] = [];
-    const rewrite = (text: string, base: string, nextBase = base) => rewriteAnnotationLinks(text, (href) => {
-      let target;
-      try { target = resolveAnnotationLink(href, base); } catch { return href; }
-      if (target.path !== from && base === nextBase) return href;
-      if (target.path === from) target.path = to;
-      return annotationHref(target, nextBase);
-    });
-    for (const entry of (await this.snapshot(root)).files) {
-      if (entry.directory || !/\.(md|markdown)$/i.test(entry.path) || /^sources\//i.test(entry.path)) continue;
-      const before = await this.markdown(root, entry.path);
-      const text = rewrite(before.text, entry.path, entry.path === from ? to : entry.path);
-      if (text !== before.text) edits.push({ path: entry.path === from ? to : entry.path, before, text, budget: 2 * 1024 * 1024 });
-    }
-    const directory = ".pi/sessions";
-    let sessions: string[];
-    try { sessions = await fs.readdir(await this.resolve(root, directory)); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return edits; throw error; }
-    for (const name of sessions) {
-      if (!name.endsWith(".jsonl")) continue;
-      const relative = `${directory}/${name}`;
-      const budget = 32 * 1024 * 1024;
-      const before = await this.textFile(root, relative, budget);
-      if (!/#annotation=/i.test(before.text)) continue;
-      let changed = false;
-      const text = before.text.split(/(?<=\n)/).map((line) => {
-        if (!line.trim()) return line;
-        const entry: unknown = JSON.parse(line);
-        const update = (value: unknown): unknown => {
-          if (typeof value === "string") {
-            const next = rewrite(value, "");
-            if (next !== value) changed = true;
-            return next;
-          }
-          if (Array.isArray(value)) return value.map(update);
-          if (value && typeof value === "object")
-            return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, update(item)]));
-          return value;
-        };
-        const rewritten = update(entry);
-        return JSON.stringify(rewritten) !== JSON.stringify(entry)
-          ? JSON.stringify(rewritten) + (line.endsWith("\n") ? "\n" : "") : line;
-      }).join("");
-      if (changed) edits.push({ path: relative, before, text, budget });
-    }
-    return edits;
-  }
-
   private async execute(
     command: Exclude<Command, { type: "create" | "cancelCreate" | "importLegacy" }>,
     signal?: AbortSignal,
@@ -1117,149 +1043,6 @@ export class ProjectService {
     }
     const root = await fs.realpath(command.root);
     const m = await this.manifest(root);
-    if (command.type === "savePdf") {
-      const record = [m.paper, ...m.materials].find((r) => r.path === command.path);
-      if (!record || !/\.pdf$/i.test(command.path)) throw new Error("只能保存已登记的工程 PDF。");
-      const bytes = Buffer.from(command.bytes);
-      if (!/^[a-f0-9]{64}$/.test(command.version) || bytes.length > 128 * 1024 * 1024 ||
-          bytes.subarray(0, 5).toString() !== "%PDF-") throw new Error("PDF 保存内容或版本无效。");
-      const file = await this.resolve(root, command.path);
-      const unchanged = async () => {
-        await this.resolve(root, command.path);
-        if (await digest(file) !== command.version)
-          throw new Error("PDF 已在外部修改，批注尚未保存。请保留当前窗口并导出副本，重新打开后核对。");
-      };
-      await unchanged();
-      await fs.access(file, constants.W_OK);
-      const temporary = path.join(path.dirname(file), `.paper30min-${randomUUID()}.tmp`);
-      try {
-        const handle = await fs.open(temporary, "wx", (await fs.stat(file)).mode);
-        try { await handle.writeFile(bytes); await handle.sync(); }
-        finally { await handle.close(); }
-        // Windows readers can briefly prevent replacement. Keep the original
-        // intact and recheck its version before every bounded retry.
-        for (let attempt = 0; ; attempt++) {
-          signal?.throwIfAborted();
-          await unchanged();
-          signal?.throwIfAborted();
-          try { await fs.rename(temporary, file); break; }
-          catch (error) {
-            if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM" || attempt >= 5) throw error;
-            await delay(100 * (attempt + 1), undefined, { signal });
-          }
-        }
-      } finally { await fs.rm(temporary, { force: true }); }
-      // Preserve provenance hashes; citation navigation follows document identity, not byte equality.
-      const sha256 = createHash("sha256").update(bytes).digest("hex");
-      if (isKnownPdfVersion(record, command.version)) {
-        record.annotationSha256 = sha256;
-        await atomicJson(path.join(root, manifestName), m);
-      }
-      return { sha256, document: record };
-    }
-    if (command.type === "createCitation" || command.type === "resolveCitation" || command.type === "pdfUses") {
-      let dictionary: CitationDictionary = { formatVersion: 1, projectId: m.id, citations: {} };
-      let citationError = "";
-      try {
-        const file = path.join(root, citationName);
-        if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("引用字典不能是符号链接。");
-        if ((await fs.stat(file)).size > 32 * 1024 * 1024) throw new Error("引用字典超过 32 MiB。");
-        dictionary = JSON.parse(await fs.readFile(file, "utf8"));
-        if (dictionary?.formatVersion !== 1 || dictionary.projectId !== m.id ||
-            !dictionary.citations || typeof dictionary.citations !== "object" || Array.isArray(dictionary.citations))
-          throw new Error("引用字典格式或工程身份无效。");
-        for (const [id, item] of Object.entries(dictionary.citations)) {
-          if (!item || !/^[a-f0-9]{32}$/.test(id) || item.id !== id || typeof item.documentId !== "string")
-            throw new Error("引用字典已损坏。");
-          validateCitation(item);
-          // Read old dictionaries without carrying their obsolete PDF hash forward.
-          delete (item as Citation & { sha256?: string }).sha256;
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          if (command.type !== "pdfUses") throw error;
-          citationError = (error as Error).message;
-          dictionary = { formatVersion: 1, projectId: m.id, citations: {} };
-        }
-      }
-      if (command.type === "pdfUses") {
-        const record = [m.paper, ...m.materials].find((r) => r.path === command.path);
-        await this.resolve(root, command.path);
-        const annotations: CitationUse[] = [];
-        const used = new Map<string, UsedCitation>();
-        const { files } = await this.snapshot(root);
-        for (const entry of files) {
-          // text/ owns originals, parsed drafts and review candidates; sources/ owns dictionaries.
-          if (entry.directory || !/\.(md|markdown)$/i.test(entry.path) || /^(text|sources)\//i.test(entry.path)) continue;
-          let file: MarkdownFile;
-          try { file = await this.markdown(root, entry.path); }
-          catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-            throw new Error(`无法读取引用使用位置（${entry.path}）：${(error as Error).message}`);
-          }
-          const tokens = markdownRenderer.parse(file.text.replace(/^\uFEFF/, ""), {});
-          const heading = tokens.findIndex((token) => token.type === "heading_open");
-          const title = heading >= 0 ? tokens[heading + 1].content : path.basename(entry.path);
-          for (const use of markCitationUses(tokens, entry.path)) {
-            if (isAnnotationLink(use.id)) {
-              if (resolveAnnotationLink(use.id).path === command.path)
-                annotations.push({ ...use, path: entry.path, title, version: file.version });
-              continue;
-            }
-            const citation = dictionary.citations[use.id];
-            if (!citation || citation.documentId !== record?.id) continue;
-            let item = used.get(use.id);
-            if (!item) { item = { citation, uses: [] }; used.set(use.id, item); }
-            item.uses.push({ ...use, path: entry.path, title, version: file.version });
-          }
-        }
-        return { citations: [...used.values()], annotations, citationError };
-      }
-      const existing = command.type === "resolveCitation" ? dictionary.citations[citationId(command.link)] : undefined;
-      if (command.type === "resolveCitation" && !existing) throw new Error("找不到此引用，可能属于其他工程或字典已缺失。");
-      const record = [m.paper, ...m.materials].find((r) => existing ? r.id === existing.documentId : command.type === "createCitation" && r.path === command.path);
-      if (!record) throw new Error("引用对应的 PDF 身份不存在，请先将 PDF 加入工程材料。");
-      const input = command.type === "createCitation" ? command.input : existing!;
-      validateCitation(input);
-      let file: string;
-      try { file = await this.resolve(root, record.path); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("引用 PDF 已缺失，请重新关联原文件。");
-        throw error;
-      }
-      if (!/\.pdf$/i.test(file)) throw new Error("引用目标必须是 PDF。");
-      if (command.type === "createCitation") {
-        if (!/^[a-f0-9]{64}$/.test(command.input.sha256)) throw new Error("引用创建需要有效的 PDF 版本。");
-        const current = await digest(file, signal);
-        if (!canReusePdfEvidence({ sha256: command.input.sha256, document: command.sourceDocument ?? record },
-          { sha256: current, document: record }))
-          throw new Error("PDF 已被替换或版本无法确认，请重新选择后创建引用。");
-      }
-      if (existing) return { citation: existing, path: record.path };
-      // Compare evidence, not object serialization or approximate geometry. Reuse
-      // happens inside the project queue and only after verifying the current PDF.
-      const reusable = Object.values(dictionary.citations).find((item) =>
-        item.documentId === record.id &&
-        item.kind === input.kind && item.text === input.text &&
-        item.pages.length === input.pages.length && item.pages.every((p, i) => {
-          const other = input.pages[i];
-          return p.page === other.page && p.width === other.width && p.height === other.height &&
-            p.rects.length === other.rects.length && p.rects.every((rect, j) => {
-              const target = other.rects[j];
-              return rect.origin.x === target.origin.x && rect.origin.y === target.origin.y &&
-                rect.size.width === target.size.width && rect.size.height === target.size.height;
-            });
-        }));
-      if (reusable) return reusable;
-      const citation: Citation = { kind: input.kind, text: input.text, pages: input.pages,
-        id: randomUUID().replaceAll("-", ""), documentId: record.id };
-      dictionary.citations[citation.id] = citation;
-      if (Buffer.byteLength(JSON.stringify(dictionary, null, 2) + "\n") > 32 * 1024 * 1024)
-        throw new Error("引用字典超过 32 MiB，本次引用未保存。");
-      // The project command queue serializes additions; staging + sync + rename keeps old data intact on interruption.
-      await atomicJson(path.join(root, citationName), dictionary, signal);
-      return citation;
-    }
     if (
       command.type === "saveWorkspace" ||
       command.type === "savePdfPosition"
@@ -1376,7 +1159,6 @@ export class ProjectService {
       const parent = path.posix.dirname(command.destination);
       if (parent !== ".") await this.resolve(root, parent);
       const destination = path.join(root, command.destination);
-      const edits = await this.movedLinkEdits(root, command.path, command.destination);
       await fs.link(source, destination);
       try {
         await fs.unlink(source);
@@ -1393,25 +1175,11 @@ export class ProjectService {
       Object.keys(m.translations).forEach(
         (k) => (m.translations[k] = replace(m.translations[k])),
       );
-      const applied: { edit: typeof edits[number]; version: string }[] = [];
       try {
-        for (const edit of edits) {
-          const result = await this.saveText(root, edit.path, edit.text, edit.before.version, signal, edit.budget);
-          if (!result.saved) throw new Error(`文档已在外部变化，不能更新批注链接：${edit.path}`);
-          applied.push({ edit, version: result.file.version });
-        }
         await atomicJson(path.join(root, manifestName), m);
       } catch (error) {
-        const failures: string[] = [];
-        for (const { edit, version } of applied.reverse()) {
-          try {
-            const result = await this.saveText(root, edit.path, edit.before.text, version, undefined, edit.budget);
-            if (!result.saved) failures.push(edit.path);
-          } catch { failures.push(edit.path); }
-        }
         await fs.link(destination, source);
         await fs.unlink(destination);
-        if (failures.length) throw new Error(`移动未完成，部分文档发生外部变更，未覆盖：${failures.join("、")}`);
         throw error;
       }
     }

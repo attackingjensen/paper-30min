@@ -1,4 +1,3 @@
-import type { Citation } from "./citations.js";
 import type { DocumentRecord } from "./contracts.js";
 
 export const defaultParsingSettings = {
@@ -54,7 +53,6 @@ export interface ParsedBlock {
   label: string;
   text: string; // Original parser excerpt; the editable Markdown remains authoritative.
   vendorIds: number[];
-  citation: Citation;
   images: string[];
   limitation: string;
 }

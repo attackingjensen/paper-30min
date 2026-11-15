@@ -22,10 +22,7 @@ import {
   Play,
 } from "lucide-react";
 import { AgentMessage } from "./AgentMessage";
-import { copiedAnnotationText, setAnnotationClipboard } from "./annotation-clipboard";
-import { isAnnotationLink } from "../shared/annotation-links";
-import { extractChatSources, type ChatAttachment } from "../shared/chat-input";
-import type { ResolvedReference } from "../shared/references";
+import type { ChatAttachment } from "../shared/chat-input";
 import "./agent.css";
 import type {
   AgentCommand,
@@ -41,7 +38,6 @@ export function AgentPanel({
   initialView,
   onViewChange,
   onOpenFile,
-  onCitation,
   selectedSession,
   onParsing,
 }: {
@@ -50,7 +46,6 @@ export function AgentPanel({
   initialView?: { active: string; text: string; attachments?: ChatAttachment[] };
   onViewChange: (view: { active: string; text: string; attachments?: ChatAttachment[] }) => void;
   onOpenFile: (path: string) => void;
-  onCitation: (link: string) => void;
   selectedSession?: string;
   onParsing: () => void;
 }) {
@@ -66,11 +61,6 @@ export function AgentPanel({
   const choices = materials.filter(item => `${item.label} ${item.value}`.toLowerCase().includes(mention?.query.toLowerCase() ?? ""));
   function addAttachments(items: ChatAttachment[]) {
     setAttachments(old => [...old, ...items.filter(item => !old.some(value => value.kind === item.kind && value.value === item.value))]);
-  }
-  function ingest(value: string) {
-    const parsed = extractChatSources(value);
-    setText(parsed.text);
-    addAttachments(parsed.attachments);
   }
   function choose(item: ChatAttachment) {
     if (!mention) return;
@@ -90,16 +80,6 @@ export function AgentPanel({
     void window.desktop.agent<ChatAttachment[]>({ type: "materials", root }).then(items => { if (!disposed) setMaterials(items); }).catch(error => { if (!disposed) setError(error.message); });
     return () => { disposed = true; };
   }, [root, mentionOpen]);
-  useEffect(() => {
-    const receive = (event: Event) => {
-      const detail = (event as CustomEvent<{ root: string; markdown: string }>).detail;
-      if (detail.root !== root) return;
-      const parsed = extractChatSources(detail.markdown);
-      addAttachments(parsed.attachments); requestAnimationFrame(() => inputRef.current?.focus());
-    };
-    window.addEventListener("paper30min-chat-source", receive);
-    return () => window.removeEventListener("paper30min-chat-source", receive);
-  }, [root]);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [catalog, setCatalog] = useState<AgentSettings>();
@@ -361,7 +341,7 @@ export function AgentPanel({
                 <div className="thinking-content">{m.thinking}</div>
               </details>
             )}
-            <AgentMessage text={m.text} role={m.role} onError={setError} onCitation={onCitation} />
+            <AgentMessage text={m.text} role={m.role} onError={setError} />
             {m.tools?.map((tool) => (
               <ToolProcess key={tool.id} tool={tool} onOpenFile={onOpenFile} />
             ))}
@@ -372,7 +352,7 @@ export function AgentPanel({
         ))}
         {current?.queued.map((message, i) => (
           <div className="queued-message" key={i}>
-            待补充：<AgentMessage text={message} role="user" onError={setError} onCitation={onCitation} />
+            待补充：<AgentMessage text={message} role="user" onError={setError} />
           </div>
         ))}
         {(error || current?.error) && (
@@ -421,20 +401,7 @@ export function AgentPanel({
         <div className="composer">
           <div className="chat-attachments">
             {attachments.map((item) => <span key={`${item.kind}:${item.value}`}>
-              <button title={item.value} onClick={async () => {
-                try {
-                  if (item.kind !== "source") { setPreview({ title: item.label, text: item.value }); return; }
-                  const result = await window.desktop.invoke<ResolvedReference>({ type: "resolveReference", root, link: item.value });
-                  setPreview({ title: item.label, text: [
-                    `${result.path} · 第 ${result.pages.map(page => page.page).join("、")} 页`,
-                    result.excerpt ? `关注文字：${result.excerpt}` : "",
-                    ...result.manuscript.locations.map(location => `解析稿：${location.path}，第 ${location.startLine}–${location.endLine} 行（链接第 ${location.linkLine} 行）`),
-                    result.manuscript.reason ?? "",
-                    ...result.discussions.map((discussion, index) => `讨论 ${index + 1}（${discussion.status}）：\n` + discussion.entries.map(entry => `${entry.parentId ? "回复 " + entry.parentId : "根批注"} [${entry.id}]：${entry.comment ?? "（无文字）"}`).join("\n")),
-                    ...result.warnings,
-                  ].filter(Boolean).join("\n\n") });
-                } catch (error) { setError((error as Error).message); }
-              }}>{item.kind === "source" ? "来源" : item.kind === "skill" ? "Skill" : "文档"} · {item.label}</button>
+              <button title={item.value} onClick={() => setPreview({ title: item.label, text: item.value })}>{item.kind === "skill" ? "Skill" : "文档"} · {item.label}</button>
               <button aria-label={`移除 ${item.label}`} onClick={() => { setAttachments(old => old.filter(value => value !== item)); setPreview(undefined); }}>×</button>
             </span>)}
           </div>
@@ -447,22 +414,6 @@ export function AgentPanel({
           </div>}
           <textarea
             ref={inputRef}
-            onPaste={(event) => {
-              try {
-                const pasted = copiedAnnotationText(event.clipboardData, root, "");
-                event.preventDefault();
-                const input = event.currentTarget;
-                const start = input.selectionStart;
-                ingest(input.value.slice(0, start) + (pasted ?? event.clipboardData.getData("text/plain")) + input.value.slice(input.selectionEnd));
-              } catch (error) { event.preventDefault(); setError((error as Error).message); }
-            }}
-            onCopy={(event) => {
-              const input = event.currentTarget;
-              const selected = input.value.slice(input.selectionStart, input.selectionEnd);
-              if (!isAnnotationLink(selected)) return;
-              event.preventDefault();
-              setAnnotationClipboard(event.clipboardData, selected, root, "");
-            }}
             aria-label="Agent 消息"
             placeholder="有什么想聊的？"
             title="Enter 发送，Ctrl+Enter 换行"

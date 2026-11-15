@@ -52,7 +52,6 @@ test("建图完整发布按清单顺序登记十三节与附录，失败停止�
     const current = await projects.dispatch({ type: "open", root }) as Project;
     expect(current.manifest.explanations).toEqual([`explanations/${replacement.id}/新版.md`]);
     expect(await fs.stat(path.join(root, first.manifest.map!)).catch(() => null)).toBeNull();
-    expect((await projects.dispatch({ type: "pdfUses", root, path: project.manifest.paper.path }) as { citations: { uses: unknown[] }[] }).citations[0].uses.length).toBeGreaterThan(0);
   } finally { await projects.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 

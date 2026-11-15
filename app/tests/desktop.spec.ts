@@ -15,35 +15,6 @@ import type { ParsingRun, ParsingMapping } from "../src/shared/parsing";
 import type { AgentSettings, ChatSession, PdfSource } from "../src/shared/contracts";
 import { seedParsing, seedBlockParsing } from "./review-fixture";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { EmbedPdfContainer, AnnotationPlugin } from "@embedpdf/react-pdf-viewer";
-
-async function nativeAnnotations() {
-  return page.locator("embedpdf-container").evaluate(async (element) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    return registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").getAnnotations()
-      .filter((item) => item.commitState !== "deleted").map((item) => item.object);
-  });
-}
-
-async function expectAnnotationSelected(id?: string) {
-  await expect.poll(() => page.locator("embedpdf-container").evaluate(async (element, wanted) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    const selected = registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").getSelectedAnnotations();
-    return wanted ? selected.filter((a) => a.object.id === wanted).length : selected.length;
-  }, id)).toBeGreaterThan(0);
-}
-
-async function nativeHighlight() {
-  const count = (await nativeAnnotations()).length;
-  await page.getByRole("button", { name: "批注", exact: true }).click();
-  await page.getByRole("button", { name: "高亮", exact: true }).first().click();
-  const image = await pdfImage().boundingBox();
-  await page.mouse.move(image!.x + 80, image!.y + 190);
-  await page.mouse.down();
-  await page.mouse.move(image!.x + 300, image!.y + 230, { steps: 20 });
-  await page.mouse.up();
-  await expect.poll(async () => (await nativeAnnotations()).length).toBe(count + 1);
-}
 
 let sandbox: string;
 let desktop: ElectronApplication;
@@ -120,8 +91,19 @@ async function launch() {
     // Keep browser input/clipboard APIs active without taking native desktop focus.
     const session = await page.context().newCDPSession(page);
     await session.send("Emulation.setFocusEmulationEnabled", { enabled: true });
-    await expect.poll(() => page.evaluate(() => [innerWidth, innerHeight]))
-      .toEqual([1440, 960]);
+    await expect.poll(async () => {
+      const actual = await page.evaluate(() => [innerWidth, innerHeight]);
+      if (actual[0] !== 1440 || actual[1] !== 960) {
+        // Windows offscreen sizing can include the outer frame. Re-read after each
+        // native resize instead of locking the viewport or weakening the assertion.
+        await desktop.evaluate(({ BrowserWindow }, expected) => {
+          const window = BrowserWindow.getAllWindows()[0];
+          const [width, height] = window.getContentSize();
+          window.setContentSize(width + expected.width - expected.actual[0], height + expected.height - expected.actual[1]);
+        }, { width: 1440, height: 960, actual });
+      }
+      return actual;
+    }, { timeout: 15000 }).toEqual([1440, 960]);
   }
   await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible();
   expect(await desktop.evaluate(({ BrowserWindow }) =>
@@ -217,7 +199,7 @@ test.afterEach(async () => {
   }
 });
 
-test("百度候选在停止、重开、下载恢复后保留图片和可点击块引用，搬迁后离线可读", async () => {
+test("百度候选在停止、重开、下载恢复后保留图片，搬迁后离线可读", async () => {
   test.setTimeout(120_000);
   let submits = 0;
   let downloads = 0;
@@ -349,42 +331,6 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     await page.getByRole("button", { name: "查看正文" }).click();
     await expect(page.getByRole("group", { name: "Markdown 视图" })).toBeVisible();
     await expect(page.locator(".markdown-preview img").first()).toBeVisible();
-    for (const label of ["text", "display_formula", "chart"]) {
-      const block = mapping.blocks.find(
-        (block) => block.label === label && block.citation.kind === "region",
-      )!;
-      await page
-        .locator(
-          `.markdown-preview a[href="paper://cite/${block.citation.id}"]`,
-        )
-        .first()
-        .click();
-      await expectPdfRendered();
-      const highlights = page.locator(
-        `[aria-label="引用高亮"] [data-citation-page="${block.citation.pages[0].page}"]`,
-      );
-      await expect(highlights).toHaveCount(
-        block.citation.pages[0].rects.length,
-      );
-      await expect
-        .poll(async () => {
-          const mark = await highlights.first().boundingBox();
-          const viewport = await pdfViewport().boundingBox();
-          return (
-            !!mark &&
-            !!viewport &&
-            mark.y + mark.height > viewport.y &&
-            mark.y < viewport.y + viewport.height
-          );
-        })
-        .toBe(true);
-      await page
-        .getByRole("tab", { name: path.basename(run!.candidate!), exact: true })
-        .click();
-      await expect(
-        page.getByRole("group", { name: "Markdown 视图" }),
-      ).toBeVisible();
-    }
     await page.screenshot({ path: "test-results/ste82-candidate-desktop.png" });
     await page.getByRole("button", { name: "收起 Agent", exact: true }).click();
     await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
@@ -416,7 +362,6 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     expect(
       await fs.readFile(path.join(relocated, run.candidate!), "utf8"),
     ).not.toContain(endpoint);
-    const citationsBeforeDelete = await fs.readFile(path.join(relocated, ".paper30min-citations.json"), "utf8");
     const pdfBeforeDelete = await fs.readFile(path.join(relocated, "text/paper.pdf"));
     await page.getByRole("navigation", { name: "阅读导航" }).getByRole("button", { name: "论文解析", exact: true }).click();
     await page.getByRole("button", { name: "删除解析", exact: true }).click();
@@ -429,7 +374,6 @@ test("百度候选在停止、重开、下载恢复后保留图片和可点击�
     await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
     await expect(fs.stat(path.join(relocated, "text", run.batchId))).rejects.toThrow();
     await expect(fs.stat(path.join(relocated, ".paper30min/parsing", run.batchId))).rejects.toThrow();
-    expect(await fs.readFile(path.join(relocated, ".paper30min-citations.json"), "utf8")).toBe(citationsBeforeDelete);
     expect(await fs.readFile(path.join(relocated, "text/paper.pdf"))).toEqual(pdfBeforeDelete);
     await desktop.close();
     await launch();
@@ -566,46 +510,6 @@ test("真实百度服务生成可回查候选并记录格式与耗时", async ()
           ),
       )
       .toBe(true);
-    for (const label of ["text", "display_formula", "chart"]) {
-      const block = mapping.blocks.find(
-        (block) =>
-          block.label === label &&
-          block.citation.kind === "region" &&
-          (label !== "text" || block.text.length > 100),
-      );
-      if (!block) continue;
-      await page
-        .locator(
-          `.markdown-preview a[href="paper://cite/${block.citation.id}"]`,
-        )
-        .first()
-        .click();
-      await expectPdfRendered();
-      const highlights = page.locator(
-        `[aria-label="引用高亮"] [data-citation-page="${block.citation.pages[0].page}"]`,
-      );
-      await expect(highlights).toHaveCount(
-        block.citation.pages[0].rects.length,
-      );
-      await expect
-        .poll(async () => {
-          const mark = await highlights.first().boundingBox();
-          const viewport = await pdfViewport().boundingBox();
-          return (
-            !!mark &&
-            !!viewport &&
-            mark.y + mark.height > viewport.y &&
-            mark.y < viewport.y + viewport.height
-          );
-        })
-        .toBe(true);
-      await page.screenshot({
-        path: path.join(output, `ste82-real-${label}.png`),
-      });
-      await page
-        .getByRole("tab", { name: path.basename(run!.candidate!), exact: true })
-        .click();
-    }
     await fs.writeFile(
       path.join(output, "evidence.json"),
       JSON.stringify(
@@ -620,10 +524,10 @@ test("真实百度服务生成可回查候选并记录格式与耗时", async ()
           pages: run!.pageCount,
           blocks: mapping.blocks.length,
           pageOnlyBlocks: mapping.blocks.filter(
-            (block) => block.citation.kind === "page",
+            (block) => block.limitation.includes("仅页级定位"),
           ).length,
           regionBlocks: mapping.blocks.filter(
-            (block) => block.citation.kind === "region",
+            (block) => block.limitation.includes("OCR 块区域"),
           ).length,
           images: mapping.images.length,
           vendorImages: mapping.images.filter((image) => image.vendorPath)
@@ -1676,13 +1580,11 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
     expect(payload.tools.map((tool: any) => tool.function.name).sort()).toEqual(
       [
         "bash",
-        "create_annotation",
         "edit",
         "fetch_content",
         "get_search_content",
         "read",
         "read_pdf",
-        "resolve_reference",
         "web_search",
         "write",
       ],
@@ -1949,186 +1851,6 @@ test("模型含凭据的流中止或异常后，终态与持久会话仍脱敏",
   }
 });
 
-test("Agent 引用工具复用块链接写笔记，保存阅读器待存批注，重开后同一批注可定位", async () => {
-  test.setTimeout(150000);
-  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
-    path.join(sandbox, "projects"), "引用工具工程");
-  const root = path.join(sandbox, "projects", "引用工具工程");
-  const { run, link } = await seedBlockParsing(root);
-  await expectPdfRendered();
-  await page.locator("embedpdf-container").evaluate(async (element) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").createAnnotation(0,
-      { id: "reader-existing", type: 1, pageIndex: 0, contents: "原有用户评论",
-        rect: { origin: { x: 80, y: 250 }, size: { width: 24, height: 24 } } });
-  });
-  let step = 0;
-  let created: { link: string; annotationId: string };
-  const outputs: any[] = [];
-  const server = createServer(async (request, response) => {
-    let body = ""; for await (const part of request) body += part;
-    const payload = JSON.parse(body);
-    const last = payload.messages.at(-1);
-    if (last?.role === "tool") {
-      outputs.push(last);
-      if (step === 5) created = JSON.parse(last.content);
-    }
-    const actions = [
-      { name: "read", args: { path: run.candidate, offset: 3, limit: 3 } },
-      { name: "bash", args: { command: "Get-ChildItem text -Recurse -Filter *.md | Select-String 'dominant' -Context 0,2" } },
-      { name: "resolve_reference", args: { link } },
-      { name: "write", args: { path: "notes/Agent笔记.md", content: `# 研究笔记\n\n模型采用编码器和解码器。[原文](${link})\n` } },
-      { name: "create_annotation", args: { link, comment: "Agent 块级评论：请区分编码器和解码器。" } },
-      { name: "resolve_reference", args: { link: created?.link } },
-      { name: "resolve_reference", args: { link: "paper://cite/" + "0".repeat(32) } },
-      { name: "create_annotation", args: { link: created?.link, comment: "不允许把批注当解析块" } },
-      { name: "read_pdf", args: { path: "text/paper.pdf", page: 1 } },
-    ];
-    if (step === 4) {
-      await page.locator("embedpdf-container").evaluate(async (element) => {
-        const registry = await (element as EmbedPdfContainer).registry;
-        registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading")
-          .updateAnnotation(0, "reader-existing", { contents: "用户待保存评论也要保留" });
-      });
-    }
-    const action = actions[step++];
-    response.writeHead(200, { "Content-Type": "text/event-stream" });
-    const delta = action ? { tool_calls: [{ index: 0, id: `references-${step}`, type: "function",
-      function: { name: action.name, arguments: JSON.stringify(action.args) } }] } : { content: `已写入笔记。[原文](${link})` };
-    for (const [value, finish] of [[delta, null], [{}, action ? "tool_calls" : "stop"]])
-      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`);
-    response.end("data: [DONE]\n\n");
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  try {
-    await page.evaluate(async (endpoint) => {
-      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
-      settings.services[0].baseUrl = endpoint;
-      settings.models[0].model = "reference-model";
-      settings.models[0].vision = true;
-      await window.desktop.agent({ type: "saveSettings", settings, apiKey: "controlled-reference-key" });
-    }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
-    await page.getByLabel("Agent 消息").fill("读搜解析稿，解释后写笔记，展开引用，创建评论并看原页。");
-    await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 120000 });
-    expect(created!.link).toContain("#annotation=");
-    expect(outputs.some((item) => String(item.content).includes("找不到此引用"))).toBe(true);
-    expect(outputs.some((item) => String(item.content).includes("定位不足"))).toBe(true);
-    expect(await fs.readFile(path.join(root, "notes/Agent笔记.md"), "utf8")).toContain(link);
-    const invoke = (href: string) => page.evaluate(({ root, link }) => window.desktop.invoke<any>({ type: "resolveReference", root, link }), { root, link: href });
-    expect((await invoke(link)).manuscript).toMatchObject({ status: "matched", locations: [{ linkLine: 5 }] });
-    expect((await invoke("text/paper.pdf#annotation=reader-existing")).comment).toBe("用户待保存评论也要保留");
-    expect((await invoke(created!.link)).comment).toContain("Agent 块级评论");
-    expect(await page.evaluate((root) => window.desktop.parsing({ type: "readiness", root }), root)).toMatchObject({ ready: true });
-    await desktop.close(); await launch();
-    await page.getByRole("button", { name: /引用工具工程/ }).click();
-    await expectPdfRendered();
-    await expect.poll(async () => (await nativeAnnotations()).map((item) => item.id)).toContain(created!.annotationId);
-    expect((await invoke(created!.link)).comment).toContain("Agent 块级评论");
-    await page.getByRole("button", { name: "新会话", exact: true }).click();
-    // Reuse the returned ordinary annotation link through the existing document navigation.
-    await fs.writeFile(path.join(root, "notes/评论链接.md"), `[评论](../${created!.link})`);
-    await page.getByRole("button", { name: "笔记", exact: true }).click();
-    await expect(page.getByRole("button", { name: "评论链接.md", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "评论链接.md", exact: true }).click();
-    await page.locator('.markdown-preview a[href*="#annotation="]').click();
-    await expectAnnotationSelected(created!.annotationId);
-    await page.screenshot({ path: "test-results/ste96-reference-tools.png" });
-    expect(await page.evaluate((root) => window.desktop.parsing({ type: "readiness", root }), root)).toMatchObject({ ready: true });
-    expect(errors).toEqual([]);
-  } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
-});
-
-test("Agent 创建评论遇到外部 PDF 修改明确失败并保留阅读器待存评论", async () => {
-  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
-    path.join(sandbox, "projects"), "评论冲突工程");
-  const root = path.join(sandbox, "projects", "评论冲突工程");
-  const { link } = await seedBlockParsing(root);
-  await expectPdfRendered();
-  let step = 0;
-  let external: Buffer;
-  const server = createServer(async (request, response) => {
-    for await (const _part of request) { /* Consume the model request. */ }
-    if (step === 0) {
-      await page.locator("embedpdf-container").evaluate(async (element) => {
-        const registry = await (element as EmbedPdfContainer).registry;
-        registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").createAnnotation(0,
-          { id: "pending-conflict", type: 1, pageIndex: 0, contents: "保留用户内存评论",
-            rect: { origin: { x: 80, y: 250 }, size: { width: 24, height: 24 } } });
-      });
-      await fs.appendFile(path.join(root, "text/paper.pdf"), "\n% externally changed\n");
-      external = await fs.readFile(path.join(root, "text/paper.pdf"));
-    }
-    const delta = step++ === 0 ? { tool_calls: [{ index: 0, id: "annotation-conflict", type: "function",
-      function: { name: "create_annotation", arguments: JSON.stringify({ link, comment: "不能覆盖外部文件" }) } }] } : { content: "保存失败，未报告成功。" };
-    response.writeHead(200, { "Content-Type": "text/event-stream" });
-    for (const [value, finish] of [[delta, null], [{}, step === 1 ? "tool_calls" : "stop"]])
-      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`);
-    response.end("data: [DONE]\n\n");
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  try {
-    await page.evaluate(async (endpoint) => {
-      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
-      settings.services[0].baseUrl = endpoint; settings.models[0].model = "conflict-model";
-      await window.desktop.agent({ type: "saveSettings", settings, apiKey: "controlled-conflict-key" });
-    }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
-    await page.getByLabel("Agent 消息").fill("给原文块创建评论。");
-    await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    const card = page.locator('[data-tool="create_annotation"]');
-    await expect(card).toContainText("失败");
-    await card.locator("summary").click();
-    await expect(card).toContainText(/版本|外部修改/);
-    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
-    expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(external!);
-    expect((await nativeAnnotations()).find((item) => item.id === "pending-conflict")?.contents).toBe("保留用户内存评论");
-    expect(await page.evaluate((root) => window.desktop.parsing({ type: "readiness", root }), root)).toMatchObject({ ready: false });
-  } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
-});
-
-test("引用工具真实模型读搜、解释、按要求写笔记和创建评论，普通问答不写成果", async () => {
-  test.setTimeout(300000);
-  test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || !process.env.PAPER30MIN_REAL_PROFILE,
-    "需显式提供真实模型加密配置目录；关闭 trace。");
-  await desktop.close();
-  for (const file of ["agent-settings.json", "Local State"])
-    await fs.copyFile(path.join(process.env.PAPER30MIN_REAL_PROFILE!, file), path.join(sandbox, "profile", file));
-  await launch();
-  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
-    path.join(sandbox, "projects"), "真实引用工程");
-  const root = path.join(sandbox, "projects", "真实引用工程");
-  const { run, link } = await seedBlockParsing(root);
-  await page.evaluate(async () => {
-    const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
-    const selected = settings.models.find((model) => model.id === settings.selectedModelId)!;
-    selected.vision = true; selected.thinking = "high";
-    await window.desktop.agent({ type: "saveSettings", settings });
-  });
-  const send = async (text: string) => {
-    await page.getByLabel("Agent 消息").fill(text);
-    await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 135000 });
-    await expect(page.locator(".agent-error")).toHaveCount(0);
-    return page.evaluate((root) => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
-  };
-  await send(`请用 read 分段读取 ${run.candidate}，用 bash 搜索其中 dominant 段落并查看相邻引用链接，` +
-    "用 resolve_reference 展开该链接，再按需 read_pdf 核对第1页。简要解释这段话，只回复并给出已有原文链接。");
-  expect((await fs.readdir(path.join(root, "notes"))).filter((name) => name.endsWith(".md"))).toEqual([]);
-  const states = await send("现在请将刚才解释写入 notes/研究笔记.md，直接复用原文块链接。" +
-    "再在该块创建一条评论，讨论编码器和解码器的职责，使用 resolve_reference 读回保存的批注，回复批注链接。");
-  const calls = states.flatMap((state) => state.messages.flatMap((message) => message.tools ?? []));
-  for (const name of ["read", "bash", "resolve_reference", "read_pdf", "write", "create_annotation"])
-    expect(calls.some((tool) => tool.name === name && tool.status === "done")).toBe(true);
-  const created = calls.filter((tool) => tool.name === "create_annotation" && tool.status === "done").at(-1)!;
-  const annotation = JSON.parse(created.output!);
-  const resolved = await page.evaluate(({ root, link }) => window.desktop.invoke<any>({ type: "resolveReference", root, link }), { root, link: annotation.link });
-  expect(resolved.comment.length).toBeGreaterThan(0);
-  expect(await fs.readFile(path.join(root, "notes/研究笔记.md"), "utf8")).toContain(link);
-  await page.screenshot({ path: "test-results/real-model/ste96-reference-tools.png" });
-  await fs.writeFile("test-results/real-model/ste96-evidence.json", JSON.stringify({ states, resolved }, null, 2));
-});
 
 test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页", async () => {
   test.setTimeout(240000);
@@ -2170,7 +1892,7 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页",
   await page.getByLabel("Agent 消息").fill(
     "请实际调用 read_pdf 核对 text/paper.pdf 第8页的翻译结果表，再读取第4页整页核对注意力公式。" +
     (scan ? `另读取参考材料 ${scan} 第1页，这是论文第3页的扫描图，无文本层，请依据图像解释编码器和解码器结构的区别。` : "") +
-    "最终简要报告英德 BLEU 分数、注意力公式与结构区别，每项说明文件路径与页码；本工程尚无引用，不生成引用链接。禁止通过 read/bash/web_search 旁路读取资料。",
+    "最终简要报告英德 BLEU 分数、注意力公式与结构区别，每项说明文件路径与页码。禁止通过 read/bash/web_search 旁路读取资料。",
   );
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
@@ -2187,13 +1909,11 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页",
     expect(info).not.toHaveProperty("text");
     expect(info).not.toHaveProperty("textStatus");
     expect(info).not.toHaveProperty("textTruncated");
-    for (const field of ["citation", "link", "markdown"]) expect(info).not.toHaveProperty(field);
+    for (const field of ["link", "markdown"]) expect(info).not.toHaveProperty(field);
     expect(info).toMatchObject({ width: expect.any(Number), height: expect.any(Number) });
   }
   const reply = states.flatMap((state) => state.messages).filter((message) => message.role === "assistant").at(-1)!.text;
   expect(reply).toContain("28.4");
-  const links = page.locator('.message-text a[href^="paper://cite/"]');
-  await expect(links).toHaveCount(0);
   await page.screenshot({ path: "test-results/real-model/ste94-pdf.png" });
   await fs.writeFile("test-results/real-model/ste94-evidence.json", JSON.stringify({
     model: modelId, thinking: "high", reply, calls: successful.map((tool) => ({ args: tool.arguments, pdf: (tool.details as any).pdf })),
@@ -2217,9 +1937,6 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
   let overflow = false;
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
-  let waitingForSave = false;
-  let resumeAfterSave: () => void = () => {};
-  const annotationSaved = new Promise<void>((resolve) => { resumeAfterSave = resolve; });
   let batch: ParsingRun;
   const server = createServer(async (request, response) => {
     let raw = "";
@@ -2245,7 +1962,6 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
       if (step === 0) prompts.push(text);
       let call: { name: string; args: any } | undefined;
       if (session === 1) {
-        if (step === 2) { waitingForSave = true; await annotationSaved; }
         call = [
           { name: "complete_review_page", args: { page: 2 } },
           { name: "read", args: { path: batch.candidate } },
@@ -2288,15 +2004,6 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
     }, { root, endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` });
     await page.getByRole("button", { name: "论文解析", exact: true }).first().click();
     await page.getByRole("button", { name: "开始审阅", exact: true }).click();
-    await expect.poll(() => waitingForSave, { timeout: 45000 }).toBe(true);
-    await page.evaluate(async (root) => {
-      const source = await window.desktop.invoke<PdfSource>({ type: "readPdf", root, path: "text/paper.pdf" });
-      const suffix = new TextEncoder().encode("\n% annotation save during review\n");
-      const bytes = new Uint8Array(source.bytes.length + suffix.length);
-      bytes.set(source.bytes); bytes.set(suffix, source.bytes.length);
-      await window.desktop.invoke({ type: "savePdf", root, path: "text/paper.pdf", version: source.sha256, bytes });
-    }, root);
-    resumeAfterSave();
     await expect.poll(() => holding, { timeout: 45000 }).toBe(true);
     const progress = async () => JSON.parse(await fs.readFile(path.join(root, ".paper30min/parsing", batch.batchId, "run.json"), "utf8")) as ParsingRun;
     expect((await progress()).reviewedThroughPage).toBe(1);
@@ -2339,7 +2046,6 @@ test("解析审阅可见、自动压缩、停止后新会话逐页续接，正�
     await page.screenshot({ path: "test-results/ste83-reviewed-narrow.png", animations: "disabled" });
     expect(errors).toEqual([]);
   } finally {
-    resumeAfterSave();
     release();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -2378,8 +2084,6 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口且不
     const source = path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf");
     await create(source, path.join(sandbox, "projects"), "PDF 工具工程", true);
     const root = path.join(sandbox, "projects", "PDF 工具工程");
-    const citationPath = path.join(root, ".paper30min-citations.json");
-    const citationsBefore = await fs.readFile(citationPath, "utf8").catch(() => null);
     await expectPdfRendered();
     await jumpPdfPage(2);
     await setPdfZoom("125");
@@ -2404,29 +2108,25 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口且不
       expect(result).not.toHaveProperty("text");
       expect(result).not.toHaveProperty("textStatus");
       expect(result).not.toHaveProperty("textTruncated");
-      for (const field of ["citation", "link", "markdown"]) expect(result).not.toHaveProperty(field);
+      for (const field of ["link", "markdown"]) expect(result).not.toHaveProperty(field);
     }
     expect(images).toHaveLength(2);
     const { PNG } = await import("pngjs");
     const crop = PNG.sync.read(Buffer.from(images[1].split(",")[1], "base64"));
     expect([crop.width, crop.height]).toEqual([1224, 1584]);
     expect(results[1]).toMatchObject({ path: "text/paper.pdf", page: 3, width: 612, height: 792, scale: 2 });
-    expect(await fs.readFile(citationPath, "utf8").catch(() => null)).toBe(citationsBefore);
     expect(JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf).toEqual(before);
     await expect(page.getByRole("tab", { name: "paper.pdf", exact: true })).toHaveCount(0);
     await expect(page.locator('[data-tool="read_pdf"][data-status="done"]')).toHaveCount(2);
-    await expect(page.locator('.message-text a[href^="paper://cite/"]')).toHaveCount(0);
     await page.screenshot({ path: "test-results/ste94-read-only.png" });
     await desktop.close();
     await launch();
     await page.getByRole("button", { name: /PDF 工具工程/ }).click();
     await expect(page.locator('[data-tool="read_pdf"][data-status="done"]')).toHaveCount(2);
     await expect(page.locator(".message-text.chat-markdown").last()).toContainText("暂无可用引用");
-    await expect(page.locator('.message-text a[href^="paper://cite/"]')).toHaveCount(0);
     const sessionFiles = await fs.readdir(path.join(root, ".pi/sessions"));
     const history = await fs.readFile(path.join(root, ".pi/sessions", sessionFiles[0]), "utf8");
     expect(history).toContain('"type":"image"');
-    expect(await fs.readFile(citationPath, "utf8").catch(() => null)).toBe(citationsBefore);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -2522,7 +2222,6 @@ test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件
   let manuscript: string;
   let link: string;
   let mode: "map" | "card" | "chat" | "pause" = "map";
-  let missingMapCitation = false;
   let step = 0;
   const server = createServer(async (request, response) => {
     let body = "";
@@ -2547,7 +2246,7 @@ test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件
     if (mode === "map" && step === 1) {
       const explanations = [...Array.from({ length: 12 }, (_, index) => `explanations/${index + 1}.md`), "explanations/附录.md"];
       calls = [
-        { name: "write", args: { path: `${directory}/map.md`, content: missingMapCitation ? "# 尚无引用的地图" : `# 阅读地图\n\n方法与[证据](${link})。` } },
+        { name: "write", args: { path: `${directory}/map.md`, content: `# 阅读地图\n\n方法与[证据](${link})。` } },
         ...explanations.map((file, index) => ({ name: "write", args: { path: `${directory}/${file}`, content: `# ${index === 12 ? "附录" : `第${index + 1}节`}\n\n论点、方法与[证据](${link})。` } })),
         { name: "write", args: { path: `${directory}/result.json`, content: JSON.stringify({ map: "map.md", explanations }) } },
       ];
@@ -2593,18 +2292,7 @@ test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件
     await expect(page.locator(".markdown-preview")).toContainText("第10节");
     await page.screenshot({ path: "test-results/ste84-mapping.png" });
     expect(await fs.readdir(path.join(root, "memories"))).toEqual([]);
-    missingMapCitation = true; step = 0;
-    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
-    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
-    await page.getByRole("button", { name: "确认替换并生成", exact: true }).click();
-    await expect(page.locator(".mapping-panel")).toContainText("建图成果缺少可回查的原文引用：map.md");
-    expect(await readManifest(root)).toEqual(manifest);
-    missingMapCitation = false; step = 0;
-    await page.getByRole("button", { name: "继续建图", exact: true }).click();
-    await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
-    expect(JSON.stringify(requests.at(-1))).toContain("上一轮应用报告");
-    expect(JSON.stringify(requests.at(-1))).toContain("地图本身也须");
-    const continuedManifest = await readManifest(root);
+    const continuedManifest = manifest;
     mode = "pause";
     await page.getByRole("button", { name: "阅读地图", exact: true }).click();
     await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
@@ -2705,8 +2393,7 @@ test("STE-84 真实模型从论文全文生成地图和逐节精解", async () =
       const raw = await fs.readFile("../legacy/v1/app/src-tauri/tests/fixtures/aistudio/1512.03385.jsonl");
       const candidate = await buildCandidate({ root, run, source, raw, projects, signal: new AbortController().signal,
         download: async () => { throw new Error("此录制正文无需下载外部图片。"); }, progress: async () => {} });
-      // The recorded OCR fixture is deliberately excerpted. Use complete PDF text
-      // with truthful page citations for this generation test, not as OCR review evidence.
+      // The recorded OCR fixture is deliberately excerpted. Use complete PDF text for this generation test, not as OCR review evidence.
       const { stdout } = await promisify(execFile)("pdftotext", ["-enc", "UTF-8", path.join(root, run.document.path), "-"], { maxBuffer: 4 * 1024 * 1024 });
       const pages = stdout.split("\f");
       if (!pages.at(-1)?.trim()) pages.pop();
@@ -2715,12 +2402,8 @@ test("STE-84 真实模型从论文全文生成地图和逐节精解", async () =
       const manuscript: string[] = ["# Deep Residual Learning for Image Recognition"];
       for (const [index, text] of pages.entries()) {
         const page = index + 1;
-        const dimensions = candidate.mapping.blocks.flatMap(block => block.citation.pages).find(item => item.page === page)!;
-        const citation = await projects.dispatch({ type: "createCitation", root, path: run.document.path, input: {
-          sha256: source.sha256, kind: "page", text: "", pages: [{ page, width: dimensions.width, height: dimensions.height, rects: [] }],
-        } }) as ParsingMapping["blocks"][number]["citation"];
-        blocks.push({ id: `${run.batchId}:p${page}:b0`, vendorIds: [], label: "text", text, citation, images: [], limitation: "整页文本转录，引用仅定位到页" });
-        manuscript.push(`## 原文第 ${page} 页\n\n${text.trim()}\n\n[第 ${page} 页原文](paper://cite/${citation.id})`);
+        blocks.push({ id: `${run.batchId}:p${page}:b0`, vendorIds: [], label: "text", text, images: [], limitation: "整页文本转录" });
+        manuscript.push(`## 原文第 ${page} 页\n\n${text.trim()}`);
       }
       candidate.mapping.blocks = blocks;
       candidate.markdown = manuscript.join("\n\n");
@@ -2755,7 +2438,6 @@ test("STE-84 真实模型从论文全文生成地图和逐节精解", async () =
   await fs.writeFile("test-results/real-model/ste84-evidence.json", JSON.stringify({ states, manifest, documents }, null, 2));
   await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
   expect(manifest.explanations.length).toBeGreaterThanOrEqual(5);
-  expect(documents.every(document => document.content.includes("paper://cite/"))).toBe(true);
   const { markdownRenderer } = await import("../src/shared/markdown-references");
   const mapDocument = documents.find(document => document.path === manifest.map)!;
   const navigation = markdownRenderer.parse(mapDocument.content, {}).flatMap(block => block.children ?? [])
@@ -2780,20 +2462,16 @@ test("STE-99 真实模型按需整理指定原文与讨论为记忆卡片", asyn
   await launch();
   await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"), path.join(sandbox, "projects"), "真实聊天材料");
   const root = path.join(sandbox, "projects/真实聊天材料");
-  const { link } = await seedBlockParsing(root);
+  await seedBlockParsing(root);
   await fs.writeFile(path.join(root, "notes/阅读问题.md"), "本轮只研究编码器和解码器的职责。核验词：松柏七号。");
   const input = page.getByLabel("Agent 消息");
-  await input.fill("请把指定原文与阅读问题整理为 memories/编码器与解码器.md 记忆卡片。先 read 来源中的解析稿行号与指定笔记，保留笔记核验词和已有原文链接。论文事实、讨论理解和待核实问题应区分。只整理给出的范围，不假称已读完整论文。 ");
-  await input.evaluate((element, link) => {
-    const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", `[选中原文](${link})`);
-    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
-  }, link);
+  await input.fill("请把阅读问题整理为 memories/编码器与解码器.md 记忆卡片。先 read 指定笔记和工程论文解析稿，保留笔记核验词；引用原文时写出文件路径与页码。论文事实、讨论理解和待核实问题应区分。只整理给出的范围，不假称已读完整论文。 ");
   await input.press("End"); await input.pressSequentially(" @阅读问题");
   await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
   await input.press("Enter"); await input.press("End"); await input.pressSequentially(" @记忆卡片");
   await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
   await input.press("Enter");
-  await expect(page.locator(".chat-attachments > span")).toHaveCount(3);
+  await expect(page.locator(".chat-attachments > span")).toHaveCount(2);
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
   await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 135000 });
@@ -2803,125 +2481,63 @@ test("STE-99 真实模型按需整理指定原文与讨论为记忆卡片", asyn
   const answer = states.flatMap(state => state.messages).filter(message => message.role === "assistant").map(message => message.text).join("\n");
   const card = await fs.readFile(path.join(root, "memories/编码器与解码器.md"), "utf8");
   expect(card).toContain("松柏七号");
-  expect(card).toContain(link);
+  expect(card).toMatch(/text\/|第\s*\d+\s*页/);
   expect(answer).toContain("memories/");
   await fs.writeFile("test-results/real-model/ste99-evidence.json", JSON.stringify({ states, card }, null, 2));
   await page.screenshot({ path: "test-results/real-model/ste99-chat.png" });
 });
 
-test("STE-95 聊天来源预览、去重、文档与 Skill 组合发送及历史重开", async () => {
+test("STE-95 文档与 Skill 附件去重、组合发送及历史重开", async () => {
   const requests: { messages: { role: string; content: unknown }[] }[] = [];
-  let reply = "";
   const server = createServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += chunk;
     requests.push(JSON.parse(body));
     response.writeHead(200, { "Content-Type": "text/event-stream" });
-    response.end(`data: ${JSON.stringify({ id: "sources", choices: [{ index: 0, delta: { content: reply }, finish_reason: null }] })}\n\n` +
-      `data: ${JSON.stringify({ id: "sources", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+    response.end(`data: ${JSON.stringify({ id: "attachments", choices: [{ index: 0, delta: { content: "已核对" }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ id: "attachments", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const parent = path.join(sandbox, "projects");
-    await create(fixture, parent, "聊天材料");
+    await create(fixture, parent, "聊天材料", true);
     const root = path.join(parent, "聊天材料");
-    const { link, run } = await seedBlockParsing(root);
-    reply = `已核对[原文](${link})。\n\n\`\`\`json\n{"回答": "保留助手代码"}\n\`\`\``;
     await fs.mkdir(path.join(root, "notes"), { recursive: true });
     await fs.writeFile(path.join(root, "notes/问题(中文).md"), "不应自动发送的全文");
     await page.evaluate(async base => {
       const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
-      await window.desktop.agent({ type: "saveSettings", settings: { ...settings, services: [{ id: "sources", name: "受控模型", api: "openai-completions", baseUrl: base, hasKey: false }],
-        models: [{ id: "sources", serviceId: "sources", name: "受控模型", model: "fixture", contextWindow: 32000, maxTokens: 1024, thinking: "off", availableThinking: ["off"] }], selectedModelId: "sources" }, apiKeys: { sources: "test-key" } });
+      await window.desktop.agent({ type: "saveSettings", settings: { ...settings, services: [{ id: "attachments", name: "受控模型", api: "openai-completions", baseUrl: base, hasKey: false }],
+        models: [{ id: "attachments", serviceId: "attachments", name: "受控模型", model: "fixture", contextWindow: 32000, maxTokens: 1024, thinking: "off", availableThinking: ["off"] }], selectedModelId: "attachments" }, apiKeys: { attachments: "test-key" } });
     }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
     const input = page.getByLabel("Agent 消息");
-    await input.fill("解释这里 ");
-    const paste = async (text: string) => input.evaluate((element, value) => {
-      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", value);
-      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
-    }, text);
-    await paste(`[原文](${link}) [重复](${link})`);
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
-    await expect(input).toHaveValue("解释这里 原文 重复");
-    await paste(` [**这个定理为什么成立**][r]\n\n[r]: ${link}\n[r]: paper://cite/${"0".repeat(32)}`);
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
-    await expect(input).toHaveValue(/这个定理为什么成立/);
-    await page.locator(".chat-attachments button").first().click();
-    await expect(page.getByRole("region", { name: "附件预览" })).toContainText(run.candidate!);
-    await expect(page.getByRole("region", { name: "附件预览" })).toContainText("第 3–5 行（链接第 5 行）");
-    await page.getByText("关闭预览", { exact: true }).click();
-    await expectPdfRendered();
-    await page.getByRole("button", { name: "引用", exact: true }).click();
-    await page.getByRole("button", { name: "整页引用", exact: true }).click();
-    await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(2);
-    expect(await nativeAnnotations()).toHaveLength(0);
-    await nativeHighlight();
-    const annotationId = (await nativeAnnotations())[0].id;
-    await page.locator("embedpdf-container").evaluate(async (element, id) => {
-      const registry = await (element as EmbedPdfContainer).registry;
-      registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").updateAnnotation(0, id, { contents: "发送当时的讨论" });
-    }, annotationId);
-    await page.getByRole("button", { name: "批注加入聊天", exact: true }).first().click();
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(3);
     await input.fill("解释这里 @问题");
     await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
     await input.press("Enter");
-    await expect(input).toHaveValue("解释这里 ");
-    await input.press("End");
     await input.pressSequentially("@记忆卡片");
     await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
     await input.press("Enter");
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(5);
+    await input.pressSequentially("@问题");
+    await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+    await input.press("Enter");
+    await expect(page.locator(".chat-attachments > span")).toHaveCount(2);
     await input.fill('解释这里\n\n```json\n{"问题": "保留用户代码"}\n```');
-    await page.screenshot({ path: "test-results/ste95-composer.png" });
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await expect(page.locator(".chat-message.assistant")).toContainText("已核对");
     await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
     expect(requests).toHaveLength(1);
     const sent = JSON.stringify(requests[0].messages.filter(message => message.role === "user"));
-    expect(sent).toContain(run.candidate!);
-    expect(sent).toContain("startLine");
-    expect(sent).toContain("discussions");
-    expect(sent).toContain("发送当时的讨论");
     expect(sent).toContain("问题(中文).md");
     expect(sent).not.toContain("不应自动发送的全文");
-    expect(sent).toContain("SHA-256");
     expect(sent).toContain("# 记忆卡片");
-    expect(sent).not.toContain("image_url");
-    await expect(page.locator(".chat-message.user")).not.toContainText("来源快照");
-    await expect(page.locator(".chat-message.user")).not.toContainText("startLine");
-    await expect(page.locator(".chat-message.user pre").first()).toHaveText('{"问题": "保留用户代码"}');
-    await expect(page.locator(".chat-message.assistant pre")).toHaveText('{"回答": "保留助手代码"}');
-    await expect(page.locator(".chat-message.user").getByRole("link", { name: "来源", exact: true })).toHaveCount(3);
-    await page.screenshot({ path: "test-results/ste95-source-display.png" });
-    await page.locator(".chat-message.user a").first().click();
-    await expect(page.getByRole("tab", { name: "paper.pdf" })).toHaveAttribute("aria-selected", "true");
-    await page.locator(".chat-message.assistant a").click();
-    await page.locator("embedpdf-container").evaluate(async (element, id) => {
-      const registry = await (element as EmbedPdfContainer).registry;
-      registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").updateAnnotation(0, id, { contents: "讨论后来改写" });
-    }, annotationId);
-    await page.getByRole("button", { name: "笔记", exact: true }).click();
-    await expect(page.getByRole("tab", { name: "笔记", exact: true })).toHaveAttribute("aria-selected", "true");
-    await expect(page.locator("embedpdf-container")).toHaveCount(0);
-    await fs.writeFile(path.join(root, "notes/问题(中文).md"), "后来修改");
+    await expect(page.locator(".chat-message.user pre")).toHaveText('{"问题": "保留用户代码"}');
     const original = await page.locator(".chat-message.user .message-text").textContent();
     await desktop.close(); await launch();
     await page.getByRole("button", { name: /聊天材料/ }).click();
     await expect(page.locator(".chat-message.user .message-text")).toHaveText(original!);
-    await page.getByRole("button", { name: "从此消息分支" }).nth(1).click();
-    await expect(page.locator(".chat-message.user .message-text")).toHaveText(original!);
-    await page.getByLabel("Agent 消息").fill("保留代码 ");
-    await page.getByLabel("Agent 消息").evaluate((element, link) => {
-      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", `\`${link}\`\n\n\`\`\`\n[代码](${link})\n\`\`\``);
-      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
-    }, link);
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(0);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
-test("STE-95 来源失败保留草稿，移除后可发送，停止和模型失败保留材料", async () => {
+test("STE-95 文档缺失报错、移除后发送及失败历史重开", async () => {
   let fail = false;
   const requests: unknown[] = [];
   const server = createServer(async (request, response) => {
@@ -2929,82 +2545,76 @@ test("STE-95 来源失败保留草稿，移除后可发送，停止和模型失�
     requests.push(JSON.parse(body));
     if (fail) { response.writeHead(401); response.end("unauthorized"); return; }
     response.writeHead(200, { "Content-Type": "text/event-stream" });
-    response.write(`data: ${JSON.stringify({ id: "stop", choices: [{ index: 0, delta: { content: "处理中" }, finish_reason: null }] })}\n\n`);
+    response.end(`data: ${JSON.stringify({ id: "documents", choices: [{ index: 0, delta: { content: "已完成" }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ id: "documents", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
-    await create(fixture, path.join(sandbox, "projects"), "失败材料");
-    const root = path.join(sandbox, "projects/失败材料");
+    await create(fixture, path.join(sandbox, "projects"), "文档附件", true);
+    const root = path.join(sandbox, "projects/文档附件");
     await page.evaluate(async base => {
       const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
-      await window.desktop.agent({ type: "saveSettings", settings: { ...settings, services: [{ id: "sources", name: "受控模型", api: "openai-completions", baseUrl: base, hasKey: false }],
-        models: [{ id: "sources", serviceId: "sources", name: "受控模型", model: "fixture", contextWindow: 32000, maxTokens: 1024, thinking: "off", availableThinking: ["off"] }], selectedModelId: "sources" }, apiKeys: { sources: "test-key" } });
+      await window.desktop.agent({ type: "saveSettings", settings: { ...settings, services: [{ id: "documents", name: "受控模型", api: "openai-completions", baseUrl: base, hasKey: false }],
+        models: [{ id: "documents", serviceId: "documents", name: "受控模型", model: "fixture", contextWindow: 32000, maxTokens: 1024, thinking: "off", availableThinking: ["off"] }], selectedModelId: "documents" }, apiKeys: { documents: "test-key" } });
     }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
-    await expectPdfRendered();
-    await page.getByRole("button", { name: "引用", exact: true }).click();
-    await page.getByRole("button", { name: "整页引用", exact: true }).click();
-    await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
-    await page.getByLabel("Agent 消息").fill("保留我的问题");
-    await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    await expect(page.locator(".agent-error")).toContainText("解析");
-    await expect(page.getByLabel("Agent 消息")).toHaveValue("保留我的问题");
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
-    expect(requests).toHaveLength(0);
-    await seedParsing(root);
-    await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    await expect(page.locator(".chat-message.assistant")).toContainText("处理中");
-    await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
-    await page.getByLabel("Agent 消息").fill("停止前排队的来源\n\n```python\nprint(1)");
-    await page.getByRole("button", { name: "补充消息", exact: true }).click();
-    await expect(page.locator(".queued-message")).toContainText("停止前排队的来源");
-    await expect(page.locator(".queued-message")).not.toContainText("来源快照");
-    await expect(page.locator(".queued-message pre")).toHaveText("print(1)");
-    await expect(page.locator(".queued-message").getByRole("link", { name: "来源", exact: true })).toHaveCount(1);
-    await page.getByRole("button", { name: "停止回复", exact: true }).click();
-    await expect(page.getByRole("button", { name: "停止回复", exact: true })).toHaveCount(0);
-    await expect(page.locator(".chat-message.user").first()).not.toContainText("来源快照");
-    await expect(page.locator(".chat-message.user").first().getByRole("link", { name: "来源", exact: true })).toHaveCount(1);
-    await expect(page.locator(".chat-message.user").last()).toContainText("尚未送达模型");
     await fs.writeFile(path.join(root, "notes/即将移动.md"), "指定材料");
-    await page.getByLabel("Agent 消息").fill("读取 @即将移动");
+    const input = page.getByLabel("Agent 消息");
+    await input.fill("读取 @即将移动");
     await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
-    await page.getByLabel("Agent 消息").press("Enter");
+    await input.press("Enter");
     await fs.rename(path.join(root, "notes/即将移动.md"), path.join(root, "notes/已移动.md"));
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await expect(page.locator(".agent-error")).toContainText("指定文档已缺失或移动");
-    expect(requests).toHaveLength(1);
+    expect(requests).toHaveLength(0);
     await page.getByRole("button", { name: "移除 notes/即将移动.md", exact: true }).click();
-    await page.getByLabel("Agent 消息").fill("");
-    await page.getByLabel("Agent 消息").evaluate(element => {
-      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", "https://example.com/a.pdf#annotation=note-1 paper://cite/" + "0".repeat(32) + "/extra");
-      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
-    });
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(0);
-    await expect(page.getByLabel("Agent 消息")).toHaveValue(/https:\/\/example.com\/a.pdf#annotation=note-1 paper:\/\/cite\/0+\/extra/);
-    await page.getByLabel("Agent 消息").fill("缺失来源 ");
-    await page.getByLabel("Agent 消息").evaluate(element => {
-      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", "[不存在](paper://cite/" + "0".repeat(32) + ")");
-      element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
-    });
+    await input.fill("读取 @已移动");
+    await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+    await input.press("Enter");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    await expect(page.locator(".agent-error")).toBeVisible();
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
+    await expect(page.locator(".chat-message.assistant")).toContainText("已完成");
     expect(requests).toHaveLength(1);
-    await page.getByRole("button", { name: "移除 不存在", exact: true }).click();
+    await input.fill("再次读取 @已移动");
+    await expect(page.getByRole("listbox", { name: "选择文档或 Skill" }).getByRole("option")).toHaveCount(1);
+    await input.press("Enter");
     fail = true;
-    await page.getByRole("button", { name: "引用加入聊天", exact: true }).click();
-    await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await expect(page.locator(".agent-error")).toContainText("认证失败");
-    await expect(page.locator(".chat-message.user")).toHaveCount(3);
+    expect(requests).toHaveLength(2);
     await desktop.close(); await launch();
-    await page.getByRole("button", { name: /失败材料/ }).click();
-    await expect(page.locator(".chat-message.user")).toHaveCount(3);
-    await expect(page.locator(".chat-message.user").last()).not.toContainText("来源快照");
-    await expect(page.locator(".chat-message.user").last().getByRole("link", { name: "来源", exact: true })).toHaveCount(1);
+    await page.getByRole("button", { name: /文档附件/ }).click();
+    await expect(page.locator(".chat-message.user")).toHaveCount(2);
+    await expect(page.locator(".chat-message.user").last()).toContainText("再次读取");
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+test("旧 Pi 会话仅在显示层剥离来源快照", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  const root = path.join(sandbox, "projects/研究工程");
+  const sessionDir = path.join(root, ".pi/sessions");
+  await fs.mkdir(sessionDir, { recursive: true });
+  const legacyText = [
+    "请核对历史来源",
+    "",
+    `[来源](<paper://cite/${"0".repeat(32)}>)`,
+    "",
+    "发送时的来源快照（选区为关注范围；正文请按位置 read，按需 read_pdf）：",
+    "",
+    "```json",
+    JSON.stringify({ kind: "citation", status: "available", path: "text/paper.pdf", sha256: "abc", pages: [] }),
+    "```",
+  ].join("\n");
+  const session = SessionManager.create(root, sessionDir);
+  session.appendMessage({ role: "user", content: legacyText, timestamp: Date.now() });
+  await page.getByRole("button", { name: "所有工程", exact: true }).click();
+  await page.getByRole("button", { name: /研究工程/ }).click();
+  const message = page.locator(".chat-message.user .message-text");
+  await expect(message).toContainText("请核对历史来源");
+  await expect(message).not.toContainText("来源快照");
+  await expect(message).not.toContainText('"kind"');
+  await expect(message.getByRole("link", { name: "来源", exact: true })).toHaveCount(1);
+  const states = await page.evaluate(root => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
+  expect(JSON.stringify(states)).toContain("来源快照");
+  expect(states.flatMap(state => state.messages).some(message => message.text.includes('"kind":"citation"'))).toBe(true);
 });
 
 test("Pi 原生对话流式回复、补充、分支及搬迁重开，密钥留本机", async () => {
@@ -3720,8 +3330,11 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   const parent = path.join(sandbox, "projects");
   await create(fixture, parent);
   const root = path.join(parent, "研究工程");
+  const originalPdf = await fs.readFile(path.join(root, "text/paper.pdf"));
   await expect(pdfPages()).toContainText("2");
   await expectPdfRendered();
+  await expect(page.getByRole("button", { name: "批注", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "高亮", exact: true })).toHaveCount(0);
   await setPdfZoom("100");
   await page.screenshot({ path: "test-results/pdf-desktop.png" });
   for (const offset of [300, 620]) {
@@ -3804,18 +3417,12 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
     .click();
   await page.getByRole("button", { name: "原始论文", exact: true }).click();
   await expect(pdfPage()).toHaveValue("2");
-  await page.evaluate(async (root) => {
-    const source = await window.desktop.invoke<PdfSource>({ type: "readPdf", root, path: "text/paper.pdf" });
-    const suffix = new TextEncoder().encode("\n% annotation saved without moving viewport\n");
-    const bytes = new Uint8Array(source.bytes.length + suffix.length);
-    bytes.set(source.bytes); bytes.set(suffix, source.bytes.length);
-    await window.desktop.invoke({ type: "savePdf", root, path: "text/paper.pdf", version: source.sha256, bytes });
-  }, root);
   await desktop.close();
   await launch();
   await page.getByRole("button", { name: /研究工程/ }).click();
   await expect(pdfPage()).toHaveValue("2");
   await expect(pdfZoom()).toHaveValue("150");
+  expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(originalPdf);
 });
 
 test("真实 Ctrl+滚轮仅缩放 PDF，缩放和位置在重开后保留", async () => {
@@ -4543,826 +4150,6 @@ test("工作台真实文件树、标签复用与设置返回，桌面和窄窗�
   await expect(
     page.getByRole("navigation", { name: "工程文件" }),
   ).toBeVisible();
-});
-
-test("PDF 引用复制、原生粘贴撤销、定位高亮与标签往返", async () => {
-  const parent = path.join(sandbox, "projects");
-  await create(fixture, parent);
-  const root = path.join(parent, "研究工程");
-  await expectPdfRendered();
-  await setPdfZoom("100");
-  await page.getByRole("button", { name: "引用", exact: true }).click();
-  await page.getByRole("button", { name: "框选引用", exact: true }).click();
-  const image = await pdfImage().boundingBox();
-  expect(image).not.toBeNull();
-  const start = { x: image!.x + 60, y: image!.y + 80 };
-  await page.mouse.move(start.x, start.y);
-  await page.mouse.down();
-  await page.mouse.move(start.x + 160, start.y + 50, { steps: 10 });
-  await page.mouse.up();
-  await expect(page.getByRole("status")).toContainText("区域已选中");
-  const dictionaryFile = path.join(root, ".paper30min-citations.json");
-  await expect(fs.access(dictionaryFile)).rejects.toThrow();
-  // Reselect replaces temporary geometry; neither selection nor cancellation publishes a link.
-  await page.getByRole("button", { name: "框选引用", exact: true }).click();
-  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
-  await page.mouse.move(start.x, start.y);
-  await page.mouse.down();
-  await page.mouse.move(start.x + 80, start.y + 30, { steps: 5 });
-  await page.mouse.up();
-  await page.keyboard.press("Escape");
-  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
-  await expect(fs.access(dictionaryFile)).rejects.toThrow();
-  await page.getByRole("button", { name: "框选引用", exact: true }).click();
-  await page.mouse.move(start.x, start.y);
-  await page.mouse.down();
-  await page.mouse.move(start.x + 90, start.y + 40, { steps: 5 });
-  await expect(page.locator("[data-citation-page]")).toHaveCount(1);
-  await page.keyboard.press("Escape");
-  await page.mouse.up();
-  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
-  await page.getByRole("button", { name: "框选引用", exact: true }).click();
-  await page.getByRole("button", { name: "取消引用选择", exact: true }).first().click();
-  await expect(page.getByRole("status")).toHaveCount(0);
-  await page.getByRole("button", { name: "框选引用", exact: true }).click();
-  await page.mouse.move(start.x, start.y);
-  await page.mouse.down();
-  await page.mouse.move(start.x + 160, start.y + 50, { steps: 10 });
-  await page.mouse.up();
-  await page.screenshot({ path: "test-results/citation-toolbar-preview.png" });
-  await page.mouse.click(start.x + 30, start.y + 15, { button: "right" });
-  await page.getByRole("menuitem", { name: "复制引用链接", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("已复制引用链接");
-  const link = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  expect(link).toMatch(/^\[PDF 第 1 页\]\(paper:\/\/cite\/[a-f0-9]{32}\)$/);
-  const dictionary = JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"));
-  expect(Object.keys(dictionary.citations)).toHaveLength(1);
-  const source: any = Object.values(dictionary.citations)[0];
-  expect(source.kind).toBe("region");
-  expect(source.pages[0].rects[0].origin.x).toBeCloseTo(60, 0);
-  expect(source.pages[0].rects[0].size.width).toBeCloseTo(160, 0);
-  await fs.writeFile(path.join(root, "notes/引用.md"), "草稿开始\n\n");
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await page.getByRole("button", { name: "引用.md", exact: true }).click();
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
-  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
-  await editor.press("Control+End");
-  await editor.press("Control+v");
-  await expect(editor).toContainText("paper://cite/");
-  await editor.press("Control+z");
-  await expect(editor).not.toContainText("paper://cite/");
-  await editor.press("Control+v");
-  await page.getByRole("button", { name: "分屏", exact: true }).click();
-  await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
-  await expectPdfRendered();
-  await expect(page.locator("[data-citation-page]").first()).toBeVisible();
-  const mark = page.locator('[aria-label="引用高亮"] [data-citation-page="1"]');
-  await expect(mark).toHaveCount(1);
-  await expect.poll(async () => {
-    const [rect, pdf] = await Promise.all([mark.boundingBox(), pdfImage().boundingBox()]);
-    return rect && pdf ? rect.x - pdf.x : undefined;
-  }).toBeCloseTo(60, 0);
-  await expect.poll(async () => {
-    const [rect, pdf] = await Promise.all([mark.boundingBox(), pdfImage().boundingBox()]);
-    return rect && pdf ? rect.y - pdf.y : undefined;
-  }).toBeCloseTo(80, 0);
-  await setPdfZoom("150");
-  await expect.poll(async () => (await mark.boundingBox())?.width).toBeCloseTo(240, 0);
-  for (const name of ["水平滚动", "双页视图", "顺时针旋转"]) {
-    await page.getByRole("button", { name: "页面设置", exact: true }).click();
-    await page.getByRole("menuitem", { name, exact: true }).click();
-  }
-  await expect.poll(async () => (await mark.boundingBox())?.height).toBeCloseTo(240, 0);
-  await expect.poll(async () => {
-    const marked = await mark.boundingBox();
-    const image = await pdfImage().boundingBox();
-    return marked && image ? marked.x - image.x : undefined;
-  }).toBeCloseTo((source.pages[0].height - 130) * 1.5, 0);
-  await pdfViewport().evaluate((element) => { element.scrollLeft = 500; element.scrollTop = 0; });
-  await expect.poll(async () => {
-    const marked = await mark.boundingBox();
-    const image = await pdfImage().boundingBox();
-    return marked && image ? marked.y - image.y : undefined;
-  }).toBeCloseTo(60 * 1.5, 0);
-  await page.screenshot({ path: "test-results/citation-rotated.png" });
-  await page.getByRole("tab", { name: "引用.md", exact: true }).click();
-  await expect(editor).toContainText(link);
-  await editor.getByText(/paper:\/\/cite\//).click({ modifiers: ["Control"] });
-  await expect(page.locator("[data-citation-page]").first()).toBeVisible();
-  await page.getByRole("tab", { name: "引用.md", exact: true }).click();
-
-  await expect.poll(() => fs.readFile(path.join(root, "notes/引用.md"), "utf8")).toContain(link);
-  await desktop.close();
-  await launch();
-  await page.getByRole("button", { name: /研究工程/ }).click();
-  await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
-  await expect(page.locator("[data-citation-page]").first()).toBeVisible();
-});
-
-test("PDF 初始化期间连续点击引用保留最新目标", async () => {
-  await create(fixture, path.join(sandbox, "projects"));
-  const root = path.join(sandbox, "projects/研究工程");
-  const manifest = await readManifest(root);
-  const links = await page.evaluate(async ({ root, sha256 }) => {
-    const ids = await Promise.all([1, 2].map((page) => window.desktop.invoke<{ id: string }>({
-      type: "createCitation", root, path: "text/paper.pdf", input: { sha256, kind: "region", text: "",
-        pages: [{ page, width: 612, height: 792, rects: [{ origin: { x: 50, y: 160 }, size: { width: 180, height: 12 } }] }] },
-    })));
-    return ids.map(({ id }, i) => `[目标${i + 1}](paper://cite/${id})`).join("\n\n");
-  }, { root, sha256: manifest.paper.sha256 });
-  await page.getByRole("button", { name: "所有工程", exact: true }).click();
-  const sessionDir = path.join(root, ".pi/sessions");
-  await fs.mkdir(sessionDir, { recursive: true });
-  const session = SessionManager.create(root, sessionDir);
-  session.appendMessage({ role: "user", content: "请提供两个出处", timestamp: Date.now() });
-  session.appendMessage({ role: "assistant", content: [{ type: "text", text: links }],
-    api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", timestamp: Date.now(),
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-  });
-  // Delay the actual browser worker transport, retaining real PDF/plugin initialization.
-  await page.evaluate(() => {
-    const original = Worker.prototype.postMessage as (this: Worker, message: unknown, options?: Transferable[] | StructuredSerializeOptions) => void;
-    const pending: (() => void)[] = [];
-    Worker.prototype.postMessage = function (message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
-      pending.push(() => original.call(this, message, options));
-    };
-    window.addEventListener("release-pdf-workers", () => {
-      Worker.prototype.postMessage = original;
-      for (const send of pending) send();
-    }, { once: true });
-  });
-  await page.getByRole("button", { name: /研究工程/ }).click();
-  await expect(page.locator("embedpdf-container")).toHaveCount(1);
-  await page.locator(".chat-message").getByRole("link", { name: "目标1", exact: true }).click();
-  await page.locator(".chat-message").getByRole("link", { name: "目标2", exact: true }).click();
-  await expect(pdfImage()).toHaveCount(0);
-  await page.evaluate(() => window.dispatchEvent(new Event("release-pdf-workers")));
-  await expectPdfRendered();
-  await expect(pdfPage()).toHaveValue("2");
-  await expect(page.locator("[data-citation-page]")).toHaveAttribute("data-citation-page", "2");
-  await page.locator(".chat-message").getByRole("link", { name: "目标1", exact: true }).click();
-  await expect(pdfPage()).toHaveValue("1");
-  await expect(page.locator("[data-citation-page]")).toHaveAttribute("data-citation-page", "1");
-});
-
-test("同一阅读器共用批注与无痕引用，保存后可继续取证且反查不丢内存批注", async () => {
-  await create(fixture, path.join(sandbox, "projects"));
-  const root = path.join(sandbox, "projects/研究工程");
-  await expectPdfRendered();
-  await expect(page.getByRole("group", { name: "PDF 引用模式" })).toHaveCount(0);
-  const original = await fs.readFile(path.join(root, "text/paper.pdf"));
-  await page.getByRole("button", { name: "引用", exact: true }).click();
-  await page.getByRole("button", { name: "整页引用", exact: true }).click();
-  await page.getByRole("button", { name: "复制引用链接", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("已复制引用链接");
-  const invisible = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  expect(invisible).toContain("paper://cite/");
-  expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(original);
-  expect(await nativeAnnotations()).toHaveLength(0);
-  await fs.writeFile(path.join(root, "notes/混合.md"), `# 混合笔记\n\n${invisible}\n`);
-  await nativeHighlight();
-  const before = (await nativeAnnotations())[0];
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  const list = page.getByRole("complementary", { name: "文档引用使用位置" });
-  await list.getByRole("button", { name: /整页引用/ }).click();
-  expect((await nativeAnnotations())[0].id).toBe(before.id);
-  await page.getByRole("button", { name: "关闭文档引用列表", exact: true }).click();
-  await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
-  await expect(page.getByRole("status")).toContainText("已复制 1 个批注链接");
-  const annotation = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  await fs.appendFile(path.join(root, "notes/混合.md"), annotation.replace("text/paper.pdf", "../text/paper.pdf"));
-  await page.getByRole("button", { name: "引用", exact: true }).click();
-  await page.getByRole("button", { name: "整页引用", exact: true }).click();
-  await page.locator("embedpdf-container").evaluate(async (element, id) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").updateAnnotation(0, id, { contents: "Saved alongside citation" });
-  }, before.id);
-  await page.getByRole("button", { name: "复制引用链接", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("已复制引用链接");
-  const after = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  const dictionary = JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"));
-  expect(dictionary.citations[after.match(/cite\/([a-f0-9]+)/)![1]]).not.toHaveProperty("sha256");
-
-  expect(after).toContain("paper://cite/");
-  expect(after).toBe(invisible);
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  await expect(list.locator("section")).toHaveCount(2);
-  await expect(list).toContainText("整页引用");
-  await expect(list).toContainText("原生批注 · 第 1 页");
-  await expect(page.locator("[data-document-citation], [data-citation-uses-page]")).toHaveCount(0);
-  await list.getByRole("button", { name: /原生批注 · 第/ }).click();
-  await expectAnnotationSelected();
-  await list.locator("section").filter({ hasText: "原生批注" }).getByRole("button", { name: /混合笔记/ }).click();
-  await expect(page.locator(".citation-use-target")).toContainText("PDF 第 1 页批注");
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await expectPdfRendered();
-});
-
-test("原生批注跨行高亮保存到工程 PDF，重开保持链接身份", async () => {
-  test.setTimeout(90_000);
-  await create(fixture, path.join(sandbox, "projects"));
-  await expectPdfRendered();
-  await expectPdfRendered();
-  await page.getByRole("button", { name: "批注", exact: true }).click();
-  await page.getByRole("button", { name: "高亮", exact: true }).first().click();
-  const image = await pdfImage().boundingBox();
-  await page.mouse.move(image!.x + 80, image!.y + 190);
-  await page.mouse.down();
-  await page.mouse.move(image!.x + 300, image!.y + 230, { steps: 20 });
-  await page.mouse.up();
-  await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
-  await expect(page.getByRole("status")).toContainText("已复制 1 个批注链接");
-  const markdown = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  expect(markdown).toMatch(/text\/paper\.pdf#annotation=[^)]/);
-  const root = path.join(sandbox, "projects/研究工程");
-  await expect(fs.readFile(path.join(root, ".paper30min-citations.json"))).rejects.toThrow();
-  await page.getByLabel("Agent 消息").press("Control+v");
-  await expect(page.getByLabel("Agent 消息")).toHaveValue("PDF 第 1 页批注");
-  await expect(page.locator(".chat-attachments > span")).toHaveCount(1);
-  await expect(page.locator(".chat-attachments button").first()).toHaveAttribute("title", markdown.match(/\]\((.*)\)$/)![1]);
-  await fs.writeFile(path.join(root, "notes/批注.md"), "# 我的笔记\n\n");
-  await fs.mkdir(path.join(root, "map/deep"));
-  const deepLink = markdown.replace("text/paper.pdf", "../../text/paper.pdf");
-  await fs.writeFile(path.join(root, "map/deep/另一篇.md"), `# 第二篇\n\n${deepLink}\n\n再次使用 ${deepLink}\n`);
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await page.getByRole("button", { name: "批注.md", exact: true }).click();
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
-  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
-  await editor.press("Control+End");
-  await editor.press("Control+v");
-  await expect(editor).toContainText("../text/paper.pdf#annotation=");
-  await editor.press("Control+z");
-  await expect(editor).not.toContainText("#annotation=");
-  await editor.press("Control+v");
-  await page.getByRole("button", { name: "分屏", exact: true }).click();
-  await page.locator('.markdown-preview a[href*="#annotation="]').click();
-  await expectAnnotationSelected();
-  await page.getByRole("tab", { name: "批注.md", exact: true }).click();
-  await expect(editor).toContainText("../text/paper.pdf#annotation=");
-
-  await page.locator('.markdown-preview a[href*="#annotation="]').click();
-  await expectAnnotationSelected();
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  const uses = page.getByRole("complementary", { name: "文档引用使用位置" });
-  await expect(uses.locator("section > button:not(.citation-source)")).toHaveCount(3);
-  await uses.getByRole("button", { name: /第二篇/ }).nth(1).click();
-  await expect(page.locator(".citation-use-target")).toContainText("PDF 第 1 页批注");
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await expectPdfRendered();
-  await desktop.close();
-  await launch();
-  await page.getByRole("button", { name: /研究工程/ }).click();
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await page.getByRole("button", { name: "批注.md", exact: true }).click();
-  await page.locator('.markdown-preview a[href*="#annotation="]').first().click();
-  await expectAnnotationSelected();
-  const reopened = await nativeAnnotations();
-  expect(reopened).toHaveLength(1);
-  expect(reopened[0].id).toBe(decodeURIComponent(markdown.match(/#annotation=([^)]*)/)![1]));
-  expect("segmentRects" in reopened[0] && reopened[0].segmentRects!.length).toBeGreaterThanOrEqual(2);
-  await page.screenshot({ path: "test-results/native-annotation-reopened.png" });
-});
-
-test("原生批注在 Markdown 与已有会话中随 PDF 和文档移动更新，移除链接不删除批注", async () => {
-  test.setTimeout(120_000);
-  await create(fixture, path.join(sandbox, "projects"));
-  const root = path.join(sandbox, "projects/研究工程");
-  await expectPdfRendered();
-  await expectPdfRendered();
-  await nativeHighlight();
-  await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
-  await expect(page.getByRole("status")).toContainText("已复制 1 个批注链接");
-  const markdown = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  const id = decodeURIComponent(markdown.match(/#annotation=([^)]*)/)![1]);
-  const relative = markdown.replace("text/paper.pdf", "../text/paper.pdf");
-  const href = relative.match(/\]\((.*)\)$/)![1];
-  await fs.writeFile(path.join(root, "notes/甲.md"), `# 甲\n\n${relative}\n\n[再次][a\\]]\n\n[a\\]]: ${href}\n`);
-  await fs.mkdir(path.join(root, "map/deep"));
-  const sessionDir = path.join(root, ".pi/sessions");
-  await fs.mkdir(sessionDir, { recursive: true });
-  const manager = SessionManager.create(root, sessionDir);
-  manager.appendMessage({ role: "user", content: markdown, timestamp: Date.now() });
-  await page.getByRole("button", { name: "所有工程", exact: true }).click();
-  await page.getByRole("button", { name: /研究工程/ }).click();
-  const chatLink = page.locator('.chat-message a[href*="#annotation="]');
-  await expect(chatLink).toHaveCount(1);
-  await chatLink.click();
-  await expectAnnotationSelected();
-  await page.getByRole("button", { name: "改名或移动", exact: true }).click();
-  await page.getByLabel("工程内相对路径").fill("text/批注 甲.pdf");
-  await page.getByRole("dialog").getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "批注 甲.pdf", exact: true })).toBeVisible();
-  await expect(chatLink).toHaveAttribute("href", new RegExp("text/%E6%89%B9%E6%B3%A8%20%E7%94%B2\\.pdf#annotation="));
-  expect(await fs.readFile(manager.getSessionFile()!, "utf8")).toContain("%E6%89%B9%E6%B3%A8%20%E7%94%B2.pdf#annotation=");
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await page.getByRole("button", { name: "甲.md", exact: true }).click();
-  await page.getByRole("button", { name: "改名或移动", exact: true }).click();
-  await page.getByLabel("工程内相对路径").fill("map/deep/移动.md");
-  await page.getByRole("dialog").getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "移动.md", exact: true })).toBeVisible();
-  const moved = await fs.readFile(path.join(root, "map/deep/移动.md"), "utf8");
-  expect(moved).toContain("../../text/%E6%89%B9%E6%B3%A8%20%E7%94%B2.pdf#annotation=" + id);
-  expect(moved).toContain("[a\\]]: ../../text/");
-  await expect(page.locator('.markdown-preview a[href*="#annotation="]')).toHaveCount(2);
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
-  await page.getByRole("textbox", { name: "Markdown 源码", exact: true }).locator(".cm-line")
-    .filter({ hasText: "[再次][a\\]]" }).click({ modifiers: ["Control"] });
-  await expectAnnotationSelected();
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  await expect(page.getByRole("complementary", { name: "文档引用使用位置" }).locator("section > button:not(.citation-source)")).toHaveCount(2);
-  await fs.writeFile(path.join(root, "map/deep/移动.md"), "# 已移除链接\n");
-  await expect(page.getByRole("complementary", { name: "文档引用使用位置" })).toContainText("没有文档使用此批注");
-  expect((await nativeAnnotations()).map((a) => a.id)).toContain(id);
-  await fs.rename(path.join(root, "text/批注 甲.pdf"), path.join(root, "text/external.pdf"));
-  await chatLink.click();
-  await expect(page.getByRole("alert").filter({ hasText: "批注 PDF 已缺失或移动" })).toBeVisible();
-});
-
-test("原生批注保存保护外部版本、失败现场和并发写入，旧引用在保存批注后仍可解析", async () => {
-  test.setTimeout(120_000);
-  await create(fixture, path.join(sandbox, "projects"));
-  const root = path.join(sandbox, "projects/研究工程");
-  const manifest = await readManifest(root);
-  const old = await page.evaluate(({ root, sha256 }) => window.desktop.invoke<{ id: string }>({ type: "createCitation", root, path: "text/paper.pdf",
-    input: { sha256, kind: "page", text: "", pages: [{ page: 1, width: 612, height: 792, rects: [] }] } }), { root, sha256: manifest.paper.sha256 });
-  await expectPdfRendered();
-  await expectPdfRendered();
-  await nativeHighlight();
-  const file = path.join(root, "text/paper.pdf");
-  const original = await fs.readFile(file);
-  const external = Buffer.concat([original, Buffer.from("\n% external edit\n")]);
-  await fs.writeFile(file, external);
-  await expect(page.getByRole("alert").filter({ hasText: "批注保存失败" })).toBeVisible();
-  expect(await fs.readFile(file)).toEqual(external);
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await expect(page.locator(".notice.error").filter({ hasText: "PDF 自动保存失败" })).toBeVisible();
-  await expect(page.locator(".pdf-reader")).toBeVisible();
-  await fs.writeFile(file, original);
-  await page.getByRole("button", { name: "重试自动保存", exact: true }).click();
-  // Leaving the reader waits for its pending save; polling the PDF can itself
-  // prevent Windows from replacing it while the test holds a read handle.
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await expect(page.locator(".pdf-reader")).not.toBeVisible();
-  expect((await fs.readFile(file)).equals(original)).toBe(false);
-  expect(await page.evaluate(({ root, id }) => window.desktop.invoke<{ path: string }>({ type: "resolveCitation", root, link: "paper://cite/" + id }), { root, id: old.id })).toMatchObject({ path: "text/paper.pdf" });
-  const source = await page.evaluate((root) => window.desktop.invoke<{ bytes: Uint8Array; sha256: string }>({ type: "readPdf", root, path: "text/paper.pdf" }), root);
-  const outcomes = await page.evaluate(async ({ root, bytes, sha256 }) => {
-    const first = new Uint8Array([...Object.values(bytes), ...new TextEncoder().encode("\n% first save\n")]);
-    const second = new Uint8Array([...Object.values(bytes), ...new TextEncoder().encode("\n% second save\n")]);
-    return Promise.allSettled([first, second].map((value) => window.desktop.invoke({ type: "savePdf", root, path: "text/paper.pdf", bytes: value, version: sha256 })));
-  }, { root, ...source });
-  expect(outcomes.map((value) => value.status)).toEqual(["fulfilled", "rejected"]);
-  expect((await fs.readFile(file)).subarray(-14).toString()).toBe("\n% first save\n");
-  await fs.writeFile(path.join(root, "notes/保存前出处.md"), `[保存前出处](paper://cite/${old.id})`);
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await page.getByRole("button", { name: "保存前出处.md", exact: true }).click();
-  await page.getByRole("link", { name: "保存前出处", exact: true }).click();
-  await expectPdfRendered();
-  await expectPdfRendered();
-
-});
-
-test("批注提交期间继续编辑，较新评论也写入 PDF", async () => {
-  await create(fixture, path.join(sandbox, "projects"));
-  await expectPdfRendered();
-  // Reproduce a new edit after PDFium writes the old snapshot, before SDK cleanup.
-  await page.locator("embedpdf-container").evaluate(async (element) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    const api = registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading");
-    const off = api.onAnnotationEvent((event) => {
-      if (event.type !== "create" || !event.committed) return;
-      off();
-      api.updateAnnotation(event.pageIndex, event.annotation.id, { contents: "Edit during commit" });
-    });
-  });
-  await nativeHighlight();
-  await expect.poll(async () => (await nativeAnnotations())[0]?.contents).toBe("Edit during commit");
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "笔记", exact: true })).toHaveAttribute("aria-selected", "true");
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await expectPdfRendered();
-  await expect.poll(async () => (await nativeAnnotations())[0]?.contents).toBe("Edit during commit");
-  const restoredId = (await nativeAnnotations())[0].id;
-  await page.getByRole("button", { name: "批注", exact: true }).click();
-  await page.locator("embedpdf-container").evaluate(async (element, id) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").selectAnnotation(0, id);
-    const original = Worker.prototype.postMessage as (this: Worker, message: unknown, options?: Transferable[] | StructuredSerializeOptions) => void;
-    const pending: (() => void)[] = [];
-    Worker.prototype.postMessage = function (message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
-      pending.push(() => original.call(this, message, options));
-    };
-    window.addEventListener("release-pdf-delete", () => {
-      Worker.prototype.postMessage = original;
-      for (const send of pending) send();
-    }, { once: true });
-  }, restoredId);
-  try {
-    await page.getByRole("button", { name: "删除选中的批注", exact: true }).click();
-    // Hold the real worker beyond the autosave debounce, then undo in flight.
-    await page.waitForTimeout(800);
-    await page.getByRole("button", { name: "撤销", exact: true }).click();
-    expect((await nativeAnnotations()).map((item) => item.id)).toContain(restoredId);
-  } finally {
-    await page.evaluate(() => window.dispatchEvent(new Event("release-pdf-delete")));
-  }
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "笔记", exact: true })).toHaveAttribute("aria-selected", "true");
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await expectPdfRendered();
-  await expect.poll(async () => (await nativeAnnotations()).find((item) => item.id === restoredId)?.contents).toBe("Edit during commit");
-
-});
-
-test("原生批注真实论文渲染、原生评论与窄窗口可操作", async () => {
-  const source = path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf");
-  await create(source, path.join(sandbox, "projects"));
-  await expectPdfRendered();
-  await expectPdfRendered();
-  await setPdfZoom("75");
-  await expect.poll(async () => Math.round((await pdfImage().boundingBox())!.width)).toBe(459);
-  const raster = PNG.sync.read(await pdfImage().screenshot());
-  let ink = 0;
-  for (let i = 0; i < raster.data.length; i += 4)
-    if (raster.data[i] < 140 && raster.data[i + 1] < 140 && raster.data[i + 2] < 140) ink++;
-  expect(ink).toBeGreaterThan(3000);
-  const existingIds = (await nativeAnnotations()).map((item) => item.id);
-  await page.getByRole("button", { name: "批注", exact: true }).click();
-  await page.getByRole("button", { name: "高亮", exact: true }).first().click();
-  const image = await pdfImage().boundingBox();
-  // Independent pdftotext geometry: title x=211..400, y=150..166 at 75% zoom.
-  await page.mouse.move(image!.x + 160, image!.y + 118);
-  await page.mouse.down(); await page.mouse.move(image!.x + 297, image!.y + 118, { steps: 15 }); await page.mouse.up();
-  await expect.poll(async () => (await nativeAnnotations()).filter((item) => !existingIds.includes(item.id)).length).toBe(1);
-  const id = (await nativeAnnotations()).find((item) => !existingIds.includes(item.id))!.id;
-  await page.getByRole("button", { name: "评论", exact: true }).last().click();
-  await page.getByPlaceholder("新增评论...", { exact: true }).fill("Real paper comment");
-  await page.getByPlaceholder("新增评论...", { exact: true }).press("Enter");
-  await expect.poll(async () => (await nativeAnnotations()).find((item) => item.id === id)?.contents).toBe("Real paper comment");
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "笔记", exact: true })).toHaveAttribute("aria-selected", "true");
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await expectPdfRendered();
-  await expect.poll(async () => (await nativeAnnotations()).find((item) => item.id === id)?.contents).toBe("Real paper comment");
-  await expect(page.locator(".annotation-actions")).toHaveCount(0);
-  await page.screenshot({ path: "test-results/native-real-paper-desktop.png" });
-  await page.getByRole("button", { name: "收起 Agent", exact: true }).click();
-  await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
-  await page.setViewportSize({ width: 560, height: 780 });
-  await expect(page.getByRole("button", { name: "文档引用使用位置", exact: true })).toBeVisible();
-  await expectPdfRendered();
-  await page.screenshot({ path: "test-results/native-real-paper-narrow.png" });
-});
-
-test("原生批注跨页选字产生逐页链接，下划线、重叠、评论编辑和删除保留明确身份", async () => {
-  test.setTimeout(120_000);
-  const stream = "BT /F1 14 Tf 50 190 Td (First line annotation evidence.) Tj 0 -25 Td (Second line spans native annotations.) Tj ET";
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 250] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 250] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-  ];
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-  objects.forEach((object, index) => { offsets.push(Buffer.byteLength(pdf)); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
-  const xref = Buffer.byteLength(pdf);
-  pdf += `xref\n0 7\n0000000000 65535 f \n${offsets.slice(1).map((offset) => String(offset).padStart(10, "0") + " 00000 n \n").join("")}trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
-  const source = path.join(sandbox, "cross-page.pdf");
-  await fs.writeFile(source, pdf);
-  await create(source, path.join(sandbox, "projects"));
-  await expectPdfRendered();
-  await expectPdfRendered();
-  await setPdfZoom("100");
-  await page.getByRole("button", { name: "批注", exact: true }).click();
-  const images = pdfViewport().locator('img[style*="pointer-events: none"]');
-  await expect(images).toHaveCount(2);
-  await expect.poll(async () => Math.round((await images.nth(0).boundingBox())!.width)).toBe(600);
-  const first = await images.nth(0).boundingBox();
-  const second = await images.nth(1).boundingBox();
-  await page.getByRole("button", { name: "下划线", exact: true }).first().click();
-  await page.mouse.move(first!.x + 60, first!.y + 55);
-  await page.mouse.down(); await page.mouse.move(first!.x + 200, first!.y + 55, { steps: 10 }); await page.mouse.up();
-  await expect.poll(async () => (await nativeAnnotations()).length).toBe(1);
-  const underline = (await nativeAnnotations())[0];
-  await page.mouse.click(first!.x + 500, first!.y + 200);
-  await page.getByRole("button", { name: "高亮", exact: true }).first().click();
-  await page.mouse.move(first!.x + 60, first!.y + 80);
-  await page.mouse.down();
-  await page.mouse.move(second!.x + 220, second!.y + 80, { steps: 30 });
-  await page.mouse.up();
-  await expect.poll(async () => (await nativeAnnotations()).length).toBe(3);
-  const annotations = (await nativeAnnotations()).filter((item) => item.id !== underline.id);
-  expect(annotations.map((a) => a.pageIndex)).toEqual([0, 1]);
-  // The SDK's public multi-selection keeps both per-page IDs, without inventing a shared one.
-  await page.locator("embedpdf-container").evaluate(async (element, ids) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading").setSelection(ids);
-  }, annotations.map((a) => a.id));
-  await page.getByRole("button", { name: "复制批注链接", exact: true }).first().click();
-  await expect(page.getByRole("status")).toContainText("已复制 2 个批注链接");
-  const links = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  expect(links.split("\n")).toHaveLength(2);
-  expect(links).toContain("PDF 第 1 页批注"); expect(links).toContain("PDF 第 2 页批注");
-  await page.locator("embedpdf-container").evaluate(async (element, target) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    const api = registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading");
-    api.selectAnnotation(target.pageIndex, target.id);
-    api.updateAnnotation(target.pageIndex, target.id, { contents: "A durable comment", strokeColor: "#ff0000" });
-  }, annotations[0]);
-  await page.locator("embedpdf-container").evaluate(async (element, target) => {
-    const registry = await (element as EmbedPdfContainer).registry;
-    registry.getPlugin<AnnotationPlugin>("annotation")!.provides().forDocument("reading")
-      .updateAnnotation(0, target.id, { rect: { ...target.rect, origin: { ...target.rect.origin, y: target.rect.origin.y + 25 } },
-        segmentRects: (target as { segmentRects: typeof target.rect[] }).segmentRects.map((rect) => ({ ...rect, origin: { ...rect.origin, y: rect.origin.y + 25 } })) });
-  }, underline);
-  const root = path.join(sandbox, "projects/研究工程");
-  await fs.writeFile(path.join(root, "notes/跨页.md"), links.replaceAll("text/paper.pdf", "../text/paper.pdf"));
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await page.getByRole("button", { name: "跨页.md", exact: true }).click();
-  await page.locator('.markdown-preview a[href*="#annotation="]').nth(0).click();
-  await expect(pdfPage()).toHaveValue("1");
-  await expectAnnotationSelected();
-  expect((await nativeAnnotations()).find((a) => a.id === annotations[0].id)?.contents).toBe("A durable comment");
-  expect((await nativeAnnotations()).find((a) => a.id === annotations[0].id)).toMatchObject({ strokeColor: "#ff0000" });
-  await page.getByRole("button", { name: "删除选中的批注", exact: true }).click();
-  await page.getByRole("button", { name: "批注", exact: true }).click();
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect.poll(async () => (await nativeAnnotations()).map((item) => item.id)).toContain(annotations[0].id);
-  await page.getByRole("button", { name: "恢复", exact: true }).click();
-  await expect.poll(async () => (await nativeAnnotations()).map((item) => item.id)).not.toContain(annotations[0].id);
-  await page.getByRole("tab", { name: "跨页.md", exact: true }).click();
-  await page.locator('.markdown-preview a[href*="#annotation="]').nth(0).click();
-  await expect(page.getByRole("status")).toContainText("找不到目标批注");
-  await page.getByRole("tab", { name: "跨页.md", exact: true }).click();
-  await page.locator('.markdown-preview a[href*="#annotation="]').nth(1).click();
-  // Both short pages fit in the viewport; assert the actual selected page-2 annotation.
-  await expectAnnotationSelected(annotations[1].id);
-  await page.screenshot({ path: "test-results/native-annotation-cross-page.png" });
-});
-
-test("文字多行引用保留原句与多个区域，整页引用不伪装精确高亮", async () => {
-  const file = path.join(sandbox, "text-selection.pdf");
-  // Independently authored page geometry: two 14pt text lines, baselines y=100/130 from top.
-  const content = "BT /F1 14 Tf 50 700 Td (Citation alpha [one] \\(two\\).) Tj 0 -30 Td (Second line evidence.) Tj ET";
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
-  ];
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-  objects.forEach((object, i) => { offsets.push(Buffer.byteLength(pdf)); pdf += `${i + 1} 0 obj\n${object}\nendobj\n`; });
-  const xref = Buffer.byteLength(pdf);
-  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((n) => String(n).padStart(10, "0") + " 00000 n \n").join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
-  await fs.writeFile(file, pdf);
-  await create(file, path.join(sandbox, "projects"));
-  await expectPdfRendered();
-  await setPdfZoom("100");
-  await page.getByRole("button", { name: "光标模式", exact: true }).click();
-  const image = await pdfImage().boundingBox();
-  await page.mouse.move(image!.x + 50, image!.y + 95);
-  await page.mouse.down();
-  await page.mouse.move(image!.x + 190, image!.y + 125, { steps: 15 });
-  await page.mouse.up();
-  await page.screenshot({ path: "test-results/citation-text-selection.png" });
-  await page.mouse.click(image!.x + 90, image!.y + 95, { button: "right" });
-  await page.getByRole("menuitem", { name: "复制引用链接", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("已复制引用链接");
-  const markdown = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  expect(markdown).toMatch(/^\[Citation alpha \\\[one\\\] \\\(two…\]\(paper:\/\/cite\/[a-f0-9]{32}\)$/);
-  const root = path.join(sandbox, "projects/研究工程");
-  const dictionary = JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8"));
-  const citation: any = Object.values(dictionary.citations)[0];
-  expect(citation.kind).toBe("text");
-  expect(citation.pages[0].rects.length).toBeGreaterThanOrEqual(2);
-  expect(citation.text).toContain("Second line evidence.");
-  await page.getByRole("button", { name: "引用", exact: true }).click();
-  await page.getByRole("button", { name: "整页引用", exact: true }).click();
-  await page.getByRole("button", { name: "复制引用链接", exact: true }).click();
-  await expect.poll(() => desktop.evaluate(({ clipboard }) => clipboard.readText())).not.toBe(markdown);
-  const pageLink = await desktop.evaluate(({ clipboard }) => clipboard.readText());
-  await fs.writeFile(path.join(root, "notes/原句.md"), markdown + "\n\n" + pageLink);
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await page.getByRole("button", { name: "原句.md", exact: true }).click();
-  await expect(page.getByRole("link", { name: "Citation alpha [one] (two…", exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "PDF 第 1 页", exact: true }).click();
-  await expectPdfRendered();
-  await expect(page.locator('[data-citation-page]')).toHaveCount(0);
-});
-
-test("引用字典并发新增、跨页区域、搬迁改名与明确失效", async () => {
-  const parent = path.join(sandbox, "projects");
-  await create(fixture, parent);
-  let root = path.join(parent, "研究工程");
-  const manifest = await readManifest(root);
-  const input = { sha256: manifest.paper.sha256, kind: "text" as const, text: "中文 [括号] (测试) *内容*",
-    pages: [1, 2].map((p) => ({ page: p, width: 612, height: 792, rects: [
-      { origin: { x: 50, y: 60 }, size: { width: 180, height: 12 } },
-      { origin: { x: 50, y: 80 }, size: { width: 95, height: 12 } },
-    ] })) };
-  const created = await page.evaluate(async ({ root, input }) => Promise.all(Array.from({ length: 12 }, (_, i) =>
-    window.desktop.invoke<any>({ type: "createCitation", root, path: "text/paper.pdf", input: { ...input, text: input.text + Math.floor(i / 2) } }))), { root, input });
-  expect(new Set(created.map((c) => c.id)).size).toBe(6);
-  expect(created[0].id).toBe(created[1].id);
-  const dictionaryPath = () => path.join(root, ".paper30min-citations.json");
-  expect(Object.keys(JSON.parse(await fs.readFile(dictionaryPath(), "utf8")).citations)).toHaveLength(6);
-  const reuse = await page.evaluate(async ({ root, input }) => {
-    const create = (value: typeof input | { sha256: string; kind: "region" | "page"; text: string; pages: typeof input.pages }) =>
-      window.desktop.invoke<any>({ type: "createCitation", root, path: "text/paper.pdf", input: value });
-    const region = { ...input, kind: "region" as const, text: "", pages: [input.pages[0]] };
-    const first = await create(region);
-    const repeated = await create(region);
-    const adjusted = structuredClone(region);
-    adjusted.pages[0].rects[0].origin.x += 0.001;
-    const different = await create(adjusted);
-    const wholePage = { ...region, kind: "page" as const, pages: [{ ...input.pages[0], rects: [] }] };
-    const whole = await create(wholePage);
-    const wholeRepeated = await create(wholePage);
-    const otherPage = await create({ ...wholePage, pages: [{ ...wholePage.pages[0], page: 2 }] });
-    return { first, repeated, different, whole, wholeRepeated, otherPage };
-  }, { root, input });
-  expect(reuse.first.id).toBe(reuse.repeated.id);
-  expect(reuse.different.id).not.toBe(reuse.first.id);
-  expect(reuse.whole.id).toBe(reuse.wholeRepeated.id);
-  expect(reuse.otherPage.id).not.toBe(reuse.whole.id);
-  const original = await fs.readFile(dictionaryPath(), "utf8");
-  expect(Object.keys(JSON.parse(original).citations)).toHaveLength(10);
-  const link = `paper://cite/${created[0].id}`;
-  const resolve = () => page.evaluate(({ root, link }) => window.desktop.invoke<any>({ type: "resolveCitation", root, link }), { root, link });
-  expect((await resolve()).citation.pages).toEqual(input.pages);
-  await page.evaluate(({ root }) => window.desktop.invoke({ type: "move", root, path: "text/paper.pdf", destination: "text/改名.pdf" }), { root });
-  expect((await resolve()).path).toBe("text/改名.pdf");
-  await fs.rename(path.join(root, "text/改名.pdf"), path.join(root, "text/外部移动.pdf"));
-  await expect(resolve()).rejects.toThrow("缺失");
-  await page.evaluate(({ root, id }) => window.desktop.invoke({ type: "relink", root, id, source: root + "/text/外部移动.pdf" }), { root, id: manifest.paper.id });
-  expect((await resolve()).path).toBe("text/外部移动.pdf");
-  await desktop.close();
-  const moved = path.join(parent, "已搬迁");
-  await fs.rename(root, moved);
-  root = moved;
-  // A crashed staging write is not a published dictionary.
-  await fs.writeFile(path.join(root, ".paper30min-interrupted.tmp"), "{broken");
-  await launch();
-  expect((await resolve()).citation.id).toBe(created[0].id);
-  const repeatAfterRestart = () => page.evaluate(({ root, input }) =>
-    window.desktop.invoke<any>({ type: "createCitation", root, path: "text/外部移动.pdf", input: { ...input, text: input.text + "0" } }), { root, input });
-  expect((await repeatAfterRestart()).id).toBe(created[0].id);
-  expect(await fs.readFile(dictionaryPath(), "utf8")).toBe(original);
-  await fs.appendFile(path.join(root, "text/外部移动.pdf"), "\nchanged");
-  await expect(repeatAfterRestart()).rejects.toThrow("替换");
-  expect((await resolve()).citation.id).toBe(created[0].id);
-  await expect(page.evaluate(({ root }) => window.desktop.invoke({ type: "resolveCitation", root, link: "paper://cite/" + "0".repeat(32) }), { root })).rejects.toThrow("找不到此引用");
-  expect(await fs.readFile(dictionaryPath(), "utf8")).toBe(original);
-  await fs.writeFile(dictionaryPath(), "{broken");
-  await expect(page.evaluate(({ root, input }) => window.desktop.invoke({ type: "createCitation", root, path: "text/外部移动.pdf", input }), { root, input })).rejects.toThrow();
-  expect(await fs.readFile(dictionaryPath(), "utf8")).toBe("{broken");
-});
-
-test("PDF 无痕引用侧边反查、临时定位、外部更新与重开", async () => {
-  const parent = path.join(sandbox, "projects");
-  await create(fixture, parent);
-  const root = path.join(parent, "研究工程");
-  await expectPdfRendered();
-  const manifest = await readManifest(root);
-  const pdfBefore = await fs.readFile(path.join(root, "text/paper.pdf"));
-  const input = { sha256: manifest.paper.sha256, kind: "text" as const, text: "两行跨页证据",
-    pages: [1, 2].map((page) => ({ page, width: 612, height: 792, rects: [
-      { origin: { x: 50, y: 160 }, size: { width: 180, height: 12 } },
-      { origin: { x: 50, y: 180 }, size: { width: 100, height: 12 } },
-    ] })) };
-  const citations = await page.evaluate(async ({ root, input }) => {
-    const make = (value: typeof input | { sha256: string; kind: "page" | "region"; text: string; pages: typeof input.pages }) =>
-      window.desktop.invoke<any>({ type: "createCitation", root, path: "text/paper.pdf", input: value });
-    return [await make(input), await make({ ...input, kind: "region", text: "", pages: [input.pages[0]] }),
-      await make({ ...input, kind: "page", text: "", pages: [{ ...input.pages[0], rects: [] }] })];
-  }, { root, input });
-  const [textCitation, regionCitation, unused] = citations;
-  const link = `paper://cite/${textCitation.id}`;
-  const regionLink = `paper://cite/${regionCitation.id}`;
-  const unusedLink = `paper://cite/${unused.id}`;
-  const uses = () => page.evaluate(({ root }) => window.desktop.invoke<{ citations: any[] }>({ type: "pdfUses", root, path: "text/paper.pdf" }).then((result) => result.citations), { root });
-  await fs.mkdir(path.join(root, ".pi/sessions"), { recursive: true });
-  await fs.writeFile(path.join(root, ".pi/sessions/chat.jsonl"), JSON.stringify({ role: "user", content: unusedLink }));
-  await fs.writeFile(path.join(root, "text/parsed.md"), Array(100).fill(`[解析预建](${unusedLink})`).join("\n"));
-  await fs.writeFile(path.join(root, "notes/示例.md"), `代码 \`[不是使用](${unusedLink})\`\n\n\`\`\`md\n[也不是](${unusedLink})\n\`\`\`\n`);
-  expect(await uses()).toEqual([]);
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
-  const noteA = `# 第一篇\n\n${"填充段落。\n\n".repeat(35)}第一处 [证据](${link})\n\n第二处 [证据](${link})\n`;
-  await fs.writeFile(path.join(root, "notes/甲.md"), noteA);
-  await fs.writeFile(path.join(root, "notes/乙.md"), `# 第二篇\n\n[证据](${link}) 和 [重叠区域](${regionLink})\n`);
-  await expect.poll(async () => (await uses()).map((item) => item.uses.length).sort()).toEqual([1, 3]);
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  const list = page.getByRole("complementary", { name: "文档引用使用位置" });
-  const useButtons = list.locator("section > button:not(.citation-source)");
-  await expect(useButtons).toHaveCount(4);
-  await expect(list).toContainText("第一篇");
-  await expect(list).toContainText("第二篇");
-  await expect(page.locator("[data-document-citation], [data-citation-uses-page]")).toHaveCount(0);
-  await list.getByRole("button", { name: /文字引用/ }).click();
-  await expect(page.locator("[data-citation-page]")).toHaveCount(4);
-  await page.keyboard.press("Escape");
-  await pdfViewport().click({ position: { x: 40, y: 300 } });
-  await expect(page.locator("[data-citation-page]")).toHaveCount(4);
-  await expect(page.locator(".citation-return, .annotation-actions")).toHaveCount(0);
-  await expect(page.getByRole("status").filter({ hasText: "已定位" })).toHaveCount(0);
-  await page.screenshot({ path: "test-results/citation-uses.png" });
-  const position = await pdfViewport().evaluate((e) => e.scrollTop);
-  await list.getByRole("button").filter({ hasText: "第二处" }).click();
-  await expect(page.locator(".citation-use-target")).toHaveAttribute("data-citation-use", `${textCitation.id}:1`);
-  await expect(page.locator(".citation-use-target")).toBeInViewport();
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
-  await expectPdfRendered();
-  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeCloseTo(position, 0);
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  await fs.copyFile(path.join(root, "notes/甲.md"), path.join(root, "notes/复制.md"));
-  await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(6);
-  await fs.unlink(path.join(root, "notes/复制.md"));
-  await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(4);
-  await list.getByRole("button").filter({ hasText: "第二处" }).click();
-  await page.getByRole("tab", { name: "paper.pdf" }).click();
-  await jumpPdfPage(2);
-  await page.getByRole("tab", { name: "甲.md", exact: true }).click();
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await expectPdfRendered();
-  await expect(pdfPage()).toHaveValue("2");
-  await expect(page.locator("[data-citation-page]")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "文档引用使用位置", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(4);
-  await fs.rename(path.join(root, "notes/甲.md"), path.join(root, "map/移动.md"));
-  await expect(list).toContainText("map/移动.md");
-  await fs.writeFile(path.join(root, "notes/乙.md"), "# 第二篇\n\n删除所有引用\n");
-  await expect(list.locator("section > button:not(.citation-source)")).toHaveCount(2);
-  await desktop.close();
-  await launch();
-  await page.getByRole("button", { name: /研究工程/ }).click();
-  await expectPdfRendered();
-  await expect(page.getByRole("button", { name: "文档引用使用位置", exact: true })).toBeVisible();
-  await fs.writeFile(path.join(root, "map/移动.md"), "# 无引用\n");
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
-  expect(await uses()).toEqual([]);
-  expect(Object.keys(JSON.parse(await fs.readFile(path.join(root, ".paper30min-citations.json"), "utf8")).citations)).toHaveLength(3);
-  expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(pdfBefore);
-});
-
-test("文档反查读取自动保存结果，整页引用与失效字典明确处理", async () => {
-  const parent = path.join(sandbox, "projects");
-  await create(fixture, parent);
-  const root = path.join(parent, "研究工程");
-  const manifest = await readManifest(root);
-  const citation = await page.evaluate(({ root, sha256 }) => window.desktop.invoke<any>({
-    type: "createCitation", root, path: "text/paper.pdf", input: { sha256, kind: "page", text: "",
-      pages: [{ page: 1, width: 612, height: 792, rects: [] }] },
-  }), { root, sha256: manifest.paper.sha256 });
-  const link = `paper://cite/${citation.id}`;
-  await fs.writeFile(path.join(root, "notes/稿.md"), `\uFEFF# 我的文档\r\n\r\n[页证据][ref]\r\n\r\n[ref]: ${link}\r\n`);
-  await page.getByRole("button", { name: "笔记", exact: true }).click();
-  await page.getByRole("button", { name: "稿.md", exact: true }).click();
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
-  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
-  await editor.click();
-  await page.keyboard.press("Control+End");
-  await page.keyboard.type("AUTOSAVED");
-  await expect.poll(() => fs.readFile(path.join(root, "notes/稿.md"), "utf8")).toContain("AUTOSAVED");
-  await page.getByRole("tab", { name: "paper.pdf" }).click();
-  await expectPdfRendered();
-  await expect(page.locator("[data-document-citation]")).toHaveCount(0);
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  const list = page.getByRole("complementary", { name: "文档引用使用位置" });
-  await expect(list).toContainText("整页引用");
-  await list.getByRole("button").filter({ hasText: "我的文档" }).click();
-  await expect(page.locator(".citation-use-target")).toHaveText("页证据");
-  await expect(page.locator(".markdown-preview")).toContainText("AUTOSAVED");
-
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  await list.getByRole("button").filter({ hasText: "我的文档" }).click();
-  await expect(page.locator(".citation-use-target")).toHaveText("页证据");
-  await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
-  await page.getByRole("button", { name: "文档引用使用位置", exact: true }).click();
-  await expect(list.locator("section")).toHaveCount(1);
-  const dictionary = path.join(root, ".paper30min-citations.json");
-  const original = await fs.readFile(dictionary, "utf8");
-  await fs.writeFile(dictionary, "{broken");
-  await expect(page.getByRole("alert")).toContainText("文档引用加载失败");
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
-  await expect(list.locator("section")).toHaveCount(0);
-  await fs.writeFile(dictionary, original);
-  await expect(list.locator("section")).toHaveCount(1);
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
-  await fs.appendFile(path.join(root, "text/paper.pdf"), "\nchanged");
-  await expect(page.getByRole("alert").filter({ hasText: "已重新载入" })).toBeVisible();
-  await expect(list.locator("section")).toHaveCount(1);
-  await expect(page.locator("[data-citation-uses-page]")).toHaveCount(0);
-  await expect(page.getByRole("alert").filter({ hasText: "文档引用加载失败" })).toHaveCount(0);
 });
 
 test("Markdown 三种视图、真实文件保真、图片公式与多标签草稿", async () => {

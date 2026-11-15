@@ -19,7 +19,7 @@ export function createPdfTools(
       name: "read_pdf",
       label: "查看 PDF 图像",
       description:
-        "Visually inspect a complete PDF page in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real full-page PNG, registered path and document ID, PDF version, page number and count, width and height in PDF points, and actual rendering scale. Pages are 1-based. Omit page to inspect page 1. Does not create or return citations or links. No region cropping, PDF text extraction or OCR. Read the parsed manuscript for document text and reuse its existing citation links when available; never invent links, citation IDs or coordinates.",
+        "Visually inspect a complete PDF page in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real full-page PNG, registered path and document ID, PDF version, page number and count, width and height in PDF points, and actual rendering scale. Pages are 1-based. Omit page to inspect page 1. No region cropping, PDF text extraction or OCR. Read the parsed manuscript for document text.",
       parameters: Type.Object({
         path: Type.String({
           description:

@@ -65,7 +65,7 @@ export function ParsingSettingsForm() {
           .finally(() => setBusy(false));
       }}
     >
-      <p className="settings-intro">将 PDF 转为带原文引用的正文，供后续审阅使用。</p>
+      <p className="settings-intro">将 PDF 转为可编辑正文，供后续审阅使用。</p>
       <fieldset className="settings-fields" disabled={busy}>
         <section className="settings-group">
           <div className="settings-group-heading">
@@ -188,7 +188,7 @@ export function ParsingPanel({
     <article className="article parsing-panel">
       <header className="parsing-heading">
         <div><FileSearch className="document-symbol" /><h1>论文解析</h1>
-          <p className="parsing-description">将论文转换为带原文引用的正文，保留图表与公式。</p>
+          <p className="parsing-description">将论文转换为可编辑正文，保留图表与公式。</p>
         </div>
         <button className="borderbtn" onClick={onSettings}>
           <Settings2 /> 解析设置
@@ -385,7 +385,7 @@ export function ParsingPanel({
             </div>
             {deleting === run.batchId && (
               <div className="parsing-confirm" role="dialog" aria-label="删除解析记录">
-                <p>将此批次的正文、图片和任务记录移入回收站。原 PDF 和引用链接保留。</p>
+                <p>将此批次的正文、图片和任务记录移入回收站。原 PDF 与已有成果保留。</p>
                 {run.phase !== "candidate" && run.phase !== "remote-failed" && (
                   <p>删除本机记录不会取消云端任务，也将无法从这里恢复查询。再次解析可能重新计费。</p>
                 )}

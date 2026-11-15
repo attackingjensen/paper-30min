@@ -14,7 +14,7 @@ import {
 import type { Project } from "../src/shared/contracts";
 import { markdownRenderer } from "../src/shared/markdown-references";
 
-test("真实百度片段生成独立批次、多区域引用和离线候选；失败恢复不重复提交", async () => {
+test("真实百度片段生成独立批次、多区域块和离线候选；失败恢复不重复提交", async () => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-parsing-"),
   );
@@ -24,7 +24,6 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
   );
   let submits = 0;
   let downloads = 0;
-  let beforeDownload: (() => Promise<void>) | undefined;
   const rows = (
     await fs.readFile(
       "../legacy/v1/app/src-tauri/tests/fixtures/aistudio/1512.03385.jsonl",
@@ -76,7 +75,6 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
         response.writeHead(503);
         response.end();
       } else {
-        await beforeDownload?.();
         response.end(raw);
       }
     }
@@ -99,22 +97,6 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
       },
     })) as Project;
     const { root } = project;
-    const saveAnnotationVersion = async () => {
-      const source = await projects.dispatch({ type: "readPdf", root, path: project.manifest.paper.path }) as { bytes: Uint8Array; sha256: string };
-      await projects.dispatch({ type: "savePdf", root, path: project.manifest.paper.path, version: source.sha256,
-        bytes: new Uint8Array([...source.bytes, ...Buffer.from("\n% annotation save\n")]) });
-    };
-    let saveBeforeRead = false;
-    const dispatch = projects.dispatch.bind(projects);
-    projects.dispatch = async (command, signal) => {
-      // Place a real save between the parser's manifest snapshot and final PDF read.
-      if (command.type === "readPdf" && saveBeforeRead) {
-        saveBeforeRead = false;
-        await saveAnnotationVersion();
-      }
-      return dispatch(command, signal);
-    };
-    await saveAnnotationVersion();
     const rejected = (await parsing.dispatch(
       { type: "start", root, documentId: project.manifest.paper.id },
       config,
@@ -135,12 +117,6 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     )) as ParsingRun;
     await expect.poll(async () => (await status()).phase).toBe("failed");
     expect((await status()).jobId).toBe("job-1");
-    await saveAnnotationVersion();
-    beforeDownload = async () => {
-      beforeDownload = undefined;
-      await saveAnnotationVersion();
-      saveBeforeRead = true;
-    };
     await parsing.dispatch(
       { type: "resume", root, batchId: run.batchId },
       config,
@@ -148,7 +124,6 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     await expect
       .poll(async () => (await status()).phase, { timeout: 60_000 })
       .toBe("candidate");
-    expect(saveBeforeRead).toBe(false);
     expect(submits).toBe(2);
     const final = await status();
     expect(final.pageCount).toBe(12);
@@ -161,14 +136,8 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     const grouped = mapping.blocks.find(
       (block) => block.vendorIds.includes(7) && block.vendorIds.includes(8),
     );
-    expect(grouped?.citation.pages[0].rects).toHaveLength(2);
-    expect(grouped?.citation.pages[0].rects[0].origin.x).toBeCloseTo(47);
-    expect(
-      mapping.blocks.some(
-        (block) =>
-          block.label === "display_formula" && block.citation.kind === "region",
-      ),
-    ).toBe(true);
+    expect(grouped).toBeTruthy();
+    expect(grouped!.limitation).toContain("OCR 块区域，非逐字精确选区");
     expect(mapping.images.length).toBeGreaterThan(0);
     const markdown = await fs.readFile(
       path.join(root, final.candidate!),
@@ -176,7 +145,7 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
     );
     expect(markdown).not.toContain("块 ID：");
     expect(markdown).not.toContain("图片来源：");
-    expect(markdown).toContain(`[原文](paper://cite/${grouped!.citation.id})`);
+    expect(markdown).not.toContain("paper://cite/");
     expect(final.candidate).toBe(`text/${run.batchId}/paper.md`);
     expect(await fs.readdir(path.join(root, "text", run.batchId))).toEqual(["images", "paper.md"]);
     const snapshot = await projects.dispatch({ type: "refresh", root }) as Project;
@@ -192,24 +161,16 @@ test("真实百度片段生成独立批次、多区域引用和离线候选；�
       expect(markdown).not.toContain(`](${crop})`);
     const paragraphBlock = mapping.blocks.find((block) => block.vendorIds.includes(paragraph.block_id))!;
     expect(paragraphBlock.text).toContain("Second paragraph.");
-    expect(markdown).toContain(`First paragraph. [原文](paper://cite/${paragraphBlock.citation.id})\n\nSecond paragraph. [原文](paper://cite/${paragraphBlock.citation.id})`);
+    expect(markdown).toContain("First paragraph.\n\nSecond paragraph.");
     expect(markdown).toContain("```text\ncode example\n```");
     const rendered = markdownRenderer.render(markdown);
-    expect(rendered).toContain(`<h1>Section title <a href="paper://cite/${paragraphBlock.citation.id}">原文</a></h1>`);
-    expect(rendered).toContain(`</table>\n<p><a href="paper://cite/${paragraphBlock.citation.id}">原文</a></p>`);
+    expect(rendered).toContain("<h1>Section title</h1>");
+    expect(rendered).toContain("</table>");
+    expect(rendered).toContain("After table.");
     expect(rendered.match(/<ol>/g)).toHaveLength(1);
-    expect(rendered).toContain(`<li>\n<p>Second item <a href="paper://cite/${paragraphBlock.citation.id}">原文</a></p>`);
+    expect(rendered).toContain("<li>\n<p>Second item</p>");
     expect(rendered.match(/<blockquote>/g)).toHaveLength(1);
-    const codeBlock = mapping.blocks.find((block) => block.vendorIds.includes(10000))!;
-    expect(rendered).toContain(`<pre><code>indented code\nsecond line\n</code></pre>\n<p><a href="paper://cite/${codeBlock.citation.id}">原文</a></p>`);
-    for (const block of mapping.blocks) {
-      const resolved: any = await projects.dispatch({
-        type: "resolveCitation",
-        root,
-        link: `paper://cite/${block.citation.id}`,
-      });
-      expect(resolved.citation).toEqual(block.citation);
-    }
+    expect(rendered).toContain("<pre><code>indented code\nsecond line\n</code></pre>");
     const validRaw = raw;
     raw = Buffer.from("");
     await parsing.dispatch(
@@ -504,21 +465,18 @@ test("未知提交禁止重付费；关联任务号后可恢复，任一分组�
         await projects.readParsingFile(root, run.batchId, "mapping.json")
       ).toString(),
     );
-    expect(
-      mapping.blocks
-        .filter((block) => block.citation.pages[0].page === 1)
-        .every((block) => block.citation.kind === "page"),
-    ).toBe(true);
+    const pageOf = (block: { id: string }) => Number(/:p(\d+):b/.exec(block.id)![1]);
+    expect(mapping.blocks.filter((block) => pageOf(block) === 1).every((block) => block.limitation.includes("仅页级定位"))).toBe(true);
     expect(
       mapping.blocks.find(
         (block) => block.vendorIds.includes(7) && block.vendorIds.includes(8),
-      )?.citation.kind,
-    ).toBe("page");
+      )?.limitation,
+    ).toContain("仅页级定位");
     const md = (
       await projects.readParsingFile(root, run.batchId, "candidate.md")
     ).toString();
     expect(md).not.toContain("未生成推测区域");
-    expect(md).toContain("[原文](paper://cite/");
+    expect(md).not.toContain("paper://cite/");
     expect(mapping.blocks[0].limitation).toContain("仅页级定位");
     await reopened.close();
   } finally {
@@ -609,14 +567,12 @@ test("旧版其余三份真实 JSONL 与对应 PDF 可生成完整候选，跨�
       );
       expect(
         new Set(
-          mapping.blocks.flatMap((block) =>
-            block.citation.pages.map((page) => page.page),
-          ),
+          mapping.blocks.flatMap((block) => {
+            const page = /:p(\d+):b/.exec(block.id)?.[1];
+            return page ? [Number(page)] : [];
+          }),
         ).size,
       ).toBe(count);
-      expect(
-        mapping.blocks.some((block) => block.citation.kind === "region"),
-      ).toBe(true);
       for (const block of mapping.blocks) {
         expect(ids.has(block.id)).toBe(false);
         ids.add(block.id);
@@ -630,7 +586,7 @@ test("旧版其余三份真实 JSONL 与对应 PDF 可生成完整候选，跨�
   }
 });
 
-test("删除解析兼容旧批次，回收失败可重试且保留其他批次与引用", async () => {
+test("删除解析兼容旧批次，回收失败可重试且保留其他批次", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-delete-parsing-"));
   let failMetadata = true;
   let recycled = 0;
@@ -657,8 +613,6 @@ test("删除解析兼容旧批次，回收失败可重试且保留其他批次�
     await fs.mkdir(legacy, { recursive: true });
     await fs.writeFile(path.join(legacy, "run.json"), JSON.stringify(run(legacyId)));
     await fs.writeFile(path.join(legacy, "candidate.md"), "旧正文");
-    const citation = await projects.dispatch({ type: "createCitation", root, path: project.manifest.paper.path,
-      input: { sha256: project.manifest.paper.sha256, kind: "page", text: "", pages: [{ page: 1, width: 612, height: 792, rects: [] }] } }) as any;
     await expect(parsing.dispatch({ type: "delete", root, batchId: "../paper.pdf" }, config)).rejects.toThrow("不存在");
     await expect(parsing.dispatch({ type: "delete", root, batchId }, config)).rejects.toThrow("回收站暂不可用");
     expect(await parsing.dispatch({ type: "status", root }, config)).toHaveLength(2);
@@ -668,7 +622,6 @@ test("删除解析兼容旧批次，回收失败可重试且保留其他批次�
     expect(await parsing.dispatch({ type: "status", root }, config)).toHaveLength(1);
     await parsing.dispatch({ type: "delete", root, batchId: legacyId }, config);
     expect(await parsing.dispatch({ type: "status", root }, config)).toHaveLength(0);
-    expect((await projects.dispatch({ type: "resolveCitation", root, link: `paper://cite/${citation.id}` }) as any).citation.id).toBe(citation.id);
     expect((await fs.stat(path.join(root, "text/paper.pdf"))).isFile()).toBe(true);
     expect(recycled).toBe(3);
   } finally {

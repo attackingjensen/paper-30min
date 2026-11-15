@@ -1,5 +1,3 @@
-import type { CitationInput } from "./citations.js";
-import type { AnnotationWrite, ReferenceRequest } from "./references.js";
 import type { ParsingCommand } from "./parsing.js";
 import type { ChatAttachment } from "./chat-input.js";
 import type { MappingState } from "./mapping.js";
@@ -126,11 +124,6 @@ export type Command =
   | { type: "createNote"; root: string; name: string }
   | { type: "readAsset"; root: string; path: string }
   | { type: "readPdf"; root: string; path: string }
-  | { type: "savePdf"; root: string; path: string; bytes: Uint8Array; version: string }
-  | { type: "createCitation"; root: string; path: string; input: CitationInput; sourceDocument?: DocumentRecord }
-  | { type: "resolveCitation"; root: string; link: string }
-  | ({ type: "resolveReference"; root: string } & ReferenceRequest)
-  | { type: "pdfUses"; root: string; path: string }
   | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
   | {
       type: "savePdfPosition";
@@ -141,7 +134,6 @@ export type Command =
   | { type: "resolveFile"; root: string; path: string };
 
 export interface Desktop {
-  handleAnnotationWrite(writer: (request: AnnotationWrite, checkActive: () => void) => Promise<{ sha256: string } | null>): () => void;
   parsing<T>(command: ParsingCommand): Promise<T>;
   agent<T>(command: AgentCommand): Promise<T>;
   watchAgent(listener: (state: ChatSession) => void): () => void;
