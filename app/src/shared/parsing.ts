@@ -1,4 +1,3 @@
-import type { Citation } from "./citations.js";
 import type { DocumentRecord } from "./contracts.js";
 
 export const defaultParsingSettings = {
@@ -44,17 +43,12 @@ export interface ParsingRun {
   error?: string;
   busy?: boolean;
   stopping?: boolean;
-  reviewedThroughPage?: number;
-  reviewSessionId?: string;
-  reviewBusy?: boolean;
-  reviewError?: string;
 }
 export interface ParsedBlock {
   id: string;
   label: string;
   text: string; // Original parser excerpt; the editable Markdown remains authoritative.
   vendorIds: number[];
-  citation: Citation;
   images: string[];
   limitation: string;
 }
@@ -82,7 +76,6 @@ export type ParsingCommand =
       clearKey?: boolean;
     }
   | { type: "status"; root: string }
-  | { type: "readiness"; root: string }
   | { type: "verify"; root: string; batchId: string }
   | { type: "delete"; root: string; batchId: string }
   | { type: "start"; root: string; documentId: string }

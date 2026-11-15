@@ -1,15 +1,10 @@
-import type { CitationInput } from "./citations.js";
-import type { AnnotationWrite, ReferenceRequest } from "./references.js";
 import type { ParsingCommand } from "./parsing.js";
 import type { ChatAttachment } from "./chat-input.js";
-import type { MappingState } from "./mapping.js";
 
 export interface DocumentRecord {
   id: string;
   path: string;
   sha256: string;
-  /** Latest annotation-only save descended from the imported PDF. */
-  annotationSha256?: string;
 }
 
 export interface Manifest {
@@ -17,10 +12,6 @@ export interface Manifest {
   id: string;
   name: string;
   paper: DocumentRecord;
-  materials: DocumentRecord[];
-  map: string | null;
-  explanations: string[];
-  translations: Record<string, string>;
 }
 
 export interface ProjectManifest {
@@ -110,33 +101,14 @@ export interface CreateInput {
   makeDefault: boolean;
   operationId: string;
 }
-export interface LegacyPdf {
-  path: string;
-  name: string;
-  error?: string;
-}
-export interface LegacyLibrary {
-  root: string;
-  papers: LegacyPdf[];
-}
-export interface LegacyImportResult {
-  root: string;
-  name: string;
-  existing: boolean;
-}
 export type Command =
   | { type: "preferences" }
   | { type: "setDefault"; folder: string | null }
   | { type: "create"; input: CreateInput }
   | { type: "cancelCreate"; operationId: string }
-  | { type: "scanLegacy"; root: string }
-  | { type: "importLegacy"; root: string; path: string; name: string; operationId: string }
   | { type: "open"; root: string }
   | { type: "refresh"; root: string }
-  | { type: "addMaterial"; root: string; source: string }
   | { type: "move"; root: string; path: string; destination: string }
-  | { type: "relink"; root: string; id: string; source: string }
-  | { type: "trash"; root: string; id: string }
   | { type: "read"; root: string; path: string }
   | { type: "readMarkdown"; root: string; path: string }
   | {
@@ -149,11 +121,6 @@ export type Command =
   | { type: "createNote"; root: string; name: string }
   | { type: "readAsset"; root: string; path: string }
   | { type: "readPdf"; root: string; path: string }
-  | { type: "savePdf"; root: string; path: string; bytes: Uint8Array; version: string }
-  | { type: "createCitation"; root: string; path: string; input: CitationInput; sourceDocument?: DocumentRecord }
-  | { type: "resolveCitation"; root: string; link: string }
-  | ({ type: "resolveReference"; root: string } & ReferenceRequest)
-  | { type: "pdfUses"; root: string; path: string }
   | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
   | {
       type: "savePdfPosition";
@@ -164,12 +131,11 @@ export type Command =
   | { type: "resolveFile"; root: string; path: string };
 
 export interface Desktop {
-  handleAnnotationWrite(writer: (request: AnnotationWrite, checkActive: () => void) => Promise<{ sha256: string } | null>): () => void;
   parsing<T>(command: ParsingCommand): Promise<T>;
   agent<T>(command: AgentCommand): Promise<T>;
   watchAgent(listener: (state: ChatSession) => void): () => void;
   invoke<T>(command: Command): Promise<T>;
-  choose(kind: "pdf" | "folder" | "material" | "legacy"): Promise<string | null>;
+  choose(kind: "pdf" | "folder"): Promise<string | null>;
   watchProject(root: string, listener: (error?: string) => void): () => void;
   openLink(url: string): Promise<void>;
   openFile(root: string, path: string): Promise<void>;
@@ -268,9 +234,7 @@ export interface ChatSession {
   queued: string[];
   error?: string;
   revision: number;
-  reviewBatchId?: string;
   compacting?: boolean;
-  mapping?: MappingState;
 }
 export type AgentCommand =
   | { type: "settings" }
@@ -289,10 +253,7 @@ export type AgentCommand =
   | { type: "selectModel"; modelId: string; thinking?: ThinkingLevel }
   | { type: "list"; root: string }
   | { type: "materials"; root: string }
-  | { type: "mappingPlan"; root: string }
-  | { type: "mapping"; root: string; planId: string }
   | { type: "create"; root: string }
-  | { type: "review"; root: string; batchId: string }
   | { type: "open"; root: string; id: string }
   | { type: "branch"; root: string; id: string; messageId: string }
   | {

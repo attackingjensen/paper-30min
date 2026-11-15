@@ -12,7 +12,6 @@ import {
 import {
   ProjectService,
   type AgentFile,
-  type WriteScope,
 } from "./project-service.js";
 
 export function redact(value: string, secrets: string[]) {
@@ -66,7 +65,6 @@ export function createProjectTools(
   service: ProjectService,
   active: () => boolean,
   secrets: string[],
-  scope: WriteScope = {},
 ): ToolDefinition[] {
   const baselines = new Map<string, AgentFile>();
   const key = (file: string) => path.resolve(file).toLowerCase();
@@ -95,7 +93,6 @@ export function createProjectTools(
       content,
       baseline?.version ?? null,
       signal,
-      scope,
     );
     if (!saved.saved) {
       const error = new Error(

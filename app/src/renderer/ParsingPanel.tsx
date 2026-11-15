@@ -16,7 +16,7 @@ import {
   type ParsingRun,
   type ParsingCommand,
 } from "../shared/parsing";
-import type { Project, ChatSession } from "../shared/contracts";
+import type { Project } from "../shared/contracts";
 import "./parsing.css";
 
 export function ParsingSettingsForm() {
@@ -65,7 +65,7 @@ export function ParsingSettingsForm() {
           .finally(() => setBusy(false));
       }}
     >
-      <p className="settings-intro">将 PDF 转为带原文引用的正文，供后续审阅使用。</p>
+      <p className="settings-intro">将 PDF 转为可编辑正文，供阅读与原页核对使用。</p>
       <fieldset className="settings-fields" disabled={busy}>
         <section className="settings-group">
           <div className="settings-group-heading">
@@ -122,19 +122,17 @@ const phaseNames: Record<ParsingRun["phase"], string> = {
   stopped: "已停止",
   failed: "处理失败",
   "remote-failed": "云端任务失败",
-  candidate: "待 Agent 审阅",
+  candidate: "解析完成",
 };
 
 export function ParsingPanel({
   project,
   onOpen,
   onSettings,
-  onSession,
 }: {
   project: Project;
   onOpen: (path: string) => void;
   onSettings: () => void;
-  onSession: (id: string) => void;
 }) {
   const [runs, setRuns] = useState<ParsingRun[]>([]);
   const [error, setError] = useState("");
@@ -188,7 +186,7 @@ export function ParsingPanel({
     <article className="article parsing-panel">
       <header className="parsing-heading">
         <div><FileSearch className="document-symbol" /><h1>论文解析</h1>
-          <p className="parsing-description">将论文转换为带原文引用的正文，保留图表与公式。</p>
+          <p className="parsing-description">将论文转换为可编辑正文，保留图表与公式。</p>
         </div>
         <button className="borderbtn" onClick={onSettings}>
           <Settings2 /> 解析设置
@@ -203,11 +201,11 @@ export function ParsingPanel({
           value={documentId}
           onChange={(event) => setDocumentId(event.target.value)}
         >
-          {[project.manifest.paper, ...project.manifest.materials]
+          {[project.manifest.paper]
             .filter((record) => /\.pdf$/i.test(record.path))
             .map((record) => (
               <option key={record.id} value={record.id}>
-                {record.id === project.manifest.paper.id ? `${record.path.split("/").at(-1)} · 工程论文` : record.path}
+                {`${record.path.split("/").at(-1)} · 工程论文`}
               </option>
             ))}
         </select>
@@ -262,7 +260,7 @@ export function ParsingPanel({
               <span className={`parsing-phase ${run.phase}`} role="status">
                 {run.stopping
                   ? "正在停止，等待提交回执"
-                  : run.reviewBusy ? "Agent 正在审阅" : run.phase === "candidate" && run.reviewedThroughPage === run.pageCount ? "已完成审阅" : phaseNames[run.phase]}
+                  : phaseNames[run.phase]}
               </span>
             </div>
             <div className="row muted tiny">
@@ -271,7 +269,6 @@ export function ParsingPanel({
                 {run.completedPages} / {run.pageCount || "?"} 页
               </span>
               <span>{Math.round(run.elapsedMs / 1000)} 秒</span>
-              {run.phase === "candidate" && <span>已审阅 {run.reviewedThroughPage ?? 0} / {run.pageCount} 页</span>}
             </div>
             {run.busy && (
               <progress
@@ -288,7 +285,6 @@ export function ParsingPanel({
               </dl>
             </details>
             {run.error && <p className="parsing-error">{run.error}</p>}
-            {run.reviewError && <p className="parsing-error">{run.reviewError}</p>}
             {run.phase === "unknown" && !run.busy && (
               <label className="parsing-job">
                 关联百度任务号
@@ -361,31 +357,15 @@ export function ParsingPanel({
               )}
               <button
                 className="parsing-delete"
-                disabled={busy || run.busy || run.reviewBusy}
+                disabled={busy || run.busy}
                 onClick={() => setDeleting(run.batchId)}
               >
                 <Trash2 /> 删除解析
               </button>
-              {run.phase === "candidate" && (run.reviewBusy || (run.reviewedThroughPage ?? 0) < run.pageCount) && (
-                <button className="borderbtn" disabled={busy}
-                  onClick={() => {
-                    setBusy(true); setError("");
-                    void (run.reviewBusy
-                      ? window.desktop.agent<ChatSession>({ type: "stop", root: project.root, id: run.reviewSessionId! })
-                      : window.desktop.agent<ChatSession>({ type: "review", root: project.root, batchId: run.batchId }))
-                      .then((state) => { if (!run.reviewBusy) onSession(state.id); setRevision((value) => value + 1); })
-                      .catch((error) => setError(error.message))
-                      .finally(() => setBusy(false));
-                  }}>
-                  {run.reviewBusy ? <Square /> : <Play />}
-                  {run.reviewBusy ? "停止审阅" : run.reviewSessionId ? "继续审阅" : "开始审阅"}
-                </button>
-              )}
-              {run.reviewSessionId && <button className="borderbtn" onClick={() => onSession(run.reviewSessionId!)}><FileText /> 查看审阅会话</button>}
             </div>
             {deleting === run.batchId && (
               <div className="parsing-confirm" role="dialog" aria-label="删除解析记录">
-                <p>将此批次的正文、图片和任务记录移入回收站。原 PDF 和引用链接保留。</p>
+                <p>将此批次的正文、图片和任务记录移入回收站。原 PDF 与已有成果保留。</p>
                 {run.phase !== "candidate" && run.phase !== "remote-failed" && (
                   <p>删除本机记录不会取消云端任务，也将无法从这里恢复查询。再次解析可能重新计费。</p>
                 )}

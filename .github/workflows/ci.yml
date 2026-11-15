@@ -39,6 +39,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Dead code check
+        run: npm run test:dead-code
+
       # build 已包含 typecheck；先构建一次，再直接运行 Playwright。
       - name: Typecheck and build
         run: npm run build

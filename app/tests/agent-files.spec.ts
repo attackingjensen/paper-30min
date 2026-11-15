@@ -5,15 +5,13 @@ import os from "node:os";
 import { ProjectService } from "../src/main/project-service";
 import { createProjectTools } from "../src/main/agent-tools";
 
-test("公共工程写入保护基线、取消、所有权与统一出处转换", async () => {
+test("公共工程写入保护基线、取消与所有权", async () => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-tool-files-"),
   );
   const service = new ProjectService(
     path.join(directory, "config.json"),
     async () => {},
-    async (_root, text) =>
-      text.replace("paper30min-source:valid", "paper30min://source/validated"),
   );
   try {
     const project = (await service.dispatch({
@@ -57,19 +55,17 @@ test("公共工程写入保护基线、取消、所有权与统一出处转换",
     await run("edit", {
       path: "notes/note.md",
       edits: [
-        { oldText: "External", newText: "[source](paper30min-source:valid)" },
+        { oldText: "External", newText: "Edited" },
       ],
     });
-    expect(await fs.readFile(file, "utf8")).toBe(
-      "[source](paper30min://source/validated)\r\n",
-    );
+    expect(await fs.readFile(file, "utf8")).toBe("Edited\r\n");
     await run("write", {
       path: "notes/new/note.md",
-      content: "[source](paper30min-source:valid)",
+      content: "New\r\n",
     });
     expect(
       await fs.readFile(path.join(root, "notes/new/note.md"), "utf8"),
-    ).toBe("[source](paper30min://source/validated)");
+    ).toBe("New\r\n");
     const corrected = await run("write", {
       path: "text/parsed.md",
       content: "changed",
@@ -82,28 +78,7 @@ test("公共工程写入保护基线、取消、所有权与统一出处转换",
     await expect(
       service.writeAgentFile(root, file, "late", null, controller.signal),
     ).rejects.toThrow();
-    expect(await fs.readFile(file, "utf8")).toContain("validated");
-    for (const candidateDirectory of ["text/candidates/review", `text/${"a".repeat(32)}`])
-      await expect(
-        service.writeAgentFile(
-          root,
-          path.join(root, candidateDirectory, "paper.md"),
-          "reviewed",
-          null,
-          new AbortController().signal,
-          { candidateDirectory },
-        ),
-      ).resolves.toMatchObject({ saved: true });
-    await expect(
-      service.writeAgentFile(
-        root,
-        path.join(root, "text/paper.pdf"),
-        "bad",
-        null,
-        new AbortController().signal,
-        { candidateDirectory: "text/candidates/review" },
-      ),
-    ).rejects.toThrow("候选目录");
+    expect(await fs.readFile(file, "utf8")).toContain("Edited");
     await fs.symlink(
       path.join(root, "text"),
       path.join(root, "notes/link"),
