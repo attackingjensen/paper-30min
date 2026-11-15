@@ -12,7 +12,7 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import { PNG } from "pngjs";
 import type { ParsingRun, ParsingMapping } from "../src/shared/parsing";
-import type { AgentSettings, ChatSession, PdfSource } from "../src/shared/contracts";
+import type { AgentSettings, ChatSession } from "../src/shared/contracts";
 import { seedParsing, seedBlockParsing } from "./review-fixture";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -2216,41 +2216,19 @@ test("Pi 普通对话可写入文件和运行 Shell", async () => {
   }
 });
 
-test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件会话重开", async () => {
+test("STE-99 可编辑记忆 Skill 调用与文件会话重开", async () => {
   const requests: any[] = [];
   let root: string;
   let manuscript: string;
   let link: string;
-  let mode: "map" | "card" | "chat" | "pause" = "map";
+  let mode: "card" | "chat" = "chat";
   let step = 0;
   const server = createServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += chunk;
     const payload = JSON.parse(body); requests.push(payload);
-    if (mode === "pause") {
-      response.writeHead(200, { "Content-Type": "text/event-stream" });
-      response.write(`data: ${JSON.stringify({ id: "paused", choices: [{ index: 0, delta: { content: "正在准备建图" }, finish_reason: null }] })}\n\n`);
-      return;
-    }
-    const text = JSON.stringify(payload.messages.filter((message: any) => message.role === "user"));
-    const directory = /tmp\/mapping-[a-f0-9]{32}/.exec(text)?.[0];
     let calls: { name: string; args: unknown }[] = [];
     if (mode !== "chat" && step === 0) calls = [{ name: "read", args: { path: manuscript } }];
-    if (mode === "map" && step === 0 && directory) {
-      const explanations = await fs.readdir(path.join(root, directory, "explanations")).catch(() => []);
-      for (const file of ["map.md", ...explanations.map(file => `explanations/${file}`), "result.json"]) {
-        if (await fs.stat(path.join(root, directory, file)).catch(() => null))
-          calls.push({ name: "read", args: { path: `${directory}/${file}` } });
-      }
-    }
-    if (mode === "map" && step === 1) {
-      const explanations = [...Array.from({ length: 12 }, (_, index) => `explanations/${index + 1}.md`), "explanations/附录.md"];
-      calls = [
-        { name: "write", args: { path: `${directory}/map.md`, content: `# 阅读地图\n\n方法与[证据](${link})。` } },
-        ...explanations.map((file, index) => ({ name: "write", args: { path: `${directory}/${file}`, content: `# ${index === 12 ? "附录" : `第${index + 1}节`}\n\n论点、方法与[证据](${link})。` } })),
-        { name: "write", args: { path: `${directory}/result.json`, content: JSON.stringify({ map: "map.md", explanations }) } },
-      ];
-    }
     if (mode === "card" && step === 1) calls = [{ name: "write", args: {
       path: "memories/注意力机制.md", content: `# 注意力机制\n\n论文事实：该方法使用注意力。[原文](${link})\n\n讨论理解：值得关注信息之间的关联。\n\n待核实：扩展到其他任务的条件。`,
     } }];
@@ -2267,10 +2245,6 @@ test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件
   try {
     await create(fixture, path.join(sandbox, "projects"), "研究成果");
     root = path.join(sandbox, "projects/研究成果");
-    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
-    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
-    await expect(page.locator(".mapping-panel")).toContainText("请先");
-    await expect(page.locator(".mapping-panel").getByRole("button", { name: "论文解析", exact: true })).toBeVisible();
     const seeded = await seedBlockParsing(root); manuscript = seeded.run.candidate!; link = seeded.link;
     await page.evaluate(async base => {
       const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
@@ -2278,37 +2252,6 @@ test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件
         services: [{ id: "research", name: "受控模型", api: "openai-completions", baseUrl: base, hasKey: false }],
         models: [{ id: "research", serviceId: "research", name: "受控模型", model: "fixture", contextWindow: 32000, maxTokens: 4096, thinking: "off", availableThinking: ["off"] }], selectedModelId: "research" }, apiKeys: { research: "test-key" } });
     }, `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
-    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
-    await expect(page.getByRole("dialog", { name: "生成地图与精解" })).toBeVisible();
-    await page.getByRole("button", { name: "开始建图", exact: true }).click();
-    await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
-    await expect(page.getByRole("button", { name: "从此消息分支", exact: true })).toHaveCount(0);
-    const manifest = await readManifest(root);
-    expect(manifest.explanations.map((file: string) => path.posix.basename(file))).toEqual(["1.md", "2.md", "3.md", "4.md", "5.md", "6.md", "7.md", "8.md", "9.md", "10.md", "11.md", "12.md", "附录.md"]);
-    await expect(page.locator(".document-row")).toHaveCount(1);
-    await page.getByRole("button", { name: "论文精解", exact: true }).click();
-    await expect(page.locator(".document-row")).toHaveCount(13);
-    await page.getByRole("button", { name: "10.md", exact: true }).click();
-    await expect(page.locator(".markdown-preview")).toContainText("第10节");
-    await page.screenshot({ path: "test-results/ste84-mapping.png" });
-    expect(await fs.readdir(path.join(root, "memories"))).toEqual([]);
-    const continuedManifest = manifest;
-    mode = "pause";
-    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
-    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
-    await expect(page.getByRole("dialog").locator("li")).toHaveCount(14);
-    await page.getByRole("button", { name: "确认替换并生成", exact: true }).click();
-    await expect(page.getByRole("button", { name: "停止建图", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "停止建图", exact: true }).click();
-    await expect(page.getByRole("button", { name: "继续建图", exact: true })).toBeVisible();
-    expect(await readManifest(root)).toEqual(continuedManifest);
-    await desktop.close(); await launch(); await choose(root);
-    await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
-    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
-    await expect(page.getByRole("button", { name: "继续建图", exact: true })).toBeVisible();
-    mode = "map"; step = 0;
-    await page.getByRole("button", { name: "继续建图", exact: true }).click();
-    await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await page.getByRole("button", { name: "产品 Skill", exact: true }).click();
     await page.getByLabel("产品 Skill", { exact: true }).selectOption("memory-card.md");
@@ -2322,7 +2265,6 @@ test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件
     await page.getByRole("button", { name: "保存提示词", exact: true }).click();
     await expect(page.getByRole("status")).toHaveText("已保存");
     await page.getByRole("button", { name: "返回工作台", exact: true }).click();
-    mode = "chat"; step = 0;
     await page.getByRole("button", { name: "新会话", exact: true }).click();
     await page.getByLabel("Agent 消息").fill("这段方法的适用条件是什么？只讨论。");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
@@ -2358,99 +2300,6 @@ test("STE-84/99 建图入口发布导航、可编辑记忆 Skill 调用与文件
     await expect(page.locator(".markdown-preview")).toContainText("讨论理解");
     await page.screenshot({ path: "test-results/ste99-memory-card.png" });
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
-});
-
-test("STE-84 真实模型从论文全文生成地图和逐节精解", async () => {
-  test.setTimeout(1800000);
-  test.skip(process.env.PAPER30MIN_REAL_MODEL !== "1" || !process.env.PAPER30MIN_REAL_PROFILE, "需真实模型隔离配置，关闭 trace。");
-  await desktop.close();
-  for (const file of ["agent-settings.json", "Local State"])
-    await fs.copyFile(path.join(process.env.PAPER30MIN_REAL_PROFILE!, file), path.join(sandbox, "profile", file));
-  await launch();
-  await page.evaluate(async modelName => {
-    const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
-    const selected = settings.models.find(model => model.id === settings.selectedModelId)!;
-    if (modelName) selected.model = modelName;
-    selected.maxTokens = Math.max(selected.maxTokens, 16384);
-    await window.desktop.agent({ type: "saveSettings", settings });
-  }, process.env.PAPER30MIN_REAL_MAPPING_MODEL);
-  const root = path.join(sandbox, "projects/真实建图");
-  if (process.env.PAPER30MIN_REAL_MAPPING_PROJECT) {
-    await fs.cp(process.env.PAPER30MIN_REAL_MAPPING_PROJECT, root, { recursive: true });
-    await choose(root);
-    await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
-  } else {
-    await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf"), path.join(sandbox, "projects"), "真实建图");
-    const run = await seedParsing(root);
-    const { ProjectService } = await import("../src/main/project-service");
-    const { buildCandidate } = await import("../src/main/baidu-candidate");
-    const { createHash } = await import("node:crypto");
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const projects = new ProjectService(path.join(sandbox, "fixture-preferences.json"), async () => {});
-    try {
-      const source = await projects.dispatch({ type: "readPdf", root, path: run.document.path }) as PdfSource;
-      const raw = await fs.readFile("../legacy/v1/app/src-tauri/tests/fixtures/aistudio/1512.03385.jsonl");
-      const candidate = await buildCandidate({ root, run, source, raw, projects, signal: new AbortController().signal,
-        download: async () => { throw new Error("此录制正文无需下载外部图片。"); }, progress: async () => {} });
-      // The recorded OCR fixture is deliberately excerpted. Use complete PDF text for this generation test, not as OCR review evidence.
-      const { stdout } = await promisify(execFile)("pdftotext", ["-enc", "UTF-8", path.join(root, run.document.path), "-"], { maxBuffer: 4 * 1024 * 1024 });
-      const pages = stdout.split("\f");
-      if (!pages.at(-1)?.trim()) pages.pop();
-      expect(pages).toHaveLength(run.pageCount);
-      const blocks: ParsingMapping["blocks"] = [];
-      const manuscript: string[] = ["# Deep Residual Learning for Image Recognition"];
-      for (const [index, text] of pages.entries()) {
-        const page = index + 1;
-        blocks.push({ id: `${run.batchId}:p${page}:b0`, vendorIds: [], label: "text", text, images: [], limitation: "整页文本转录" });
-        manuscript.push(`## 原文第 ${page} 页\n\n${text.trim()}`);
-      }
-      candidate.mapping.blocks = blocks;
-      candidate.markdown = manuscript.join("\n\n");
-      const mapping = Buffer.from(JSON.stringify(candidate.mapping));
-      run.mappingSha256 = createHash("sha256").update(mapping).digest("hex");
-      run.markdownSha256 = createHash("sha256").update(candidate.markdown).digest("hex");
-      await fs.writeFile(path.join(root, run.candidate!), candidate.markdown);
-      await fs.writeFile(path.join(root, ".paper30min/parsing", run.batchId, "mapping.json"), mapping);
-      await fs.writeFile(path.join(root, ".paper30min/parsing", run.batchId, "run.json"), JSON.stringify(run));
-    } finally { await projects.close(); }
-  }
-  await page.getByRole("button", { name: "阅读地图", exact: true }).click();
-  const sessions = await page.evaluate(root => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
-  if (sessions[0]?.mapping?.status === "pending") {
-    await page.getByRole("button", { name: "继续建图", exact: true }).click();
-  } else {
-    await page.getByRole("button", { name: "生成地图与精解", exact: true }).click();
-    await page.getByRole("button", { name: "开始建图", exact: true }).click();
-  }
-  await expect(page.getByRole("button", { name: "停止建图", exact: true })).toBeVisible();
-  try {
-    await expect(page.getByRole("button", { name: "停止建图", exact: true })).toHaveCount(0, { timeout: 1680000 });
-  } finally {
-    // Preserve expensive real-model work for inspection or continuation even on timeout.
-    await fs.cp(root, path.join("test-results/real-model", `ste84-project-${path.basename(sandbox)}`), { recursive: true });
-  }
-  const states = await page.evaluate(root => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
-  const manifest = await readManifest(root);
-  const documents = await Promise.all([...(manifest.map ? [manifest.map] : []), ...manifest.explanations].map(async file => ({
-    path: file, content: await fs.readFile(path.join(root, file), "utf8"),
-  })));
-  await fs.writeFile("test-results/real-model/ste84-evidence.json", JSON.stringify({ states, manifest, documents }, null, 2));
-  await expect(page.locator(".mapping-panel")).toContainText("建图已完成");
-  expect(manifest.explanations.length).toBeGreaterThanOrEqual(5);
-  const { markdownRenderer } = await import("../src/shared/markdown-references");
-  const mapDocument = documents.find(document => document.path === manifest.map)!;
-  const navigation = markdownRenderer.parse(mapDocument.content, {}).flatMap(block => block.children ?? [])
-    .filter(token => token.type === "link_open").map(token => String(token.attrGet("href") ?? ""))
-    .filter(href => !/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith("#") && !href.startsWith("//"))
-    .map(href => ({ href, path: decodeURIComponent(new URL(href, `https://project.local/${mapDocument.path}`).pathname.slice(1)) }));
-  expect(navigation.map(item => item.path)).toEqual(expect.arrayContaining(manifest.explanations));
-  for (const item of navigation) expect((await fs.stat(path.join(root, item.path))).isFile()).toBe(true);
-  await page.getByRole("button", { name: "阅读地图.md", exact: true }).click();
-  const firstLink = navigation.find(item => item.path === manifest.explanations[0])!;
-  await page.locator(`.markdown-preview a[href=${JSON.stringify(firstLink.href)}]`).first().click();
-  await expect(page.getByRole("tab", { name: path.posix.basename(manifest.explanations[0]), exact: true })).toHaveAttribute("aria-selected", "true");
-  await page.screenshot({ path: "test-results/real-model/ste84-map.png" });
 });
 
 test("STE-99 真实模型按需整理指定原文与讨论为记忆卡片", async () => {
@@ -3274,8 +3123,6 @@ test("从真实创建入口保存默认位置、复制 PDF，重启与搬迁后�
   await expect.poll(async () => (await fs.readdir(root)).sort()).toEqual([
     ".paper30min-reading.json",
     ".pi",
-    "explanations",
-    "map",
     "memories",
     "notes",
     "paper30min.json",
@@ -3352,7 +3199,7 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
           ).pdf["text/paper.pdf"]?.y,
       )
       .toBe(offset);
-    await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+    await page.getByRole("button", { name: "笔记", exact: true }).click();
     await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
     await expect
       .poll(() => pdfViewport().evaluate((e) => e.scrollTop))
@@ -3408,7 +3255,7 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
         ).pdf["text/paper.pdf"]?.zoom,
     )
     .toBe(1.5);
-  await page.getByRole("button", { name: "阅读地图", exact: true }).click();
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
   await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
   await expect(pdfPage()).toHaveValue("2");
   await expect(pdfZoom()).toHaveValue("150");
@@ -3672,7 +3519,7 @@ test("旧 PDF 批量导入只复制原文，保留冲突目录并在重开后幂
   for (const root of [first, path.join(parent, "第二篇")]) {
     expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(original);
     expect(await fs.readdir(path.join(root, "text"))).toEqual(["paper.pdf"]);
-    for (const folder of ["notes", "map", "explanations", ".pi/sessions"])
+    for (const folder of ["notes", ".pi/sessions"])
       expect(await fs.readdir(path.join(root, folder))).toEqual([]);
     expect(await readManifest(root)).toMatchObject({ map: null, materials: [], explanations: [], translations: {} });
   }

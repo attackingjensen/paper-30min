@@ -79,27 +79,6 @@ test("公共工程写入保护基线、取消与所有权", async () => {
       service.writeAgentFile(root, file, "late", null, controller.signal),
     ).rejects.toThrow();
     expect(await fs.readFile(file, "utf8")).toContain("Edited");
-    for (const candidateDirectory of ["text/candidates/review", `text/${"a".repeat(32)}`])
-      await expect(
-        service.writeAgentFile(
-          root,
-          path.join(root, candidateDirectory, "paper.md"),
-          "reviewed",
-          null,
-          new AbortController().signal,
-          { candidateDirectory },
-        ),
-      ).resolves.toMatchObject({ saved: true });
-    await expect(
-      service.writeAgentFile(
-        root,
-        path.join(root, "text/paper.pdf"),
-        "bad",
-        null,
-        new AbortController().signal,
-        { candidateDirectory: "text/candidates/review" },
-      ),
-    ).rejects.toThrow("候选目录");
     await fs.symlink(
       path.join(root, "text"),
       path.join(root, "notes/link"),

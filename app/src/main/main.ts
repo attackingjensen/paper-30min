@@ -290,14 +290,14 @@ async function start() {
       settingsWrite = result.catch(() => undefined);
       return result;
     }
-    if (command.type === "settings" || command.type === "send" || command.type === "review" || command.type === "mapping")
+    if (command.type === "settings" || command.type === "send" || command.type === "review")
       await settingsWrite;
     if (command.type === "settings") return agentSettings.publicSettings();
     return request({
       type: "agent",
       command,
       config:
-        command.type === "send" || command.type === "review" || command.type === "mapping"
+        command.type === "send" || command.type === "review"
           ? await agentSettings.read()
           : { ...defaultAgentSettings, keys: {}, unreadableKeys: [] },
     });

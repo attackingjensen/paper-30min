@@ -309,7 +309,7 @@ export function AgentPanel({
               </span>
               {m.id !== "streaming" &&
                 m.id !== "pending-user" &&
-                !current.busy && !current.reviewBatchId && !current.mapping && (
+                !current.busy && !current.reviewBatchId && (
                   <button
                     className="icon"
                     title="从此消息分支"

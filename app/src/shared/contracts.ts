@@ -1,6 +1,5 @@
 import type { ParsingCommand } from "./parsing.js";
 import type { ChatAttachment } from "./chat-input.js";
-import type { MappingState } from "./mapping.js";
 
 export interface DocumentRecord {
   id: string;
@@ -239,7 +238,6 @@ export interface ChatSession {
   revision: number;
   reviewBatchId?: string;
   compacting?: boolean;
-  mapping?: MappingState;
 }
 export type AgentCommand =
   | { type: "settings" }
@@ -258,8 +256,6 @@ export type AgentCommand =
   | { type: "selectModel"; modelId: string; thinking?: ThinkingLevel }
   | { type: "list"; root: string }
   | { type: "materials"; root: string }
-  | { type: "mappingPlan"; root: string }
-  | { type: "mapping"; root: string; planId: string }
   | { type: "create"; root: string }
   | { type: "review"; root: string; batchId: string }
   | { type: "open"; root: string; id: string }

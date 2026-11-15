@@ -15,7 +15,6 @@ import {
   FolderOpen,
   Home,
   Import,
-  Map,
   MoreHorizontal,
   PanelLeft,
   PanelRight,
@@ -41,7 +40,6 @@ import { AgentPanel } from "./AgentPanel";
 import type { ChatAttachment } from "../shared/chat-input";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { ProductSkillsForm } from "./ProductSkillsForm";
-import { MappingPanel } from "./MappingPanel";
 import { LegacyImport } from "./LegacyImport";
 import { ParsingPanel, ParsingSettingsForm } from "./ParsingPanel";
 import {
@@ -257,7 +255,8 @@ export function App() {
     };
     positions.current[p.root] = p.reading.pdf;
     const restored = p.reading.tabs.filter(
-      (t) => !t.path || p.files.some((f) => f.path === t.path && !f.directory),
+      (t) => t.key !== "map" && t.key !== "explanations" &&
+        (!t.path || p.files.some((f) => f.path === t.path && !f.directory)),
     );
     setTabs(restored.length ? restored : [tab]);
     setActive(
@@ -554,25 +553,14 @@ export function App() {
         </article>
       );
     const paths =
-      current.key === "map"
-        ? project?.manifest.map
-          ? [project.manifest.map]
-          : []
-        : current.key === "explanations"
-          ? (project?.manifest.explanations ?? [])
-          : current.key === "translations"
-            ? Object.values(project?.manifest.translations ?? {})
-            : (project?.files
-                .filter((f) => !f.directory && f.path.startsWith("notes/"))
-                .map((f) => f.path) ?? []);
+      current.key === "translations"
+        ? Object.values(project?.manifest.translations ?? {})
+        : (project?.files
+            .filter((f) => !f.directory && f.path.startsWith("notes/"))
+            .map((f) => f.path) ?? []);
     return (
       <article className="article">
         <h1>{current.title}</h1>
-        {(current.key === "map" || current.key === "explanations") && root && <MappingPanel key={root} root={root}
-          beforeStart={() => documents.flush()}
-          onParsing={() => openTab({ key: "parsing", title: "论文解析" })}
-          onSession={id => { setSelectedAgent({ root, id }); setRight(true); }}
-          onPublished={refresh} />}
         {paths.length ? (
           paths.map((p) => (
             <button
@@ -856,14 +844,6 @@ export function App() {
                     {nav("论文解析", <FileText />, {
                       key: "parsing",
                       title: "论文解析",
-                    })}
-                    {nav("阅读地图", <Map />, {
-                      key: "map",
-                      title: "阅读地图",
-                    })}
-                    {nav("论文精解", <BookOpen />, {
-                      key: "explanations",
-                      title: "论文精解",
                     })}
                     {nav("全文译文", <FileText />, {
                       key: "translations",

@@ -8,7 +8,7 @@ export async function chatMaterials(projects: ProjectService, root: string, skil
   const project = await projects.dispatch({ type: "refresh", root }) as Project;
   return [
     ...project.files.filter(file => !file.directory && /\.(md|txt|pdf)$/i.test(file.path)).map(file => ({ kind: "document" as const, value: file.path, label: file.path })),
-    ...(await skills.list()).filter(skill => skill.id !== "paper-map.md").map(skill => ({ kind: "skill" as const, value: skill.id, label: skill.name })),
+    ...(await skills.list()).map(skill => ({ kind: "skill" as const, value: skill.id, label: skill.name })),
   ];
 }
 export async function prepareChatInput(projects: ProjectService, root: string, text: string, attachments: ChatAttachment[] = [], skills = new ProductSkills()) {
