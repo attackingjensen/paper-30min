@@ -248,7 +248,6 @@ async function start() {
     if (
       command.type === "stop" ||
       command.type === "status" ||
-      command.type === "readiness" ||
       command.type === "delete" ||
       command.type === "verify"
     )
@@ -290,28 +289,24 @@ async function start() {
       settingsWrite = result.catch(() => undefined);
       return result;
     }
-    if (command.type === "settings" || command.type === "send" || command.type === "review")
+    if (command.type === "settings" || command.type === "send")
       await settingsWrite;
     if (command.type === "settings") return agentSettings.publicSettings();
     return request({
       type: "agent",
       command,
       config:
-        command.type === "send" || command.type === "review"
+        command.type === "send"
           ? await agentSettings.read()
           : { ...defaultAgentSettings, keys: {}, unreadableKeys: [] },
     });
   });
   ipcMain.handle("project:choose", async (event, kind: string) => {
     trusted(event);
-    if (!["folder", "pdf", "material", "legacy"].includes(kind))
+    if (!["folder", "pdf"].includes(kind))
       throw new Error("无效的选择类型。");
     const result = await dialog.showOpenDialog(window, {
-      title: kind === "legacy" ? "选择旧书库文件夹" : undefined,
-      defaultPath: kind === "legacy"
-        ? path.join(app.getPath("appData"), "com.paper30min.reader")
-        : undefined,
-      properties: kind === "folder" || kind === "legacy" ? ["openDirectory"] : ["openFile"],
+      properties: kind === "folder" ? ["openDirectory"] : ["openFile"],
       filters:
         kind === "pdf" ? [{ name: "PDF", extensions: ["pdf"] }] : undefined,
     });

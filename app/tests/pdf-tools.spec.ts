@@ -99,9 +99,7 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     })) as Project;
     const root = project.root;
     let active = true;
-    const readPages: { documentId: string; page: number }[] = [];
-    const tool = createPdfTools(root, service, true, () => active,
-      (documentId, page) => readPages.push({ documentId, page }))[0];
+    const tool = createPdfTools(root, service, true, () => active)[0];
     const run = (args: any, signal?: AbortSignal) =>
       tool.execute(
         "call",
@@ -163,7 +161,6 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     } finally {
       await reopened.close();
     }
-    expect(readPages).toEqual(Array.from({ length: 3 }, () => ({ documentId: info.documentId, page: 1 })));
     expect(
       await fs
         .readFile(path.join(root, ".paper30min-reading.json"), "utf8")
@@ -237,14 +234,12 @@ test("公式页和扫描页均只返回实际图像与定位信息，取消不�
     for (let i = 0; i < formulaImage.data.length; i += 4)
       if (formulaImage.data[i] < 128) ink++;
     expect(ink).toBeGreaterThan(500);
-    const added = (await service.dispatch({
-      type: "addMaterial",
-      root,
-      source: path.resolve(
-        "../legacy/v1/app/src-tauri/tests/fixtures/pdfparse_scanned_blank.pdf",
-      ),
-    })) as Project;
-    const scan = await invoke({ path: added.manifest.materials[0].path });
+    const scanPath = "text/scan.pdf";
+    await fs.copyFile(
+      path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/pdfparse_scanned_blank.pdf"),
+      path.join(root, scanPath),
+    );
+    const scan = await invoke({ path: scanPath });
     const scanInfo = JSON.parse((scan.content[0] as any).text);
     expect(scanInfo).not.toHaveProperty("text");
     expect(scanInfo).not.toHaveProperty("textStatus");

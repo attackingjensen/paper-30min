@@ -4,7 +4,6 @@ import { createReadStream, createWriteStream, constants } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { isKnownPdfVersion } from "../shared/pdf-versions.js";
 import type {
   Command,
   CreateInput,
@@ -15,20 +14,12 @@ import type {
   ReadingState,
   MarkdownFile,
   MarkdownSave,
-  LegacyLibrary,
-  LegacyImportResult,
 } from "../shared/contracts.js";
 
 const manifestName = "paper30min.json";
 const directories = ["text", "notes", "memories", "tmp"];
 const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
 const readingName = ".paper30min-reading.json";
-interface LegacyImportRecord {
-  source: string;
-  sha256: string;
-  root: string;
-  projectId: string;
-}
 export interface AgentFile {
   bytes: Buffer;
   version: string;
@@ -162,8 +153,7 @@ function parseManifest(value: unknown): Manifest {
       !r ||
       typeof r.id !== "string" ||
       !r.id ||
-      !/^[a-f0-9]{64}$/.test(r.sha256) ||
-      (r.annotationSha256 !== undefined && !/^[a-f0-9]{64}$/.test(r.annotationSha256))
+      !/^[a-f0-9]{64}$/.test(r.sha256)
     )
       throw new Error("工程文档身份无效。");
     relativePath(r.path);
@@ -173,29 +163,10 @@ function parseManifest(value: unknown): Manifest {
     m.formatVersion !== 1 ||
     typeof m.id !== "string" ||
     !m.id ||
-    typeof m.name !== "string" ||
-    !Array.isArray(m.materials) ||
-    !Array.isArray(m.explanations) ||
-    !m.translations ||
-    typeof m.translations !== "object" ||
-    Array.isArray(m.translations)
+    typeof m.name !== "string"
   )
     throw new Error("工程清单格式不支持或已损坏。");
   record(m.paper);
-  m.materials.forEach(record);
-  if (
-    new Set([m.paper, ...m.materials].map((r) => r.id)).size !==
-    m.materials.length + 1
-  )
-    throw new Error("工程文档身份重复。");
-  if (
-    new Set([m.paper, ...m.materials].map((r) => r.path.toLowerCase())).size !==
-    m.materials.length + 1
-  )
-    throw new Error("工程文档路径重复。");
-  if (m.map !== null) relativePath(m.map);
-  m.explanations.forEach(relativePath);
-  Object.values(m.translations).forEach(relativePath);
   return m;
 }
 
@@ -205,11 +176,8 @@ function ensureAvailablePath(
   ownId?: string,
 ) {
   if (
-    [manifest.paper, ...manifest.materials].some(
-      (record) =>
-        record.id !== ownId &&
-        record.path.toLowerCase() === relative.toLowerCase(),
-    )
+    manifest.paper.id !== ownId &&
+    manifest.paper.path.toLowerCase() === relative.toLowerCase()
   ) {
     throw new Error("此路径已关联另一份文档，请选择该文档自己的文件。");
   }
@@ -234,16 +202,14 @@ export class ProjectService {
       this.creation.get(command.operationId)?.abort();
       return Promise.resolve();
     }
-    if (command.type === "create" || command.type === "importLegacy") {
-      const operationId = command.type === "create" ? command.input.operationId : command.operationId;
+    if (command.type === "create") {
+      const operationId = command.input.operationId;
       if (this.creation.has(operationId))
         return Promise.reject(new Error("创建任务已存在。"));
       const controller = new AbortController();
       this.creation.set(operationId, controller);
       return this.serialize<unknown>(() =>
-        command.type === "create"
-          ? this.create(command.input, controller.signal)
-          : this.importLegacy(command, controller.signal),
+        this.create(command.input, controller.signal),
       ).finally(() => this.creation.delete(operationId));
     }
     return this.serialize(() => this.execute(command, signal));
@@ -276,11 +242,9 @@ export class ProjectService {
       (lower.startsWith("text/") && !/\.(md|markdown)$/.test(lower)) ||
       lower.startsWith("sources/") ||
       /\.pdf$/i.test(lower) ||
-      [manifest.paper, ...manifest.materials].some(
-        (record) => record.path.toLowerCase() === lower,
-      )
+      manifest.paper.path.toLowerCase() === lower
     )
-      throw new Error("原始材料、图片和出处字典不能作为自由成果覆盖。");
+      throw new Error("原始论文、图片和内部文件不能作为自由成果覆盖。");
   }
 
   readAgentFile(root: string, absolute: string): Promise<AgentFile> {
@@ -372,9 +336,8 @@ export class ProjectService {
         : [`text/${batchId}`, `.paper30min/parsing/${batchId}`];
       const targets: string[] = [];
       for (const directory of directories) {
-        if ([manifest.paper, ...manifest.materials].some((record) =>
-          record.path.toLowerCase().startsWith(directory.toLowerCase() + "/")))
-          throw new Error("解析目录内有已登记的原始材料，不能删除。");
+        if (manifest.paper.path.toLowerCase().startsWith(directory.toLowerCase() + "/"))
+          throw new Error("解析目录内有已登记的工程论文，不能删除。");
         try { targets.push(await this.resolve(root, directory)); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }
@@ -505,11 +468,10 @@ export class ProjectService {
   private async create(
     input: CreateInput,
     signal: AbortSignal,
-    imported?: { projectId: string; sha256: string; file: FileHandle },
   ): Promise<Project> {
     validName(input.name);
     await this.writableFolder(input.parent);
-    await checkPdf(imported?.file ?? input.source);
+    await checkPdf(input.source);
     signal.throwIfAborted();
     const root = path.join(input.parent, input.name);
     // An exclusive mkdir establishes ownership: cleanup can never delete an existing project.
@@ -527,24 +489,16 @@ export class ProjectService {
       const paperPath = "text/paper.pdf";
       const target = path.join(root, paperPath);
       await pipeline(
-        imported
-          ? imported.file.createReadStream({ start: 0, autoClose: false })
-          : createReadStream(input.source),
+        createReadStream(input.source),
         createWriteStream(target, { flags: "wx" }),
         { signal },
       );
       const sha256 = await digest(target, signal);
-      if (imported && sha256 !== imported.sha256)
-        throw new Error("导入期间源 PDF 已变化，请重试。");
       const manifest: Manifest = {
         formatVersion: 1,
-        id: imported?.projectId ?? randomUUID(),
+        id: randomUUID(),
         name: input.name,
         paper: { id: randomUUID(), path: paperPath, sha256 },
-        materials: [],
-        map: null,
-        explanations: [],
-        translations: {},
       };
       signal.throwIfAborted();
       await atomicJson(path.join(root, manifestName), manifest);
@@ -560,139 +514,6 @@ export class ProjectService {
       await fs.rm(root, { recursive: true, force: true });
       if (signal.aborted) throw new Error("已取消创建工程。");
       throw error;
-    }
-  }
-
-  private get importFile() {
-    return path.join(path.dirname(this.configFile), "legacy-imports.json");
-  }
-
-  private async importRecords(): Promise<LegacyImportRecord[]> {
-    try {
-      if ((await fs.lstat(this.importFile)).isSymbolicLink())
-        throw new Error("PDF 导入记录不能是符号链接。");
-      const value = JSON.parse(await fs.readFile(this.importFile, "utf8"));
-      if (value?.formatVersion !== 1 || !Array.isArray(value.records) ||
-          value.records.some((r: LegacyImportRecord) =>
-            !r || typeof r.source !== "string" || !path.isAbsolute(r.source) ||
-            !/^[a-f0-9]{64}$/.test(r.sha256) || typeof r.root !== "string" ||
-            !path.isAbsolute(r.root) || typeof r.projectId !== "string" || !r.projectId))
-        throw new Error("PDF 导入记录已损坏，请保留该文件并检查本机配置。");
-      return value.records;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-  }
-
-  private async legacyPath(root: string, relative = "") {
-    if (!path.isAbsolute(root)) throw new Error("需要完整旧书库路径。");
-    if (relative) relativePath(relative);
-    const target = path.resolve(root, relative);
-    let cursor = path.parse(target).root;
-    for (const part of target.slice(cursor.length).split(path.sep).filter(Boolean)) {
-      cursor = path.join(cursor, part);
-      if ((await fs.lstat(cursor)).isSymbolicLink())
-        throw new Error("旧书库路径不能包含符号链接或目录联接。");
-    }
-    return fs.realpath(target);
-  }
-
-  private async scanLegacy(root: string): Promise<LegacyLibrary> {
-    root = await this.legacyPath(root);
-    const attachments = await this.legacyPath(root, "attachments");
-    const entries = await fs.readdir(attachments, { withFileTypes: true });
-    const papers: LegacyLibrary["papers"] = [];
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-      const relative = `attachments/${entry.name}/pdf`;
-      try {
-        const source = await this.legacyPath(root, relative);
-        if (!(await fs.stat(source)).isFile()) throw new Error("原始 PDF 不是普通文件。");
-        await checkPdf(source);
-        papers.push({ path: relative, name: `pdf-${entry.name}` });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        papers.push({ path: relative, name: `pdf-${entry.name}`, error: (error as Error).message });
-      }
-    }
-    if (!papers.length) throw new Error("旧书库中没有可导入的原始 PDF。");
-    return { root, papers };
-  }
-
-  private async importLegacy(
-    input: Extract<Command, { type: "importLegacy" }>,
-    signal: AbortSignal,
-  ): Promise<LegacyImportResult> {
-    if (!/^attachments\/[^/]+\/pdf$/.test(input.path))
-      throw new Error("只允许导入旧书库的原始 PDF。");
-    const source = await this.legacyPath(input.root, input.path);
-    const parent = (await this.preferences()).defaultFolder;
-    if (!parent) throw new Error("请先设置默认工程文件夹。");
-    const sourceRoot = await fs.realpath(input.root);
-    let destination: string;
-    try { destination = await fs.realpath(parent); }
-    catch { throw new Error("工程文件夹不存在或不可写，请重新选择保存位置。"); }
-    const overlap = path.relative(sourceRoot, destination);
-    if (!overlap || (!overlap.startsWith(".." + path.sep) && overlap !== ".." && !path.isAbsolute(overlap)))
-      throw new Error("默认工程文件夹不能位于旧书库内，请重新选择。");
-    await this.writableFolder(parent);
-    const before = await fs.lstat(source);
-    if (!before.isFile()) throw new Error("原始 PDF 不是普通文件。");
-    const file = await fs.open(source, "r");
-    try {
-      const opened = await file.stat();
-      if (!opened.isFile() || opened.ino !== before.ino || opened.dev !== before.dev)
-        throw new Error("源 PDF 路径已变化，请重试。");
-      await checkPdf(file);
-      const hash = createHash("sha256");
-      for await (const chunk of file.createReadStream({ autoClose: false, signal })) hash.update(chunk);
-      const sha256 = hash.digest("hex");
-      signal.throwIfAborted();
-      const records = await this.importRecords();
-      const previous = records.find((r) => r.source === source && r.sha256 === sha256);
-      if (previous) {
-        try {
-          const project = await this.snapshot(previous.root);
-          if (project.manifest.id === previous.projectId &&
-              project.manifest.paper.sha256 === sha256 &&
-              isKnownPdfVersion(project.manifest.paper,
-                await digest(await this.resolve(previous.root, project.manifest.paper.path), signal))) {
-            signal.throwIfAborted();
-            await this.remember(project);
-            return { root: project.root, name: project.manifest.name, existing: true };
-          }
-        } catch (error) {
-          if (signal.aborted) throw error;
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-            throw new Error("已有导入工程无法核验，请检查后重试：" + (error as Error).message);
-        }
-      }
-      validName(input.name);
-      let name = input.name;
-      // Preserve interrupted/unrelated directories. A new suffix lets the same PDF retry safely.
-      for (let index = 2; ; index++) {
-        try { await fs.lstat(path.join(parent, name)); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
-          throw error;
-        }
-        name = `${input.name} (${index})`;
-      }
-      const record: LegacyImportRecord = {
-        source, sha256, root: path.join(parent, name), projectId: randomUUID(),
-      };
-      const index = previous ? records.indexOf(previous) : -1;
-      if (index < 0) records.push(record);
-      else records[index] = record;
-      // Reserve identity before mkdir; a crash after manifest publication can be recognized on retry.
-      await atomicJson(this.importFile, { formatVersion: 1, records }, signal);
-      const project = await this.create({
-        source, parent, name, makeDefault: false, operationId: input.operationId,
-      }, signal, { projectId: record.projectId, sha256, file });
-      return { root: project.root, name: project.manifest.name, existing: false };
-    } finally {
-      await file.close();
     }
   }
 
@@ -740,7 +561,7 @@ export class ProjectService {
     };
     await walk(root, "");
     files.sort((a, b) => a.path.localeCompare(b.path));
-    const missing = [manifest.paper, ...manifest.materials]
+    const missing = [manifest.paper]
       .filter((r) => !files.some((f) => !f.directory && f.path === r.path))
       .map((r) => r.id);
     return {
@@ -750,34 +571,6 @@ export class ProjectService {
       missing,
       reading: await this.reading(root),
     };
-  }
-
-  private async copyMaterial(
-    root: string,
-    source: string,
-  ): Promise<DocumentRecord> {
-    const name = path.basename(source);
-    validName(name);
-    const relative = "text/" + name;
-    await this.resolve(root, "text");
-    const destination = path.join(root, relative);
-    // Stream into a private temporary file before publishing; partial copies never become materials.
-    const temporary = path.join(
-      root,
-      "text",
-      `.paper30min-${randomUUID()}.tmp`,
-    );
-    try {
-      await pipeline(
-        createReadStream(source),
-        createWriteStream(temporary, { flags: "wx" }),
-      );
-      const sha256 = await digest(temporary);
-      await fs.link(temporary, destination);
-      return { id: randomUUID(), path: relative, sha256 };
-    } finally {
-      await fs.rm(temporary, { force: true });
-    }
   }
 
   private async markdown(
@@ -918,12 +711,11 @@ export class ProjectService {
   }
 
   private async execute(
-    command: Exclude<Command, { type: "create" | "cancelCreate" | "importLegacy" }>,
+    command: Exclude<Command, { type: "create" | "cancelCreate" }>,
     signal?: AbortSignal,
   ): Promise<unknown> {
     signal?.throwIfAborted();
     if (command.type === "preferences") return this.preferences();
-    if (command.type === "scanLegacy") return this.scanLegacy(command.root);
     if (command.type === "setDefault") {
       if (command.folder !== null) await this.writableFolder(command.folder);
       const p = await this.preferences();
@@ -1003,7 +795,7 @@ export class ProjectService {
         return {
           bytes: new Uint8Array(bytes),
           sha256: createHash("sha256").update(bytes).digest("hex"),
-          document: [m.paper, ...m.materials].find((item) => item.path === command.path),
+          document: m.paper.path === command.path ? m.paper : undefined,
         };
       } finally {
         await handle.close();
@@ -1025,26 +817,13 @@ export class ProjectService {
         throw new Error("文件过大，请在外部应用中打开。");
       return fs.readFile(file, "utf8");
     }
-    if (command.type === "addMaterial") {
-      ensureAvailablePath(m, "text/" + path.basename(command.source));
-      const record = await this.copyMaterial(root, command.source);
-      m.materials.push(record);
-      try {
-        await atomicJson(path.join(root, manifestName), m);
-      } catch (error) {
-        await fs.unlink(path.join(root, record.path));
-        throw error;
-      }
-    }
     if (command.type === "move") {
       const source = await this.resolve(root, command.path);
       if (!(await fs.stat(source)).isFile())
         throw new Error("请选择需要改名或移动的文件。");
       relativePath(command.destination);
       if (command.path === command.destination) return this.snapshot(root);
-      const ownId = [m.paper, ...m.materials].find(
-        (record) => record.path === command.path,
-      )?.id;
+      const ownId = m.paper.path === command.path ? m.paper.id : undefined;
       ensureAvailablePath(m, command.destination, ownId);
       const parent = path.posix.dirname(command.destination);
       if (parent !== ".") await this.resolve(root, parent);
@@ -1056,72 +835,13 @@ export class ProjectService {
         await fs.unlink(destination);
         throw error;
       }
-      const replace = (p: string) =>
-        p === command.path ? command.destination : p;
-      m.paper.path = replace(m.paper.path);
-      m.materials.forEach((r) => (r.path = replace(r.path)));
-      if (m.map) m.map = replace(m.map);
-      m.explanations = m.explanations.map(replace);
-      Object.keys(m.translations).forEach(
-        (k) => (m.translations[k] = replace(m.translations[k])),
-      );
+      if (m.paper.path === command.path) m.paper.path = command.destination;
       try {
         await atomicJson(path.join(root, manifestName), m);
       } catch (error) {
         await fs.link(destination, source);
         await fs.unlink(destination);
         throw error;
-      }
-    }
-    if (command.type === "relink") {
-      const record = [m.paper, ...m.materials].find((r) => r.id === command.id);
-      if (!record) throw new Error("找不到文档身份。");
-      if (!(await this.snapshot(root)).missing.includes(record.id))
-        throw new Error("文档仍存在，无需重新关联。");
-      const sha256 = await digest(command.source);
-      if (!isKnownPdfVersion(record, sha256))
-        throw new Error("文件内容与原文档不同，不能将其他文件关联为同一文档。");
-      const relative = path
-        .relative(root, await fs.realpath(command.source))
-        .split(path.sep)
-        .join("/");
-      if (
-        relative &&
-        !relative.startsWith("../") &&
-        !path.isAbsolute(relative)
-      ) {
-        await this.resolve(root, relative);
-        ensureAvailablePath(m, relative, record.id);
-        record.path = relative;
-        await atomicJson(path.join(root, manifestName), m);
-      } else {
-        ensureAvailablePath(
-          m,
-          "text/" + path.basename(command.source),
-          record.id,
-        );
-        const copied = await this.copyMaterial(root, command.source);
-        record.path = copied.path;
-        try {
-          await atomicJson(path.join(root, manifestName), m);
-        } catch (error) {
-          await fs.unlink(path.join(root, copied.path));
-          throw error;
-        }
-      }
-    }
-    if (command.type === "trash") {
-      const record = m.materials.find((r) => r.id === command.id);
-      if (!record) throw new Error("只能移出附加参考材料，工程论文不能移出。");
-      const file = await this.resolve(root, record.path);
-      await this.trashFile(file);
-      m.materials = m.materials.filter((r) => r.id !== command.id);
-      try {
-        await atomicJson(path.join(root, manifestName), m);
-      } catch {
-        throw new Error(
-          "文件已移入回收站，但清单保存失败。请从回收站恢复文件后刷新工程。",
-        );
       }
     }
     return this.snapshot(root);

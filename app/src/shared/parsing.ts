@@ -43,10 +43,6 @@ export interface ParsingRun {
   error?: string;
   busy?: boolean;
   stopping?: boolean;
-  reviewedThroughPage?: number;
-  reviewSessionId?: string;
-  reviewBusy?: boolean;
-  reviewError?: string;
 }
 export interface ParsedBlock {
   id: string;
@@ -80,7 +76,6 @@ export type ParsingCommand =
       clearKey?: boolean;
     }
   | { type: "status"; root: string }
-  | { type: "readiness"; root: string }
   | { type: "verify"; root: string; batchId: string }
   | { type: "delete"; root: string; batchId: string }
   | { type: "start"; root: string; documentId: string }

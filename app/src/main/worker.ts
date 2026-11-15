@@ -27,7 +27,6 @@ const parsing = new ParsingService(service);
 const agent = new AgentService(
   (state) => port.postMessage({ agentState: state }),
   service,
-  parsing,
   new ProductSkills(path.join(path.dirname(process.argv[2]), "product-skills")),
 );
 

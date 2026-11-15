@@ -14,7 +14,6 @@ import {
   Folder,
   FolderOpen,
   Home,
-  Import,
   MoreHorizontal,
   PanelLeft,
   PanelRight,
@@ -22,7 +21,6 @@ import {
   RefreshCw,
   Settings,
   Sparkles,
-  Trash2,
   X,
 } from "lucide-react";
 import type {
@@ -40,7 +38,6 @@ import { AgentPanel } from "./AgentPanel";
 import type { ChatAttachment } from "../shared/chat-input";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { ProductSkillsForm } from "./ProductSkillsForm";
-import { LegacyImport } from "./LegacyImport";
 import { ParsingPanel, ParsingSettingsForm } from "./ParsingPanel";
 import {
   useMarkdownDocuments,
@@ -59,8 +56,7 @@ type Dialog =
       makeDefault: boolean;
     }
   | { type: "note"; name: string }
-  | { type: "move"; path: string; destination: string }
-  | { type: "trash"; id: string; name: string };
+  | { type: "move"; path: string; destination: string };
 
 function IconButton({
   label,
@@ -110,9 +106,7 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
-  const [legacyImport, setLegacyImport] = useState(false);
   const [content, setContent] = useState<string | null>(null);
-  const [selectedAgent, setSelectedAgent] = useState<{ root: string; id: string }>();
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
   const activeRoot = useRef(root);
@@ -255,7 +249,7 @@ export function App() {
     };
     positions.current[p.root] = p.reading.pdf;
     const restored = p.reading.tabs.filter(
-      (t) => t.key !== "map" && t.key !== "explanations" &&
+      (t) => !["map", "explanations", "translations", "materials"].includes(t.key) &&
         (!t.path || p.files.some((f) => f.path === t.path && !f.directory)),
     );
     setTabs(restored.length ? restored : [tab]);
@@ -329,38 +323,6 @@ export function App() {
       return p;
     });
   }
-  async function addMaterial() {
-    await run(async () => {
-      const source = await desktop.choose("material");
-      if (source && root)
-        setProject(
-          await desktop.invoke<Project>({ type: "addMaterial", root, source }),
-        );
-    });
-  }
-  async function relink(id: string) {
-    await run(async () => {
-      const source = await desktop.choose(
-        id === project?.manifest.paper.id ? "pdf" : "material",
-      );
-      if (!source || !root || !project) return;
-      const oldPath = [
-        project.manifest.paper,
-        ...project.manifest.materials,
-      ].find((r) => r.id === id)!.path;
-      const p = await desktop.invoke<Project>({
-        type: "relink",
-        root,
-        id,
-        source,
-      });
-      const newPath = [p.manifest.paper, ...p.manifest.materials].find(
-        (r) => r.id === id,
-      )!.path;
-      retargetTabs(oldPath, newPath);
-      setProject(p);
-    });
-  }
   function retargetTabs(from: string, to: string) {
     documents.retarget(from, to);
     const saved = positions.current[root!];
@@ -381,11 +343,6 @@ export function App() {
     current?.path &&
     project &&
     !project.files.some((f) => f.path === current.path && !f.directory);
-  const record =
-    project &&
-    [project.manifest.paper, ...project.manifest.materials].find(
-      (r) => r.path === current?.path,
-    );
   const separator =
     preferences.defaultFolder?.includes("\\") ||
     (dialog?.type === "create" && dialog.parent.includes("\\"))
@@ -403,50 +360,6 @@ export function App() {
       </button>
     );
   }
-  function materialList() {
-    if (!project) return null;
-    return [project.manifest.paper, ...project.manifest.materials].map((r) => (
-      <div className="material-row" key={r.id}>
-        <FileText />
-        <button
-          className="material-name"
-          onClick={() => openPath(r.path)}
-          title={r.path}
-        >
-          {r.path.split("/").at(-1)}
-          <small>{r.path}</small>
-        </button>
-        {r.id === project.manifest.paper.id && (
-          <span className="pill">工程论文</span>
-        )}
-        {project.missing.includes(r.id) ? (
-          <button onClick={() => void relink(r.id)} disabled={busy}>
-            重新关联
-          </button>
-        ) : (
-          <IconButton
-            label={`改名或移动 ${r.path}`}
-            onClick={() =>
-              setDialog({ type: "move", path: r.path, destination: r.path })
-            }
-          >
-            <MoreHorizontal />
-          </IconButton>
-        )}
-        {r.id !== project.manifest.paper.id &&
-          !project.missing.includes(r.id) && (
-            <IconButton
-              label={`移出 ${r.path}`}
-              onClick={() =>
-                setDialog({ type: "trash", id: r.id, name: r.path })
-              }
-            >
-              <Trash2 />
-            </IconButton>
-          )}
-      </div>
-    ));
-  }
   function contentView() {
     if (!current) return <div className="empty">尚未打开文档</div>;
     if (current.key === "parsing")
@@ -456,15 +369,7 @@ export function App() {
           project={project!}
           onOpen={openPath}
           onSettings={() => setSettings("parsing")}
-          onSession={(id) => { setRight(true); setSelectedAgent({ root: root!, id }); }}
         />
-      );
-    if (current.key === "materials")
-      return (
-        <article className="article">
-          <h1>相关材料</h1>
-          {materialList()}
-        </article>
       );
     if (current.path && isMarkdown(current.path)) {
       const draft = documents.drafts.get(current.path);
@@ -509,15 +414,6 @@ export function App() {
           <FileText className="document-symbol" />
           <h1>找不到文件</h1>
           <p className="muted path">{current.path}</p>
-          {record && (
-            <button
-              className="borderbtn"
-              onClick={() => void relink(record.id)}
-              disabled={busy}
-            >
-              重新关联
-            </button>
-          )}
         </article>
       );
     if (current.path && /\.pdf$/i.test(current.path))
@@ -553,11 +449,9 @@ export function App() {
         </article>
       );
     const paths =
-      current.key === "translations"
-        ? Object.values(project?.manifest.translations ?? {})
-        : (project?.files
-            .filter((f) => !f.directory && f.path.startsWith("notes/"))
-            .map((f) => f.path) ?? []);
+      project?.files
+        .filter((f) => !f.directory && f.path.startsWith("notes/"))
+        .map((f) => f.path) ?? [];
     return (
       <article className="article">
         <h1>{current.title}</h1>
@@ -701,8 +595,6 @@ export function App() {
                       </button>
                     )}
                   </div>
-                  <button className="borderbtn legacy-entry" disabled={busy}
-                    onClick={() => setLegacyImport(true)}><Import /> 导入旧 PDF</button>
                 </>
               ) : settings === "agent" ||
                 settings === "proxy" ||
@@ -741,9 +633,6 @@ export function App() {
               onClick={() => void openProject()}
             >
               <FolderOpen /> 打开工程文件夹
-            </button>
-            <button className="borderbtn" disabled={busy} onClick={() => setLegacyImport(true)}>
-              <Import /> 导入旧 PDF
             </button>
           </div>
           <h2>最近工程</h2>
@@ -801,17 +690,7 @@ export function App() {
                 <Plus />
                 <span>从 PDF 新建工程</span>
               </button>
-              <div className="section-label between">
-                当前工程
-                <IconButton
-                  label="管理材料"
-                  onClick={() =>
-                    openTab({ key: "materials", title: "相关材料" })
-                  }
-                >
-                  <MoreHorizontal />
-                </IconButton>
-              </div>
+              <div className="section-label">当前工程</div>
               <div className="project-name" title={project.manifest.name}>
                 <span className="project-dot" />
                 {project.manifest.name}
@@ -845,15 +724,7 @@ export function App() {
                       key: "parsing",
                       title: "论文解析",
                     })}
-                    {nav("全文译文", <FileText />, {
-                      key: "translations",
-                      title: "全文译文",
-                    })}
                     {nav("笔记", <FileText />, { key: "notes", title: "笔记" })}
-                    {nav("相关材料", <Folder />, {
-                      key: "materials",
-                      title: "相关材料",
-                    })}
                   </>
                 ) : (
                   <FileTree files={project.files} onOpen={openPath} />
@@ -930,43 +801,33 @@ export function App() {
                         <Plus /> 新建笔记
                       </button>
                     )}
-                    {current?.key === "materials" ? (
-                      <button
-                        disabled={busy}
-                        onClick={() => void addMaterial()}
-                      >
-                        <Plus /> 添加材料
-                      </button>
-                    ) : (
-                      current?.path &&
-                      !missingCurrent && (
-                        <>
-                          <IconButton
-                            label="改名或移动"
-                            disabled={busy}
-                            onClick={() =>
-                              setDialog({
-                                type: "move",
-                                path: current.path!,
-                                destination: current.path!,
-                              })
-                            }
-                          >
-                            <MoreHorizontal />
-                          </IconButton>
-                          <IconButton
-                            label="在外部应用中打开"
-                            disabled={busy}
-                            onClick={() =>
-                              void run(() =>
-                                desktop.openFile(root!, current.path!),
-                              )
-                            }
-                          >
-                            <FolderOpen />
-                          </IconButton>
-                        </>
-                      )
+                    {current?.path && !missingCurrent && (
+                      <>
+                        <IconButton
+                          label="改名或移动"
+                          disabled={busy}
+                          onClick={() =>
+                            setDialog({
+                              type: "move",
+                              path: current.path!,
+                              destination: current.path!,
+                            })
+                          }
+                        >
+                          <MoreHorizontal />
+                        </IconButton>
+                        <IconButton
+                          label="在外部应用中打开"
+                          disabled={busy}
+                          onClick={() =>
+                            void run(() =>
+                              desktop.openFile(root!, current.path!),
+                            )
+                          }
+                        >
+                          <FolderOpen />
+                        </IconButton>
+                      </>
                     )}
                   </div>
                 </div>
@@ -985,8 +846,6 @@ export function App() {
                   root={root!}
                   onSettings={() => setSettings("agent")}
                   initialView={agentViews.current[root!]}
-                  selectedSession={selectedAgent && selectedAgent.root === root ? selectedAgent.id : undefined}
-                  onParsing={() => openTab({ key: "parsing", title: "论文解析" })}
                   onViewChange={(view) => {
                     agentViews.current[root!] = view;
                   }}
@@ -996,9 +855,6 @@ export function App() {
           </div>
         </div>
       )}
-      {legacyImport && <LegacyImport folder={preferences.defaultFolder}
-        onClose={() => setLegacyImport(false)} onUpdated={reloadPreferences}
-        onOpen={(folder) => { setLegacyImport(false); void openProject(folder); }} />}
       {dialog && (
         <div className="modal-backdrop">
           <form
@@ -1010,9 +866,7 @@ export function App() {
                 ? "新建工程"
                 : dialog.type === "note"
                   ? "新建笔记"
-                  : dialog.type === "move"
-                    ? "改名或移动"
-                    : "移出工程"
+                  : "改名或移动"
             }
             onSubmit={(event) => {
               event.preventDefault();
@@ -1042,15 +896,6 @@ export function App() {
                     setDialog(null);
                   }
                 });
-              if (dialog.type === "trash" && root)
-                void update({ type: "trash", root, id: dialog.id }).then(
-                  (p) => {
-                    if (p) {
-                      closeTab(dialog.name);
-                      setDialog(null);
-                    }
-                  },
-                );
             }}
           >
             <h2>
@@ -1058,9 +903,7 @@ export function App() {
                 ? "新建工程"
                 : dialog.type === "note"
                   ? "新建笔记"
-                  : dialog.type === "move"
-                    ? "改名或移动"
-                    : "移出工程"}
+                  : "改名或移动"}
             </h2>
             {dialog.type === "create" ? (
               <>
@@ -1130,7 +973,7 @@ export function App() {
                   disabled={busy}
                 />
               </>
-            ) : dialog.type === "move" ? (
+            ) : (
               <>
                 <label htmlFor="destination">工程内相对路径</label>
                 <input
@@ -1143,11 +986,6 @@ export function App() {
                   }
                   required
                 />
-              </>
-            ) : (
-              <>
-                <p className="path">{dialog.name}</p>
-                <p>文件将移入系统回收站，相关引用将失效。研究成果保留。</p>
               </>
             )}
             {error && <p className="form-error">{error}</p>}
@@ -1182,9 +1020,7 @@ export function App() {
                     ? "创建工程"
                     : dialog.type === "note"
                       ? "创建笔记"
-                      : dialog.type === "move"
-                        ? "保存"
-                        : "移入回收站"}
+                      : "保存"}
               </button>
             </div>
           </form>

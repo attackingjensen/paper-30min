@@ -19,7 +19,6 @@ import {
   FileOutput,
   Globe,
   Brain,
-  Play,
 } from "lucide-react";
 import { AgentMessage } from "./AgentMessage";
 import type { ChatAttachment } from "../shared/chat-input";
@@ -38,16 +37,12 @@ export function AgentPanel({
   initialView,
   onViewChange,
   onOpenFile,
-  selectedSession,
-  onParsing,
 }: {
   root: string;
   onSettings: () => void;
   initialView?: { active: string; text: string; attachments?: ChatAttachment[] };
   onViewChange: (view: { active: string; text: string; attachments?: ChatAttachment[] }) => void;
   onOpenFile: (path: string) => void;
-  selectedSession?: string;
-  onParsing: () => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [active, setActive] = useState(initialView?.active ?? "");
@@ -85,31 +80,9 @@ export function AgentPanel({
   const [catalog, setCatalog] = useState<AgentSettings>();
   const [modelOpen, setModelOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
-  const [readiness, setReadiness] = useState<{ ready: boolean; reason?: string }>();
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
-  useEffect(() => {
-    if (!selectedSession) return;
-    setActive(selectedSession);
-    void window.desktop.agent<ChatSession>({ type: "open", root, id: selectedSession }).then(update).catch((error) => setError(error.message));
-  }, [root, selectedSession]);
-  useEffect(() => {
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const load = async () => {
-      try {
-        const value = await window.desktop.parsing<{ ready: boolean; reason?: string }>({ type: "readiness", root });
-        if (!disposed) setReadiness(value);
-      } catch (error) {
-        if (!disposed) setReadiness({ ready: false, reason: (error as Error).message });
-      } finally {
-        if (!disposed) timer = setTimeout(() => void load(), 2000);
-      }
-    };
-    void load();
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [root]);
   useEffect(() => {
     onViewChange({ active, text, attachments });
   }, [active, text, attachments, onViewChange]);
@@ -309,7 +282,7 @@ export function AgentPanel({
               </span>
               {m.id !== "streaming" &&
                 m.id !== "pending-user" &&
-                !current.busy && !current.reviewBatchId && (
+                !current.busy && (
                   <button
                     className="icon"
                     title="从此消息分支"
@@ -362,16 +335,6 @@ export function AgentPanel({
         )}
       </div>
       <div className="composer-wrap">
-        {readiness && !readiness.ready && !current?.busy && (
-          <div className="notice agent-readiness">
-            <p>{readiness.reason}</p>
-            <button className="borderbtn" onClick={onParsing}>论文解析</button>
-          </div>
-        )}
-        {current?.reviewBatchId && !current.busy && !readiness?.ready && (
-          <button className="borderbtn" disabled={pending}
-            onClick={() => void command({ type: "review", root, batchId: current.reviewBatchId! }, true)}><Play /> 继续审阅</button>
-        )}
         {awayFromBottom && (
           <button
             className="latest-message"
@@ -631,7 +594,6 @@ function ToolProcess({
             {{
               read: "读取文件",
               read_pdf: "读取 PDF 原文",
-              complete_review_page: "保存审阅进度",
               write: "写入文件",
               edit: "编辑文件",
               bash: "运行命令",

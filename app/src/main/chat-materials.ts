@@ -26,7 +26,7 @@ export async function prepareChatInput(projects: ProjectService, root: string, t
       const version = /\.pdf$/i.test(item.value)
         ? (await projects.dispatch({ type: "readPdf", root, path: item.value }) as PdfSource).sha256
         : (await projects.readAgentFile(root, path.resolve(root, item.value))).version;
-      const identity = [project.manifest.paper, ...project.manifest.materials].find(record => record.path === item.value)?.id;
+      const identity = project.manifest.paper.path === item.value ? project.manifest.paper.id : undefined;
       sections.push(`指定工程文档：${JSON.stringify(item.value)}${identity ? `（文档 ID：${identity}）` : ""}，发送时 SHA-256 ${version}。按需读取，未附加全文；后续读取若版本变化应说明。`);
     } else if (item.kind === "skill") {
       const skill = await skills.read(item.value);
