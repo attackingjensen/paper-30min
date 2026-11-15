@@ -5,8 +5,6 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import TurndownService from "turndown";
 import { tables } from "turndown-plugin-gfm";
 import type { PdfSource } from "../shared/contracts.js";
-import type { Citation, CitationRect } from "../shared/citations.js";
-import { markdownRenderer } from "../shared/markdown-references.js";
 import type {
   ParsingRun,
   ParsingMapping,
@@ -16,6 +14,11 @@ import { ProjectService } from "./project-service.js";
 
 const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
+
+type BlockRect = {
+  origin: { x: number; y: number };
+  size: { width: number; height: number };
+};
 
 async function openPdf(source: PdfSource) {
   const [{ init }, { PdfEngine, PdfiumNative }] = await Promise.all([
@@ -301,7 +304,7 @@ export async function buildCandidate({
           first.block_label,
         );
         if (!text.trim() && !visual) continue;
-        const rects: CitationRect[] = [];
+        const rects: BlockRect[] = [];
         if (calibrated)
           for (const item of group) {
             const b = item.block_bbox;
@@ -330,33 +333,11 @@ export async function buildCandidate({
           }
         if (rects.length !== group.length) rects.length = 0;
         const id = `${run.batchId}:p${pageNumber}:b${first.block_id}`;
-        const citation = (await projects.dispatch(
-          {
-            type: "createCitation",
-            root,
-            path: run.document.path,
-            input: {
-              sha256: run.document.sha256,
-              text: "",
-              kind: rects.length ? "region" : "page",
-              pages: [
-                {
-                  page: pageNumber,
-                  width: page.size.width,
-                  height: page.size.height,
-                  rects,
-                },
-              ],
-            },
-          },
-          signal,
-        )) as Citation;
         const block: ParsedBlock = {
           id,
           label: first.block_label,
           text,
           vendorIds: group.map((item) => item.block_id),
-          citation,
           images: [],
           limitation: rects.length
             ? "OCR 块区域，非逐字精确选区"
@@ -395,32 +376,11 @@ export async function buildCandidate({
             }
           }
         mapping.blocks.push(block);
-        const reference = `[原文](paper://cite/${citation.id})`;
         let content = body.trimEnd();
         if (["doc_title", "paragraph_title"].includes(first.block_label))
           content = `${first.block_label === "doc_title" ? "#" : "##"} ${content.trim().replace(/\s+/g, " ")}`;
         if (!content.trim() && cropped.length)
           content = cropped.map((image) => `![第 ${pageNumber} 页原图](${image})`).join("\n\n");
-        const offsets = [0, ...Array.from(content.matchAll(/\n/g), (match) => match.index + 1)];
-        const edits: { offset: number; text: string }[] = [];
-        for (const token of markdownRenderer.parse(content, {})) {
-          if (!token.map || !["paragraph_open", "heading_open", "table_open", "math_block"].includes(token.type)) continue;
-          const inline = token.type === "paragraph_open" || token.type === "heading_open";
-          // Setext underlines and ATX closing markers must remain heading syntax.
-          const endLine = token.map[1] - (token.type === "heading_open" && !token.markup.startsWith("#") ? 1 : 0);
-          const lineStart = offsets[endLine - 1];
-          const line = content.slice(lineStart, offsets[endLine] ?? content.length).replace(/[ \t\r\n]+$/, "");
-          const closing = token.type === "heading_open" && token.markup.startsWith("#")
-            ? /[ \t]+#+$/.exec(line) : null;
-          const prefix = /^[ \t]*(?:>[ \t]*)*/.exec(line)![0];
-          edits.push({
-            offset: lineStart + (closing?.index ?? line.length),
-            text: inline ? ` ${reference}` : `\n${prefix}\n${prefix}${reference}`,
-          });
-        }
-        for (const edit of edits.sort((a, b) => b.offset - a.offset))
-          content = content.slice(0, edit.offset) + edit.text + content.slice(edit.offset);
-        if (!edits.length) content += `\n\n${reference}`;
         markdown.push(content.trimEnd(), "");
       }
       await progress(pageNumber, pages.length);

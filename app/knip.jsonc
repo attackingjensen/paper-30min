@@ -1,0 +1,23 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
+  "entry": [
+    "src/main/main.ts",
+    "src/main/worker.ts",
+    "src/main/preload.cts",
+    "src/renderer/main.tsx"
+  ],
+  "project": [
+    "src/**/*.{ts,tsx,cts}",
+    "tests/**/*.ts",
+    "scripts/**/*.mjs",
+    "*.ts"
+  ],
+  "includeEntryExports": true,
+  // Phase 0 临时基线：只豁免这两份旧共享契约中的间接导出类型。
+  // 死文件、死值导出、依赖和其他文件类型仍正常检查；对应模块改造时移除豁免。
+  "ignoreIssues": {
+    "src/shared/contracts.ts": ["types"],
+    "src/shared/parsing.ts": ["types"]
+  },
+  "treatConfigHintsAsErrors": true
+}

@@ -4,11 +4,7 @@ import { EditorState, StateField, StateEffect } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { markdown } from "@codemirror/lang-markdown";
-import { syntaxTree } from "@codemirror/language";
-import { markdownRenderer as renderer, markCitationUses } from "../shared/markdown-references";
-import type { CitationUse } from "../shared/citations";
-import { annotationLinkSpans, isAnnotationLink } from "../shared/annotation-links";
-import { copiedAnnotationText, setAnnotationClipboard } from "./annotation-clipboard";
+import { markdownRenderer as renderer } from "../shared/markdown-references";
 import "katex/dist/katex.min.css";
 import { isDirty, type MarkdownDraft } from "./useMarkdownDocuments";
 import "./markdown.css";
@@ -59,17 +55,13 @@ export function MarkdownDocument({
   onChange,
   onSave,
   onOpen,
-  onCitation,
-  usageTarget,
   onPosition,
 }: {
   root: string;
-  usageTarget?: { use: CitationUse; nonce: string };
   draft: MarkdownDraft;
   onChange: () => void;
   onSave: () => void;
   onOpen: (path: string) => void;
-  onCitation: (link: string) => void;
   onPosition: (position: {
     mode: MarkdownDraft["mode"];
     scroll: number;
@@ -81,8 +73,8 @@ export function MarkdownDocument({
   const preview = useRef<HTMLElement>(null);
   const [showConflict, setShowConflict] = useState(false);
   const [linkError, setLinkError] = useState("");
-  const callbacks = useRef({ onChange, onSave, onPosition, onCitation });
-  callbacks.current = { onChange, onSave, onPosition, onCitation };
+  const callbacks = useRef({ onChange, onSave, onPosition });
+  callbacks.current = { onChange, onSave, onPosition };
   const positionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -123,23 +115,6 @@ export function MarkdownDocument({
           EditorView.domEventHandlers({
             compositionstart() { draft.composing = true; callbacks.current.onChange(); },
             compositionend() { draft.composing = false; callbacks.current.onChange(); },
-            paste(event, view) {
-              if (!event.clipboardData) return false;
-              try {
-                const text = copiedAnnotationText(event.clipboardData, root, draft.path);
-                if (text === null) return false;
-                event.preventDefault();
-                view.dispatch(view.state.replaceSelection(normalize(text)), { scrollIntoView: true, userEvent: "input.paste" });
-              } catch (error) { event.preventDefault(); setLinkError((error as Error).message); }
-              return true;
-            },
-            copy(event, view) {
-              const selected = view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to);
-              if (!event.clipboardData || !isAnnotationLink(selected)) return false;
-              event.preventDefault();
-              setAnnotationClipboard(event.clipboardData, selected, root, draft.path);
-              return true;
-            },
           }),
           EditorView.contentAttributes.of({
             "aria-label": "Markdown 源码",
@@ -179,31 +154,6 @@ export function MarkdownDocument({
         ],
       });
     const view = new EditorView({ state, parent: host.current });
-    const citationAt = (event: MouseEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return null;
-      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-      if (pos === null) return null;
-      const annotation = annotationLinkSpans(view.state.doc.toString()).find((link) => pos >= link.from && pos <= link.to);
-      if (annotation) return annotation.href;
-      let node = syntaxTree(view.state).resolveInner(pos, 1);
-      while (node.parent && node.name !== "Link") node = node.parent;
-      if (node.name !== "Link") return null;
-      const url = node.getChild("URL");
-      const link = url && view.state.sliceDoc(url.from, url.to);
-      return link && (link.startsWith("paper:") || isAnnotationLink(link)) ? link : null;
-    };
-    const preserveCursor = (event: MouseEvent) => {
-      if (citationAt(event)) { event.preventDefault(); event.stopPropagation(); }
-    };
-    const openCitation = (event: MouseEvent) => {
-      const link = citationAt(event);
-      if (link) {
-        event.preventDefault();
-        callbacks.current.onCitation(link);
-      }
-    };
-    view.dom.addEventListener("mousedown", preserveCursor, true);
-    view.dom.addEventListener("click", openCitation);
     view.scrollDOM.scrollTop = draft.scroll;
     const scrolled = () => {
       draft.scroll = view.scrollDOM.scrollTop;
@@ -219,8 +169,6 @@ export function MarkdownDocument({
         cursor: draft.cursor,
       });
       view.scrollDOM.removeEventListener("scroll", scrolled);
-      view.dom.removeEventListener("click", openCitation);
-      view.dom.removeEventListener("mousedown", preserveCursor, true);
       view.destroy();
       if (draft.composing) { draft.composing = false; callbacks.current.onChange(); }
     };
@@ -247,7 +195,6 @@ export function MarkdownDocument({
 
   const html = useMemo(() => {
     const tokens = renderer.parse(draft.text.replace(/^\uFEFF/, ""), {});
-    markCitationUses(tokens, draft.path);
     const visit = (list: typeof tokens) => {
       for (const token of list) {
         if (token.type === "image") {
@@ -278,26 +225,6 @@ export function MarkdownDocument({
   }, [draft.text, draft.path, root]);
 
   // Drafts are mutable: location checks must use the snapshot that produced the preview.
-  const { loading, file, text, mode: viewMode } = draft;
-  const visited = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (!usageTarget || loading || !file || visited.current === usageTarget.nonce) return;
-    const { use } = usageTarget;
-    if (file.version !== use.version || text !== file.text) {
-      visited.current = usageTarget.nonce;
-      setLinkError("文档已变化或有未保存编辑，请重新打开 PDF 引用列表再定位。当前内容已保留。");
-      return;
-    }
-    if (viewMode === "edit") { draft.mode = "read"; onChange(); return; }
-    const link = preview.current?.querySelector<HTMLElement>(`[data-citation-use="${CSS.escape(`${use.id}:${use.occurrence}`)}"]`);
-    visited.current = usageTarget.nonce;
-    if (!link) { setLinkError("引用使用位置已变化，请返回 PDF 刷新引用列表。"); return; }
-    setLinkError("");
-    preview.current?.querySelectorAll(".citation-use-target").forEach((node) => node.classList.remove("citation-use-target"));
-    link.classList.add("citation-use-target");
-    link.scrollIntoView({ block: "center" });
-  }, [usageTarget, loading, file, text, viewMode, html]);
-
   function mode(value: MarkdownDraft["mode"]) {
     draft.mode = value;
     onChange();
@@ -315,26 +242,24 @@ export function MarkdownDocument({
         {readOnly ? (
           <span className="muted">只读出处字典</span>
         ) : (
-          <>
-            <div className="switch" role="group" aria-label="Markdown 视图">
-              {(
-                [
-                  ["read", "阅读"],
-                  ["edit", "编辑"],
-                  ["split", "分屏"],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  aria-pressed={draft.mode === id}
-                  className={draft.mode === id ? "active" : ""}
-                  onClick={() => mode(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </>
+          <div className="switch" role="group" aria-label="Markdown 视图">
+            {(
+              [
+                ["read", "阅读"],
+                ["edit", "编辑"],
+                ["split", "分屏"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                aria-pressed={draft.mode === id}
+                className={draft.mode === id ? "active" : ""}
+                onClick={() => mode(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         )}
       </div>
       {(draft.error || linkError) && (
@@ -388,7 +313,6 @@ export function MarkdownDocument({
               event.preventDefault();
               setLinkError("");
               const href = anchor.getAttribute("href") ?? "";
-              if (href.startsWith("paper:") || isAnnotationLink(href)) { onCitation(href); return; }
               if (/^https?:\/\//i.test(href)) {
                 void window.desktop
                   .openLink(href)

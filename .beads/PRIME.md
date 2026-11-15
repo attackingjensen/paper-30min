@@ -8,7 +8,6 @@
 - **Prohibited**: Do NOT use TodoWrite, TaskCreate, or markdown TODO lists.
 - **Memory**: Do NOT use `bd remember` or `bd memories`. Persistent knowledge belongs to OpenViking; review and memory revision are triggered by the user, not by routine task completion.
 - **Workflow**: Create or claim a beads issue BEFORE writing code; mark `in_progress` when starting.
-- **Git authority**: Conservative — do NOT run git commits, pushes, or Dolt remote sync unless the user explicitly asks.
 
 ## Essential Commands
 
@@ -35,7 +34,6 @@
 1. Close finished issues with evidence (commands, outputs, commit hashes, test names).
 2. Create beads for any remaining follow-up work.
 3. Report changed files and validation results.
-4. Do NOT commit, push, or sync unless explicitly instructed.
 
 ## Project Notes
 

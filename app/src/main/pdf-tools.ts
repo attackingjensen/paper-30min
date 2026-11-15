@@ -12,18 +12,17 @@ export function createPdfTools(
   projects: ProjectService,
   vision: boolean,
   active: () => boolean,
-  onRead?: (documentId: string, page: number) => void,
 ) {
   return [
     defineTool({
       name: "read_pdf",
       label: "查看 PDF 图像",
       description:
-        "Visually inspect a complete PDF page in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real full-page PNG, registered path and document ID, PDF version, page number and count, width and height in PDF points, and actual rendering scale. Pages are 1-based. Omit page to inspect page 1. Does not create or return citations or links. No region cropping, PDF text extraction or OCR. Read the parsed manuscript for document text and reuse its existing citation links when available; never invent links, citation IDs or coordinates.",
+        "Visually inspect a complete PDF page in the current project, independently of the viewer and parsing. Requires a vision-enabled model. Returns a real full-page PNG, project-relative path and document ID, PDF version, page number and count, width and height in PDF points, and actual rendering scale. Pages are 1-based. Omit page to inspect page 1. No region cropping, PDF text extraction or OCR. Read the parsed manuscript for document text.",
       parameters: Type.Object({
         path: Type.String({
           description:
-            "Project-relative registered PDF path; normally text/paper.pdf",
+            "Project-relative PDF path; normally text/paper.pdf",
         }),
         page: Type.Optional(Type.Integer({ minimum: 1 })),
         scale: Type.Optional(
@@ -63,8 +62,6 @@ export function createPdfTools(
           path: args.path,
         })) as PdfSource;
         const record = source.document;
-        if (!record)
-          throw new Error("PDF 身份不存在，请先将 PDF 加入工程材料。");
         check();
         const pageNumber = args.page ?? 1;
         if (!Number.isSafeInteger(pageNumber) || pageNumber < 1)
@@ -130,7 +127,7 @@ export function createPdfTools(
           check();
           const info = {
             path: args.path,
-            documentId: record.id,
+            documentId: record?.id ?? args.path,
             sha256: source.sha256,
             page: pageNumber,
             pageCount: doc.pages.length,
@@ -141,7 +138,6 @@ export function createPdfTools(
             scale: actualScale,
             image: "实际 PNG 整页图，非原生 PDF 输入",
           };
-          onRead?.(record.id, pageNumber);
           return {
             content: [
               { type: "text" as const, text: JSON.stringify(info) },
