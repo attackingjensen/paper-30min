@@ -22,7 +22,27 @@ npm test
 
 `npm test` 先构建，再运行 Playwright 的真实 Electron 高层测试。测试只替代系统文件选择器，使用生产 preload、IPC、Node 工程进程和真实磁盘操作；回收站调用也使用 Electron 系统接口。默认测试使用临时配置与可控模型服务，覆盖流式回复、代理、失败恢复、并发停止和迟到事件。失败保留 trace，布局截图位于 `test-results/`。
 
-GitHub 的 `Electron CI` 使用 Node.js 24 和 `npm ci`，在 Windows、Linux 上运行 `npm run build`（包含类型检查），随后仅在 Windows 上运行 `npx playwright test --reporter=list,html`，避免重复构建。Windows 回归使用隐藏窗口和受控服务，不配置真实模型或百度服务凭据；HTML 报告、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天。可从 Actions 页面手动运行工作流。Linux 构建通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
+GitHub 的 `Electron CI` 使用 Node.js 24 和 `npm ci`，在 Windows、Linux 上先运行 `npm run test:dead-code` 和 `npm run build`（包含类型检查），随后仅在 Windows 上运行 `npx playwright test --reporter=list,html`，避免重复构建。Windows 回归使用隐藏窗口和受控服务，不配置真实模型或百度服务凭据；HTML 报告、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天。可从 Actions 页面手动运行工作流。Linux 构建通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
+
+## 死代码检测
+
+[knip](https://knip.dev/overview/getting-started) 是仅用于开发和 CI 的静态检测工具，不进入生产运行代码或安装包。它检查未使用文件、导出、导出类型和依赖，并同时报告未声明依赖；配置位于 `knip.jsonc`，业务源码不需要检测标记。
+
+```powershell
+npm run test:dead-code
+```
+
+命令有问题时退出码为 1，配置或内部错误为 2；Electron CI 在 Windows 和 Linux 均把它作为阻断门禁。`src/main/main.ts`、`worker.ts`、`preload.cts` 和 `src/renderer/main.tsx` 显式登记为入口，因为 Electron 的进程启动/预加载路径不都经过静态 import；`includeEntryExports` 同时检查入口文件的导出。
+
+### Phase 0 基线与有限豁免
+
+首次无配置扫描成功识别 TypeScript 项目，报告 6 个入口相关未使用文件、3 个未使用依赖、1 个未使用开发依赖、8 处未声明依赖、2 个未使用导出和 6 个未使用导出类型。补全入口后，级联误报消失，剩余问题按以下方式处理：
+
+- 不使用 `ignoreFiles` 或全局关闭规则。`@embedpdf/pdfium`、`@embedpdf/plugin-spread`、`@embedpdf/plugin-rotate`、`@embedpdf/plugin-stamp` 是源码直接 import，已按实际安装版本显式声明；`@embedpdf/plugin-capture`、`@embedpdf/plugin-render` 已由 Viewer 的 snippet 依赖提供，冗余直接声明已移除；`markdown-it` 自带类型，冗余 `@types/markdown-it` 已移除。
+- `ignoreIssues` 只对 `src/shared/contracts.ts` 和 `src/shared/parsing.ts` 的 `types` 问题生效，当前对应 `FileEntry`、`AgentServiceSettings`、`AgentModelSettings`、`ParsingPhase` 四个间接导出类型。它们仍被同文件导出契约引用，但没有独立外部引用，暂由 project-core／agent-integration／pdf-import 收敛契约时决定取消导出还是接入使用。
+- 该豁免也会覆盖这两个文件以后新增的未使用导出类型，因此只是 Phase 0 短期基线；对应模块改造时必须移除豁免并复扫。死文件、死值导出、依赖问题和其他文件的类型问题不受影响。
+
+knip 能证明静态引用和依赖层面的死代码情况，不能单独证明旧引用、旧映射、旧材料或旧导入的语义残留为零；Phase 0 checkpoint 还需对照退役清单做定向协议、通道和入口检查。配置依据见官方 [entry/project 与 ignoreIssues](https://knip.dev/reference/configuration)、[issue types](https://knip.dev/reference/issue-types) 和 [CLI 退出码](https://knip.dev/reference/cli)。
 
 桌面回归默认隐藏原生窗口，不显示任务栏按钮，也不抢占桌面焦点；每次启动将原生窗口内容区设为 1440 × 960，避免 runner 的小屏幕改变桌面测试布局，用例内仍可调整为窄窗口。后台仍进行真实渲染和截图，并通过 CDP 保持浏览器输入与剪贴板 API 可用。需要现场视觉检查或验证原生焦点时，只显式显示所选用例：
 
