@@ -1,6 +1,6 @@
 # Paper30Min
 
-> 当前分支用于 v2.0.0 开发：新版 Electron 应用位于根目录 `app/`，运行与验证入口见 [app/README.md](app/README.md)，本地工程契约见 [docs/project-format.md](docs/project-format.md)。旧客户端位于 `legacy/v1/app/`，仅供迁移、升级兼容和行为参考。以下发布介绍描述 v1.4.0，不是新版功能规格。归档入口见 [legacy/v1/README.md](legacy/v1/README.md)。
+> 当前分支用于 v2.0.0 开发：新版 Electron 应用位于根目录 `app/`，运行与验证入口见 [app/README.md](app/README.md)，本地工程契约见 [docs/project-format.md](docs/project-format.md)。旧 v1 Tauri 客户端源码已删除，历史实现经 git 历史与 Release/tag 追溯。以下发布介绍描述 v1.4.0，不是新版功能规格。
 
 论文精读专精 agent harness：用大模型把一篇完整论文压缩成约 30 分钟可读完的形态——先拿到一屏阅读地图，再定向深挖你关心的章节，最后让复述稿把全篇讲清楚。
 
@@ -21,8 +21,6 @@
 | Ollama（本地） | `http://127.0.0.1:11434/v1` | `qwen2.5:14b` |
 
 配置解析服务后，导入论文（本地 PDF / arXiv 编号 / 示例论文），解析与视觉资源准备会自动在后台完成，点「开始建图」即可开始精读。云端结果发布后可离线阅读原文与来源资源；更改默认解析服务不改写已有论文，需主动重新解析。
-
-没有 API Key 时，可运行 `python tools/mock_llm.py` 启动本地演示模型；在客户端设置中填入 `http://127.0.0.1:8799/v1`、任意 Key 和模型名 `mock-reader-1`。
 
 ## 阅读协议
 
@@ -60,8 +58,6 @@
 paper-30min/
 ├── skills/              # 技能库：顶层为新协议提示词与关注点数据，legacy/ 为旧五技能留档
 ├── app/                 # 新版 Electron / React / Node 客户端
-├── legacy/v1/app/       # 旧版 Tauri 客户端，只读参考
-├── tools/               # 侧车构建、示例论文与 mock 模型等工具
 └── docs/                # 开发产物与文档
     ├── adr/             #   编号式关键决策记录
     └── releases/        #   发布说明与验收边界

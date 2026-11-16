@@ -4,8 +4,8 @@
 
 ## 当前实现
 
-- 根目录 `app/` 是新版 Electron 客户端；`legacy/v1/app/` 是旧客户端，只读参考，不在其中开发新版。
-- v2 使用本地开放工程：正文文件、相对路径清单与 Pi 会话为权威，无 SQLite；Node 负责工程与 Agent 运行，React 负责界面。旧版 Rust/SQLite 书库仅供迁移与行为参考。
+- 根目录 `app/` 是新版 Electron 客户端；旧 v1 Tauri 客户端源码已删除，历史实现经 git 历史与 Release/tag 追溯。
+- v2 使用本地开放工程：正文文件、相对路径清单与 Pi 会话为权威，无 SQLite；Node 负责工程与 Agent 运行，React 负责界面。
 - `app/skills/` 是产品阅读提示词，根目录 `skills/` 保留旧版协议，均不能与 NexusKit 开发技能混用。
 
 ## 分支与交付
@@ -28,7 +28,7 @@
 
 Electron 自动化回归默认隐藏窗口，不弹窗或抢占焦点。只有明确需要现场视觉检查、原生焦点或人工交互验收时，才设置 `PAPER30MIN_TEST_WINDOW=visible` 并通过 Playwright `-g` 筛选相关用例；完成后清除该环境变量，不以可见模式运行整套回归。隐藏模式仍须验证实际渲染、截图和交互，但不能替代原生焦点或人工交互验收；剪贴板用例仍可能使用系统剪贴板。
 
-GitHub 的 `Electron CI` 在 Windows 和 Linux 上运行 knip 死代码检测、类型检查和构建，Windows 另运行隐藏窗口 Electron 全套回归。`Legacy v1 CI` 独立保留旧客户端检查，两者不能互相替代；只有对应提交实际完成的 CI 才记为通过。归档客户端的检查入口见 `legacy/v1/app/README.md`，不构成新版验证证据。
+GitHub 的 `Electron CI` 在 Windows 和 Linux 上运行 knip 死代码检测、类型检查和构建，Windows 另运行隐藏窗口 Electron 全套回归；只有对应提交实际完成的 CI 才记为通过。旧 `Legacy v1 CI` 已随旧客户端删除一并移除。
 
 ## 工作约定
 

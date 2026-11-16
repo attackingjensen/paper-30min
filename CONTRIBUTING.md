@@ -37,7 +37,7 @@ git push -u origin feat/my-change   # origin 指向自己的 fork
 
 ## 代码与文档约定
 
-- 新版在 `app/` 开发；`legacy/v1/app/` 是已归档的旧客户端，只读参考，不在其中开发。
+- 新版在 `app/` 开发；旧 v1 Tauri 客户端源码已删除，历史实现经 git 历史与 Release/tag 追溯。
 - 本地开放式工程：正文文件、相对路径清单与 Pi 会话为权威，不引入 SQLite。
 - 文档默认中文；代码标识符与技能 frontmatter 保持自身格式。
 - 当前任务与进度由 beads 承接，配置见 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md)；Linear 仅作历史参考，GitHub Issues 只承担外部问题记录。

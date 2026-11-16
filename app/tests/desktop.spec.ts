@@ -20,7 +20,7 @@ let desktop: ElectronApplication;
 let desktopProcess: ReturnType<ElectronApplication["process"]>;
 let page: Page;
 let errors: string[];
-const fixture = path.resolve("../legacy/v1/app/ui/samples/sample_paper.pdf");
+const fixture = path.resolve("tests/fixtures/sample_paper.pdf");
 
 // Playwright pierces the complete viewer's open shadow root through its public UI.
 const pdfViewport = () =>
@@ -201,7 +201,7 @@ test("百度候选在停止、重开、下载恢复后保留图片，搬迁后�
   let done = false;
   const rows = (
     await fs.readFile(
-      "../legacy/v1/app/src-tauri/tests/fixtures/aistudio/1512.03385.jsonl",
+      "tests/fixtures/aistudio/1512.03385.jsonl",
       "utf8",
     )
   )
@@ -262,7 +262,7 @@ test("百度候选在停止、重开、下载恢复后保留图片，搬迁后�
     await page.getByRole("button", { name: "返回工程" }).click();
     await create(
       path.resolve(
-        "../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf",
+        "tests/fixtures/corpus/1512.03385.pdf",
       ),
       path.join(sandbox, "projects"),
     );
@@ -425,7 +425,7 @@ test("真实百度服务生成可回查候选并记录格式与耗时", async ()
     await create(
       path.resolve(
         process.env.PAPER30MIN_REAL_PARSING_SOURCE ??
-          "../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf",
+          "tests/fixtures/corpus/1512.03385.pdf",
       ),
       path.join(sandbox, "projects"),
     );
@@ -1860,7 +1860,7 @@ test("read_pdf 真实视觉模型核对双栏论文、公式图表与扫描页",
       await fs.copyFile(path.join(process.env.PAPER30MIN_REAL_PROFILE!, file), path.join(sandbox, "profile", file));
     await launch();
   }
-  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"),
+  await create(path.resolve("tests/fixtures/corpus/1706.03762.pdf"),
     path.join(sandbox, "projects"), "真实 PDF 工程");
   const root = path.join(sandbox, "projects", "真实 PDF 工程");
   const scanPath = process.env.PAPER30MIN_REAL_SCAN;
@@ -1950,7 +1950,7 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口且不
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    const source = path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf");
+    const source = path.resolve("tests/fixtures/corpus/1706.03762.pdf");
     await create(source, path.join(sandbox, "projects"), "PDF 工具工程");
     const root = path.join(sandbox, "projects", "PDF 工具工程");
     await expectPdfRendered();
@@ -2180,7 +2180,7 @@ test("STE-99 真实模型按需整理指定原文与讨论为记忆卡片", asyn
   for (const file of ["agent-settings.json", "Local State"])
     await fs.copyFile(path.join(process.env.PAPER30MIN_REAL_PROFILE!, file), path.join(sandbox, "profile", file));
   await launch();
-  await create(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf"), path.join(sandbox, "projects"), "真实聊天材料");
+  await create(path.resolve("tests/fixtures/corpus/1706.03762.pdf"), path.join(sandbox, "projects"), "真实聊天材料");
   const root = path.join(sandbox, "projects/真实聊天材料");
   await fs.writeFile(path.join(root, "text/paper.md"), "# Attention Is All You Need\n\nThe dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder.\n\n[原文](/text/paper.pdf)\n");
   await fs.writeFile(path.join(root, "notes/阅读问题.md"), "本轮只研究编码器和解码器的职责。核验词：松柏七号。");
@@ -3256,7 +3256,7 @@ test("中文参考 PDF、无文本层、加密和损坏文件显式反馈", asyn
     await page.getByRole("button", { name: "刷新工程", exact: true }).click();
     await page.getByRole("button", { name, exact: true }).click();
   };
-  await add(path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/pdfparse_scanned_blank.pdf"), "扫描材料.pdf");
+  await add(path.resolve("tests/fixtures/pdfparse_scanned_blank.pdf"), "扫描材料.pdf");
   await expectPdfRendered();
   await add(path.resolve("tests/fixtures/encrypted.pdf"), "encrypted.pdf");
   await expect(page.getByText("请输入密码", { exact: true })).toBeVisible();

@@ -1,6 +1,6 @@
 # Paper30Min v2 桌面客户端
 
-Electron + React / TypeScript 客户端。新版代码在本目录，旧 Tauri 客户端保留在 [legacy/v1/app](../legacy/v1/app/) 供只读参考。
+Electron + React / TypeScript 客户端。旧 v1 Tauri 客户端源码已删除，历史实现经 git 历史与 Release/tag 追溯。
 
 ## 开发与验证
 
