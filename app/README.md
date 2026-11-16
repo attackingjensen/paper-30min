@@ -62,6 +62,23 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 当前支持从 PDF 创建、打开与最近工程、默认位置和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索和侧栏等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。停止输入约 600 毫秒后自动保存，标签和设置往返中保留编辑位置与撤销历史；Ctrl+S 仍可立即保存。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析生成可编辑正文，Agent 可按需对照原页核对。
 
+### Phase 1 新工程核契约层
+
+`src/main/project-core.ts` 按 [project-core 规格](../docs/spec/SPEC-project-core.md) 实现新工程容器，目前由真实磁盘契约测试使用，尚未替换上述 `project-service.ts` 的界面导入链路：
+
+- `createProject` 创建 `formatVersion: 2` 清单和首次导入恢复记录。
+- `publishSourceSnapshot` 在 staging 中同步并核验文件，再发布到 `sources/<sourceSnapshotId>/`；`snapshot.json` 保存身份、相对路径、逐文件 SHA-256／大小及可选 MIME。已发布快照不接受原地更新。
+- `commitRevision` 要求四个 revision JSON 容器文件，先发布 `paper/revisions/<revisionId>/`，再写 `.paper30min/revisions/<revisionId>/revision.json`，最后原子替换清单中的 current 指针。`baseRevision` 仅在首次导入时为 `null`，之后必须等于 current。
+- `openProject`、`readSourceSnapshot` 和 `readRevision` 校验身份、受管路径、文件清单与摘要；current 可读不依赖来源快照仍可用，首次导入记录只在 current 为空时承担恢复作用。
+
+工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。
+
+```powershell
+npx playwright test -g 'project-core'
+```
+
+契约测试覆盖创建中断、来源与 revision 不可变、首导入和更新故障、基线竞争、进程内并发、外部修改、非法路径、目录链接及工程整体搬迁；真实 Electron 集成由 Phase 1 检查点统一验收。
+
 ## PDF 阅读与旧引用退役
 
 当前版本已移除 PDF 原生批注写回、旧引用字典、`paper://cite/` 与 `#annotation=` 链接，以及按解析块展开引用的 Agent 工具。阅读器保留 PDF 渲染、缩放、滚动与阅读位置恢复；工程 PDF 只读，不提供批注创建入口。

@@ -31,10 +31,40 @@ export interface ProjectImportRecord {
   paperId: string;
 }
 
+export interface ManagedFileRecord {
+  path: string;
+  sha256: string;
+  size: number;
+  mime?: string;
+}
+
+export interface SourceSnapshotRecord {
+  formatVersion: 1;
+  sourceSnapshotId: string;
+  projectId: string;
+  paperId: string;
+  path: string;
+  files: ManagedFileRecord[];
+  createdAt: string;
+}
+
+export interface ProjectRevisionRecord {
+  formatVersion: 1;
+  revisionId: string;
+  projectId: string;
+  paperId: string;
+  sourceSnapshotId: string;
+  baseRevision: string | null;
+  path: string;
+  files: ManagedFileRecord[];
+  committedAt: string;
+}
+
 export interface ProjectCoreSnapshot {
   root: string;
   manifest: ProjectManifest;
   importRecord: ProjectImportRecord | null;
+  currentRevision: ProjectRevisionRecord | null;
 }
 
 export interface FileEntry {
