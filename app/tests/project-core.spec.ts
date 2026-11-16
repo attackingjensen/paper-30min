@@ -11,6 +11,7 @@ import {
   readRevision,
   readSourceSnapshot,
 } from "../src/main/project-core";
+import { testDocumentTree, testRevisionFiles } from "./fixtures/document-tree";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -23,23 +24,6 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await fs.rm(sandbox, { recursive: true, force: true });
 });
-
-function json(value: unknown) {
-  return Buffer.from(JSON.stringify(value));
-}
-
-function revisionFiles(
-  documentTitle: string,
-  baseRevision: string | null = null,
-  sourceTitle = documentTitle,
-) {
-  return {
-    "document.json": json({ documentFormatVersion: 1, title: documentTitle }),
-    "source-base.json": json({ documentFormatVersion: 1, title: sourceTitle }),
-    "tombstones.json": json([]),
-    "changeset.json": json({ baseRevision }),
-  };
-}
 
 async function committedProject(name = "已提交") {
   const created = await createProject({ parent: sandbox, name });
@@ -55,7 +39,7 @@ async function committedProject(name = "已提交") {
     root: created.root,
     baseRevision: null,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: revisionFiles("第一版"),
+    files: testRevisionFiles(created.manifest.paper.id, "第一版"),
     metadata: { normalizationVersion: 1 },
   });
   return { created, source, revision };
@@ -181,7 +165,7 @@ test("project-core 发布来源快照和首个 revision 后才推进 current", a
   expect(revisionJson.path).not.toContain(created.root);
   expect(
     JSON.parse(await fs.readFile(path.join(created.root, revision.path, "document.json"), "utf8")),
-  ).toEqual({ documentFormatVersion: 1, title: "第一版" });
+  ).toEqual(testDocumentTree(created.manifest.paper.id, "第一版"));
 });
 
 test("project-core 修正产生新 revision，已发布正文和来源字节保持不变", async () => {
@@ -199,7 +183,7 @@ test("project-core 修正产生新 revision，已发布正文和来源字节保�
     root: created.root,
     baseRevision: first.revisionId,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: revisionFiles("本地修正", first.revisionId, "第一版"),
+    files: testRevisionFiles(created.manifest.paper.id, "本地修正", first.revisionId, "第一版"),
   });
 
   expect(second.revisionId).not.toBe(first.revisionId);
@@ -240,7 +224,7 @@ test("project-core 拒绝缺少必需正文文件的 revision", async () => {
     root: created.root,
     files: { "document.html": Buffer.from("paper") },
   });
-  const files: Record<string, Buffer> = revisionFiles("不完整");
+  const files: Record<string, Buffer> = testRevisionFiles(created.manifest.paper.id, "不完整");
   delete files["changeset.json"];
 
   await expect(commitRevision({
@@ -288,7 +272,7 @@ for (const point of ["revision-content", "revision-metadata", "before-current-re
       root: created.root,
       baseRevision: first.revisionId,
       sourceSnapshotId: source.sourceSnapshotId,
-      files: revisionFiles("故障候选", first.revisionId, "第一版"),
+      files: testRevisionFiles(created.manifest.paper.id, "故障候选", first.revisionId, "第一版"),
     }, {
       async onCommitPoint(currentPoint, context) {
         if (currentPoint === point) {
@@ -326,7 +310,7 @@ test("project-core 发布前 current 被外部推进时拒绝覆盖并保留候�
     root: created.root,
     baseRevision: first.revisionId,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: revisionFiles("第二版", first.revisionId, "第一版"),
+    files: testRevisionFiles(created.manifest.paper.id, "第二版", first.revisionId, "第一版"),
   });
   const manifestFile = path.join(created.root, "paper30min.json");
   const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
@@ -338,7 +322,7 @@ test("project-core 发布前 current 被外部推进时拒绝覆盖并保留候�
     root: created.root,
     baseRevision: first.revisionId,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: revisionFiles("过期候选", first.revisionId, "第一版"),
+    files: testRevisionFiles(created.manifest.paper.id, "过期候选", first.revisionId, "第一版"),
   }, {
     async onCommitPoint(point, context) {
       if (point === "revision-metadata") {
@@ -370,7 +354,7 @@ test("project-core 整体搬迁后保持身份、current 和来源相对引用",
     .toBe(`sources/${source.sourceSnapshotId}`);
   expect(
     JSON.parse(await fs.readFile(path.join(moved, revision.path, "document.json"), "utf8")),
-  ).toEqual({ documentFormatVersion: 1, title: "第一版" });
+  ).toEqual(testDocumentTree(created.manifest.paper.id, "第一版"));
   expect(reopened.currentRevision?.path).not.toContain(moved);
 });
 
@@ -392,7 +376,7 @@ test("project-core 写入端拒绝路径穿越和伪造资产摘要", async () =
     baseRevision: null,
     sourceSnapshotId: source.sourceSnapshotId,
     files: {
-      ...revisionFiles("资产错误"),
+      ...testRevisionFiles(created.manifest.paper.id, "资产错误"),
       [`assets/${fakeHash}.png`]: Buffer.from("not-the-hash"),
     },
   })).rejects.toThrow(/资产|摘要/);
@@ -429,7 +413,7 @@ test("project-core 拒绝其他工程的来源快照身份", async () => {
     root: second.root,
     baseRevision: null,
     sourceSnapshotId: first.source.sourceSnapshotId,
-    files: revisionFiles("错绑来源"),
+    files: testRevisionFiles(second.manifest.paper.id, "错绑来源"),
   })).rejects.toThrow(/身份|不匹配/);
   expect((await openProject(second.root)).manifest.paper.currentRevision).toBeNull();
 });
@@ -450,7 +434,7 @@ test("project-core 资产按实际内容摘要记录", async () => {
     baseRevision: null,
     sourceSnapshotId: source.sourceSnapshotId,
     files: {
-      ...revisionFiles("含资产"),
+      ...testRevisionFiles(created.manifest.paper.id, "含资产"),
       [`assets/${sha256}.png`]: asset,
     },
   });

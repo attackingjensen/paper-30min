@@ -10,6 +10,11 @@ import type {
   ProjectRevisionRecord,
   SourceSnapshotRecord,
 } from "../shared/contracts.js";
+import {
+  parseDocumentTree,
+  validateDocumentAssets,
+  type DocumentTree,
+} from "../shared/document/tree.js";
 
 const manifestName = "paper30min.json";
 const initialImportName = ".paper30min/imports/initial.json";
@@ -23,6 +28,7 @@ const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const sha256 = /^[a-f0-9]{64}$/;
 const jsonBudget = 1024 * 1024;
+const documentJsonBudget = 64 * 1024 * 1024;
 const writeQueues = new Map<string, Promise<void>>();
 
 export interface CreateProjectInput {
@@ -265,14 +271,48 @@ function normalizeFiles(
   if (kind === "revision") {
     const decoder = new TextDecoder("utf-8", { fatal: true });
     for (const required of requiredRevisionFiles) {
+      const file = validated.find((candidate) => candidate.path === required)!;
+      if ((required === "document.json" || required === "source-base.json") &&
+        file.bytes.byteLength > documentJsonBudget)
+        throw new Error(`revision 文档树超过 64 MiB 预算：${required}。`);
       try {
-        JSON.parse(decoder.decode(validated.find((file) => file.path === required)!.bytes));
+        JSON.parse(decoder.decode(file.bytes));
       } catch {
         throw new Error(`revision 必需 JSON 文件无效：${required}。`);
       }
     }
   }
   return validated;
+}
+
+function validateRevisionDocumentTrees(
+  documentValue: unknown,
+  sourceBaseValue: unknown,
+  files: ManagedFileRecord[],
+  paperId: string,
+) {
+  const document = parseDocumentTree(documentValue, paperId);
+  const sourceBase = parseDocumentTree(sourceBaseValue, paperId);
+  const assetHashes = Object.fromEntries(
+    files.filter((file) => file.path.startsWith("assets/"))
+      .map((file) => [file.path, file.sha256]),
+  );
+  validateDocumentAssets(document, assetHashes);
+  validateDocumentAssets(sourceBase, assetHashes);
+  return { document, sourceBase };
+}
+
+function validateBufferedRevisionTrees(files: NormalizedFile[], paperId: string) {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const read = (relative: string) => JSON.parse(decoder.decode(
+    files.find((file) => file.path === relative)!.bytes,
+  )) as unknown;
+  return validateRevisionDocumentTrees(
+    read("document.json"),
+    read("source-base.json"),
+    files,
+    paperId,
+  );
 }
 
 function normalizeMetadata(
@@ -437,14 +477,15 @@ async function ensureManagedDirectory(root: string, relative: string) {
   return target;
 }
 
-async function readJsonFile(file: string, description: string) {
+async function readJsonFile(file: string, description: string, budget = jsonBudget) {
+  const budgetLabel = budget === documentJsonBudget ? "64 MiB" : "1 MiB";
   const handle = await fs.open(file, "r");
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > jsonBudget)
-      throw new Error("工程 JSON 文件超过 1 MiB 读取预算或不是普通文件。");
+    if (!stat.isFile() || stat.size > budget)
+      throw new Error(`工程 JSON 文件超过 ${budgetLabel} 读取预算或不是普通文件。`);
     const bytes = await handle.readFile();
-    if (bytes.length > jsonBudget) throw new Error("工程 JSON 文件超过 1 MiB 读取预算。");
+    if (bytes.length > budget) throw new Error(`工程 JSON 文件超过 ${budgetLabel} 读取预算。`);
     try {
       const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       return { value: JSON.parse(text) as unknown, bytes };
@@ -460,8 +501,13 @@ async function readJsonFile(file: string, description: string) {
   }
 }
 
-async function readManagedJson(root: string, relative: string, description: string) {
-  return readJsonFile(await managedPath(root, relative), description);
+async function readManagedJson(
+  root: string,
+  relative: string,
+  description: string,
+  budget = jsonBudget,
+) {
+  return readJsonFile(await managedPath(root, relative), description, budget);
 }
 
 async function readManifest(root: string) {
@@ -595,7 +641,7 @@ async function loadSourceSnapshot(
   }
 }
 
-async function loadRevision(root: string, manifest: ProjectManifest, revisionId: string) {
+async function loadRevisionContent(root: string, manifest: ProjectManifest, revisionId: string) {
   if (!uuid.test(revisionId)) throw new Error("revisionId 无效。");
   try {
     const { value } = await readManagedJson(
@@ -605,7 +651,27 @@ async function loadRevision(root: string, manifest: ProjectManifest, revisionId:
     );
     const revision = parseRevision(value, manifest, revisionId);
     await verifyDirectory(await managedPath(root, revision.path), revision.files);
-    return revision;
+    const [documentResult, sourceBaseResult] = await Promise.all([
+      readManagedJson(
+        root,
+        `${revision.path}/document.json`,
+        "current 文档树",
+        documentJsonBudget,
+      ),
+      readManagedJson(
+        root,
+        `${revision.path}/source-base.json`,
+        "source-base 文档树",
+        documentJsonBudget,
+      ),
+    ]);
+    const documents = validateRevisionDocumentTrees(
+      documentResult.value,
+      sourceBaseResult.value,
+      revision.files,
+      manifest.paper.id,
+    );
+    return { revision, documents };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
       throw new Error(`revision 不存在或内容不完整：${revisionId}；请保留现场并恢复候选或有效工程。`, {
@@ -613,6 +679,10 @@ async function loadRevision(root: string, manifest: ProjectManifest, revisionId:
       });
     throw error;
   }
+}
+
+async function loadRevision(root: string, manifest: ProjectManifest, revisionId: string) {
+  return (await loadRevisionContent(root, manifest, revisionId)).revision;
 }
 
 async function inspectProject(root: string) {
@@ -715,6 +785,19 @@ export async function readRevision(root: string, revisionId: string) {
   return loadRevision(root, manifest, revisionId);
 }
 
+export async function readRevisionDocument(
+  root: string,
+  revisionId: string,
+  kind: "document" | "source-base",
+): Promise<DocumentTree> {
+  if (kind !== "document" && kind !== "source-base")
+    throw new Error("文档树读取类型必须是 document 或 source-base。");
+  root = await canonicalRoot(root);
+  const { manifest } = await readManifest(root);
+  const { documents } = await loadRevisionContent(root, manifest, revisionId);
+  return kind === "document" ? documents.document : documents.sourceBase;
+}
+
 export async function publishSourceSnapshot(
   input: PublishSourceSnapshotInput,
   hooks: ProjectCommitHooks = {},
@@ -789,6 +872,7 @@ export async function commitRevision(
     if (current !== input.baseRevision)
       throw new Error(`baseRevision 已过期：读取基线为 ${input.baseRevision}，current 为 ${current}。`);
     await loadSourceSnapshot(root, manifest, input.sourceSnapshotId);
+    validateBufferedRevisionTrees(files, manifest.paper.id);
 
     const revisionId = randomUUID();
     const staged = await stageFiles(root, "revision", files);

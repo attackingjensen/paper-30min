@@ -11,6 +11,7 @@ import {
   readRevision,
   readSourceSnapshot,
 } from "../src/main/project-core";
+import { testDocumentTree, testRevisionFiles } from "./fixtures/document-tree";
 
 let sandbox: string;
 
@@ -22,16 +23,6 @@ test.afterEach(async () => {
   await fs.rm(sandbox, { recursive: true, force: true });
 });
 
-function revisionFiles(title: string, baseRevision: string | null = null) {
-  const document = Buffer.from(JSON.stringify({ documentFormatVersion: 1, title }));
-  return {
-    "document.json": document,
-    "source-base.json": document,
-    "tombstones.json": Buffer.from("[]"),
-    "changeset.json": Buffer.from(JSON.stringify({ baseRevision })),
-  };
-}
-
 async function committedProject(name = "恢复基线") {
   const created = await createProject({ parent: sandbox, name });
   const source = await publishSourceSnapshot({
@@ -42,7 +33,7 @@ async function committedProject(name = "恢复基线") {
     root: created.root,
     baseRevision: null,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: revisionFiles("旧 current"),
+    files: testRevisionFiles(created.manifest.paper.id, "旧 current"),
   });
   return { created, source, revision };
 }
@@ -99,13 +90,13 @@ test("project-core 文件摘要记录保留可选 MIME", async () => {
   expect((await readSourceSnapshot(created.root, source.sourceSnapshotId)).files)
     .toEqual([expect.objectContaining({ path: "document.html", mime: "text/html" })]);
 
-  const document = Buffer.from(JSON.stringify({ documentFormatVersion: 1, title: "MIME" }));
+  const document = Buffer.from(JSON.stringify(testDocumentTree(created.manifest.paper.id, "MIME")));
   const revision = await commitRevision({
     root: created.root,
     baseRevision: null,
     sourceSnapshotId: source.sourceSnapshotId,
     files: {
-      ...revisionFiles("MIME"),
+      ...testRevisionFiles(created.manifest.paper.id, "MIME"),
       "document.json": { bytes: document, mime: "application/json" },
     },
   });
@@ -149,7 +140,7 @@ test("project-core 同进程同基线并发提交只有一个成功", async () =
     root: created.root,
     baseRevision: revision.revisionId,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: revisionFiles(title, revision.revisionId),
+    files: testRevisionFiles(created.manifest.paper.id, title, revision.revisionId),
   });
   const results = await Promise.allSettled([attempt("候选 A"), attempt("候选 B")]);
   const fulfilled = results.filter((result) => result.status === "fulfilled");
@@ -174,7 +165,7 @@ test("project-core 首次导入候选发布后故障保留空 current 和完整�
     root: created.root,
     baseRevision: null,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: revisionFiles("首导入候选"),
+    files: testRevisionFiles(created.manifest.paper.id, "首导入候选"),
   }, {
     onCommitPoint(point, context) {
       if (point === "revision-metadata") {
@@ -198,7 +189,7 @@ test("project-core current 替换前复核旧 revision 内容摘要", async () =
     root: created.root,
     baseRevision: revision.revisionId,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: revisionFiles("新候选", revision.revisionId),
+    files: testRevisionFiles(created.manifest.paper.id, "新候选", revision.revisionId),
   }, {
     async onCommitPoint(point, context) {
       if (point === "revision-metadata") {
@@ -240,7 +231,7 @@ test("project-core 拒绝非法必需 JSON 和覆盖核心元数据字段", asyn
     root: created.root,
     baseRevision: null,
     sourceSnapshotId: source.sourceSnapshotId,
-    files: { ...revisionFiles("非法 JSON"), "changeset.json": Buffer.from("{") },
+    files: { ...testRevisionFiles(created.manifest.paper.id, "非法 JSON"), "changeset.json": Buffer.from("{") },
   })).rejects.toThrow(/JSON/);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });

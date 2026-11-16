@@ -70,11 +70,13 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 - `publishSourceSnapshot` 在 staging 中同步并核验文件，再发布到 `sources/<sourceSnapshotId>/`；`snapshot.json` 保存身份、相对路径、逐文件 SHA-256／大小及可选 MIME。已发布快照不接受原地更新。
 - `commitRevision` 要求四个 revision JSON 容器文件，先发布 `paper/revisions/<revisionId>/`，再写 `.paper30min/revisions/<revisionId>/revision.json`，最后原子替换清单中的 current 指针。`baseRevision` 仅在首次导入时为 `null`，之后必须等于 current。
 - `openProject`、`readSourceSnapshot` 和 `readRevision` 校验身份、受管路径、文件清单与摘要；current 可读不依赖来源快照仍可用，首次导入记录只在 current 为空时承担恢复作用。
+- `src/shared/document/tree.ts` 定义 `documentFormatVersion: 1` 的 Section、Unit、Sentence、Atom 与 Block 树。节点使用论文内唯一的 UUID，记录键与节点 ID 必须一致；章节、单元、句子、内联原子和阅读块保存显式父子关系及顺序。`commitRevision` 对 `document.json` 与 `source-base.json` 调用同一运行时 schema、引用完整性、paperId 和资产引用校验。
+- `readRevisionDocument` 通过显式 `document` / `source-base` 参数读取对应树，避免把来源基线混入普通正文入口。重开只读取并验证已持久化的节点和句子，不重新分配 ID、不重新分段，也不改写 revision 字节。两棵文档树的单文件读取预算为 64 MiB；工程元数据仍为 1 MiB。
 
 工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
 
 ```powershell
-npx playwright test -g 'project-core'
+npx playwright test -g 'project-core|document-core'
 ```
 
 契约测试覆盖创建中断、来源与 revision 不可变、首导入和更新故障、基线竞争、进程内并发、外部修改、非法路径、目录链接及工程整体搬迁；真实 Electron 集成由 Phase 1 检查点统一验收。
