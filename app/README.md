@@ -39,8 +39,8 @@ npm run test:dead-code
 首次无配置扫描成功识别 TypeScript 项目，报告 6 个入口相关未使用文件、3 个未使用依赖、1 个未使用开发依赖、8 处未声明依赖、2 个未使用导出和 6 个未使用导出类型。补全入口后，级联误报消失，剩余问题按以下方式处理：
 
 - 不使用 `ignoreFiles` 或全局关闭规则。`@embedpdf/pdfium`、`@embedpdf/plugin-spread`、`@embedpdf/plugin-rotate` 是源码直接 import，已按实际安装版本显式声明；Viewer 已传递提供的 annotation、capture、interaction-manager、render、selection、stamp 与默认印章资源不重复声明；`markdown-it` 自带类型，冗余 `@types/markdown-it` 已移除。
-- `ignoreIssues` 只对 `src/shared/contracts.ts` 和 `src/shared/parsing.ts` 的 `types` 问题生效，当前对应 `FileEntry`、`AgentServiceSettings`、`AgentModelSettings`、`ParsingPhase` 四个间接导出类型。它们仍被同文件导出契约引用，但没有独立外部引用，暂由 project-core／agent-integration／pdf-import 收敛契约时决定取消导出还是接入使用。
-- 该豁免也会覆盖这两个文件以后新增的未使用导出类型，因此只是 Phase 0 短期基线；对应模块改造时必须移除豁免并复扫。死文件、死值导出、依赖问题和其他文件的类型问题不受影响。
+- `ignoreIssues` 现在只对 `src/shared/parsing.ts` 的 `types` 问题生效，对应 `ParsingPhase` 间接导出类型，留待 pdf-import 收敛契约时移除。`src/shared/contracts.ts` 的豁免已随 Phase 1 project-core 契约收敛移除：`FileEntry`、`AgentServiceSettings`、`AgentModelSettings` 取消导出，仍由同文件导出契约结构性引用。
+- 剩余豁免会覆盖 `parsing.ts` 以后新增的未使用导出类型，因此只是短期基线；对应模块改造时必须移除豁免并复扫。死文件、死值导出、依赖问题和其他文件的类型问题不受影响。
 
 knip 能证明静态引用和依赖层面的死代码情况，不能单独证明旧引用、旧映射、旧材料或旧导入的语义残留为零；Phase 0 checkpoint 还需对照退役清单做定向协议、通道和入口检查。配置依据见官方 [entry/project 与 ignoreIssues](https://knip.dev/reference/configuration)、[issue types](https://knip.dev/reference/issue-types) 和 [CLI 退出码](https://knip.dev/reference/cli)。
 
@@ -61,6 +61,31 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 详见 [工程文件契约](../docs/project-format.md)。`src/main/project-service.ts` 是界面及后续 Agent 共享的文件操作入口，由 Node utility process 执行；主进程负责系统选择器、回收站和外部打开，React 通过受限 preload 调用。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统。
 
 当前支持从 PDF 创建、打开与最近工程、默认位置和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索和侧栏等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。停止输入约 600 毫秒后自动保存，标签和设置往返中保留编辑位置与撤销历史；Ctrl+S 仍可立即保存。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析生成可编辑正文，Agent 可按需对照原页核对。
+
+### Phase 1 新工程核契约层
+
+`src/main/project-core.ts` 按 [project-core 规格](../docs/spec/SPEC-project-core.md) 实现新工程容器，由真实磁盘契约测试与真实 Electron IPC 回归验收；界面导入链路仍是上述 `project-service.ts` 的 `formatVersion: 1` 过渡形态，新核界面接管由 arXiv 导入与全文阅读器等后续 phase 承接：
+
+- `createProject` 创建 `formatVersion: 2` 清单和首次导入恢复记录。
+- `publishSourceSnapshot` 在 staging 中同步并核验文件，再发布到 `sources/<sourceSnapshotId>/`；`snapshot.json` 保存身份、相对路径、逐文件 SHA-256／大小及可选 MIME。已发布快照不接受原地更新。
+- `commitRevision` 要求四个 revision JSON 容器文件，先发布 `paper/revisions/<revisionId>/`，再写 `.paper30min/revisions/<revisionId>/revision.json`，最后原子替换清单中的 current 指针。`baseRevision` 仅在首次导入时为 `null`，之后必须等于 current。
+- `openProject`、`readSourceSnapshot` 和 `readRevision` 校验身份、受管路径、文件清单与摘要；current 可读不依赖来源快照仍可用，首次导入记录只在 current 为空时承担恢复作用。
+- `src/shared/document/tree.ts` 定义 `documentFormatVersion: 1` 的 Section、Unit、Sentence、Atom 与 Block 树。节点使用论文内唯一的 UUID，记录键与节点 ID 必须一致；章节、单元、句子、内联原子和阅读块保存显式父子关系及顺序。`commitRevision` 对 `document.json` 与 `source-base.json` 调用同一运行时 schema、引用完整性、paperId 和资产引用校验。
+- `readRevisionDocument` 通过显式 `document` / `source-base` 参数读取对应树，避免把来源基线混入普通正文入口。重开只读取并验证已持久化的节点和句子，不重新分配 ID、不重新分段，也不改写 revision 字节。两棵文档树及其 changeset、tombstones 的单文件读取预算为 64 MiB；单个资产上限为 32 MiB，单 revision 引用资产总量上限为 512 MiB；工程元数据仍为 1 MiB。
+- `src/shared/document/anchor.ts` 提供结构化锚点和精确选区。普通文本偏移按 UTF-16 code unit，内联 atom 占一个逻辑位置；跨句／跨单元选区必须按阅读顺序显式保存全部连续 ranges。`QuoteSnapshot` 保存选中文本及前后各最多 32 个逻辑位置的上下文，解析只用于校验和诊断，不凭重复 quote 或相似文本自动重锚。
+- `src/shared/document/changeset.ts` 按稳定 ID 生成 `retained` / `moved` / `changed` / `removed` / `added` 变化，并支持合并阶段的 `conflicted`。派生状态以锚点实际依赖为边界：纯移动保持 `fresh`，内容变化为 `stale`，删除或冲突为 `invalid`，新增目标为 `missing`；不会因 revisionId 改变而全篇失效。`tombstones` 保存最后出现 revision、原摘录和原因，采用不修改旧数组的累积方式，并禁止退役 ID 复用。
+- `src/shared/document/merge.ts` 以旧 source-base、current 和新 candidate 执行单元级三方合并。候选对齐依次使用稳定 ID、唯一 source alias、同父级唯一规范内容和可证明的未变顺序；重复文本或歧义对齐不继承旧 ID。双方修改同一单元产生 content 冲突，修改后删除产生 deletion 冲突，父级／阅读顺序和资产分别产生 structure／order／asset 冲突。每项冲突保留 base、current、candidate 与相关锚点，必须逐项显式选择 current 或 candidate，不能按默认优先级发布。source-base 可以合法保留已在 current 本地删除的节点；显式恢复同一逻辑节点时撤销对应 tombstone，退役 ID 不得改用于不同逻辑内容。父章节缺失会形成 structure 冲突，不会把子单元静默改挂到其他章节。
+- `src/main/document/merge.ts` 提供真实工程候选创建、冲突解决和发布。发布后的 current 是合并树，source-base 只含新来源树；后续轮次因此仍能识别保留下来的本地修正。候选携带 revisionId、changeset、累积 tombstones 和两棵树所需资产；未解决冲突或 baseRevision 已变化时拒绝发布，最终仍由 `commitRevision` 复核 current 并原子推进。`commitRevision` 也接受可选的调用方 revisionId，用于让候选与其 changeset 在创建时绑定同一身份；未提供时仍自动生成。简略 changeset 输入会在提交时生成实际差异，显式 changeset 必须与基线、revisionId 和候选树一致。提交失败后，只有内容、来源、基线和元数据完全一致的同一候选可以按原 revisionId 重试，已有不可变内容不会被覆盖。
+
+工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
+
+新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish` 与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。界面导入链路尚未接入这些命令。
+
+```powershell
+npx playwright test -g 'project-core|document-core'
+```
+
+契约测试覆盖创建中断、来源与 revision 不可变、首导入和更新故障、基线竞争、进程内并发、外部修改、非法路径、目录链接及工程整体搬迁。真实 Electron 回归（`tests/project-core-electron.spec.ts`）经生产 preload、IPC 和 Node 工程进程覆盖无 PDF 工程创建、首次导入与更新发布、current 推进、离线重开、基线冲突与并发提交、外部篡改与缺失 revision 故障现场、整体搬迁、`formatVersion: 1` 明确分流及合并候选发布。
 
 ## PDF 阅读与旧引用退役
 

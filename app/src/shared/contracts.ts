@@ -1,5 +1,6 @@
 import type { ParsingCommand } from "./parsing.js";
 import type { ChatAttachment } from "./chat-input.js";
+import type { DocumentTree } from "./document/tree.js";
 
 export interface DocumentRecord {
   id: string;
@@ -14,7 +15,100 @@ export interface Manifest {
   paper: DocumentRecord;
 }
 
-export interface FileEntry {
+export interface ProjectManifest {
+  formatVersion: 2;
+  id: string;
+  name: string;
+  paper: {
+    id: string;
+    currentRevision: string | null;
+  };
+}
+
+export interface ProjectImportRecord {
+  formatVersion: 1;
+  id: string;
+  projectId: string;
+  paperId: string;
+}
+
+export interface ManagedFileRecord {
+  path: string;
+  sha256: string;
+  size: number;
+  mime?: string;
+}
+
+export type SourceSnapshotRecord = Record<string, unknown> & {
+  formatVersion: 1;
+  sourceSnapshotId: string;
+  projectId: string;
+  paperId: string;
+  path: string;
+  files: ManagedFileRecord[];
+  createdAt: string;
+};
+
+export type ProjectRevisionRecord = Record<string, unknown> & {
+  formatVersion: 1;
+  revisionId: string;
+  projectId: string;
+  paperId: string;
+  sourceSnapshotId: string;
+  baseRevision: string | null;
+  path: string;
+  files: ManagedFileRecord[];
+  committedAt: string;
+};
+
+export interface ProjectCoreSnapshot {
+  root: string;
+  manifest: ProjectManifest;
+  importRecord: ProjectImportRecord | null;
+  currentRevision: ProjectRevisionRecord | null;
+}
+
+export type ManagedFileContent = Uint8Array | { bytes: Uint8Array; mime?: string };
+
+export type CoreCommand =
+  | { type: "coreCreate"; parent: string; name: string }
+  | { type: "coreOpen"; root: string }
+  | {
+      type: "corePublishSource";
+      root: string;
+      files: Record<string, ManagedFileContent>;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "coreCommit";
+      root: string;
+      baseRevision: string | null;
+      sourceSnapshotId: string;
+      revisionId?: string;
+      files: Record<string, ManagedFileContent>;
+      metadata?: Record<string, unknown>;
+    }
+  | { type: "coreReadSource"; root: string; sourceSnapshotId: string }
+  | { type: "coreReadRevision"; root: string; revisionId: string }
+  | {
+      type: "coreReadDocument";
+      root: string;
+      revisionId: string;
+      tree: "document" | "source-base";
+    }
+  | {
+      type: "coreMergePublish";
+      root: string;
+      baseRevision: string;
+      sourceSnapshotId: string;
+      candidate: DocumentTree;
+      resolutions?: Array<{
+        conflictId: string;
+        choice: "current" | "candidate";
+      }>;
+    };
+
+interface FileEntry {
   path: string;
   directory: boolean;
 }
@@ -105,7 +199,8 @@ export type Command =
       path: string;
       position: PdfPosition;
     }
-  | { type: "resolveFile"; root: string; path: string };
+  | { type: "resolveFile"; root: string; path: string }
+  | CoreCommand;
 
 export interface Desktop {
   parsing<T>(command: ParsingCommand): Promise<T>;
@@ -132,7 +227,7 @@ export const thinkingLevels: ThinkingLevel[] = [
   "max",
   "ultra",
 ];
-export interface AgentServiceSettings {
+interface AgentServiceSettings {
   id: string;
   name: string;
   api: AgentApi;
@@ -140,7 +235,7 @@ export interface AgentServiceSettings {
   hasKey: boolean;
   keyError?: boolean;
 }
-export interface AgentModelSettings {
+interface AgentModelSettings {
   id: string;
   serviceId: string;
   name: string;
