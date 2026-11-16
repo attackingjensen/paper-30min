@@ -1,0 +1,153 @@
+import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
+import { arxivEndpointUrl, isAllowedArxivHost, parseArxivReference } from "./reference.js";
+
+/** 受控 abs 获取入口：生产 transport 在后续切片接入，测试映射到本地 fixtures。 */
+export type AbsFetch = (url: string) => Promise<string>;
+
+export type ArxivVersionResolution =
+  | { ok: true; reference: ArxivReference; absUrl: string }
+  | { ok: false; diagnostic: ImportDiagnostic };
+
+export type ArxivVersionGuard = { ok: true } | { ok: false; diagnostic: ImportDiagnostic };
+
+export interface ArxivVersionEvidence {
+  /** 响应 HTML 中 citation_arxiv_id 元数据的值（如有）。 */
+  citationId?: string;
+}
+
+function fail(code: string, messageKey: string, sourceUrl?: string): { ok: false; diagnostic: ImportDiagnostic } {
+  return {
+    ok: false,
+    diagnostic: { code, severity: "fatal", stage: "resolve", messageKey, sourceUrl },
+  };
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+interface AbsIdentity {
+  baseId: string;
+  version: number | null;
+}
+
+/** 从 abs/HTML 页面元数据或 URL 路径中读取完整来源身份；解析失败返回 null。 */
+function identityFromText(text: string): AbsIdentity | null {
+  const parsed = parseArxivReference(text);
+  return parsed.ok ? { baseId: parsed.reference.baseId, version: parsed.reference.version } : null;
+}
+
+function citationIdentity(html: string): AbsIdentity | null {
+  const match = /<meta\b[^>]*\bname=["']citation_arxiv_id["'][^>]*>/i.exec(html);
+  if (!match) return null;
+  const content = /\bcontent=["']([^"']*)["']/i.exec(match[0]);
+  return content ? identityFromText(content[1]) : null;
+}
+
+/** abs 页面 <title> 的 [id] 前缀给出该页面对应的 base ID。 */
+function absTitleBaseId(html: string): string | null {
+  const match = /<title>\s*\[([^\]]+)\]/i.exec(html);
+  return match ? identityFromText(match[1])?.baseId ?? null : null;
+}
+
+interface HistoryEntry {
+  version: number;
+  withdrawn: boolean;
+}
+
+/** 提交历史中指向同一 base ID 的版本链接；版本按整数比较。 */
+function submissionHistory(html: string, baseId: string): HistoryEntry[] {
+  const pattern = new RegExp(
+    `<a\\b[^>]*\\bhref=["']/abs/${escapeRegExp(baseId)}v(\\d+)["'][^>]*>\\s*\\[v\\d+\\]\\s*</a>([\\s\\S]*?)(?=<a\\b|<b>|$)`,
+    "gi",
+  );
+  const entries: HistoryEntry[] = [];
+  for (const match of html.matchAll(pattern)) {
+    entries.push({ version: Number(match[1]), withdrawn: /withdrawn/i.test(match[2]) });
+  }
+  return entries;
+}
+
+/** 只信提交历史中的版本链接，忽略页面其他数字；无历史返回 null。 */
+export function arxivLatestVersion(html: string, baseId: string): number | null {
+  const versions = submissionHistory(html, baseId).map((entry) => entry.version);
+  return versions.length === 0 ? null : Math.max(...versions);
+}
+
+/**
+ * 固定实际版本（SPEC §1.4–1.7）：
+ * - 无版本输入读取一次 abs，从提交历史按整数取最新并固定；
+ * - 显式版本读取该版本 abs 核验存在性与身份，绝不改取其他版本；
+ * - 无版本目标为撤稿版时报告撤稿，不自动采用上一版；用户显式选择的历史版本照常固定。
+ */
+export async function resolveArxivVersion(
+  reference: ArxivReference,
+  fetchAbs: AbsFetch,
+): Promise<ArxivVersionResolution> {
+  const absUrl = arxivEndpointUrl(reference, "abs");
+  let html: string;
+  try {
+    html = await fetchAbs(absUrl);
+  } catch {
+    return fail("arxiv-abs-fetch-failed", "arxiv.abs.fetchFailed", absUrl);
+  }
+  const identity = citationIdentity(html);
+  const titleBaseId = absTitleBaseId(html);
+  const pageBaseId = identity?.baseId ?? titleBaseId;
+  if (pageBaseId !== null && pageBaseId !== reference.baseId)
+    return fail("arxiv-identity-mismatch", "arxiv.identity.mismatch", absUrl);
+  const history = submissionHistory(html, reference.baseId);
+  if (reference.version !== null) {
+    const entry = history.find((candidate) => candidate.version === reference.version);
+    if (!entry) return fail("arxiv-version-missing", "arxiv.version.missing", absUrl);
+    return { ok: true, reference, absUrl };
+  }
+  if (history.length === 0)
+    return fail("arxiv-version-unresolved", "arxiv.version.unresolved", absUrl);
+  const latest = history.reduce((best, entry) => (entry.version > best.version ? entry : best));
+  if (latest.withdrawn)
+    return fail("arxiv-version-withdrawn", "arxiv.version.withdrawn", absUrl);
+  return {
+    ok: true,
+    reference: {
+      baseId: reference.baseId,
+      version: latest.version,
+      canonicalId: `${reference.baseId}v${latest.version}`,
+    },
+    absUrl,
+  };
+}
+
+/**
+ * 版本守卫（SPEC §1.5–1.6）：HTML 最终 URL 与元数据必须与固定版本完全一致，
+ * 版本混杂即失败，不得拼接不同版本的正文和资产；不同 base ID 是另一来源。
+ */
+export function assertArxivVersionConsistent(
+  pinned: ArxivReference,
+  finalUrl: string,
+  evidence: ArxivVersionEvidence = {},
+): ArxivVersionGuard {
+  if (pinned.version === null)
+    return fail("arxiv-version-unpinned", "arxiv.version.unpinned", finalUrl);
+  let url: URL;
+  try {
+    url = new URL(finalUrl);
+  } catch {
+    return fail("arxiv-source-url-invalid", "arxiv.source.urlInvalid", finalUrl);
+  }
+  if (!isAllowedArxivHost(url.hostname))
+    return fail("arxiv-source-host-rejected", "arxiv.source.hostRejected", finalUrl);
+  const fromUrl = identityFromText(`https://arxiv.org${url.pathname}`);
+  if (!fromUrl || fromUrl.baseId !== pinned.baseId)
+    return fail("arxiv-identity-mismatch", "arxiv.identity.mismatch", finalUrl);
+  if (fromUrl.version !== null && fromUrl.version !== pinned.version)
+    return fail("arxiv-version-mixed", "arxiv.version.mixed", finalUrl);
+  if (evidence.citationId !== undefined) {
+    const fromMeta = identityFromText(evidence.citationId);
+    if (!fromMeta || fromMeta.baseId !== pinned.baseId)
+      return fail("arxiv-identity-mismatch", "arxiv.identity.mismatch", finalUrl);
+    if (fromMeta.version !== null && fromMeta.version !== pinned.version)
+      return fail("arxiv-version-mixed", "arxiv.version.mixed", finalUrl);
+  }
+  return { ok: true };
+}
