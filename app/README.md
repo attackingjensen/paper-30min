@@ -73,6 +73,7 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 - `src/shared/document/tree.ts` 定义 `documentFormatVersion: 1` 的 Section、Unit、Sentence、Atom 与 Block 树。节点使用论文内唯一的 UUID，记录键与节点 ID 必须一致；章节、单元、句子、内联原子和阅读块保存显式父子关系及顺序。`commitRevision` 对 `document.json` 与 `source-base.json` 调用同一运行时 schema、引用完整性、paperId 和资产引用校验。
 - `readRevisionDocument` 通过显式 `document` / `source-base` 参数读取对应树，避免把来源基线混入普通正文入口。重开只读取并验证已持久化的节点和句子，不重新分配 ID、不重新分段，也不改写 revision 字节。两棵文档树的单文件读取预算为 64 MiB；工程元数据仍为 1 MiB。
 - `src/shared/document/anchor.ts` 提供结构化锚点和精确选区。普通文本偏移按 UTF-16 code unit，内联 atom 占一个逻辑位置；跨句／跨单元选区必须按阅读顺序显式保存全部连续 ranges。`QuoteSnapshot` 保存选中文本及前后各最多 32 个逻辑位置的上下文，解析只用于校验和诊断，不凭重复 quote 或相似文本自动重锚。
+- `src/shared/document/changeset.ts` 按稳定 ID 生成 `retained` / `moved` / `changed` / `removed` / `added` 变化，并支持合并阶段的 `conflicted`。派生状态以锚点实际依赖为边界：纯移动保持 `fresh`，内容变化为 `stale`，删除或冲突为 `invalid`，新增目标为 `missing`；不会因 revisionId 改变而全篇失效。`tombstones` 保存最后出现 revision、原摘录和原因，采用不修改旧数组的累积方式，并禁止退役 ID 复用。
 
 工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
 
