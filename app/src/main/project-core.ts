@@ -181,21 +181,67 @@ function validMime(value: unknown): value is string {
     /^[a-z0-9][a-z0-9!#$&^.*+-]*\/[a-z0-9][a-z0-9!#$&^.*+-]*$/i.test(value);
 }
 
+function parseManagedFileRecord(
+  value: unknown,
+  kind: "source" | "revision",
+): ManagedFileRecord {
+  const record = objectValue(value);
+  const keys = Object.keys(record);
+  if (
+    keys.some((key) => !["path", "sha256", "size", "mime"].includes(key)) ||
+    ["path", "sha256", "size"].some((key) => !Object.hasOwn(record, key))
+  ) {
+    throw new Error("受管文件摘要记录包含缺失或不受支持的字段。");
+  }
+  if (typeof record.path !== "string") throw new Error("受管文件路径无效。");
+  validRelativePath(record.path);
+  if (kind === "source" && record.path.normalize("NFC").toLowerCase() === "snapshot.json")
+    throw new Error("snapshot.json 是来源快照保留文件名，不能重复登记或覆盖。");
+  if (
+    typeof record.sha256 !== "string" ||
+    !sha256.test(record.sha256) ||
+    typeof record.size !== "number" ||
+    !Number.isSafeInteger(record.size) ||
+    record.size < 0 ||
+    (record.mime !== undefined && !validMime(record.mime))
+  ) {
+    throw new Error("受管文件摘要、大小或 MIME 无效。");
+  }
+  if (record.path.startsWith("assets/")) validateAssetPath(record.path, record.sha256);
+  return {
+    path: record.path,
+    sha256: record.sha256,
+    size: record.size,
+    ...(record.mime === undefined ? {} : { mime: record.mime }),
+  };
+}
+
+function validateManagedFileList<T extends ManagedFileRecord>(
+  files: T[],
+  kind: "source" | "revision",
+) {
+  const paths = new Set<string>();
+  for (const file of files) {
+    const portable = file.path.normalize("NFC").toLowerCase();
+    if (paths.has(portable)) throw new Error("受管文件路径重复或在搬迁后会发生冲突。");
+    paths.add(portable);
+  }
+  if (kind === "revision") {
+    const missing = requiredRevisionFiles.filter((required) =>
+      !files.some((file) => file.path === required)
+    );
+    if (missing.length) throw new Error(`revision 缺少必需正文文件：${missing.join("、")}。`);
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
 function normalizeFiles(
   input: Readonly<Record<string, ManagedFileContent>>,
   kind: "source" | "revision",
 ): NormalizedFile[] {
   const entries = Object.entries(objectValue(input));
   if (!entries.length) throw new Error("受管内容至少需要一个文件。");
-  const portablePaths = new Set<string>();
   const files = entries.map(([relative, content]) => {
-    validRelativePath(relative);
-    const portable = relative.normalize("NFC").toLowerCase();
-    if (kind === "source" && portable === "snapshot.json")
-      throw new Error("snapshot.json 是来源快照保留文件名，不能由来源输入覆盖。");
-    if (portablePaths.has(portable)) throw new Error("受管文件路径在搬迁后会发生大小写冲突。");
-    portablePaths.add(portable);
-
     let bytes: unknown = content;
     let mime: unknown;
     if (!(content instanceof Uint8Array)) {
@@ -206,33 +252,27 @@ function normalizeFiles(
       mime = input.mime;
     }
     if (!(bytes instanceof Uint8Array)) throw new Error("受管文件内容必须是字节数组。");
-    if (mime !== undefined && !validMime(mime)) throw new Error("受管文件 MIME 无效。");
-    const fileBytes = bytes;
-    const hash = digest(fileBytes);
-    if (relative.startsWith("assets/")) validateAssetPath(relative, hash);
-    return {
+    const record = parseManagedFileRecord({
       path: relative,
-      bytes: fileBytes,
-      sha256: hash,
-      size: fileBytes.byteLength,
+      sha256: digest(bytes),
+      size: bytes.byteLength,
       ...(mime === undefined ? {} : { mime }),
-    };
-  }).sort((a, b) => a.path.localeCompare(b.path));
+    }, kind);
+    return { ...record, bytes };
+  });
+  const validated = validateManagedFileList(files, kind);
 
   if (kind === "revision") {
-    const paths = new Set(files.map((file) => file.path));
-    const missing = requiredRevisionFiles.filter((file) => !paths.has(file));
-    if (missing.length) throw new Error(`revision 缺少必需正文文件：${missing.join("、")}。`);
     const decoder = new TextDecoder("utf-8", { fatal: true });
     for (const required of requiredRevisionFiles) {
       try {
-        JSON.parse(decoder.decode(files.find((file) => file.path === required)!.bytes));
+        JSON.parse(decoder.decode(validated.find((file) => file.path === required)!.bytes));
       } catch {
         throw new Error(`revision 必需 JSON 文件无效：${required}。`);
       }
     }
   }
-  return files;
+  return validated;
 }
 
 function normalizeMetadata(
@@ -268,45 +308,10 @@ function normalizeMetadata(
 
 function parseFileRecords(value: unknown, kind: "source" | "revision"): ManagedFileRecord[] {
   if (!Array.isArray(value) || !value.length) throw new Error("受管文件摘要清单无效。");
-  const paths = new Set<string>();
-  const files = value.map((item) => {
-    const record = objectValue(item);
-    const keys = Object.keys(record);
-    if (
-      keys.some((key) => !["path", "sha256", "size", "mime"].includes(key)) ||
-      ["path", "sha256", "size"].some((key) => !Object.hasOwn(record, key))
-    ) {
-      throw new Error("受管文件摘要记录包含缺失或不受支持的字段。");
-    }
-    if (typeof record.path !== "string") throw new Error("受管文件路径无效。");
-    validRelativePath(record.path);
-    if (kind === "source" && record.path.normalize("NFC").toLowerCase() === "snapshot.json")
-      throw new Error("来源快照不能重复登记保留文件 snapshot.json。");
-    if (
-      typeof record.sha256 !== "string" ||
-      !sha256.test(record.sha256) ||
-      typeof record.size !== "number" ||
-      !Number.isSafeInteger(record.size) ||
-      record.size < 0 ||
-      (record.mime !== undefined && !validMime(record.mime))
-    ) {
-      throw new Error("受管文件摘要、大小或 MIME 无效。");
-    }
-    if (paths.has(record.path)) throw new Error("受管文件摘要清单包含重复路径。");
-    paths.add(record.path);
-    if (record.path.startsWith("assets/")) validateAssetPath(record.path, record.sha256);
-    return {
-      path: record.path,
-      sha256: record.sha256,
-      size: record.size,
-      ...(record.mime === undefined ? {} : { mime: record.mime }),
-    };
-  }).sort((a, b) => a.path.localeCompare(b.path));
-  if (kind === "revision") {
-    const missing = requiredRevisionFiles.filter((file) => !paths.has(file));
-    if (missing.length) throw new Error(`revision 元数据缺少必需文件：${missing.join("、")}。`);
-  }
-  return files;
+  return validateManagedFileList(
+    value.map((item) => parseManagedFileRecord(item, kind)),
+    kind,
+  );
 }
 
 function validTimestamp(value: unknown): value is string {
@@ -337,10 +342,10 @@ function parseSourceSnapshot(
     sourceSnapshotId,
     projectId: manifest.id,
     paperId: manifest.paper.id,
-    path: record.path,
+    path: `sources/${sourceSnapshotId}`,
     files: parseFileRecords(record.files, "source"),
     createdAt: record.createdAt,
-  } as SourceSnapshotRecord;
+  };
 }
 
 function parseRevision(
@@ -371,10 +376,10 @@ function parseRevision(
     paperId: manifest.paper.id,
     sourceSnapshotId: record.sourceSnapshotId,
     baseRevision: record.baseRevision,
-    path: record.path,
+    path: `paper/revisions/${revisionId}`,
     files: parseFileRecords(record.files, "revision"),
     committedAt: record.committedAt,
-  } as ProjectRevisionRecord;
+  };
 }
 
 async function atomicJson(
@@ -729,7 +734,7 @@ export async function publishSourceSnapshot(
     const { manifest } = await readManifest(root);
     const sourceSnapshotId = randomUUID();
     const staged = await stageFiles(root, "source", files);
-    const snapshot = {
+    const snapshot: SourceSnapshotRecord = {
       ...metadata,
       formatVersion: 1,
       sourceSnapshotId,
@@ -738,7 +743,7 @@ export async function publishSourceSnapshot(
       path: `sources/${sourceSnapshotId}`,
       files: fileRecords(files),
       createdAt: new Date().toISOString(),
-    } as SourceSnapshotRecord;
+    };
     await atomicJson(path.join(staged, "snapshot.json"), snapshot);
     await verifyDirectory(staged, files, ["snapshot.json"]);
     await hooks.onCommitPoint?.("source-content", { sourceSnapshotId });
@@ -795,7 +800,7 @@ export async function commitRevision(
     await verifyDirectory(target, files);
     await hooks.onCommitPoint?.("revision-content", { revisionId });
 
-    const revision = {
+    const revision: ProjectRevisionRecord = {
       ...metadata,
       formatVersion: 1,
       revisionId,
@@ -806,7 +811,7 @@ export async function commitRevision(
       path: revisionPath,
       files: fileRecords(files),
       committedAt: new Date().toISOString(),
-    } as ProjectRevisionRecord;
+    };
     const metadataParent = await ensureManagedDirectory(root, ".paper30min/revisions");
     const metadataDirectory = path.join(metadataParent, revisionId);
     await fs.mkdir(metadataDirectory);

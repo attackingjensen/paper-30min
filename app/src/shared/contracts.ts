@@ -38,7 +38,7 @@ export interface ManagedFileRecord {
   mime?: string;
 }
 
-export interface SourceSnapshotRecord {
+export type SourceSnapshotRecord = Record<string, unknown> & {
   formatVersion: 1;
   sourceSnapshotId: string;
   projectId: string;
@@ -46,9 +46,9 @@ export interface SourceSnapshotRecord {
   path: string;
   files: ManagedFileRecord[];
   createdAt: string;
-}
+};
 
-export interface ProjectRevisionRecord {
+export type ProjectRevisionRecord = Record<string, unknown> & {
   formatVersion: 1;
   revisionId: string;
   projectId: string;
@@ -58,7 +58,7 @@ export interface ProjectRevisionRecord {
   path: string;
   files: ManagedFileRecord[];
   committedAt: string;
-}
+};
 
 export interface ProjectCoreSnapshot {
   root: string;
