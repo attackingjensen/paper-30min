@@ -51,10 +51,10 @@ const TombstoneSchema = Type.Object({
 }, { additionalProperties: false });
 const TombstonesSchema = Type.Array(TombstoneSchema);
 
-type DocumentChangeset = Type.Static<typeof DocumentChangesetSchema>;
+export type DocumentChangeset = Type.Static<typeof DocumentChangesetSchema>;
 type NodeType = DocumentChangeset["changes"][number]["nodeType"];
 type ChangeStatus = DocumentChangeset["changes"][number]["status"];
-type Tombstone = Type.Static<typeof TombstoneSchema>;
+export type Tombstone = Type.Static<typeof TombstoneSchema>;
 type DocumentNode = { id: string } & Record<string, unknown>;
 
 const changesetSchema = Schema.Compile(DocumentChangesetSchema);
