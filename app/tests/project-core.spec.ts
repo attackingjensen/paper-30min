@@ -374,17 +374,12 @@ test("project-core 整体搬迁后保持身份、current 和来源相对引用",
   expect(reopened.currentRevision?.path).not.toContain(moved);
 });
 
-test("project-core 写入端拒绝路径穿越、伪造资产摘要和敏感元数据", async () => {
+test("project-core 写入端拒绝路径穿越和伪造资产摘要", async () => {
   const created = await createProject({ parent: sandbox, name: "写入校验" });
   await expect(publishSourceSnapshot({
     root: created.root,
     files: { "../escape.html": Buffer.from("escape") },
   })).rejects.toThrow(/路径|名称/);
-  await expect(publishSourceSnapshot({
-    root: created.root,
-    files: { "document.html": Buffer.from("paper") },
-    metadata: { authorization: "secret" },
-  })).rejects.toThrow(/凭据|敏感/);
   expect(await fs.stat(path.join(sandbox, "escape.html")).catch(() => null)).toBeNull();
 
   const source = await publishSourceSnapshot({

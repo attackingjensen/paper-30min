@@ -71,7 +71,7 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 - `commitRevision` 要求四个 revision JSON 容器文件，先发布 `paper/revisions/<revisionId>/`，再写 `.paper30min/revisions/<revisionId>/revision.json`，最后原子替换清单中的 current 指针。`baseRevision` 仅在首次导入时为 `null`，之后必须等于 current。
 - `openProject`、`readSourceSnapshot` 和 `readRevision` 校验身份、受管路径、文件清单与摘要；current 可读不依赖来源快照仍可用，首次导入记录只在 current 为空时承担恢复作用。
 
-工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。
+工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
 
 ```powershell
 npx playwright test -g 'project-core'

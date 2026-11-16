@@ -117,15 +117,18 @@ test("project-core 文件摘要记录保留可选 MIME", async () => {
     .find((file) => file.path === "document.json")?.mime).toBe("application/json");
 });
 
-test("project-core 嵌套常见凭据键在持久化前被拒绝", async () => {
-  const created = await createProject({ parent: sandbox, name: "凭据键" });
-  for (const key of ["x-api-key", "token", "clientSecret", "private_key"]) {
-    await expect(publishSourceSnapshot({
-      root: created.root,
-      files: { "document.html": Buffer.from("paper") },
-      metadata: { response: { [key]: "secret" } },
-    })).rejects.toThrow(/凭据|敏感/);
-  }
+test("project-core 普通计数字段不按凭据字段名误删", async () => {
+  const created = await createProject({ parent: sandbox, name: "普通元数据" });
+  const source = await publishSourceSnapshot({
+    root: created.root,
+    files: { "document.html": Buffer.from("paper") },
+    metadata: { tokenCount: 128, converter: { name: "fixture" } },
+  });
+
+  expect(source).toMatchObject({
+    tokenCount: 128,
+    converter: { name: "fixture" },
+  });
 });
 
 test("project-core current 完整时不让历史首次导入记录阻断阅读", async () => {

@@ -23,7 +23,6 @@ const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const sha256 = /^[a-f0-9]{64}$/;
 const jsonBudget = 1024 * 1024;
-const sensitiveMetadataKey = /^(?:.+[-_])?(?:auth|authentication|authorization|proxy-authorization|cookies?|set-cookie|api-?key|token|secrets?|password|passphrase|private-key|credentials?)(?:[-_].+)?$/i;
 const writeQueues = new Map<string, Promise<void>>();
 
 export interface CreateProjectInput {
@@ -259,15 +258,7 @@ function normalizeMetadata(
       const prototype = Object.getPrototypeOf(value);
       if (prototype !== Object.prototype && prototype !== null)
         throw new Error("来源或 revision 元数据只接受普通 JSON 对象。");
-      for (const [key, child] of Object.entries(value)) {
-        const normalizedKey = key
-          .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-          .replaceAll("_", "-")
-          .toLowerCase();
-        if (sensitiveMetadataKey.test(normalizedKey))
-          throw new Error("来源或 revision 元数据不能包含凭据或敏感字段。");
-        visit(child);
-      }
+      for (const child of Object.values(value)) visit(child);
     }
     ancestors.delete(value);
   };
