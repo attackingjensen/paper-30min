@@ -26,7 +26,7 @@ test("真实百度片段生成独立批次、多区域块和离线候选；失�
   let downloads = 0;
   const rows = (
     await fs.readFile(
-      "../legacy/v1/app/src-tauri/tests/fixtures/aistudio/1512.03385.jsonl",
+      "tests/fixtures/aistudio/1512.03385.jsonl",
       "utf8",
     )
   )
@@ -88,7 +88,7 @@ test("真实百度片段生成独立批次、多区域块和离线候选；失�
       type: "create",
       input: {
         source: path.resolve(
-          "../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf",
+          "tests/fixtures/corpus/1512.03385.pdf",
         ),
         parent: directory,
         name: "paper",
@@ -294,7 +294,7 @@ test("停止提交时仍保存迟到的任务回执，重开复用任务号", as
       type: "create",
       input: {
         source: path.resolve(
-          "../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf",
+          "tests/fixtures/corpus/1512.03385.pdf",
         ),
         parent: directory,
         name: "paper",
@@ -378,7 +378,7 @@ test("未知提交禁止重付费；关联任务号后可恢复，任一分组�
   let submits = 0;
   const rows = (
     await fs.readFile(
-      "../legacy/v1/app/src-tauri/tests/fixtures/aistudio/1512.03385.jsonl",
+      "tests/fixtures/aistudio/1512.03385.jsonl",
       "utf8",
     )
   )
@@ -413,7 +413,7 @@ test("未知提交禁止重付费；关联任务号后可恢复，任一分组�
       type: "create",
       input: {
         source: path.resolve(
-          "../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1512.03385.pdf",
+          "tests/fixtures/corpus/1512.03385.pdf",
         ),
         parent: directory,
         name: "paper",
@@ -522,13 +522,13 @@ test("旧版其余三份真实 JSONL 与对应 PDF 可生成完整候选，跨�
       ["1603.02754", 13],
     ] as const) {
       current = await fs.readFile(
-        `../legacy/v1/app/src-tauri/tests/fixtures/aistudio/${arxiv}.jsonl`,
+        `tests/fixtures/aistudio/${arxiv}.jsonl`,
       );
       const project = (await projects.dispatch({
         type: "create",
         input: {
           source: path.resolve(
-            `../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/${arxiv}.pdf`,
+            `tests/fixtures/corpus/${arxiv}.pdf`,
           ),
           parent: directory,
           name: arxiv,

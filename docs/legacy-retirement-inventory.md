@@ -5,6 +5,7 @@
 > 分支：`feat/phase0-legacy-retirement`
 > 代码基线：`f3164fe`（盘点期间源码与测试未变）
 > 性质：只读盘点产物，供审阅；未删除或修改任何源码、测试与 fixtures。本清单本身不是删除授权。
+> 2026-11-16 更新：`legacy/v1/` 已整体删除（beads `paper-30min-hxs.2` 提前执行）。第 6 节第 12 项的 fixture 依赖已解除：所需样本迁入 `app/tests/fixtures/`（sample_paper.pdf、aistudio/*.jsonl、corpus/*.pdf、pdfparse_scanned_blank.pdf、pdfparse_formula_graphics.pdf），测试路径已改指新位置。本清单其余行号引用为盘点时基线 `f3164fe` 的历史快照。
 
 ## 0. 只读范围与规格状态
 
@@ -272,7 +273,7 @@
 9. **`app/src/renderer/AgentMessage.tsx` + `app/src/shared/chat-input.ts` 的链接协议**：两者保留通用渲染/AST 能力，但旧 `isSourceLink`、`sourceSnapshotLabel`、`paper://cite`/`#annotation=` 全部需要替换。需 annotations-results 专项确认新 `paper://anchor` 在聊天/成果中的展示与点击边界。
 10. **`app/skills/memory-card.md`**：判改造而非复用，因为正文仍要求 `resolve_reference`、`read_pdf`、`paper://cite/...` 和“已审阅解析稿”。需 agent-integration/annotations-results 专项给出新版提示词，不得只改 Skill 名称而保留旧工具链。
 11. **`app/src/renderer/style.css` 的旧选择器删除时机**：文件混合通用布局与旧 `.legacy-*`/`.citation-*`/`.mapping-*`/`.material-*`。需与 App/MappingPanel/LegacyImport/PdfReader 删除同 PR，避免遗留死样式或误删通用样式。
-12. **`app/tests/` 对 `legacy/v1/app/src-tauri/tests/fixtures/` 的依赖**：`desktop.spec.ts:227`、`:288`、`:489`、`:1954`、`:2044`、`:2098`、`:2146`、`:2378`、`:2695`、`:2705`、`:2781`、`:3938`、`:4979`；`parsing.spec.ts:30`、`:93`、`:336`、`:420`、`:455`、`:567`、`:573`；`pdf-tools.spec.ts:92`、`:220`、`:250`；`pdf-versions.spec.ts:23`；`reference-tools.spec.ts:22`、`:139`。这些 fixture 位于 `legacy/v1/app/`，不在本次盘点范围，但被新版测试直接读取；Phase 10 删除旧客户端前必须把所需样本迁入 `app/tests/fixtures/` 或改为新受控 fixtures，否则会造成测试失效。此项是覆盖风险，不是本清单遗漏。
+12. **`app/tests/` 对 `legacy/v1/app/src-tauri/tests/fixtures/` 的依赖**：【已解除，2026-11-16】所需样本已迁入 `app/tests/fixtures/`（aistudio/、corpus/、sample_paper.pdf、pdfparse_scanned_blank.pdf、pdfparse_formula_graphics.pdf），`desktop.spec.ts`、`parsing.spec.ts`、`pdf-tools.spec.ts`、`agent-files.spec.ts` 路径已改指新位置；`pdf-versions.spec.ts`、`reference-tools.spec.ts` 已随 Phase 0 删除。原风险记录：这些 fixture 位于 `legacy/v1/app/`，被新版测试直接读取，删除旧客户端前必须迁移，否则测试失效。
 13. **`app/src/main/agent-settings.ts`、`parsing-settings.ts` 的本机配置迁移**：两者含旧单模型/旧格式本机配置兼容分支（`agent-settings.ts:55-94`、`parsing-settings.ts` 的 formatVersion 1）。它们不属于工程旧格式，当前判复用；若后续统一设置 schema，应单独评审，不纳入旧核退役。
 14. **`app/src/shared/pdf-versions.ts` 的字节相等判断**：专项确认两个导出均只服务旧材料 relink、旧库幂等和批注 lineage，整文件废弃。新 pdf-import 的“相同字节复用快照”应在新 source snapshot 契约中直接按 SHA-256 实现，不抽取这套带旧批注信任语义的 helper。
 15. **`app/src/shared/product-skills.ts` catalog 收缩时机**：`paper-map.md` 条目删除会同步影响 `ProductSkills.list()`、`chat-materials.ts:12` 过滤和测试；需与 MappingPanel/agent-service 建图分支同一变更，避免运行期读取已删除 Skill。

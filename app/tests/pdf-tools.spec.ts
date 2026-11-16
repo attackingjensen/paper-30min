@@ -89,7 +89,7 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
       type: "create",
       input: {
         source: path.resolve(
-          "../legacy/v1/app/src-tauri/tests/fixtures/regression/corpus/1706.03762.pdf",
+          "tests/fixtures/corpus/1706.03762.pdf",
         ),
         parent: directory,
         name: "project",
@@ -208,7 +208,7 @@ test("公式页和扫描页均只返回实际图像与定位信息，取消不�
       type: "create",
       input: {
         source: path.resolve(
-          "../legacy/v1/app/src-tauri/tests/fixtures/pdfparse_formula_graphics.pdf",
+          "tests/fixtures/pdfparse_formula_graphics.pdf",
         ),
         parent: directory,
         name: "scan",
@@ -236,7 +236,7 @@ test("公式页和扫描页均只返回实际图像与定位信息，取消不�
     expect(ink).toBeGreaterThan(500);
     const scanPath = "text/scan.pdf";
     await fs.copyFile(
-      path.resolve("../legacy/v1/app/src-tauri/tests/fixtures/pdfparse_scanned_blank.pdf"),
+      path.resolve("tests/fixtures/pdfparse_scanned_blank.pdf"),
       path.join(root, scanPath),
     );
     const scan = await invoke({ path: scanPath });

@@ -17,7 +17,7 @@ test("公共工程写入保护基线、取消与所有权", async () => {
     const project = (await service.dispatch({
       type: "create",
       input: {
-        source: path.resolve("../legacy/v1/app/ui/samples/sample_paper.pdf"),
+        source: path.resolve("tests/fixtures/sample_paper.pdf"),
         parent: directory,
         name: "project",
         makeDefault: false,
