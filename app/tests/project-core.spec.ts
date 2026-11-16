@@ -10,6 +10,7 @@ import {
   publishSourceSnapshot,
   readRevision,
   readSourceSnapshot,
+  validateRevisionAssetBudget,
 } from "../src/main/project-core";
 import { testDocumentTree, testRevisionFiles } from "./fixtures/document-tree";
 
@@ -444,4 +445,22 @@ test("project-core 资产按实际内容摘要记录", async () => {
   await expect(openProject(created.root)).resolves.toMatchObject({
     currentRevision: { revisionId: revision.revisionId },
   });
+});
+
+test("project-core revision 资产执行单项与总量预算", () => {
+  const mebibyte = 1024 * 1024;
+  expect(() => validateRevisionAssetBudget([
+    { path: "assets/one.png", size: 32 * mebibyte + 1 },
+  ])).toThrow(/32 MiB|预算/);
+
+  expect(() => validateRevisionAssetBudget(
+    Array.from({ length: 17 }, (_, index) => ({
+      path: `assets/${index}.png`,
+      size: 32 * mebibyte,
+    })),
+  )).toThrow(/512 MiB|总量|预算/);
+  expect(() => validateRevisionAssetBudget([
+    { path: "document.json", size: 100 * mebibyte },
+    { path: "assets/one.png", size: 32 * mebibyte },
+  ])).not.toThrow();
 });

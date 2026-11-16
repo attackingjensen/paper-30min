@@ -300,3 +300,29 @@ test("project-core 读取端拒绝超过预算的受管 JSON", async () => {
   await expect(readSourceSnapshot(created.root, source.sourceSnapshotId))
     .rejects.toThrow(/1 MiB|预算/);
 });
+
+test("project-core 同一 revisionId 在候选提交失败后可重试且内容不被覆盖", async () => {
+  const created = await createProject({ parent: sandbox, name: "候选重试" });
+  const source = await publishSourceSnapshot({
+    root: created.root,
+    files: { "document.html": Buffer.from("paper") },
+  });
+  const revisionId = randomUUID();
+  const input = {
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    revisionId,
+    files: testRevisionFiles(created.manifest.paper.id, "可重试候选"),
+  } as const;
+
+  await expect(commitRevision(input, {
+    onCommitPoint(point) {
+      if (point === "before-current-replace") throw new Error("injected retry failure");
+    },
+  })).rejects.toThrow("injected retry failure");
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
+
+  await expect(commitRevision(input)).resolves.toMatchObject({ revisionId });
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(revisionId);
+});

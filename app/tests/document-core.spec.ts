@@ -78,6 +78,59 @@ test("document-core current 与 source-base 共用树 schema，重开保留五�
   expect(await fs.readFile(sourceBaseFile)).toEqual(originalSourceBase);
 });
 
+test("document-core 提交生成绑定 revision 的真实 changeset，重开可直接验证", async () => {
+  const { created, source } = await createdProject();
+  const tree = testDocumentTree(created.manifest.paper.id, "变化集");
+  const revision = await commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    files: testRevisionFiles(created.manifest.paper.id, "变化集"),
+  });
+
+  const persisted = JSON.parse(await fs.readFile(
+    path.join(created.root, revision.path, "changeset.json"),
+    "utf8",
+  ));
+  expect(persisted).toMatchObject({
+    changesetFormatVersion: 1,
+    baseRevision: null,
+    revisionId: revision.revisionId,
+  });
+  expect(persisted.changes).toEqual(expect.arrayContaining([
+    { nodeType: "section", nodeId: testDocumentIds.section, status: "added" },
+    { nodeType: "unit", nodeId: testDocumentIds.unit, status: "added" },
+    { nodeType: "sentence", nodeId: testDocumentIds.sentence, status: "added" },
+    { nodeType: "atom", nodeId: testDocumentIds.atom, status: "added" },
+    { nodeType: "block", nodeId: testDocumentIds.block, status: "added" },
+  ]));
+  expect(persisted.changes).toHaveLength(5);
+  await expect(openProject(created.root)).resolves.toMatchObject({
+    manifest: { paper: { currentRevision: revision.revisionId } },
+  });
+});
+
+test("document-core 显式 changeset 与 revision 或候选树不一致时拒绝发布", async () => {
+  const { created, source } = await createdProject();
+  const paperId = created.manifest.paper.id;
+
+  await expect(commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    files: {
+      ...testRevisionFiles(paperId, "错误变化集"),
+      "changeset.json": Buffer.from(JSON.stringify({
+        changesetFormatVersion: 1,
+        baseRevision: null,
+        revisionId: randomUUID(),
+        changes: [],
+      })),
+    },
+  })).rejects.toThrow(/changeset|revisionId|变化/);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
+});
+
 test("document-core 提交对 current 与 source-base 执行同一引用完整性校验", async () => {
   const { created, source } = await createdProject();
   const paperId = created.manifest.paper.id;
