@@ -67,7 +67,7 @@ export interface ProjectCoreSnapshot {
   currentRevision: ProjectRevisionRecord | null;
 }
 
-export interface FileEntry {
+interface FileEntry {
   path: string;
   directory: boolean;
 }
@@ -185,7 +185,7 @@ export const thinkingLevels: ThinkingLevel[] = [
   "max",
   "ultra",
 ];
-export interface AgentServiceSettings {
+interface AgentServiceSettings {
   id: string;
   name: string;
   api: AgentApi;
@@ -193,7 +193,7 @@ export interface AgentServiceSettings {
   hasKey: boolean;
   keyError?: boolean;
 }
-export interface AgentModelSettings {
+interface AgentModelSettings {
   id: string;
   serviceId: string;
   name: string;

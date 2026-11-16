@@ -39,8 +39,8 @@ npm run test:dead-code
 首次无配置扫描成功识别 TypeScript 项目，报告 6 个入口相关未使用文件、3 个未使用依赖、1 个未使用开发依赖、8 处未声明依赖、2 个未使用导出和 6 个未使用导出类型。补全入口后，级联误报消失，剩余问题按以下方式处理：
 
 - 不使用 `ignoreFiles` 或全局关闭规则。`@embedpdf/pdfium`、`@embedpdf/plugin-spread`、`@embedpdf/plugin-rotate` 是源码直接 import，已按实际安装版本显式声明；Viewer 已传递提供的 annotation、capture、interaction-manager、render、selection、stamp 与默认印章资源不重复声明；`markdown-it` 自带类型，冗余 `@types/markdown-it` 已移除。
-- `ignoreIssues` 只对 `src/shared/contracts.ts` 和 `src/shared/parsing.ts` 的 `types` 问题生效，当前对应 `FileEntry`、`AgentServiceSettings`、`AgentModelSettings`、`ParsingPhase` 四个间接导出类型。它们仍被同文件导出契约引用，但没有独立外部引用，暂由 project-core／agent-integration／pdf-import 收敛契约时决定取消导出还是接入使用。
-- 该豁免也会覆盖这两个文件以后新增的未使用导出类型，因此只是 Phase 0 短期基线；对应模块改造时必须移除豁免并复扫。死文件、死值导出、依赖问题和其他文件的类型问题不受影响。
+- `ignoreIssues` 现在只对 `src/shared/parsing.ts` 的 `types` 问题生效，对应 `ParsingPhase` 间接导出类型，留待 pdf-import 收敛契约时移除。`src/shared/contracts.ts` 的豁免已随 Phase 1 project-core 契约收敛移除：`FileEntry`、`AgentServiceSettings`、`AgentModelSettings` 取消导出，仍由同文件导出契约结构性引用。
+- 剩余豁免会覆盖 `parsing.ts` 以后新增的未使用导出类型，因此只是短期基线；对应模块改造时必须移除豁免并复扫。死文件、死值导出、依赖问题和其他文件的类型问题不受影响。
 
 knip 能证明静态引用和依赖层面的死代码情况，不能单独证明旧引用、旧映射、旧材料或旧导入的语义残留为零；Phase 0 checkpoint 还需对照退役清单做定向协议、通道和入口检查。配置依据见官方 [entry/project 与 ignoreIssues](https://knip.dev/reference/configuration)、[issue types](https://knip.dev/reference/issue-types) 和 [CLI 退出码](https://knip.dev/reference/cli)。
 

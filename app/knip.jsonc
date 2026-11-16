@@ -13,10 +13,11 @@
     "*.ts"
   ],
   "includeEntryExports": true,
-  // Phase 0 临时基线：只豁免这两份旧共享契约中的间接导出类型。
-  // 死文件、死值导出、依赖和其他文件类型仍正常检查；对应模块改造时移除豁免。
+  // Phase 0 临时基线：contracts.ts 豁免已随 Phase 1 project-core 契约收敛移除
+  // （FileEntry/AgentServiceSettings/AgentModelSettings 取消导出，仍由同文件契约引用）。
+  // 仅剩 parsing.ts 的间接导出类型豁免，pdf-import 改造时移除。
+  // 死文件、死值导出、依赖和其他文件类型仍正常检查。
   "ignoreIssues": {
-    "src/shared/contracts.ts": ["types"],
     "src/shared/parsing.ts": ["types"]
   },
   "treatConfigHintsAsErrors": true
