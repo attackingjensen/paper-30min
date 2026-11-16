@@ -4,6 +4,7 @@ import { constants, createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
+  ManagedFileContent,
   ManagedFileRecord,
   ProjectCoreSnapshot,
   ProjectImportRecord,
@@ -41,13 +42,6 @@ export interface CreateProjectInput {
   parent: string;
   name: string;
 }
-
-interface ManagedFileInput {
-  bytes: Uint8Array;
-  mime?: string;
-}
-
-type ManagedFileContent = Uint8Array | ManagedFileInput;
 
 export interface PublishSourceSnapshotInput {
   root: string;

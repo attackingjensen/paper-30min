@@ -1,5 +1,6 @@
 import type { ParsingCommand } from "./parsing.js";
 import type { ChatAttachment } from "./chat-input.js";
+import type { DocumentTree } from "./document/tree.js";
 
 export interface DocumentRecord {
   id: string;
@@ -66,6 +67,46 @@ export interface ProjectCoreSnapshot {
   importRecord: ProjectImportRecord | null;
   currentRevision: ProjectRevisionRecord | null;
 }
+
+export type ManagedFileContent = Uint8Array | { bytes: Uint8Array; mime?: string };
+
+export type CoreCommand =
+  | { type: "coreCreate"; parent: string; name: string }
+  | { type: "coreOpen"; root: string }
+  | {
+      type: "corePublishSource";
+      root: string;
+      files: Record<string, ManagedFileContent>;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "coreCommit";
+      root: string;
+      baseRevision: string | null;
+      sourceSnapshotId: string;
+      revisionId?: string;
+      files: Record<string, ManagedFileContent>;
+      metadata?: Record<string, unknown>;
+    }
+  | { type: "coreReadSource"; root: string; sourceSnapshotId: string }
+  | { type: "coreReadRevision"; root: string; revisionId: string }
+  | {
+      type: "coreReadDocument";
+      root: string;
+      revisionId: string;
+      tree: "document" | "source-base";
+    }
+  | {
+      type: "coreMergePublish";
+      root: string;
+      baseRevision: string;
+      sourceSnapshotId: string;
+      candidate: DocumentTree;
+      resolutions?: Array<{
+        conflictId: string;
+        choice: "current" | "candidate";
+      }>;
+    };
 
 interface FileEntry {
   path: string;
@@ -158,7 +199,8 @@ export type Command =
       path: string;
       position: PdfPosition;
     }
-  | { type: "resolveFile"; root: string; path: string };
+  | { type: "resolveFile"; root: string; path: string }
+  | CoreCommand;
 
 export interface Desktop {
   parsing<T>(command: ParsingCommand): Promise<T>;

@@ -27,7 +27,7 @@
 | `id`、`name` | 工程身份与名称 |
 | `paper` | 固定工程论文的 `id`、相对 `path`、原文件 `sha256` |
 
-当前为 Phase 0 后的过渡形态：旧 `materials`、`map`、`explanations`、`translations` 字段在读取时忽略，不再由应用生成或校验；既有清单中的这些字段按原样保留，不解释其内容。参考材料登记、阅读地图与全文译文入口均已退役。v2 清单由后续 project-core 模块定义。
+当前为 Phase 0 后的过渡形态：旧 `materials`、`map`、`explanations`、`translations` 字段在读取时忽略，不再由应用生成或校验；既有清单中的这些字段按原样保留，不解释其内容。参考材料登记、阅读地图与全文译文入口均已退役。`formatVersion: 2` 清单由 project-core 定义，见下文「formatVersion 2 新核容器」。
 
 相对路径使用 `/`，不允许父级穿越、绝对路径、Windows 保留名称或指向工程外的符号链接。工程论文身份在应用内改名／移动后保持不变，清单中的 `paper.path` 随路径更新。
 
@@ -46,6 +46,26 @@
 改名／移动只操作文件，目标父目录须已存在且目标不能覆盖；清单保存失败时尝试回到原路径。文件移动依赖本地文件系统硬链接提供不覆盖保证，跨卷挂载点不支持。旧参考材料添加、重新关联与移出回收站入口已退役。
 
 外部改名／移动后，缺失文件显示「找不到文件」提示；旧按哈希重新关联入口已退役，不再提供材料身份核对或 PDF 写回。
+
+## formatVersion 2 新核容器
+
+Phase 1 的 project-core／document-core 以契约层提供新工程容器，与上文过渡形态并存；权威规格见 [SPEC-project-core](spec/SPEC-project-core.md) 与 [SPEC-document-core](spec/SPEC-document-core.md)。
+
+```text
+工程文件夹/
+  paper30min.json               # formatVersion = 2；工程身份、名称、主论文身份与 current 指针
+  paper/revisions/<revisionId>/ # 已发布受管正文：document.json、source-base.json、tombstones.json、changeset.json、assets/
+  sources/<sourceSnapshotId>/   # 不可变来源快照与 snapshot.json（逐文件 SHA-256／大小／可选 MIME）
+  .paper30min/revisions/        # revision 元数据
+  .paper30min/imports/          # 首次导入恢复记录
+  .paper30min/staging/          # 尚未发布的受管候选
+```
+
+- 清单只保存身份与指针：`paper.currentRevision` 是 revision ID 或 `null`；`null` 仅在存在有效首次导入记录时合法。工程与主论文身份是持久化 UUID，不随路径变化，整体搬迁后按相对路径继续工作。
+- 来源快照与已发布 revision 不可变。提交先完整落盘正文内容与 revision 元数据，再原子替换 current 指针；替换前复核清单字节、基线、旧／新 revision 与来源摘要。失败保留现场，旧 current 仍可读。
+- 文档树为 `documentFormatVersion: 1` 的 Section／Unit／Sentence／Atom／Block，节点使用论文内唯一 UUID；锚点、changeset、tombstones 与三方合并由 document-core 承担。两棵文档树及其 changeset、tombstones 单文件 JSON 预算 64 MiB，单项资产 32 MiB，单 revision 引用资产总量 512 MiB，工程元数据 1 MiB。
+- 新核经 `core*` 命令接入生产 preload、IPC 与 Node utility process（命令面见 [app/README.md](../app/README.md)），由真实磁盘契约测试与真实 Electron 回归验收。界面导入链路仍是 `formatVersion: 1` 过渡形态，界面接管由后续 phase 承接。
+- 两种格式互不读取：新核遇到 `formatVersion: 1` 明确拒绝并提示旧格式处理流程；旧界面服务对 `formatVersion: 2` 清单报格式不支持。不提供自动迁移、只读兼容或双写。
 
 ## PDF 阅读与来源信息
 

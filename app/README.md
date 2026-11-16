@@ -64,7 +64,7 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 ### Phase 1 新工程核契约层
 
-`src/main/project-core.ts` 按 [project-core 规格](../docs/spec/SPEC-project-core.md) 实现新工程容器，目前由真实磁盘契约测试使用，尚未替换上述 `project-service.ts` 的界面导入链路：
+`src/main/project-core.ts` 按 [project-core 规格](../docs/spec/SPEC-project-core.md) 实现新工程容器，由真实磁盘契约测试与真实 Electron IPC 回归验收；界面导入链路仍是上述 `project-service.ts` 的 `formatVersion: 1` 过渡形态，新核界面接管由 arXiv 导入与全文阅读器等后续 phase 承接：
 
 - `createProject` 创建 `formatVersion: 2` 清单和首次导入恢复记录。
 - `publishSourceSnapshot` 在 staging 中同步并核验文件，再发布到 `sources/<sourceSnapshotId>/`；`snapshot.json` 保存身份、相对路径、逐文件 SHA-256／大小及可选 MIME。已发布快照不接受原地更新。
@@ -79,11 +79,13 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
 
+新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish` 与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。界面导入链路尚未接入这些命令。
+
 ```powershell
 npx playwright test -g 'project-core|document-core'
 ```
 
-契约测试覆盖创建中断、来源与 revision 不可变、首导入和更新故障、基线竞争、进程内并发、外部修改、非法路径、目录链接及工程整体搬迁；真实 Electron 集成由 Phase 1 检查点统一验收。
+契约测试覆盖创建中断、来源与 revision 不可变、首导入和更新故障、基线竞争、进程内并发、外部修改、非法路径、目录链接及工程整体搬迁。真实 Electron 回归（`tests/project-core-electron.spec.ts`）经生产 preload、IPC 和 Node 工程进程覆盖无 PDF 工程创建、首次导入与更新发布、current 推进、离线重开、基线冲突与并发提交、外部篡改与缺失 revision 故障现场、整体搬迁、`formatVersion: 1` 明确分流及合并候选发布。
 
 ## PDF 阅读与旧引用退役
 

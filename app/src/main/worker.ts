@@ -1,4 +1,5 @@
 import { ProjectService } from "./project-service.js";
+import { dispatchCoreCommand, isCoreCommand } from "./core-commands.js";
 import { AgentService } from "./agent-service.js";
 import type { ModelConfig } from "./agent-settings.js";
 import type { AgentCommand, Command } from "../shared/contracts.js";
@@ -86,6 +87,8 @@ port.on(
         );
       } else if (command?.type === "move") {
         value = await agent.withFileMove(command.root, () => service.dispatch(command));
+      } else if (command && isCoreCommand(command)) {
+        value = await dispatchCoreCommand(command);
       } else value = await service.dispatch(command!);
       port.postMessage({
         id: data.id,

@@ -786,7 +786,7 @@ export function assertDocumentMergePublishable(
     invalid(`baseRevision 已变化：候选基线为 ${result.baseRevision}，current 为 ${currentRevision}。`);
   const unresolved = result.conflicts.filter((conflict) => !result.resolutions[conflict.id]);
   if (unresolved.length)
-    invalid(`仍有 ${unresolved.length} 个未解决冲突，不能发布。`);
+    invalid(`仍有 ${unresolved.length} 个未解决冲突，不能发布：${unresolved.map((conflict) => `${conflict.id}（${conflict.type}）`).join("、")}。`);
   if (result.changeset.changes.some((entry) => entry.status === "conflicted"))
     invalid("changeset 仍包含 conflicted 节点，不能发布。");
   parseDocumentTree(result.document);

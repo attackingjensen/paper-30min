@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
   Command,
+  CoreCommand,
   CreateInput,
   DocumentRecord,
   Manifest,
@@ -197,7 +198,7 @@ export class ProjectService {
     await this.queue;
   }
 
-  dispatch(command: Command, signal?: AbortSignal): Promise<unknown> {
+  dispatch(command: Exclude<Command, CoreCommand>, signal?: AbortSignal): Promise<unknown> {
     if (command.type === "cancelCreate") {
       this.creation.get(command.operationId)?.abort();
       return Promise.resolve();
@@ -711,7 +712,7 @@ export class ProjectService {
   }
 
   private async execute(
-    command: Exclude<Command, { type: "create" | "cancelCreate" }>,
+    command: Exclude<Command, CoreCommand | { type: "create" | "cancelCreate" }>,
     signal?: AbortSignal,
   ): Promise<unknown> {
     signal?.throwIfAborted();
