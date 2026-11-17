@@ -66,6 +66,16 @@ export type SourceSnapshotRecord = Record<string, unknown> & {
   createdAt: string;
 };
 
+interface PdfSourceFacts {
+  kind: "pdf";
+  sha256: string;
+  pageCount: number;
+  originalName: string;
+  arxiv?: { baseId: string; version: number; pdfUrl: string };
+}
+
+export type PdfSourceSnapshotRecord = SourceSnapshotRecord & PdfSourceFacts;
+
 export type ProjectRevisionRecord = Record<string, unknown> & {
   formatVersion: 1;
   revisionId: string;
