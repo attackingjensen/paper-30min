@@ -2,9 +2,20 @@ import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
 
 // 显式 arXiv host 允许清单（SPEC-arxiv-import §1.3）。
 const ARXIV_ALLOWED_HOSTS: Record<string, true> = { "arxiv.org": true };
+// 回环端点仅用于受控本地 fixtures（http），生产 arXiv 来源始终 https://arxiv.org。
+const FIXTURE_LOOPBACK_HOSTS: Record<string, true> = {
+  "127.0.0.1": true,
+  localhost: true,
+  "::1": true,
+};
 
-export function isAllowedArxivHost(hostname: string): boolean {
+function isAllowedArxivHost(hostname: string): boolean {
   return ARXIV_ALLOWED_HOSTS[hostname.toLowerCase()] === true;
+}
+
+export function isAllowedSourceHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return ARXIV_ALLOWED_HOSTS[host] === true || FIXTURE_LOOPBACK_HOSTS[host] === true;
 }
 
 export type ArxivEndpoint = "abs" | "html" | "pdf";

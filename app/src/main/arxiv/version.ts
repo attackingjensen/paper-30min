@@ -1,5 +1,5 @@
 import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
-import { arxivEndpointUrl, isAllowedArxivHost, parseArxivReference } from "./reference.js";
+import { arxivEndpointUrl, isAllowedSourceHost, parseArxivReference } from "./reference.js";
 
 /** 受控 abs 获取入口：生产 transport 在后续切片接入，测试映射到本地 fixtures。 */
 export type AbsFetch = (url: string) => Promise<string>;
@@ -135,7 +135,7 @@ export function assertArxivVersionConsistent(
   } catch {
     return fail("arxiv-source-url-invalid", "arxiv.source.urlInvalid", finalUrl);
   }
-  if (!isAllowedArxivHost(url.hostname))
+  if (!isAllowedSourceHost(url.hostname))
     return fail("arxiv-source-host-rejected", "arxiv.source.hostRejected", finalUrl);
   const fromUrl = identityFromText(`https://arxiv.org${url.pathname}`);
   if (!fromUrl || fromUrl.baseId !== pinned.baseId)

@@ -843,6 +843,26 @@ export async function readSourceSnapshot(root: string, sourceSnapshotId: string)
   return loadSourceSnapshot(root, manifest, sourceSnapshotId);
 }
 
+/** 列出全部已发布来源快照；每个快照均经清单与摘要校验，不按文件名猜测发布。 */
+export async function listSourceSnapshots(root: string): Promise<SourceSnapshotRecord[]> {
+  root = await canonicalRoot(root);
+  const { manifest } = await readManifest(root);
+  const sources = path.join(root, "sources");
+  let entries;
+  try {
+    entries = await fs.readdir(sources, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const snapshots: SourceSnapshotRecord[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !uuid.test(entry.name)) continue;
+    snapshots.push(await loadSourceSnapshot(root, manifest, entry.name));
+  }
+  return snapshots.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 export async function readRevision(root: string, revisionId: string) {
   root = await canonicalRoot(root);
   const { manifest } = await readManifest(root);
