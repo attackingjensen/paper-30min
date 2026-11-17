@@ -118,6 +118,9 @@ export interface PdfParseTaskRecord {
   jobId?: string;
   /** 仅记录内存中下载响应的摘要；含密原始响应不写入任务目录。 */
   responseSha256?: string;
+  /** 已发布解析快照与去敏后 result.jsonl 摘要；恢复据此跳过重复下载。 */
+  parseSourceSnapshotId?: string;
+  sanitizedSha256?: string;
   diagnostic?: ImportDiagnostic;
   createdAt: string;
   updatedAt: string;
@@ -132,4 +135,36 @@ export interface BaiduUploadConfirmationRequest {
   model: "PaddleOCR-VL-1.6";
   endpoint: string;
   options: BaiduPdfParseOptions;
+}
+
+/** facts.json：规范化 vendor 页／块／几何与资产来源事实，不含 Paper30Min 节点身份。 */
+export interface PdfParseAssetFact {
+  vendorPath: string;
+  path: string;
+  sha256: string;
+  size: number;
+  mime: string;
+}
+
+export interface PdfParseBlockFact {
+  blockId: number;
+  label: string;
+  order: number | null;
+  groupId: number | null;
+  bbox: [number, number, number, number] | null;
+}
+
+export interface PdfParsePageFact {
+  page: number;
+  width: number;
+  height: number;
+  modelSettings: Record<string, boolean | string[]>;
+  blocks: PdfParseBlockFact[];
+  assets: PdfParseAssetFact[];
+}
+
+export interface PdfParseFactsFile {
+  formatVersion: 1;
+  pageCount: number;
+  pages: PdfParsePageFact[];
 }

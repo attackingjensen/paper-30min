@@ -7,14 +7,17 @@ import {
   parseImportDiagnostic,
   type ImportDiagnostic,
 } from "../../shared/arxiv.js";
-import type { PdfSourceSnapshotRecord } from "../../shared/contracts.js";
+import type {
+  PdfParseSourceSnapshotRecord,
+  PdfSourceSnapshotRecord,
+} from "../../shared/contracts.js";
 import type {
   BaiduPdfParseOptions,
   BaiduUploadConfirmationRequest,
   PdfParseTaskPhase,
   PdfParseTaskRecord,
 } from "../../shared/parsing.js";
-import { openProject, readSourceSnapshot } from "../project-core.js";
+import { listSourceSnapshots, openProject, readSourceSnapshot } from "../project-core.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -96,6 +99,11 @@ type PdfParseTaskResult =
       outcome: "downloaded";
       task: PdfParseTaskRecord;
       response: { bytes: Uint8Array; sha256: string };
+    }
+  | {
+      outcome: "sanitized";
+      task: PdfParseTaskRecord;
+      snapshot: PdfParseSourceSnapshotRecord;
     };
 
 const active = new Map<
@@ -195,6 +203,12 @@ function parseTask(value: unknown, projectId: string, paperId: string): PdfParse
       (typeof record.jobId !== "string" || !JOB_ID.test(record.jobId))) ||
     (record.responseSha256 !== undefined &&
       (typeof record.responseSha256 !== "string" || !SHA256.test(record.responseSha256))) ||
+    (record.parseSourceSnapshotId !== undefined &&
+      (typeof record.parseSourceSnapshotId !== "string" || !UUID.test(record.parseSourceSnapshotId))) ||
+    (record.sanitizedSha256 !== undefined &&
+      (typeof record.sanitizedSha256 !== "string" || !SHA256.test(record.sanitizedSha256))) ||
+    (record.parseSourceSnapshotId === undefined) !== (record.sanitizedSha256 === undefined) ||
+    (record.parseSourceSnapshotId !== undefined && record.jobId === undefined) ||
     typeof record.createdAt !== "string" ||
     !Number.isFinite(Date.parse(record.createdAt)) ||
     typeof record.updatedAt !== "string" ||
@@ -227,6 +241,12 @@ function parseTask(value: unknown, projectId: string, paperId: string): PdfParse
     ...(record.responseSha256 === undefined
       ? {}
       : { responseSha256: record.responseSha256 as string }),
+    ...(record.parseSourceSnapshotId === undefined
+      ? {}
+      : {
+          parseSourceSnapshotId: record.parseSourceSnapshotId as string,
+          sanitizedSha256: record.sanitizedSha256 as string,
+        }),
     ...(record.diagnostic === undefined
       ? {}
       : { diagnostic: parseTaskDiagnostic(record.diagnostic) }),
@@ -254,7 +274,7 @@ async function managedDirectory(root: string, relative: string, create: boolean)
   return target;
 }
 
-async function saveTask(root: string, task: PdfParseTaskRecord) {
+export async function saveTask(root: string, task: PdfParseTaskRecord) {
   const directory = await managedDirectory(
     root,
     `.paper30min/parsing/${task.parseBatchId}`,
@@ -343,6 +363,41 @@ async function loadPdf(root: string, sourceSnapshotId: string) {
   return { source: source as PdfSourceSnapshotRecord, bytes };
 }
 
+/** 找回本批次已发布的解析快照：任务已关联时直接读取；发布后崩溃丢失关联时按批次扫描。
+ * 快照与任务谱系或摘要不符立即抛错保留现场，不静默采用另一份结果。 */
+export async function findBatchParseSnapshot(
+  root: string,
+  task: PdfParseTaskRecord,
+): Promise<PdfParseSourceSnapshotRecord | undefined> {
+  let candidate: PdfParseSourceSnapshotRecord | undefined;
+  if (task.parseSourceSnapshotId !== undefined) {
+    candidate = (await readSourceSnapshot(root, task.parseSourceSnapshotId)) as PdfParseSourceSnapshotRecord;
+  } else if (task.responseSha256 !== undefined) {
+    for (const snapshot of await listSourceSnapshots(root)) {
+      if (snapshot.kind === "pdf-parse" && snapshot.parseBatchId === task.parseBatchId) {
+        candidate = snapshot as PdfParseSourceSnapshotRecord;
+        break;
+      }
+    }
+  }
+  if (!candidate) return undefined;
+  const resultFile = candidate.files.find((file) => file.path === "result.jsonl");
+  if (
+    candidate.kind !== "pdf-parse" ||
+    candidate.parentSourceSnapshotId !== task.parentSourceSnapshotId ||
+    candidate.parseBatchId !== task.parseBatchId ||
+    candidate.provider !== PROVIDER ||
+    candidate.model !== MODEL ||
+    candidate.jobId !== task.jobId ||
+    candidate.responseSha256 !== task.responseSha256 ||
+    typeof candidate.sanitizedSha256 !== "string" ||
+    !SHA256.test(candidate.sanitizedSha256) ||
+    resultFile?.sha256 !== candidate.sanitizedSha256
+  )
+    throw new Error("解析快照与任务记录不符，保留现场，不能采用另一份结果。");
+  return candidate;
+}
+
 function assertNoBlockingTask(tasks: PdfParseTaskRecord[]) {
   const blocking = tasks.some(
     (task) => !["failed", "remote-failed", "candidate-complete"].includes(task.phase),
@@ -351,7 +406,7 @@ function assertNoBlockingTask(tasks: PdfParseTaskRecord[]) {
     throw new Error("尚有提交结果不明或未完成的云端任务，请先恢复原任务，避免重复付费。");
 }
 
-function resultResource(value: string, endpointValue: string) {
+export function resultResource(value: string, endpointValue: string) {
   let url: URL;
   try {
     url = new URL(value);
@@ -711,6 +766,14 @@ export async function resumeBaiduPdfParse(input: {
       task.jobId = input.jobId;
     } else if (input.jobId !== undefined && input.jobId !== task.jobId) {
       throw new Error("不能把原任务改关联到另一个任务号。");
+    }
+    const sanitized = await findBatchParseSnapshot(opened.root, task);
+    if (sanitized) {
+      task.parseSourceSnapshotId = sanitized.sourceSnapshotId;
+      task.sanitizedSha256 = sanitized.sanitizedSha256;
+      delete task.diagnostic;
+      await saveTask(opened.root, task);
+      return { outcome: "sanitized", task, snapshot: sanitized };
     }
     task.phase = "querying";
     delete task.diagnostic;

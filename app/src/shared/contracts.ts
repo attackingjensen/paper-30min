@@ -1,4 +1,4 @@
-import type { ParsingCommand } from "./parsing.js";
+import type { BaiduPdfParseOptions, ParsingCommand } from "./parsing.js";
 import type { ArxivReference, ImportDiagnostic, PdfFallbackRequest } from "./arxiv.js";
 
 import type { ChatAttachment } from "./chat-input.js";
@@ -75,6 +75,26 @@ interface PdfSourceFacts {
 }
 
 export type PdfSourceSnapshotRecord = SourceSnapshotRecord & PdfSourceFacts;
+
+/** 不可变解析快照的被接受来源事实（SPEC-pdf-import 快照契约）；不含签名 URL 或凭据。 */
+interface PdfParseSourceFacts {
+  kind: "pdf-parse";
+  parentSourceSnapshotId: string;
+  parseBatchId: string;
+  provider: "baidu-aistudio";
+  model: "PaddleOCR-VL-1.6";
+  jobId: string;
+  options: BaiduPdfParseOptions;
+  pageCount: number;
+  /** 下载前原始响应摘要；原始字节本身不持久化。 */
+  responseSha256: string;
+  /** 去敏并本地化后 result.jsonl 的摘要。 */
+  sanitizedSha256: string;
+  sanitization: { replaced: number; missing: number; dropped: number };
+  diagnostics: ImportDiagnostic[];
+}
+
+export type PdfParseSourceSnapshotRecord = SourceSnapshotRecord & PdfParseSourceFacts;
 
 export type ProjectRevisionRecord = Record<string, unknown> & {
   formatVersion: 1;
