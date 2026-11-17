@@ -1,0 +1,16 @@
+title = "Paper30Min product-source secret scan"
+
+[extend]
+useDefault = true
+
+# 只排除非产品源码：本机私有配置、只读上游副本、依赖和生成物。
+# 不给 app/src、app/tests、docs 或 CI 中的 finding 加白名单。
+[allowlist]
+description = "Non-product files only; source findings remain blocking"
+paths = [
+  '''(^|/)\.git(/|$)''',
+  '''(^|/)\.local(/|$)''',
+  '''(^|/)\.upstream(/|$)''',
+  '''(^|/)node_modules(/|$)''',
+  '''(^|/)app/(dist|dist-node|test-results|playwright-report|tmp)(/|$)''',
+]

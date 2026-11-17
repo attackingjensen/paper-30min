@@ -22,7 +22,21 @@ npm test
 
 `npm test` 先构建，再运行 Playwright 的真实 Electron 高层测试。测试只替代系统文件选择器，使用生产 preload、IPC、Node 工程进程和真实磁盘操作；回收站调用也使用 Electron 系统接口。默认测试使用临时配置与可控模型服务，覆盖流式回复、代理、失败恢复、并发停止和迟到事件。失败保留 trace，布局截图位于 `test-results/`。
 
-GitHub 的 `Electron CI` 使用 Node.js 24 和 `npm ci`，在 Windows、Linux 上先运行 `npm run test:dead-code` 和 `npm run build`（包含类型检查），随后仅在 Windows 上运行 `npx playwright test --reporter=list,html`，避免重复构建。Windows 回归使用隐藏窗口和受控服务，不配置真实模型或百度服务凭据；HTML 报告、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天。可从 Actions 页面手动运行工作流。Linux 构建通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
+GitHub 的 `Electron CI` 使用 Node.js 24 和 `npm ci`，在 Windows、Linux 上运行 `check:fast`、`check:architecture`、`check:dependencies` 和 `npm run build`（包含类型检查），随后仅在 Windows 上运行 `npx playwright test --reporter=list,html`，避免重复构建。Windows 回归使用隐藏窗口和受控服务，不配置真实模型或百度服务凭据；HTML 报告、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天。可从 Actions 页面手动运行工作流。Linux 构建通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
+
+## 质量约束
+
+[根目录 CONSTRAINTS.md](../CONSTRAINTS.md) 是质量规则的权威来源。本机运行安全门禁前，需要 PATH 中可用 gitleaks 8.30.1 与 osv-scanner 2.7.0；CI 通过 Go 安装相同版本，dependency-cruiser 与 SWC 则由 `npm ci` 安装。
+
+```powershell
+npm run check:fast    # 类型、knip、gitleaks、diff floor guard；编辑循环
+npm run check:task    # fast + 架构边界 + 导入/工程契约 Playwright 套件；任务交还前
+npm run check:full    # fast + 架构 + OSV + 构建 + 全量 Electron；完整本地验证
+```
+
+`check:task` 的过滤器为 `project-core|document-core|arxiv-import|parsing|pdf-snapshot`，不替代其他功能的定向测试；其他改动仍用 `npx playwright test -g '相关用例'` 补充。`npm run check:architecture` 和 `npm run check:dependencies` 可单独运行。gitleaks 始终使用 `--redact`，扫描排除 `.local/` 本机私有配置、`.upstream/` 只读副本、依赖和生成物，不排除产品源码中的 finding。floor guard 默认与 `origin/main` 的 merge base 比较，可用 `node scripts/floor-guard.mjs --base <ref>` 指定基线。
+
+CI 在两个平台执行 fast、架构、OSV 和构建门禁，Windows 继续运行完整 Electron 回归。安全工具或解析器不可用、扫描报告不完整、架构扫描为 0 modules 都按检查失败处理，不能当作通过。
 
 ## 死代码检测
 

@@ -1,0 +1,2 @@
+# floor-guard 的实现包含它要检测的字面模式，不能扫描自身。
+app/scripts/floor-guard.mjs
