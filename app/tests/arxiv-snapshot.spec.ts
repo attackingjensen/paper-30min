@@ -306,3 +306,103 @@ test("arxiv-import 用户取消保留工程与现场，不发布快照", async (
   const opened = await openProject(root);
   expect(opened.manifest.paper.currentRevision).toBeNull();
 });
+
+test("arxiv-import 同版重取：HTML 不变但资产字节变化时建立新快照，不静默丢弃", async () => {
+  const first = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  expect(first.ok).toBe(true);
+  if (!first.ok) return;
+  // abs/HTML 字节完全不变，仅 fig1 图片字节变化。
+  const changed = defaultRoutes();
+  changed[FIG1_URL] = { bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]), headers: { "content-type": "image/png" } };
+  const second = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(changed).transport });
+  expect(second.ok).toBe(true);
+  if (!second.ok) return;
+  expect(second.reused).toBe(false);
+  expect(second.snapshot.sourceSnapshotId).not.toBe(first.snapshot.sourceSnapshotId);
+  expect(await fs.readdir(path.join(root, "sources"))).toHaveLength(2);
+
+  // 资产恢复原字节后复用第一个快照（全量摘要集合一致）。
+  const restored = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  expect(restored.ok).toBe(true);
+  if (!restored.ok) return;
+  expect(restored.reused).toBe(true);
+  expect(restored.snapshot.sourceSnapshotId).toBe(first.snapshot.sourceSnapshotId);
+});
+
+test("arxiv-import 同版重取：资产新增或消失也建立新快照", async () => {
+  const first = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  expect(first.ok).toBe(true);
+  if (!first.ok) return;
+  // HTML 引用少一张图：资产集合变化，即使 abs/HTML 摘要相同也不复用。
+  const fewer = defaultRoutes();
+  fewer[HTML_URL] = { bytes: Buffer.from(latexmlHtml(["figures/fig1.png"])), headers: { "content-type": "text/html" } };
+  const second = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(fewer).transport });
+  expect(second.ok).toBe(true);
+  if (!second.ok) return;
+  expect(second.reused).toBe(false);
+  expect(second.snapshot.files.filter((f) => f.path.startsWith("assets/"))).toHaveLength(1);
+});
+
+test("arxiv-import PDF 与 SVG 不作为图片资产下载或进入 revision 资产集合", async () => {
+  const routes = defaultRoutes();
+  routes[HTML_URL] = {
+    bytes: Buffer.from(latexmlHtml(["figures/fig1.png", "figures/paper.pdf", "figures/plot.svg"])),
+    headers: { "content-type": "text/html" },
+  };
+  routes[`${BASE}/html/figures/paper.pdf`] = { bytes: Buffer.from("%PDF-1.4"), headers: { "content-type": "application/pdf" } };
+  routes[`${BASE}/html/figures/plot.svg`] = { bytes: Buffer.from("<svg><script>alert(1)</script></svg>"), headers: { "content-type": "image/svg+xml" } };
+  const { transport, calls } = fakeTransport(routes);
+  const result = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport });
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  // PDF 在候选阶段即被拒绝，零请求；SVG 原件保留快照但不进入资产映射。
+  expect(calls).not.toContain(`${BASE}/html/figures/paper.pdf`);
+  expect(result.warnings.some((w) => w.code === "arxiv-asset-pdf-blocked")).toBe(true);
+  expect(result.warnings.some((w) => w.code === "arxiv-asset-svg-unrendered")).toBe(true);
+  expect(result.snapshot.files.some((f) => f.path.endsWith(".pdf"))).toBe(false);
+  expect(result.snapshot.files.some((f) => f.path.endsWith(".svg"))).toBe(true);
+  const assets = result.snapshot.assets as Record<string, unknown>;
+  expect(Object.keys(assets).some((p) => p.endsWith(".svg"))).toBe(false);
+  // 获取警告随快照持久化，重开可继续呈现。
+  const reread = await readSourceSnapshot(root, result.snapshot.sourceSnapshotId);
+  expect(Array.isArray(reread.warnings)).toBe(true);
+  const persisted = reread.warnings;
+  expect(Array.isArray(persisted) && persisted.some((w) => typeof w === "object" && w !== null && "code" in w && w.code === "arxiv-asset-pdf-blocked")).toBe(true);
+});
+
+test("arxiv-import 同版重取：HTML 完全不变，仅资产获取失败导致集合变化也不复用", async () => {
+  const first = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  expect(first.ok).toBe(true);
+  if (!first.ok) return;
+  // abs/HTML 字节与第一次完全相同；fig2 本次 404，资产集合缩小。
+  const missing = defaultRoutes();
+  delete missing[FIG2_URL];
+  const second = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(missing).transport });
+  expect(second.ok).toBe(true);
+  if (!second.ok) return;
+  expect(second.reused).toBe(false);
+  expect(second.snapshot.sourceSnapshotId).not.toBe(first.snapshot.sourceSnapshotId);
+  expect(second.snapshot.files.filter((f) => f.path.startsWith("assets/"))).toHaveLength(1);
+});
+
+test("arxiv-import SVG 原件计入快照原始资产总预算，超限即中止", async () => {
+  const routes = defaultRoutes();
+  routes[HTML_URL] = {
+    bytes: Buffer.from(latexmlHtml(["figures/a.svg", "figures/b.svg"])),
+    headers: { "content-type": "text/html" },
+  };
+  const svgBytes = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>");
+  routes[`${BASE}/html/figures/a.svg`] = { bytes: svgBytes, headers: { "content-type": "image/svg+xml" } };
+  routes[`${BASE}/html/figures/b.svg`] = { bytes: Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><circle/></svg>"), headers: { "content-type": "image/svg+xml" } };
+  const result = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(routes).transport,
+    totalAssetBudgetBytes: svgBytes.byteLength, // 第二个 SVG 必然超限
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostic.code).toBe("arxiv-budget-exceeded");
+  await expect(fs.readdir(path.join(root, "sources"))).rejects.toThrow();
+});

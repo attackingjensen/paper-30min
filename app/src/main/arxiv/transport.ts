@@ -38,8 +38,9 @@ function privateOrLocalTarget(hostname: string): boolean {
   return false;
 }
 
-/** 每一跳访问网络前先验证：协议、凭据、host 允许清单与私网目标。 */
-function validateHop(rawUrl: string, kind: "start" | "redirect"): URL {
+/** 每一跳访问网络前先验证：协议、凭据、host 允许清单与私网目标。
+ * allowFixtureLoopback 仅由受控测试端点显式开启；生产默认拒绝一切回环/私网目标。 */
+function validateHop(rawUrl: string, kind: "start" | "redirect", allowFixtureLoopback: boolean): URL {
   const invalidCode = kind === "start" ? "arxiv-fetch-invalid-url" : "arxiv-fetch-redirect-invalid";
   let url: URL;
   try {
@@ -54,9 +55,15 @@ function validateHop(rawUrl: string, kind: "start" | "redirect"): URL {
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (!isAllowedSourceHost(host))
     throw new ArxivFetchError(kind === "start" ? "arxiv-fetch-host-rejected" : invalidCode, rawUrl);
-  // 回环 fixture 端点允许；其余本地/私网目标一律拒绝（含重定向）。
   const loopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
-  if (!loopback && privateOrLocalTarget(host))
+  // 生产起始跳不允许 http 明文访问 arXiv：访问网络前规范化为 HTTPS。
+  if (!allowFixtureLoopback && url.protocol === "http:" && host === "arxiv.org")
+    url.protocol = "https:";
+  if (loopback) {
+    if (!allowFixtureLoopback) throw new ArxivFetchError(invalidCode, rawUrl);
+    return url;
+  }
+  if (privateOrLocalTarget(host))
     throw new ArxivFetchError(invalidCode, rawUrl);
   return url;
 }
@@ -122,6 +129,13 @@ async function readBody(
   return Buffer.concat(chunks);
 }
 
+/** 立即断开不接受的响应正文：不 draining 无界字节；destroy 的 abort 错误就地吞掉，
+ * 避免未处理错误事件，也不让它冒充用户取消。 */
+function discardBody(body: NodeJS.ReadableStream & { destroy: (error?: Error) => void }): void {
+  body.on("error", () => undefined);
+  body.destroy();
+}
+
 async function attempt(
   startUrl: string,
   options: ArxivFetchOptions,
@@ -130,7 +144,8 @@ async function attempt(
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const signal = options.signal;
   const chain: string[] = [];
-  let current = validateHop(startUrl, "start");
+  const allowFixtureLoopback = options.allowFixtureLoopback === true;
+  let current = validateHop(startUrl, "start", allowFixtureLoopback);
   for (let hop = 0; ; hop += 1) {
     signal?.throwIfAborted();
     chain.push(current.href);
@@ -157,13 +172,13 @@ async function attempt(
     const status = response.statusCode;
     if (REDIRECT_STATUSES.has(status)) {
       const location = response.headers.location;
-      // 丢弃未读取的重定向正文，避免连接泄漏。
-      await response.body.dump().catch(() => undefined);
+      // 不接受的响应立即断开，不 draining 无界正文（避免绕过预算与推迟重试）。
+      discardBody(response.body);
       if (typeof location !== "string" || location === "")
         throw new ArxivFetchError("arxiv-fetch-redirect-invalid", current.href);
       if (hop >= maxRedirects)
         throw new ArxivFetchError("arxiv-fetch-redirect-limit", current.href);
-      const next = validateHop(new URL(location, current).href, "redirect");
+      const next = validateHop(new URL(location, current).href, "redirect", allowFixtureLoopback);
       // HTTP 只能规范化为 HTTPS（真实 arXiv host）；回环 fixture 保持 http。
       if (next.protocol === "http:" && next.hostname.toLowerCase() === "arxiv.org")
         next.protocol = "https:";
@@ -171,7 +186,7 @@ async function attempt(
       continue;
     }
     if (status < 200 || status >= 300) {
-      await response.body.dump().catch(() => undefined);
+      discardBody(response.body);
       throw new ArxivFetchError(
         "arxiv-fetch-status",
         current.href,
@@ -186,7 +201,8 @@ async function attempt(
     }
     const declared = Number(response.headers["content-length"]);
     if (Number.isFinite(declared) && declared > options.budgetBytes) {
-      await response.body.dump().catch(() => undefined);
+      // 声明大小超限：不读取正文即中止。
+      discardBody(response.body);
       throw new ArxivFetchError("arxiv-fetch-budget", current.href);
     }
     const bytes = await readBody(response.body, options.budgetBytes, stallMs, current.href, signal);

@@ -74,6 +74,8 @@ const AtomNodeSchema = Type.Union([
   Type.Object({
     ...atomFields,
     kind: Type.Literal("citation"),
+    /** 解析到的书目规范单元；未解析为 null 并保留 sourceAliases 与 warning。 */
+    targetUnitId: Type.Union([IdSchema, Type.Null()]),
   }, { additionalProperties: false }),
   Type.Object({
     ...atomFields,
@@ -335,6 +337,8 @@ function validateAtoms(tree: DocumentTree) {
       if (!atom.targetUnitId && !atom.sourceTarget)
         invalid(`未解析交叉引用 ${atom.id} 必须保留来源目标。`);
     }
+    if (atom.kind === "citation" && atom.targetUnitId && !tree.units[atom.targetUnitId])
+      invalid(`文献引用目标不存在：${atom.targetUnitId}。`);
     if (atom.kind === "footnote-reference" && !tree.units[atom.targetUnitId])
       invalid(`脚注引用目标不存在：${atom.targetUnitId}。`);
     if ((atom.kind === "math" || atom.kind === "inline-object") && atom.source.format === "mathml")

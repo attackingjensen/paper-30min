@@ -1,5 +1,6 @@
 import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
 import { arxivEndpointUrl, isAllowedSourceHost, parseArxivReference } from "./reference.js";
+import { fetchDiagnostic } from "./fetch.js";
 
 /** 受控 abs 获取入口：生产 transport 在后续切片接入，测试映射到本地 fixtures。 */
 export type AbsFetch = (url: string) => Promise<string>;
@@ -89,8 +90,9 @@ export async function resolveArxivVersion(
   let html: string;
   try {
     html = await fetchAbs(absUrl);
-  } catch {
-    return fail("arxiv-abs-fetch-failed", "arxiv.abs.fetchFailed", absUrl);
+  } catch (error) {
+    // 复用统一 transport 分类：404/403/429/TLS/停滞/网络/取消不互相冒充。
+    return { ok: false, diagnostic: fetchDiagnostic(error, absUrl, "abs", "resolve") };
   }
   const identity = citationIdentity(html);
   const titleBaseId = absTitleBaseId(html);
@@ -143,12 +145,18 @@ export function assertArxivVersionConsistent(
     return fail("arxiv-identity-mismatch", "arxiv.identity.mismatch", finalUrl);
   if (fromUrl.version !== null && fromUrl.version !== pinned.version)
     return fail("arxiv-version-mixed", "arxiv.version.mixed", finalUrl);
+  let metaVersion: number | null = null;
   if (evidence.citationId !== undefined) {
     const fromMeta = identityFromText(evidence.citationId);
     if (!fromMeta || fromMeta.baseId !== pinned.baseId)
       return fail("arxiv-identity-mismatch", "arxiv.identity.mismatch", finalUrl);
     if (fromMeta.version !== null && fromMeta.version !== pinned.version)
       return fail("arxiv-version-mixed", "arxiv.version.mixed", finalUrl);
+    metaVersion = fromMeta.version;
   }
+  // fail closed：URL 与元数据至少一项必须明确等于固定 vN；
+  // 两者都无版本时无法证明响应属于该版本，不得发布。
+  if (fromUrl.version === null && metaVersion === null)
+    return fail("arxiv-version-unproven", "arxiv.version.unproven", finalUrl);
   return { ok: true };
 }

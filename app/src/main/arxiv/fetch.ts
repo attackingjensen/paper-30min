@@ -38,6 +38,40 @@ export class ArxivFetchError extends Error {
   }
 }
 
+/** 把受控 transport 的分类失败映射为稳定诊断；不互相冒充。stage 由调用阶段决定。 */
+export function fetchDiagnostic(
+  error: unknown,
+  url: string,
+  kind: "abs" | "html",
+  stage: ImportDiagnostic["stage"] = "fetch",
+): ImportDiagnostic {
+  if (error instanceof ArxivFetchError) {
+    const prefix = kind === "abs" ? "arxiv-abs" : "arxiv-html";
+    const keyBase = kind === "abs" ? "arxiv.abs" : "arxiv.html";
+    switch (error.code) {
+      case "arxiv-fetch-cancelled":
+        return { code: error.code, severity: "fatal", stage, messageKey: "arxiv.fetch.cancelled", sourceUrl: url };
+      case "arxiv-fetch-budget":
+        return { code: "arxiv-budget-exceeded", severity: "fatal", stage, messageKey: "arxiv.fetch.budget", sourceUrl: url };
+      case "arxiv-fetch-tls":
+        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.tls`, sourceUrl: url };
+      case "arxiv-fetch-stalled":
+        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.stalled`, sourceUrl: url };
+      case "arxiv-fetch-status":
+        if (error.status === 404)
+          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.notFound`, sourceUrl: url };
+        if (error.status === 403)
+          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.forbidden`, sourceUrl: url };
+        if (error.status === 429)
+          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.rateLimited`, sourceUrl: url };
+        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.http`, sourceUrl: url };
+      default:
+        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.network`, sourceUrl: url };
+    }
+  }
+  return { code: `${kind === "abs" ? "arxiv-abs" : "arxiv-html"}-fetch-failed`, severity: "fatal", stage, messageKey: kind === "abs" ? "arxiv.abs.network" : "arxiv.html.network", sourceUrl: url };
+}
+
 export interface ArxivFetchOptions {
   /** 响应字节预算（声明大小与实际字节均受约束）。 */
   budgetBytes: number;
@@ -54,6 +88,9 @@ export interface ArxivFetchOptions {
   dispatcher?: Dispatcher;
   /** 测试注入点：等待 Retry-After 的实现。 */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** 受控 fixture 端点专用：允许回环 http 目标。生产路径不得开启；
+   * 仅当命令 baseUrl 指向回环且主进程测试环境显式允许时由 IPC 层注入。 */
+  allowFixtureLoopback?: boolean;
 }
 
 /** 受控幂等 GET：先验证 URL 与每一跳重定向，再访问网络；失败以 ArxivFetchError 分类。 */
@@ -91,6 +128,8 @@ export interface ArxivSourceMetadata {
     abs?: { etag?: string; lastModified?: string; contentType?: string; redirectChain?: string[] };
     html?: { etag?: string; lastModified?: string; contentType?: string; redirectChain?: string[] };
   };
+  /** 获取阶段警告（外部资产未抓取、单资产失败等）；随快照持久化，重开可继续呈现。 */
+  warnings?: ImportDiagnostic[];
 }
 
 export type ArxivSnapshotResult =
@@ -113,6 +152,8 @@ export interface FetchArxivSnapshotInput {
   /** 端点基址注入点：生产默认 https://arxiv.org；受控测试映射到本地 fixtures。 */
   baseUrl?: string;
   signal?: AbortSignal;
+  /** 受控 fixture 端点（回环 http）专用；生产路径不得开启。 */
+  allowFixtureLoopback?: boolean;
   /** 资产并发，默认 4。 */
   assetConcurrency?: number;
   /** 单项原始资产预算，默认 32 MiB。 */

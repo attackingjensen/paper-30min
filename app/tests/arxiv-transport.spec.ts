@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { MockAgent, type Dispatcher } from "undici";
 import {
   arxivFetch,
   ArxivFetchError,
@@ -42,7 +43,8 @@ test.afterEach(async () => {
   await closed.promise;
 });
 
-const budget = { budgetBytes: 1024 * 1024 };
+// 受控本地 fixture 端点：显式开启回环许可（生产默认拒绝，见下方专项用例）。
+const budget = { budgetBytes: 1024 * 1024, allowFixtureLoopback: true };
 
 test("arxiv-import transport 幂等 GET 返回原始字节、最终 URL 与公开响应头", async () => {
   handler = (_url, respond) =>
@@ -163,7 +165,7 @@ test("arxiv-import transport 声明大小超预算时不读取正文即中止", 
   handler = (_url, respond) =>
     respond(200, { "content-length": String(2 * 1024 * 1024) }, Buffer.alloc(16));
   const error = await arxivFetch(`${baseUrl}/html/2401.01234v1`, {
-    budgetBytes: 1024 * 1024,
+    ...budget,
   }).catch((e: unknown) => e);
   expect((error as ArxivFetchError).code).toBe("arxiv-fetch-budget");
 });
@@ -181,7 +183,7 @@ test("arxiv-import transport 实际字节超预算即中止，不截断后报成
     raw.on("close", () => clearInterval(timer));
   };
   const error = await arxivFetch(`${baseUrl}/assets/big.png`, {
-    budgetBytes: 1024 * 1024,
+    ...budget,
   }).catch((e: unknown) => e);
   expect((error as ArxivFetchError).code).toBe("arxiv-fetch-budget");
 });
@@ -214,7 +216,7 @@ test("arxiv-import transport 活动下载不受短总时限影响，只要持续
     raw.on("close", () => clearInterval(timer));
   };
   const response = await arxivFetch(`${baseUrl}/assets/active.png`, {
-    budgetBytes: 1024 * 1024,
+    ...budget,
     stallTimeoutMs: 200,
   });
   expect(response.bytes.byteLength).toBeGreaterThanOrEqual(512 * 1024);
@@ -268,4 +270,82 @@ test("arxiv-import transport 网络中断重试后仍失败时报告 network 分
   }).catch((e: unknown) => e);
   expect((error as ArxivFetchError).code).toBe("arxiv-fetch-network");
   expect(hits.length).toBe(0);
+});
+
+test("arxiv-import transport 生产模式拒绝回环起始与回环重定向，本地服务零命中", async () => {
+  const prod = { budgetBytes: 1024 * 1024 };
+  const start = await arxivFetch(`${baseUrl}/abs/2401.01234`, prod).catch((e: unknown) => e);
+  expect((start as ArxivFetchError).code).toBe("arxiv-fetch-invalid-url");
+  expect(hits).toEqual([]);
+
+  // 受控 MockAgent 模拟 arxiv.org 响应（不访问真实网络，不放宽任何检查）：
+  // 生产模式跟随到回环的重定向必须被拒绝，本地 /steal 零命中。
+  const mock = new MockAgent();
+  mock.disableNetConnect();
+  mock.get("https://arxiv.org").intercept({ path: "/abs/2401.01234", method: "GET" })
+    .reply(302, "", { headers: { location: `${baseUrl}/steal` } });
+  const redirect = await arxivFetch("https://arxiv.org/abs/2401.01234", {
+    ...prod,
+    dispatcher: mock,
+  }).catch((e: unknown) => e);
+  expect((redirect as ArxivFetchError).code).toBe("arxiv-fetch-redirect-invalid");
+  expect(hits).toEqual([]);
+  await mock.close();
+});
+
+test("arxiv-import transport 生产模式起始 http://arxiv.org 规范化为 https 再访问", async () => {
+  // MockAgent 只登记 https 端点：若起始 http 未被规范化，请求将无法匹配。
+  const mock = new MockAgent();
+  mock.disableNetConnect();
+  mock.get("https://arxiv.org").intercept({ path: "/abs/2401.01234", method: "GET" })
+    .reply(200, "<html>ok</html>", { headers: { "content-type": "text/html" } });
+  const response = await arxivFetch("http://arxiv.org/abs/2401.01234", {
+    budgetBytes: 1024 * 1024,
+    dispatcher: mock,
+  });
+  expect(response.url).toBe("https://arxiv.org/abs/2401.01234");
+  expect(Buffer.from(response.bytes).toString("utf8")).toBe("<html>ok</html>");
+  expect(hits).toEqual([]);
+  await mock.close();
+});
+
+test("arxiv-import transport 重定向的无界正文被立即断开，不 draining", async () => {
+  const closed = Promise.withResolvers<void>();
+  let sent = 0;
+  handler = (_url, _respond, raw) => {
+    raw.writeHead(302, { location: `${baseUrl}/next`, "content-type": "text/plain" });
+    const chunk = Buffer.alloc(64 * 1024, 1);
+    const timer = setInterval(() => {
+      sent += chunk.length;
+      if (!raw.write(chunk)) clearInterval(timer);
+    }, 1);
+    raw.on("close", () => { clearInterval(timer); closed.resolve(); });
+  };
+  const error = await arxivFetch(`${baseUrl}/abs/2401.01234`, {
+    ...budget,
+    maxRedirects: 0,
+  }).catch((e: unknown) => e);
+  expect((error as ArxivFetchError).code).toBe("arxiv-fetch-redirect-limit");
+  // 连接被客户端立即断开（而非读完无界正文）：close 事件到达且发送量有界。
+  await closed.promise;
+  expect(sent).toBeLessThan(8 * 1024 * 1024);
+});
+
+test("arxiv-import transport 声明超预算的大正文不读取即中止", async () => {
+  let sent = 0;
+  handler = (_url, _respond, raw) => {
+    raw.writeHead(200, { "content-length": String(64 * 1024 * 1024) });
+    const chunk = Buffer.alloc(64 * 1024, 1);
+    const timer = setInterval(() => {
+      sent += chunk.length;
+      raw.write(chunk);
+    }, 1);
+    raw.on("close", () => clearInterval(timer));
+  };
+  const error = await arxivFetch(`${baseUrl}/html/2401.01234v1`, {
+    budgetBytes: 1024 * 1024,
+    allowFixtureLoopback: true,
+  }).catch((e: unknown) => e);
+  expect((error as ArxivFetchError).code).toBe("arxiv-fetch-budget");
+  expect(sent).toBeLessThan(8 * 1024 * 1024);
 });

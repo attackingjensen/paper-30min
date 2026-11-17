@@ -158,3 +158,82 @@ test("document-core current 本地删除而 candidate 修改 unit 时生成 dele
   expect(resolved.document.units[selectionIds.secondUnit].sectionId).toBe(selectionIds.section);
   expect(() => assertDocumentMergePublishable(resolved, resolved.baseRevision)).not.toThrow();
 });
+
+test("document-core 候选书目单元经 alias 对齐后 citation 目标随之重映射，不产生悬空引用", () => {
+  const paperId = randomUUID();
+  const base = testSelectionTree(paperId);
+  // base 含书目单元（稳定 ID + alias）与指向它的已解析 citation。
+  const baseBibUnit = randomUUID();
+  const baseBibSentence = randomUUID();
+  const baseCiteAtom = randomUUID();
+  base.units[baseBibUnit] = {
+    id: baseBibUnit,
+    sectionId: selectionIds.section,
+    kind: "reference",
+    sentenceIds: [baseBibSentence],
+    sourceAliases: ["bib.bib1"],
+  };
+  base.sentences[baseBibSentence] = {
+    id: baseBibSentence,
+    unitId: baseBibUnit,
+    content: [{ kind: "text", text: "Author, A. (2020). A study." }],
+  };
+  base.sections[selectionIds.section].unitIds.push(baseBibUnit);
+  base.blocks.push({ id: randomUUID(), sectionId: selectionIds.section, kind: "unit", unitId: baseBibUnit });
+  base.atoms[baseCiteAtom] = {
+    id: baseCiteAtom,
+    unitId: selectionIds.unit,
+    kind: "citation",
+    text: "[1]",
+    targetUnitId: baseBibUnit,
+    sourceAliases: ["bib.bib1"],
+  };
+  base.sentences[selectionIds.sentence].content.push({ kind: "atom", atomId: baseCiteAtom });
+
+  const current = structuredClone(base);
+  // candidate 重新转换：书目单元与 citation 都是新 UUID，仅 alias 相同。
+  const candidate = structuredClone(base);
+  const newBibUnit = randomUUID();
+  const newBibSentence = randomUUID();
+  const newCiteAtom = randomUUID();
+  delete candidate.units[baseBibUnit];
+  delete candidate.sentences[baseBibSentence];
+  delete candidate.atoms[baseCiteAtom];
+  candidate.sections[selectionIds.section].unitIds =
+    candidate.sections[selectionIds.section].unitIds.map((id) => id === baseBibUnit ? newBibUnit : id);
+  candidate.blocks = candidate.blocks.map((block) =>
+    block.kind === "unit" && block.unitId === baseBibUnit ? { ...block, unitId: newBibUnit } : block);
+  candidate.units[newBibUnit] = {
+    id: newBibUnit,
+    sectionId: selectionIds.section,
+    kind: "reference",
+    sentenceIds: [newBibSentence],
+    sourceAliases: ["bib.bib1"],
+  };
+  candidate.sentences[newBibSentence] = {
+    id: newBibSentence,
+    unitId: newBibUnit,
+    content: [{ kind: "text", text: "Author, A. (2020). A study." }],
+  };
+  candidate.atoms[newCiteAtom] = {
+    id: newCiteAtom,
+    unitId: selectionIds.unit,
+    kind: "citation",
+    text: "[1]",
+    targetUnitId: newBibUnit,
+    sourceAliases: ["bib.bib1"],
+  };
+  candidate.sentences[selectionIds.sentence].content =
+    candidate.sentences[selectionIds.sentence].content.map((part) =>
+      part.kind === "atom" && part.atomId === baseCiteAtom ? { kind: "atom", atomId: newCiteAtom } : part);
+
+  const result = merge(base, current, candidate);
+  expect(result.conflicts).toEqual([]);
+  // citation 目标必须重映射到 base 书目单元 ID，而不是残留 candidate UUID。
+  const mergedCite = Object.values(result.document.atoms).find((atom) => atom.kind === "citation");
+  expect(mergedCite).toBeDefined();
+  if (mergedCite?.kind !== "citation") throw new Error("citation missing");
+  expect(mergedCite.targetUnitId).toBe(baseBibUnit);
+  expect(result.document.units[baseBibUnit]).toBeDefined();
+  expect(() => assertDocumentMergePublishable(result, result.baseRevision)).not.toThrow();
+});

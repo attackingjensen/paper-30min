@@ -226,7 +226,7 @@ function remapCandidateIds(candidate: DocumentTree, mapping: Map<string, string>
   }));
   mapped.atoms = Object.fromEntries(Object.values(candidate.atoms).map((atom) => {
     const next = { ...structuredClone(atom), id: id(atom.id), unitId: id(atom.unitId) };
-    if ((next.kind === "cross-reference" || next.kind === "footnote-reference") && next.targetUnitId)
+    if ((next.kind === "cross-reference" || next.kind === "footnote-reference" || next.kind === "citation") && next.targetUnitId)
       next.targetUnitId = id(next.targetUnitId);
     return [next.id, next];
   }));

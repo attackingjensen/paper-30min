@@ -3,10 +3,13 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { parse, type DefaultTreeAdapterMap } from "parse5";
 import type { ImportDiagnostic } from "../../shared/arxiv.js";
+import { readDiagnosticArray } from "../../shared/arxiv.js";
 import type { DocumentTree } from "../../shared/document/tree.js";
 import { parseDocumentTree } from "../../shared/document/tree.js";
+import { createDocumentChangeset } from "../../shared/document/changeset.js";
 import {
   commitRevision,
+  completePublishedRevision,
   openProject,
   readSourceSnapshot,
   type ProjectCommitHooks,
@@ -71,6 +74,13 @@ export type ArxivConvertPoint = "candidate-built" | "before-publish";
 export interface ConvertArxivSnapshotInput {
   root: string;
   sourceSnapshotId: string;
+  /** 恢复已构建候选：沿用中断前持久化的 revisionId，不新建身份。 */
+  revisionId?: string;
+  /** 候选 revision 已完整落盘（仅 current 未推进）：核验后只推进指针，不重新转换。 */
+  completePublished?: boolean;
+  /** 候选构建后、提交前回调：组合入口借此把 revisionId 与警告持久化到恢复记录，
+   * 使 current 推进中断后的恢复沿用同一候选，而不是重新转换新建 revision。 */
+  onCandidateBuilt?: (candidate: { revisionId: string; warnings: ImportDiagnostic[] }) => Promise<void>;
   /** 转换阶段故障注入：候选构建后、提交发布前；生产路径不注入。 */
   hooks?: {
     onConvertPoint?: (point: ArxivConvertPoint) => void | Promise<void>;
@@ -559,6 +569,16 @@ class CoverageError extends Error {
   }
 }
 
+/** 元数据校验专用错误：按类型分类诊断，不与无关提交故障的消息文本混淆。 */
+class ArxivMetadataError extends Error {
+  constructor(
+    readonly code: string,
+    readonly messageKey: string,
+  ) {
+    super(messageKey);
+  }
+}
+
 interface WalkContext {
   builder: TreeBuilder;
   input: ConvertLatexmlInput;
@@ -614,7 +634,7 @@ function walkNode(node: Node, context: WalkContext): void {
     walkListItem(element, context);
     return;
   }
-  if (hasClass(element, "ltx_figure")) {
+  if (hasClass(element, "ltx_figure") || hasClass(element, "ltx_subfigure")) {
     walkFigure(element, context);
     return;
   }
@@ -867,6 +887,7 @@ function emitCitation(cite: Element, context: WalkContext, parts: InlinePart[], 
   const atomId = context.builder.addAtom(unitId, {
     kind: "citation",
     text,
+    targetUnitId: null,
     ...(targets.length ? { sourceAliases: targets } : {}),
   });
   parts.push({ kind: "atom", atomId });
@@ -914,17 +935,59 @@ function emitAnchor(anchor: Element, context: WalkContext, parts: InlinePart[], 
 function walkFigure(figure: Element, context: WalkContext): void {
   const builder = context.builder;
   const sectionId = builder.currentSection;
-  const caption = findClass(figure, "ltx_caption");
+
+  // 子图（ltx_subfigure）：每个子图独立成块并注册自己的别名，
+  // 不得只转换第一张而静默省略其余可见内容（SPEC §4.2/§4.8）。
+  const subfigures: Element[] = [];
+  const collectSubs = (node: Node): void => {
+    if (isElement(node) && node !== figure && hasClass(node, "ltx_subfigure")) {
+      subfigures.push(node);
+      return;
+    }
+    if (isElement(node) && hasClass(node, "ltx_caption")) return;
+    if (isParent(node)) for (const child of node.childNodes) collectSubs(child);
+  };
+  collectSubs(figure);
+
+  // 父图 caption 必须排除子图子树：深度优先 findClass 会误取第一个子图 caption。
+  const caption = findCaptionOutsideSubfigures(figure);
   let captionUnitId: string | null = null;
   let captionInput: UnitInput | null = null;
   let captionSentences: InlinePart[][] = [];
+  const figureAliases = aliasesOf(figure);
   if (caption) {
     captionUnitId = builder.reserveUnit();
-    captionInput = { kind: "caption" };
+    captionInput = { kind: "caption", ...(figureAliases ? { aliases: figureAliases } : {}) };
     captionSentences = splitSentences([{ kind: "text", text: captionTextOf(caption) || " " }]);
     builder.deferUnit(captionUnitId, captionInput, captionSentences);
   }
-  const image = findImage(figure);
+
+  // 无 caption 的图也要有合法锚定单元：交叉引用只能指向 unit，不能指向 block。
+  // 非叶容器（含子图）的 alias 持久化到锚定单元，不只留在临时映射。
+  const anchorUnitId = captionUnitId ?? builder.addUnit(
+    { kind: "paragraph", ...(figureAliases ? { aliases: figureAliases } : {}) },
+    [[{ kind: "text", text: figureAnchorText(figure) }]],
+  );
+
+  const images = subfigures.length ? [] : collectImages(figure);
+  if (subfigures.length) {
+    // 主 caption 先落树，再按来源顺序转换每个子图。
+    if (captionUnitId && captionInput) {
+      const deferred = builder.takeDeferred(captionUnitId);
+      builder.flushUnit(deferred.unitId, deferred.input, deferred.sentences, sectionId, {
+        id: randomUUID(),
+        sectionId,
+        kind: "unit",
+        unitId: captionUnitId,
+      });
+    }
+    for (const sub of subfigures) walkFigure(sub, context);
+    const figureAlias = attr(figure, "id");
+    if (figureAlias) builder.registerAlias(figureAlias, anchorUnitId);
+    return;
+  }
+
+  const image = images[0] ?? null;
   let asset: { path: string; sha256: string; mime: string } | null = null;
   let figureWarning: string | undefined;
   if (image && image.tagName === "img") {
@@ -943,10 +1006,29 @@ function walkFigure(figure: Element, context: WalkContext): void {
   } else {
     figureWarning = "arxiv.convert.assetUnavailable";
   }
+  // 同一 figure 内多张图片而结构无法表达：raw 降级保留全部可见内容，不静默丢弃。
+  if (images.length > 1) {
+    builder.warnings.push(
+      warning("arxiv-convert-figure-multi-image", "arxiv.convert.figureMultiImage", attr(figure, "id")),
+    );
+    if (captionUnitId) {
+      const deferred = builder.takeDeferred(captionUnitId);
+      builder.flushUnit(deferred.unitId, { kind: "paragraph" }, deferred.sentences, sectionId, {
+        id: randomUUID(),
+        sectionId,
+        kind: "unit",
+        unitId: captionUnitId,
+      });
+    }
+    emitRawBlock(figure, context, ["arxiv.convert.figureMultiImage"]);
+    const figureAlias = attr(figure, "id");
+    if (figureAlias) builder.registerAlias(figureAlias, anchorUnitId);
+    builder.noteFigure(true);
+    return;
+  }
   builder.noteFigure(asset === null);
-  const blockId = randomUUID();
   const figureBlock: DocumentTree["blocks"][number] = {
-    id: blockId,
+    id: randomUUID(),
     sectionId,
     kind: "figure",
     asset,
@@ -961,12 +1043,35 @@ function walkFigure(figure: Element, context: WalkContext): void {
     builder.tree.blocks.push(figureBlock);
   }
   const figureAlias = attr(figure, "id");
-  if (figureAlias) builder.registerAlias(figureAlias, captionUnitId ?? blockId);
+  if (figureAlias) builder.registerAlias(figureAlias, anchorUnitId);
   if (asset === null && figureWarning === "arxiv.convert.assetUnavailable") {
     builder.warnings.push(
       warning("arxiv-convert-asset-missing", "arxiv.convert.assetMissing", figureAlias),
     );
   }
+}
+
+/** 无 caption 图片的锚定文本：优先 alt，其次来源 ID，保证可读占位。 */
+function figureAnchorText(figure: Element): string {
+  const image = findImage(figure);
+  const alt = image ? attr(image, "alt")?.trim() : undefined;
+  if (alt) return `[image: ${alt}]`;
+  const id = attr(figure, "id");
+  return id ? `[image: ${id}]` : "[image]";
+}
+
+function collectImages(root: Element): Element[] {
+  const found: Element[] = [];
+  const walk = (node: Node): void => {
+    if (isElement(node) && (node.tagName === "img" || node.tagName === "svg")) {
+      found.push(node);
+      return;
+    }
+    if (isElement(node) && hasClass(node, "ltx_caption")) return;
+    if (isParent(node)) for (const child of node.childNodes) walk(child);
+  };
+  walk(root);
+  return found;
 }
 
 function captionTextOf(caption: Element): string {
@@ -980,15 +1085,22 @@ function captionTextOf(caption: Element): string {
 }
 
 function findImage(root: Element): Element | null {
-  if (root.tagName === "img" || root.tagName === "svg") return root;
-  if (!isParent(root)) return null;
-  for (const child of root.childNodes) {
-    if (!isElement(child)) continue;
-    if (hasClass(child, "ltx_caption")) continue;
-    const found = findImage(child);
-    if (found) return found;
-  }
-  return null;
+  return collectImages(root)[0] ?? null;
+}
+
+/** 查找 figure 直属 caption：跳过子图子树，但不跳过 figure 自身（子图递归时自身即 ltx_subfigure）。 */
+function findCaptionOutsideSubfigures(figure: Element): Element | null {
+  const search = (node: Node, isRoot: boolean): Element | null => {
+    if (isElement(node) && !isRoot && hasClass(node, "ltx_subfigure")) return null;
+    if (isElement(node) && hasClass(node, "ltx_caption")) return node;
+    if (!isParent(node)) return null;
+    for (const child of node.childNodes) {
+      const found = search(child, false);
+      if (found) return found;
+    }
+    return null;
+  };
+  return search(figure, true);
 }
 
 function resolveAsset(image: Element, context: WalkContext): { path: string; sha256: string; mime: string } | null {
@@ -1033,6 +1145,11 @@ function walkTableFigure(figure: Element, context: WalkContext): void {
   const tabular = findClass(figure, "ltx_tabular") ??
     (figure.tagName === "table" ? figure : null);
   const rows = tabular ? tableRows(tabular, context) : null;
+  // 无 caption 表格也要有合法锚定单元：交叉引用只能指向 unit，不能指向 block。
+  const anchorUnitId = captionUnitId ?? builder.addUnit(
+    { kind: "paragraph" },
+    [[{ kind: "text", text: tableAnchorText(figure) }]],
+  );
   const aliases = aliasesOf(figure);
   if (rows) {
     const blockId = randomUUID();
@@ -1061,7 +1178,7 @@ function walkTableFigure(figure: Element, context: WalkContext): void {
     }
     if (!ordered.length) builder.tree.blocks.push(tableBlock);
     const alias = attr(figure, "id");
-    if (alias) builder.registerAlias(alias, captionUnitId ?? blockId);
+    if (alias) builder.registerAlias(alias, anchorUnitId);
     return;
   }
   // 无法无损表达：raw block + 文本投影 + warning；caption 随 raw 降级为普通段落。
@@ -1079,10 +1196,13 @@ function walkTableFigure(figure: Element, context: WalkContext): void {
   );
   emitRawBlock(figure, context, ["arxiv.convert.tableLossy"]);
   const alias = attr(figure, "id");
-  if (alias) {
-    const last = builder.tree.blocks[builder.tree.blocks.length - 1];
-    builder.registerAlias(alias, captionUnitId ?? last.id);
-  }
+  if (alias) builder.registerAlias(alias, anchorUnitId);
+}
+
+/** 无 caption 表格的锚定文本：来源 ID 优先，保证可读占位。 */
+function tableAnchorText(figure: Element): string {
+  const id = attr(figure, "id");
+  return id ? `[table: ${id}]` : "[table]";
 }
 
 interface CellSpan {
@@ -1114,6 +1234,20 @@ function tableRows(tabular: Element, context: WalkContext): CellSpan[][] | null 
     }
   }
 
+  // 跨度安全边界（schema 校验前的 DoS 防护）：来源 rowspan/colspan 不可信，
+  // 超出实际网格规模或非安全整数时整体降级为 raw block，不逐格填充。
+  const MAX_TABLE_ROWS = 4096;
+  const MAX_TABLE_COLUMNS = 256;
+  if (trs.length > MAX_TABLE_ROWS) return null;
+  const spanOf = (cell: Element, name: string): number | null => {
+    const raw = attr(cell, name);
+    if (raw === undefined) return 1;
+    // 完整十进制整数匹配："2.5"、"1e3" 等无法无损表达，降级而非截断。
+    if (!/^[0-9]+$/.test(raw.trim())) return null;
+    const value = Number(raw.trim());
+    if (!Number.isSafeInteger(value) || value < 1) return null;
+    return value;
+  };
   const rows: CellSpan[][] = [];
   const occupied = new Map<string, true>();
   const key = (row: number, column: number): string => `${row}:${column}`;
@@ -1127,8 +1261,13 @@ function tableRows(tabular: Element, context: WalkContext): CellSpan[][] | null 
     columnIndex = 0;
     for (const cell of cells) {
       while (occupied.has(key(rowIndex, columnIndex))) columnIndex += 1;
-      const rowSpan = Math.max(1, Number.parseInt(attr(cell, "rowspan") ?? "1", 10) || 1);
-      const columnSpan = Math.max(1, Number.parseInt(attr(cell, "colspan") ?? "1", 10) || 1);
+      const rowSpanRaw = spanOf(cell, "rowspan");
+      const columnSpanRaw = spanOf(cell, "colspan");
+      if (rowSpanRaw === null || columnSpanRaw === null) return null;
+      if (rowSpanRaw > trs.length - rowIndex || columnSpanRaw > MAX_TABLE_COLUMNS) return null;
+      const rowSpan = rowSpanRaw;
+      const columnSpan = columnSpanRaw;
+      if (columnIndex + columnSpan > MAX_TABLE_COLUMNS) return null;
       const unitId = context.builder.reserveUnit();
       const parts = inlineParts(cell, context, unitId);
       context.builder.deferUnit(
@@ -1157,7 +1296,45 @@ function findTag(root: Node, tagName: string): Element | null {
   return null;
 }
 
-function walkEquation(equation: Element, context: WalkContext): void {
+/** 返回实际创建的锚定单元 ID（group 用它持久化组 alias，不依赖成员自身 ID）。 */
+function walkEquation(equation: Element, context: WalkContext): string | null {
+  // equation group 含多条对齐公式：逐条转换，不得只取第一条（SPEC §4.2 覆盖）。
+  if (hasClass(equation, "ltx_equationgroup")) {
+    const members: Element[] = [];
+    const collect = (node: Node): void => {
+      if (isElement(node) && node !== equation &&
+          (hasClass(node, "ltx_equation") || hasClass(node, "ltx_eqn_table"))) {
+        members.push(node);
+        return;
+      }
+      if (isParent(node)) for (const child of node.childNodes) collect(child);
+    };
+    collect(equation);
+    if (members.length) {
+      let firstAnchor: string | null = null;
+      for (const member of members) {
+        const anchor = walkEquation(member, context);
+        if (firstAnchor === null) firstAnchor = anchor;
+      }
+      const alias = attr(equation, "id");
+      if (alias && !context.builder.aliases.has(alias) && firstAnchor !== null) {
+        context.builder.registerAlias(alias, firstAnchor);
+        // 组 ID 持久化到锚定单元的 sourceAliases，不只留在临时映射。
+        const unit = context.builder.tree.units[firstAnchor];
+        if (unit) {
+          const existing = unit.sourceAliases ?? [];
+          if (!existing.includes(alias)) unit.sourceAliases = [...existing, alias];
+        }
+      }
+      return firstAnchor;
+    }
+    // 无已知成员结构的 group：整体 raw 降级，不静默丢弃。
+    context.builder.warnings.push(
+      warning("arxiv-convert-equationgroup-lossy", "arxiv.convert.equationGroupLossy", attr(equation, "id")),
+    );
+    emitRawBlock(equation, context, ["arxiv.convert.equationGroupLossy"]);
+    return null;
+  }
   const builder = context.builder;
   const math = findTag(equation, "math");
   const representation = math ? mathRepresentation(math) : null;
@@ -1169,7 +1346,7 @@ function walkEquation(equation: Element, context: WalkContext): void {
       warning("arxiv-convert-math-unreadable", "arxiv.convert.mathUnreadable", attr(equation, "id")),
     );
     emitRawBlock(equation, context, ["arxiv.convert.equationUnreadable"]);
-    return;
+    return null;
   }
   const text = tagText ? `${representation.text} ${tagText}` : representation.text;
   // 编号锚定单元先落树：交叉引用只能指向单元，公式块本身不占用单元。
@@ -1187,6 +1364,7 @@ function walkEquation(equation: Element, context: WalkContext): void {
   });
   const alias = attr(equation, "id");
   if (alias) builder.registerAlias(alias, anchorUnitId);
+  return anchorUnitId;
 }
 
 function emitBlockMath(math: Element, context: WalkContext): void {
@@ -1237,10 +1415,13 @@ function resolveReferences(builder: TreeBuilder, sourceIds: Set<string>): void {
     if (!atom) continue;
     const resolved = builder.aliases.get(ref.target);
     if (ref.kind === "citation") {
-      // citation 原子没有目标字段；来源目标保存在 sourceAliases，目标缺失记 warning。
-      if (!resolved) {
-        if (sourceIds.has(ref.target))
-          throw new CoverageError("arxiv-convert-coverage", "arxiv.convert.coverage", ref.target);
+      if (atom.kind !== "citation") continue;
+      if (resolved) {
+        // 解析到书目规范单元；多目标引用取首个已解析目标，其余保留 sourceAliases。
+        if (atom.targetUnitId === null) atom.targetUnitId = resolved.unitId;
+      } else if (sourceIds.has(ref.target)) {
+        throw new CoverageError("arxiv-convert-coverage", "arxiv.convert.coverage", ref.target);
+      } else {
         builder.warnings.push(
           warning("arxiv-convert-citation-unresolved", "arxiv.convert.citationUnresolved", ref.target),
         );
@@ -1282,6 +1463,48 @@ export async function convertArxivSnapshot(
   if (!htmlRecord)
     return fatal("arxiv-convert-html-missing", "arxiv.convert.htmlMissing", "convert");
 
+  // 已发布候选的恢复：不重新转换（节点 UUID 不可复现），核验磁盘字节后只推进 current。
+  // 提前到资产读取之前：仅推进指针不需要加载 HTML 与资产字节。
+  if (input.completePublished && input.revisionId !== undefined) {
+    // 元数据校验在 completePublishedRevision 的串行临界区内、current 替换前执行：
+    // 校验失败时 current 保持为空，不产生"返回失败但已推进"的矛盾状态。
+    const validated: { value: { warnings: ImportDiagnostic[]; converterVersion: number } | null } = { value: null };
+    const validateMetadata = (revision: ProjectRevisionRecord): void => {
+      const arxivMeta = revision.arxiv;
+      const record: Record<string, unknown> = arxivMeta !== null && typeof arxivMeta === "object"
+        ? { ...arxivMeta } : {};
+      let warnings: ImportDiagnostic[];
+      try {
+        warnings = readDiagnosticArray(record.warnings);
+      } catch (error) {
+        throw new ArxivMetadataError(
+          "arxiv-import-record-corrupt",
+          `arxiv.import.recordCorrupt:${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (typeof record.converterVersion !== "number" ||
+          !Number.isInteger(record.converterVersion) || record.converterVersion < 1) {
+        throw new ArxivMetadataError("arxiv-convert-version-missing", "arxiv.convert.versionMissing");
+      }
+      validated.value = { warnings, converterVersion: record.converterVersion };
+    };
+    try {
+      const revision = await completePublishedRevision(
+        input.root, input.revisionId, input.hooks?.commitHooks ?? {}, validateMetadata,
+      );
+      if (validated.value === null)
+        return fatal("arxiv-convert-version-missing", "arxiv.convert.versionMissing", "convert");
+      return { ok: true, revision, warnings: validated.value.warnings, converterVersion: validated.value.converterVersion };
+    } catch (error) {
+      // 按错误类型分类，不做消息 substring 匹配：无关提交故障即使消息含相同文本
+      // 也返回 publish-failed，不冒充元数据校验失败。
+      if (error instanceof ArxivMetadataError)
+        return fatal(error.code, error.messageKey, "convert");
+      const message = error instanceof Error ? error.message : String(error);
+      return fatal("arxiv-convert-publish-failed", `arxiv.convert.publishFailed:${message}`, "publish");
+    }
+  }
+
   const readAsset = async (relative: string): Promise<Uint8Array> => {
     const record = snapshot.files.find((file) => file.path === relative);
     if (!record) throw new Error(`快照文件缺失：${relative}`);
@@ -1306,6 +1529,7 @@ export async function convertArxivSnapshot(
   }
 
   const opened = await openProject(input.root);
+
   const result = convertLatexml({
     html,
     paperId: opened.manifest.paper.id,
@@ -1329,15 +1553,32 @@ export async function convertArxivSnapshot(
     );
   }
 
-  const revisionId = randomUUID();
+  const revisionId = input.revisionId ?? randomUUID();
+  try {
+    await input.onCandidateBuilt?.({ revisionId, warnings: result.warnings });
+  } catch (error) {
+    // 候选进度持久化失败：结构化诊断返回，不穿透 IPC；磁盘现场保留可恢复。
+    return fatal(
+      "arxiv-convert-progress-failed",
+      `arxiv.convert.progressFailed:${error instanceof Error ? error.message : String(error)}`,
+      "convert",
+    );
+  }
   const baseRevision = opened.manifest.paper.currentRevision;
   const documentJson = Buffer.from(JSON.stringify(result.tree));
+  // 确定性 changeset：同一候选重试必须产生逐字节一致的内容，
+  // 否则 project-core 的同 revisionId 幂等复核会拒绝残留候选。
+  const changeset = createDocumentChangeset({
+    base: null,
+    current: result.tree,
+    baseRevision,
+    revisionId,
+  });
   const files: Record<string, ManagedFileContent> = {
     "document.json": documentJson,
     "source-base.json": documentJson,
     "tombstones.json": Buffer.from("[]"),
-    // project-core 按实际 baseRevision 物化 changeset；占位符避免二次转换时基线错配。
-    "changeset.json": Buffer.from(JSON.stringify({ baseRevision })),
+    "changeset.json": Buffer.from(JSON.stringify(changeset)),
   };
   for (const block of result.tree.blocks) {
     if (block.kind === "figure" && block.asset)
@@ -1359,7 +1600,12 @@ export async function convertArxivSnapshot(
       baseRevision,
       revisionId,
       files,
-      metadata: {},
+      metadata: {
+        arxiv: {
+          converterVersion: ARXIV_CONVERTER_VERSION,
+          warnings: result.warnings,
+        },
+      },
     }, input.hooks?.commitHooks);
     return {
       ok: true,

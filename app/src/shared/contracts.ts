@@ -1,5 +1,5 @@
 import type { ParsingCommand } from "./parsing.js";
-import type { ArxivReference, ImportDiagnostic } from "./arxiv.js";
+import type { ArxivReference, ImportDiagnostic, PdfFallbackRequest } from "./arxiv.js";
 
 import type { ChatAttachment } from "./chat-input.js";
 import type { DocumentTree } from "./document/tree.js";
@@ -41,6 +41,10 @@ export interface ArxivImportProgress {
   reference: ArxivReference;
   stage: "resolve" | "snapshot" | "convert";
   sourceSnapshotId?: string;
+  /** 转换已构建候选但 current 未推进时持久化：恢复沿用同一 revisionId 幂等完成提交。 */
+  candidateRevisionId?: string;
+  /** 候选构建时的转换警告；随恢复记录持久化，重开可继续呈现。 */
+  convertWarnings?: ImportDiagnostic[];
   diagnostic?: ImportDiagnostic;
   nextAction: "fetch-snapshot" | "convert" | "pdf-fallback";
 }
@@ -119,7 +123,43 @@ export type CoreCommand =
         conflictId: string;
         choice: "current" | "candidate";
       }>;
+    }
+  | {
+      type: "coreArxivImport";
+      parent: string;
+      name: string;
+      input: string;
+      /** 调用方生成的操作身份：coreArxivCancel 据此取消进行中的导入。 */
+      operationId: string;
+      /** 受控端点基址（spec Commands）：生产省略即 https://arxiv.org；
+       * 回环基址仅在主进程测试环境显式允许时才生效，生产无法访问本机服务。 */
+      baseUrl?: string;
+    }
+  | { type: "coreArxivResume"; root: string; operationId: string; baseUrl?: string }
+  | { type: "coreArxivCancel"; operationId: string }
+  | {
+      type: "coreArxivPdfFallback";
+      root: string;
+      reason: ImportDiagnostic;
+      baseUrl?: string;
+      /** 更新场景必须携带调用方读取时的 current；首次导入省略或 null。 */
+      baseRevision?: string | null;
     };
+
+/** arXiv 组合入口经生产 IPC 的结果（SPEC-arxiv-import §6–7）。 */
+export type ArxivImportCommandResult =
+  | {
+      ok: true;
+      root: string;
+      reference: ArxivReference;
+      revision: ProjectRevisionRecord;
+      warnings: ImportDiagnostic[];
+    }
+  | { ok: false; root: string; diagnostic: ImportDiagnostic };
+
+export type ArxivPdfFallbackCommandResult =
+  | { ok: true; request: PdfFallbackRequest }
+  | { ok: false; diagnostic: ImportDiagnostic };
 
 interface FileEntry {
   path: string;

@@ -3,7 +3,7 @@ import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
 import type { ManagedFileContent } from "../../shared/contracts.js";
 import { listSourceSnapshots, publishSourceSnapshot, type ProjectCommitHooks } from "../project-core.js";
 import { assertArxivVersionConsistent } from "./version.js";
-import { ArxivFetchError, type ArxivFetchResponse, type FetchArxivSnapshotInput, type ArxivSnapshotResult, type ArxivAssetMapping, type ArxivSourceMetadata } from "./fetch.js";
+import { ArxivFetchError, fetchDiagnostic, type ArxivFetchResponse, type FetchArxivSnapshotInput, type ArxivSnapshotResult, type ArxivAssetMapping, type ArxivSourceMetadata } from "./fetch.js";
 
 const ABS_BUDGET_BYTES = 8 * 1024 * 1024;
 const HTML_BUDGET_BYTES = 128 * 1024 * 1024;
@@ -21,36 +21,6 @@ function fatal(code: string, messageKey: string, stage: ImportDiagnostic["stage"
 
 function warning(code: string, messageKey: string, sourceUrl: string): ImportDiagnostic {
   return { code, severity: "warning", stage: "fetch", messageKey, sourceUrl };
-}
-
-/** 把受控 transport 的分类失败映射为稳定诊断；不互相冒充。 */
-function fetchDiagnostic(error: unknown, url: string, kind: "abs" | "html"): ImportDiagnostic {
-  const stage = "fetch";
-  if (error instanceof ArxivFetchError) {
-    const prefix = kind === "abs" ? "arxiv-abs" : "arxiv-html";
-    const keyBase = kind === "abs" ? "arxiv.abs" : "arxiv.html";
-    switch (error.code) {
-      case "arxiv-fetch-cancelled":
-        return { code: error.code, severity: "fatal", stage, messageKey: "arxiv.fetch.cancelled", sourceUrl: url };
-      case "arxiv-fetch-budget":
-        return { code: "arxiv-budget-exceeded", severity: "fatal", stage, messageKey: "arxiv.fetch.budget", sourceUrl: url };
-      case "arxiv-fetch-tls":
-        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.tls`, sourceUrl: url };
-      case "arxiv-fetch-stalled":
-        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.stalled`, sourceUrl: url };
-      case "arxiv-fetch-status":
-        if (error.status === 404)
-          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.notFound`, sourceUrl: url };
-        if (error.status === 403)
-          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.forbidden`, sourceUrl: url };
-        if (error.status === 429)
-          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.rateLimited`, sourceUrl: url };
-        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.http`, sourceUrl: url };
-      default:
-        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.network`, sourceUrl: url };
-    }
-  }
-  return { code: `${kind === "abs" ? "arxiv-abs" : "arxiv-html"}-fetch-failed`, severity: "fatal", stage, messageKey: kind === "abs" ? "arxiv.abs.network" : "arxiv.html.network", sourceUrl: url };
 }
 
 function metaContent(html: string, name: string): string | null {
@@ -163,7 +133,7 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
 
   let absResponse: ArxivFetchResponse;
   try {
-    absResponse = await transport(absUrl, { budgetBytes: ABS_BUDGET_BYTES, signal });
+    absResponse = await transport(absUrl, { budgetBytes: ABS_BUDGET_BYTES, signal, ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}) });
   } catch (error) {
     return { ok: false, diagnostic: fetchDiagnostic(error, absUrl, "abs") };
   }
@@ -175,7 +145,7 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
 
   let htmlResponse: ArxivFetchResponse;
   try {
-    htmlResponse = await transport(htmlUrl, { budgetBytes: HTML_BUDGET_BYTES, signal });
+    htmlResponse = await transport(htmlUrl, { budgetBytes: HTML_BUDGET_BYTES, signal, ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}) });
   } catch (error) {
     return { ok: false, diagnostic: fetchDiagnostic(error, htmlUrl, "html") };
   }
@@ -193,6 +163,8 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
   const baseUrl = new URL(htmlResponse.url);
   const warnings: ImportDiagnostic[] = [];
   const assets = new Map<string, { bytes: Uint8Array; mime?: string; mapping: ArxivAssetMapping }>();
+  // SVG 原件保留在快照但不进入资产映射（转换器不消费，revision 不执行）。
+  const svgFiles = new Map<string, { bytes: Uint8Array; mime: string }>();
   const candidates: string[] = [];
   for (const src of imageSources(htmlText)) {
     let resolved: URL;
@@ -211,6 +183,11 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
       warnings.push(warning("arxiv-asset-external-blocked", "arxiv.asset.externalBlocked", resolved.href));
       continue;
     }
+    // PDF 不是图片资产：不得在显式 PDF 回退确认前被下载（SPEC §7.2）。
+    if (/\.pdf$/i.test(resolved.pathname)) {
+      warnings.push(warning("arxiv-asset-pdf-blocked", "arxiv.asset.pdfBlocked", resolved.href));
+      continue;
+    }
     candidates.push(resolved.href);
   }
 
@@ -224,7 +201,7 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
       if (signal?.aborted) throw new ArxivFetchError("arxiv-fetch-cancelled", url);
       let response: ArxivFetchResponse;
       try {
-        response = await transport(url, { budgetBytes: assetBudget, signal });
+        response = await transport(url, { budgetBytes: assetBudget, signal, ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}) });
       } catch (error) {
         if (error instanceof ArxivFetchError && error.code === "arxiv-fetch-cancelled") throw error;
         if (error instanceof ArxivFetchError && error.code === "arxiv-fetch-budget") {
@@ -236,7 +213,27 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
       }
       const hash = sha256(response.bytes);
       const mime = response.headers["content-type"]?.split(";")[0].trim().toLowerCase();
+      // PDF 不是图片资产：即使响应到达也不登记（候选阶段已按扩展名拒绝）。
+      if (mime === "application/pdf") {
+        warnings.push(warning("arxiv-asset-format-blocked", "arxiv.asset.formatBlocked", url));
+        continue;
+      }
+      // SVG 原始字节保留在不可变快照（可追溯），但不进入资产 URL 映射：
+      // 转换器只消费映射内资产，未经白名单消毒的 SVG 不会进入 revision（SPEC §4.5）。
       const relative = `assets/${hash}.${assetExtension(new URL(url), mime)}`;
+      if (mime === "image/svg+xml") {
+        if (!svgFiles.has(relative)) {
+          // SVG 原件同样写入快照：计入单快照原始资产总预算。
+          totalAssetBytes += response.bytes.byteLength;
+          if (totalAssetBytes > totalBudget) {
+            budgetExceeded = url;
+            return;
+          }
+          warnings.push(warning("arxiv-asset-svg-unrendered", "arxiv.asset.svgUnrendered", url));
+          svgFiles.set(relative, { bytes: response.bytes, mime });
+        }
+        continue;
+      }
       if (assets.has(relative)) continue; // 同内容资产按摘要复用，不重复登记。
       totalAssetBytes += response.bytes.byteLength;
       if (totalAssetBytes > totalBudget) {
@@ -267,6 +264,9 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
   for (const [relative, asset] of assets) {
     files[relative] = asset.mime === undefined ? asset.bytes : { bytes: asset.bytes, mime: asset.mime };
   }
+  for (const [relative, svg] of svgFiles) {
+    files[relative] = { bytes: svg.bytes, mime: svg.mime };
+  }
   const metadata: ArxivSourceMetadata = {
     kind: "arxiv",
     baseId: pinned.baseId,
@@ -281,18 +281,21 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
     fetchedAt: new Date().toISOString(),
     assets: Object.fromEntries([...assets.values()].map((asset) => [asset.mapping.path, asset.mapping])),
     response: { abs: responseFacts(absResponse), html: responseFacts(htmlResponse) },
+    warnings,
   };
 
-  // 同字节复用：只有 abs 与 HTML 原始字节摘要都与已验证快照相同时才复用，
-  // 不因 URL、文件名或修改时间相同跳过摘要核验。
-  const absHash = sha256(absResponse.bytes);
-  const htmlHash = sha256(htmlResponse.bytes);
+  // 同字节复用：abs、HTML 与全部已接受资产的摘要集合都一致才复用；
+  // 任一资产新增、消失或字节变化都建立新快照，不静默丢弃来源变化。
+  // 复用前 loadSourceSnapshot 已逐文件核验既有快照登记字节。
+  const newDigests = new Map(Object.entries(files).map(([relative, content]) => {
+    const bytes = content instanceof Uint8Array ? content : content.bytes;
+    return [relative, sha256(bytes)];
+  }));
   for (const existing of await listSourceSnapshots(root)) {
     if (existing.canonicalId !== pinned.canonicalId) continue;
-    const absRecord = existing.files.find((file) => file.path === "abs.html");
-    const htmlRecord = existing.files.find((file) => file.path === "document.html");
-    if (absRecord?.sha256 === absHash && htmlRecord?.sha256 === htmlHash)
-      return { ok: true, reused: true, snapshot: existing, warnings, bodyReadable: false };
+    if (existing.files.length !== newDigests.size) continue;
+    const same = existing.files.every((file) => newDigests.get(file.path) === file.sha256);
+    if (same) return { ok: true, reused: true, snapshot: existing, warnings, bodyReadable: false };
   }
 
   try {

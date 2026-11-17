@@ -509,3 +509,164 @@ test("arxiv-import 资产摘要不符：拒绝发布而不是引用错误字节"
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.diagnostic.code).toBe("arxiv-convert-asset-digest");
 });
+
+test("arxiv-import equation group：多条对齐公式全部入树，引用各自解析", () => {
+  const group = `
+<table id="S2.EG" class="ltx_equationgroup ltx_eqn_table">
+<tbody>
+<tr id="S2.E2" class="ltx_equation ltx_eqn_row"><td class="ltx_eqn_cell ltx_align_center"><math class="ltx_Math" alttext="x=1" display="block"><semantics><mrow><mi>x</mi><mo>=</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">x=1</annotation></semantics></math></td><td class="ltx_eqn_cell ltx_align_right"><span class="ltx_tag">(2)</span></td></tr>
+<tr id="S2.E3" class="ltx_equation ltx_eqn_row"><td class="ltx_eqn_cell ltx_align_center"><math class="ltx_Math" alttext="y=2" display="block"><semantics><mrow><mi>y</mi><mo>=</mo><mn>2</mn></mrow><annotation encoding="application/x-tex">y=2</annotation></semantics></math></td><td class="ltx_eqn_cell ltx_align_right"><span class="ltx_tag">(3)</span></td></tr>
+</tbody>
+</table>
+<div id="S2.p9" class="ltx_para"><p class="ltx_p">See <a href="#S2.E2" class="ltx_ref">Eq 2</a>, <a href="#S2.E3" class="ltx_ref">Eq 3</a> and <a href="#S2.EG" class="ltx_ref">the group</a>.</p></div>`;
+  const result = okResult(convert(latexmlDocument({ extra: group })));
+  const tree = result.tree;
+  const formulas = tree.blocks.filter((b) => b.kind === "formula");
+  expect(formulas.some((b) => b.kind === "formula" && b.text.includes("x=1"))).toBe(true);
+  expect(formulas.some((b) => b.kind === "formula" && b.text.includes("y=2"))).toBe(true);
+  const refs = Object.values(tree.atoms).filter((a) => a.kind === "cross-reference");
+  const e2 = refs.find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.E2");
+  const e3 = refs.find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.E3");
+  expect(e2?.kind === "cross-reference" && e2.targetUnitId && tree.units[e2.targetUnitId]).toBeTruthy();
+  expect(e3?.kind === "cross-reference" && e3.targetUnitId && tree.units[e3.targetUnitId]).toBeTruthy();
+  // 组 ID 持久化到首个成员锚定单元，组引用解析到合法 unit。
+  const eg = refs.find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.EG");
+  expect(eg?.kind === "cross-reference" && eg.targetUnitId && tree.units[eg.targetUnitId]).toBeTruthy();
+  if (eg?.kind === "cross-reference" && eg.targetUnitId)
+    expect(tree.units[eg.targetUnitId].sourceAliases).toContain("S2.EG");
+});
+
+test("arxiv-import equation group 成员无自身 ID：组 alias 仍持久化，组引用解析", () => {
+  const group = `
+<table id="S2.EN" class="ltx_equationgroup ltx_eqn_table">
+<tbody>
+<tr class="ltx_equation ltx_eqn_row"><td class="ltx_eqn_cell ltx_align_center"><math class="ltx_Math" alttext="p=3" display="block"><semantics><mrow><mi>p</mi><mo>=</mo><mn>3</mn></mrow><annotation encoding="application/x-tex">p=3</annotation></semantics></math></td></tr>
+<tr class="ltx_equation ltx_eqn_row"><td class="ltx_eqn_cell ltx_align_center"><math class="ltx_Math" alttext="q=4" display="block"><semantics><mrow><mi>q</mi><mo>=</mo><mn>4</mn></mrow><annotation encoding="application/x-tex">q=4</annotation></semantics></math></td></tr>
+</tbody>
+</table>
+<div id="S2.p10" class="ltx_para"><p class="ltx_p">See <a href="#S2.EN" class="ltx_ref">the group</a>.</p></div>`;
+  const result = okResult(convert(latexmlDocument({ extra: group })));
+  const tree = result.tree;
+  expect(tree.blocks.some((b) => b.kind === "formula" && b.text.includes("p=3"))).toBe(true);
+  expect(tree.blocks.some((b) => b.kind === "formula" && b.text.includes("q=4"))).toBe(true);
+  const ref = Object.values(tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.EN");
+  expect(ref).toBeDefined();
+  if (ref?.kind !== "cross-reference") throw new Error("ref missing");
+  expect(ref.targetUnitId).not.toBeNull();
+  expect(tree.units[ref.targetUnitId!].sourceAliases).toContain("S2.EN");
+});
+
+test("arxiv-import 子图：每个子图独立成块并解析各自引用，不静默省略", () => {
+  const subs = `
+<figure id="S2.FS" class="ltx_figure">
+<div id="S2.FS.sf1" class="ltx_subfigure">
+<img src="${FIG1_SRC}" class="ltx_graphics" alt="sub one" />
+<figcaption class="ltx_caption">Sub one.</figcaption>
+</div>
+<div id="S2.FS.sf2" class="ltx_subfigure">
+<img src="${FIG2_SRC}" class="ltx_graphics" alt="sub two" />
+<figcaption class="ltx_caption">Sub two.</figcaption>
+</div>
+<figcaption class="ltx_caption">Both subfigures.</figcaption>
+</figure>
+<div id="S2.p8" class="ltx_para"><p class="ltx_p">See <a href="#S2.FS.sf2" class="ltx_ref">sub 2</a> and <a href="#S2.FS" class="ltx_ref">the whole figure</a>.</p></div>`;
+  const result = okResult(convert(latexmlDocument({ extra: subs })));
+  const tree = result.tree;
+  const figures = tree.blocks.filter((b) => b.kind === "figure");
+  expect(figures.some((b) => b.kind === "figure" && b.sourceAliases?.includes("S2.FS.sf1"))).toBe(true);
+  expect(figures.some((b) => b.kind === "figure" && b.sourceAliases?.includes("S2.FS.sf2"))).toBe(true);
+  const ref = Object.values(tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.FS.sf2");
+  expect(ref?.kind === "cross-reference" && ref.targetUnitId && tree.units[ref.targetUnitId]).toBeTruthy();
+  // 父 caption 与每个子 caption 各恰好出现一次：不重复、不遗漏。
+  const captionTexts = Object.values(tree.units)
+    .filter((u) => u.kind === "caption")
+    .map((u) => unitText(tree, u.id));
+  expect(captionTexts.filter((t) => t === "Both subfigures.")).toHaveLength(1);
+  expect(captionTexts.filter((t) => t === "Sub one.")).toHaveLength(1);
+  expect(captionTexts.filter((t) => t === "Sub two.")).toHaveLength(1);
+  // 父 figure alias 持久化到锚定 caption 单元（SPEC §4.3），不只留在临时映射。
+  const parentCaption = Object.values(tree.units).find((u) => u.kind === "caption" && unitText(tree, u.id) === "Both subfigures.");
+  expect(parentCaption?.sourceAliases).toContain("S2.FS");
+  // 父 figure 引用解析到该锚定单元。
+  const parentRef = Object.values(tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.FS");
+  expect(parentRef).toBeDefined();
+  expect(parentRef?.kind === "cross-reference" && parentRef.targetUnitId === parentCaption!.id).toBe(true);
+});
+
+test("arxiv-import 无 caption 图片：引用解析到合法锚定单元，不导致整篇失败", () => {
+  const bare = `
+<figure id="S2.FB" class="ltx_figure"><img src="${FIG1_SRC}" class="ltx_graphics" alt="bare plot" /></figure>
+<div id="S2.p7" class="ltx_para"><p class="ltx_p">See <a href="#S2.FB" class="ltx_ref">the plot</a>.</p></div>`;
+  const result = okResult(convert(latexmlDocument({ extra: bare })));
+  const tree = result.tree;
+  const ref = Object.values(tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.FB");
+  expect(ref).toBeDefined();
+  if (ref?.kind !== "cross-reference") throw new Error("ref missing");
+  expect(ref.targetUnitId).not.toBeNull();
+  expect(tree.units[ref.targetUnitId!]).toBeDefined();
+});
+
+test("arxiv-import citation 解析到书目规范单元目标", () => {
+  const tree = okTree(convert(latexmlDocument()));
+  const citation = Object.values(tree.atoms).find((a) => a.kind === "citation");
+  expect(citation).toBeDefined();
+  if (citation?.kind !== "citation") throw new Error("citation missing");
+  expect(citation.targetUnitId).not.toBeNull();
+  const target = tree.units[citation.targetUnitId!];
+  expect(target.kind).toBe("reference");
+  expect(target.sourceAliases).toContain("bib.bib1");
+});
+
+test("arxiv-import 表格跨度边界：超大/非法跨度降级 raw，不触发无界循环", () => {
+  const hostile = `
+<figure id="S2.TH" class="ltx_table">
+<table class="ltx_tabular"><tbody>
+<tr class="ltx_tr"><td class="ltx_td" rowspan="999999999" colspan="999999999">boom</td></tr>
+</tbody></table>
+</figure>`;
+  const result = okResult(convert(latexmlDocument({ extra: hostile })));
+  expect(result.warnings.some((w) => w.code === "arxiv-convert-table-lossy")).toBe(true);
+  expect(result.tree.blocks.some((b) => b.kind === "raw" && b.text.includes("boom"))).toBe(true);
+  const negative = hostile.replace('rowspan="999999999" colspan="999999999"', 'rowspan="-5" colspan="abc"');
+  const negResult = okResult(convert(latexmlDocument({ extra: negative })));
+  expect(negResult.warnings.some((w) => w.code === "arxiv-convert-table-lossy")).toBe(true);
+});
+
+test("arxiv-import 文件型 SVG 资产：不进入 revision，降级占位与 warning", () => {
+  // 快照资产映射中不含 SVG（snapshot 层已排除）；转换器对未映射 src 降级。
+  const svgImg = latexmlDocument().replace(`src="${FIG2_SRC}"`, `src="extracted/plot.svg"`);
+  const result = okResult(convert(svgImg));
+  const figures = result.tree.blocks.filter((b) => b.kind === "figure");
+  const missing = figures.find((b) => b.kind === "figure" && b.asset === null);
+  expect(missing).toBeDefined();
+  if (missing?.kind === "figure") expect(missing.warning).toBeTruthy();
+  expect(result.warnings.some((w) => w.code === "arxiv-convert-asset-missing")).toBe(true);
+  // revision 资产集合中没有任何 svg。
+  expect(result.tree.blocks.every((b) => b.kind !== "figure" || b.asset === null || !b.asset.path.endsWith(".svg"))).toBe(true);
+});
+
+test("arxiv-import 无 caption 表格：结构化与 raw 降级均有合法锚点，引用不使整篇失败", () => {
+  const bareTable = `
+<figure id="S2.TB" class="ltx_table">
+<table class="ltx_tabular"><tbody><tr class="ltx_tr"><td class="ltx_td">cell</td></tr></tbody></table>
+</figure>
+<div id="S2.p6" class="ltx_para"><p class="ltx_p">See <a href="#S2.TB" class="ltx_ref">the table</a>.</p></div>`;
+  const structured = okResult(convert(latexmlDocument({ extra: bareTable })));
+  const ref = Object.values(structured.tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.TB");
+  expect(ref).toBeDefined();
+  if (ref?.kind !== "cross-reference") throw new Error("ref missing");
+  expect(ref.targetUnitId).not.toBeNull();
+  expect(structured.tree.units[ref.targetUnitId!]).toBeDefined();
+
+  // raw 降级表格（嵌套结构）同样有合法 unit 锚点。
+  const lossy = bareTable.replace(
+    '<td class="ltx_td">cell</td>',
+    '<td class="ltx_td"><table class="ltx_tabular"><tbody><tr class="ltx_tr"><td class="ltx_td">nested</td></tr></tbody></table></td>',
+  );
+  const rawResult = okResult(convert(latexmlDocument({ extra: lossy })));
+  const rawRef = Object.values(rawResult.tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.TB");
+  expect(rawRef).toBeDefined();
+  if (rawRef?.kind !== "cross-reference") throw new Error("raw ref missing");
+  expect(rawRef.targetUnitId).not.toBeNull();
+  expect(rawResult.tree.units[rawRef.targetUnitId!]).toBeDefined();
+});
