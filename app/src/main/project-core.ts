@@ -4,6 +4,7 @@ import { constants, createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
+  ArxivImportProgress,
   ManagedFileContent,
   ManagedFileRecord,
   ProjectCoreSnapshot,
@@ -12,6 +13,8 @@ import type {
   ProjectRevisionRecord,
   SourceSnapshotRecord,
 } from "../shared/contracts.js";
+import type { ArxivReference } from "../shared/arxiv.js";
+import { parseImportDiagnostic } from "../shared/arxiv.js";
 import {
   parseDocumentTree,
   validateDocumentAssets,
@@ -170,7 +173,68 @@ function parseImportRecord(value: unknown, manifest: ProjectManifest): ProjectIm
     id: record.id,
     projectId: manifest.id,
     paperId: manifest.paper.id,
+    ...(record.arxiv === undefined ? {} : { arxiv: parseArxivImportProgress(record.arxiv) }),
   };
+}
+
+const importStages = ["resolve", "snapshot", "convert"] as const;
+const importActions = ["fetch-snapshot", "convert", "pdf-fallback"] as const;
+
+function parseArxivReferenceValue(value: unknown): ArxivReference {
+  const record = objectValue(value);
+  if (
+    typeof record.baseId !== "string" ||
+    typeof record.canonicalId !== "string" ||
+    !(record.version === null || (typeof record.version === "number" && Number.isInteger(record.version) && record.version >= 1))
+  ) {
+    throw new Error("首次导入记录中的 arXiv 引用无效。");
+  }
+  return { baseId: record.baseId, version: record.version, canonicalId: record.canonicalId };
+}
+
+
+function parseArxivImportProgress(value: unknown): ArxivImportProgress {
+  const record = objectValue(value);
+  if (
+    !importStages.includes(record.stage as (typeof importStages)[number]) ||
+    !importActions.includes(record.nextAction as (typeof importActions)[number]) ||
+    (record.sourceSnapshotId !== undefined &&
+      (typeof record.sourceSnapshotId !== "string" || !uuid.test(record.sourceSnapshotId))) ||
+    (record.candidateRevisionId !== undefined &&
+      (typeof record.candidateRevisionId !== "string" || !uuid.test(record.candidateRevisionId))) ||
+    (record.convertWarnings !== undefined && !Array.isArray(record.convertWarnings))
+  ) {
+    throw new Error("首次导入记录的 arXiv 进度无效。");
+  }
+  return {
+    reference: parseArxivReferenceValue(record.reference),
+    stage: record.stage as ArxivImportProgress["stage"],
+    nextAction: record.nextAction as ArxivImportProgress["nextAction"],
+    ...(record.sourceSnapshotId === undefined ? {} : { sourceSnapshotId: record.sourceSnapshotId as string }),
+    ...(record.candidateRevisionId === undefined ? {} : { candidateRevisionId: record.candidateRevisionId as string }),
+    ...(record.convertWarnings === undefined ? {} : {
+      convertWarnings: (record.convertWarnings as unknown[]).map(parseImportDiagnostic),
+    }),
+    ...(record.diagnostic === undefined ? {} : { diagnostic: parseImportDiagnostic(record.diagnostic) }),
+  };
+}
+
+/** 原子更新首次导入记录的 arXiv 进度；身份字段由 project-core 保持权威。 */
+export async function updateArxivImportProgress(
+  root: string,
+  progress: ArxivImportProgress,
+): Promise<void> {
+  const canonical = await canonicalRoot(root);
+  return serialized(canonical, async () => {
+    const { manifest } = await readManifest(canonical);
+    if (manifest.paper.currentRevision !== null)
+      throw new Error("current 已存在，首次导入进度不再可写。");
+    const record = parseImportRecord(
+      (await readManagedJson(canonical, initialImportName, "首次导入记录")).value,
+      manifest,
+    );
+    await atomicJson(path.join(canonical, initialImportName), { ...record, arxiv: progress });
+  });
 }
 
 function digest(bytes: Uint8Array) {
@@ -843,6 +907,26 @@ export async function readSourceSnapshot(root: string, sourceSnapshotId: string)
   return loadSourceSnapshot(root, manifest, sourceSnapshotId);
 }
 
+/** 列出全部已发布来源快照；每个快照均经清单与摘要校验，不按文件名猜测发布。 */
+export async function listSourceSnapshots(root: string): Promise<SourceSnapshotRecord[]> {
+  root = await canonicalRoot(root);
+  const { manifest } = await readManifest(root);
+  const sources = path.join(root, "sources");
+  let entries;
+  try {
+    entries = await fs.readdir(sources, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const snapshots: SourceSnapshotRecord[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !uuid.test(entry.name)) continue;
+    snapshots.push(await loadSourceSnapshot(root, manifest, entry.name));
+  }
+  return snapshots.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 export async function readRevision(root: string, revisionId: string) {
   root = await canonicalRoot(root);
   const { manifest } = await readManifest(root);
@@ -1063,5 +1147,105 @@ export async function commitRevision(
       await hooks.onCommitPoint?.("before-current-replace", { revisionId });
     });
     return revision;
+  });
+}
+
+/**
+ * 完成已完整发布但 current 未推进的候选（首次导入恢复专用）：
+ * 逐文件核验磁盘内容与登记摘要一致后，只原子推进 current 指针，
+ * 不重新转换、不新建 revision、不改写任何已发布字节。
+ * 候选不存在、内容不符或基线已变化时拒绝，保留现场。
+ */
+export async function completePublishedRevision(
+  root: string,
+  revisionId: string,
+  hooks: ProjectCommitHooks = {},
+  /** 来源模块元数据校验：在串行临界区内、current 替换前执行；
+   * 抛错即拒绝推进，避免"返回失败但 current 已推进"的矛盾状态。 */
+  validateMetadata?: (revision: ProjectRevisionRecord) => void,
+): Promise<ProjectRevisionRecord> {
+  root = await canonicalRoot(root);
+  return serialized(root, async () => {
+    const initial = await readManifest(root);
+    const { manifest } = initial;
+    if (manifest.paper.currentRevision !== null)
+      throw new Error("current 已存在，不能按首次导入候选推进。");
+    const revision = await loadRevision(root, manifest, revisionId);
+    if (revision.baseRevision !== null)
+      throw new Error("候选不是首次导入 revision，拒绝按空基线推进。");
+    await loadSourceSnapshot(root, manifest, revision.sourceSnapshotId);
+    await verifyDirectory(await managedPath(root, revision.path), revision.files);
+    validateMetadata?.(revision);
+    const nextManifest: ProjectManifest = {
+      ...manifest,
+      paper: { ...manifest.paper, currentRevision: revisionId },
+    };
+    await atomicJson(path.join(root, manifestName), nextManifest, async () => {
+      const latest = await readManifest(root);
+      if (!latest.bytes.equals(initial.bytes))
+        throw new Error("工程清单在提交期间发生变化，拒绝覆盖 current；候选已保留。");
+      if (latest.manifest.paper.currentRevision !== null)
+        throw new Error("current 基线在提交期间发生变化，拒绝发布；候选已保留。");
+      // 与 commitRevision 同序复核：来源快照与候选内容在提交窗口内未被外部篡改。
+      const recheck = async (): Promise<void> => {
+        const current = await loadRevision(root, latest.manifest, revisionId);
+        // 重载记录必须与初始记录完全一致：换源、改警告/版本/时间都拒绝。
+        if (!isDeepStrictEqual(current, revision))
+          throw new Error("候选 revision 元数据在提交期间发生变化，拒绝推进 current。");
+        if (current.baseRevision !== null)
+          throw new Error("候选基线在提交期间发生变化，拒绝推进 current。");
+        await loadSourceSnapshot(root, latest.manifest, current.sourceSnapshotId);
+        validateMetadata?.(current);
+      };
+      await recheck();
+      await hooks.onCommitPoint?.("before-current-replace", { revisionId });
+      // 注入点/外部写入可能发生在复核之后：替换前再核验一次。
+      await recheck();
+    });
+    return revision;
+  });
+}
+
+/**
+ * 首次导入恢复的候选状态探测与残留清理（串行临界区内执行）：
+ * - 内容目录与元数据都在 → "published"，调用方只补 current 推进；
+ * - 仅内容目录存在、元数据 ENOENT → 受管残留候选，清除内容目录后返回 "residual"；
+ * - 都不存在 → "absent"，调用方重新转换发布。
+ * 探测只把 ENOENT 视为不存在；其他文件系统错误 fail closed。
+ * 清理前重读清单确认 current 仍为空，且元数据确实缺失，绝不删除已发布内容。
+ */
+export async function inspectImportCandidate(
+  root: string,
+  revisionId: string,
+): Promise<"published" | "residual" | "absent"> {
+  root = await canonicalRoot(root);
+  return serialized(root, async () => {
+    const { manifest } = await readManifest(root);
+    if (manifest.paper.currentRevision !== null)
+      throw new Error("current 已存在，首次导入候选不再可探测或清理。");
+    if (!uuid.test(revisionId)) throw new Error("candidateRevisionId 无效。");
+    const contentDir = path.join(root, "paper", "revisions", revisionId);
+    const metadataFile = path.join(root, ".paper30min", "revisions", revisionId, "revision.json");
+    const exists = async (target: string): Promise<boolean> => {
+      try {
+        await fs.access(target);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+    };
+    const hasContent = await exists(contentDir);
+    const hasMetadata = await exists(metadataFile);
+    if (hasContent && hasMetadata) return "published";
+    if (!hasContent) return "absent";
+    // 仅内容无元数据：锁内再次确认 current 为空且元数据仍缺失，才清除残留。
+    const latest = await readManifest(root);
+    if (latest.manifest.paper.currentRevision !== null)
+      throw new Error("current 已被推进，拒绝清理候选内容。");
+    if (await exists(metadataFile))
+      throw new Error("候选元数据已出现，拒绝按残留清理。");
+    await fs.rm(contentDir, { recursive: true, force: true });
+    return "residual";
   });
 }

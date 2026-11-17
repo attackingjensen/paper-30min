@@ -326,3 +326,148 @@ test("project-core 同一 revisionId 在候选提交失败后可重试且内容�
   await expect(commitRevision(input)).resolves.toMatchObject({ revisionId });
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(revisionId);
 });
+
+test("project-core completePublishedRevision 核验完整候选后只推进 current", async () => {
+  const { completePublishedRevision } = await import("../src/main/project-core");
+  const created = await createProject({ parent: sandbox, name: "候选完成" });
+  const source = await publishSourceSnapshot({
+    root: created.root,
+    files: { "document.html": Buffer.from("paper") },
+  });
+  let candidateId = "";
+  await expect(commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    files: testRevisionFiles(created.manifest.paper.id, "完整候选"),
+  }, {
+    onCommitPoint(point, context) {
+      if (point === "before-current-replace") {
+        candidateId = context.revisionId!;
+        throw new Error("injected current failure");
+      }
+    },
+  })).rejects.toThrow("injected current failure");
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
+
+  const revision = await completePublishedRevision(created.root, candidateId);
+  expect(revision.revisionId).toBe(candidateId);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(candidateId);
+});
+
+test("project-core completePublishedRevision 提交窗口内候选被篡改时拒绝推进", async () => {
+  const { completePublishedRevision } = await import("../src/main/project-core");
+  const created = await createProject({ parent: sandbox, name: "候选篡改" });
+  const source = await publishSourceSnapshot({
+    root: created.root,
+    files: { "document.html": Buffer.from("paper") },
+  });
+  let candidateId = "";
+  await expect(commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    files: testRevisionFiles(created.manifest.paper.id, "待篡改候选"),
+  }, {
+    onCommitPoint(point, context) {
+      if (point === "before-current-replace") {
+        candidateId = context.revisionId!;
+        throw new Error("injected current failure");
+      }
+    },
+  })).rejects.toThrow("injected current failure");
+
+  await expect(completePublishedRevision(created.root, candidateId, {
+    async onCommitPoint(point) {
+      if (point === "before-current-replace") {
+        await fs.writeFile(path.join(created.root, "paper", "revisions", candidateId, "document.json"), "tampered");
+      }
+    },
+  })).rejects.toThrow(/摘要|完整性/);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
+});
+
+test("project-core completePublishedRevision 提交窗口内元数据换源时拒绝推进", async () => {
+  const { completePublishedRevision } = await import("../src/main/project-core");
+  const created = await createProject({ parent: sandbox, name: "换源候选" });
+  const source = await publishSourceSnapshot({
+    root: created.root,
+    files: { "document.html": Buffer.from("paper") },
+  });
+  let candidateId = "";
+  await expect(commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    files: testRevisionFiles(created.manifest.paper.id, "换源候选"),
+  }, {
+    onCommitPoint(point, context) {
+      if (point === "before-current-replace") {
+        candidateId = context.revisionId!;
+        throw new Error("injected current failure");
+      }
+    },
+  })).rejects.toThrow("injected current failure");
+
+  await expect(completePublishedRevision(created.root, candidateId, {
+    async onCommitPoint(point) {
+      if (point === "before-current-replace") {
+        // 只改元数据的 sourceSnapshotId（内容不动）：深度相等核验必须拒绝。
+        const metaFile = path.join(created.root, ".paper30min", "revisions", candidateId, "revision.json");
+        const record = JSON.parse(await fs.readFile(metaFile, "utf8"));
+        record.sourceSnapshotId = randomUUID();
+        await fs.writeFile(metaFile, JSON.stringify(record));
+      }
+    },
+  })).rejects.toThrow(/元数据.*变化|摘要|完整性/);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
+});
+
+test("project-core inspectImportCandidate 区分已发布/残留/缺失，残留清理不碰已发布内容", async () => {
+  const { inspectImportCandidate } = await import("../src/main/project-core");
+  const created = await createProject({ parent: sandbox, name: "候选探测" });
+  const source = await publishSourceSnapshot({
+    root: created.root,
+    files: { "document.html": Buffer.from("paper") },
+  });
+  // 缺失：内容目录不存在。
+  const absentId = randomUUID();
+  expect(await inspectImportCandidate(created.root, absentId)).toBe("absent");
+
+  // 残留：内容目录存在但元数据未写（revision-content 中断）。
+  let residualId = "";
+  await expect(commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    files: testRevisionFiles(created.manifest.paper.id, "残留候选"),
+  }, {
+    onCommitPoint(point, context) {
+      if (point === "revision-content") {
+        residualId = context.revisionId!;
+        throw new Error("injected content failure");
+      }
+    },
+  })).rejects.toThrow("injected content failure");
+  expect(await inspectImportCandidate(created.root, residualId)).toBe("residual");
+  await expect(fs.access(path.join(created.root, "paper", "revisions", residualId))).rejects.toThrow();
+
+  // 已发布：内容与元数据都在（before-current-replace 中断）。
+  let publishedId = "";
+  await expect(commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    files: testRevisionFiles(created.manifest.paper.id, "完整候选"),
+  }, {
+    onCommitPoint(point, context) {
+      if (point === "before-current-replace") {
+        publishedId = context.revisionId!;
+        throw new Error("injected current failure");
+      }
+    },
+  })).rejects.toThrow("injected current failure");
+  expect(await inspectImportCandidate(created.root, publishedId)).toBe("published");
+  // 已发布内容不被清理。
+  await expect(fs.access(path.join(created.root, "paper", "revisions", publishedId, "document.json"))).resolves.toBeUndefined();
+});

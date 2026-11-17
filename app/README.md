@@ -79,7 +79,21 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
 
-新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish` 与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。界面导入链路尚未接入这些命令。
+新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish`、`coreArxivImport`、`coreArxivResume` 与 `coreArxivPdfFallback` 与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。界面导入链路尚未接入这些命令（arXiv 命令面已可用，界面接管见下文）。
+
+### Phase 2 arXiv 导入契约层
+
+`src/main/arxiv/` 按 [arxiv-import 规格](../docs/spec/SPEC-arxiv-import.md) 实现首次导入流水线：严格引用解析与固定版本（`reference.ts`／`version.ts`）、受控幂等 GET（`transport.ts`，host 允许清单、重定向≤5、双预算、有界重试、取消即时生效）、不可变来源快照（`snapshot.ts`，同字节复用、异字节新建）、LaTeXML 到 document-core 的确定性转换（`convert.ts`），以及组合入口 `import.ts`（`importArxivPaper`／`resumeArxivImport`／`prepareArxivPdfFallback`）。恢复进度持久化在 `.paper30min/imports/initial.json`；快照存在不代表正文可读，只有完整 current 可离线阅读。
+
+arXiv 命令经生产 IPC 使用真实 `arxivFetch` transport，携带 `operationId`，`coreArxivCancel` 可随时取消进行中的导入/恢复（取消保留现场，恢复只补做未完成阶段）。`baseUrl` 是规格定义的受控端点基址注入点，生产省略即 `https://arxiv.org`；回环基址仅在主进程测试环境（`PAPER30MIN_TEST_WINDOW`）下生效，生产 transport 拒绝一切回环/私网目标（含重定向），起始 `http://arxiv.org` 在访问网络前规范化为 HTTPS。`coreArxivPdfFallback` 只在调用方（用户确认）发起时生成 `PdfFallbackRequest` 交接数据，全程不请求 PDF、不调用云解析、不改变工程；首次导入 `baseRevision=null`，更新场景必须携带调用方读取时的 current revision（stale base 拒绝），身份取自 current 的 arXiv 来源快照。PDF 实际获取与云解析属 pdf-import（Phase 3），本 phase 不实现。
+
+检查点加固（vx0.5 审查修复）：版本守卫 fail-closed——最终 URL 与元数据至少一项明确等于固定 `vN` 才放行；resolve 阶段复用统一 transport 诊断分类（404/403/429/TLS/停滞/取消不互相冒充）；快照复用比较 abs/HTML 与全部已接受资产的完整摘要集合，任一资产变化即新建快照；获取警告随快照持久化、转换器版本与转换警告随 revision 元数据持久化，重开/恢复可继续呈现，受管诊断损坏时恢复明确失败而非静默清空；current 推进中断后恢复沿用已持久化的候选 revisionId（`completePublishedRevision` 核验磁盘字节与元数据深度相等后只推进指针，arXiv 元数据校验在原子替换前执行，校验失败 current 保持为空）；残留候选探测与清理在 project-core 串行临界区内执行，仅 ENOENT 视为不存在，绝不删除已发布内容；表格跨度在 schema 校验前受安全整数与网格规模上限约束，超限 raw 降级；equation group 逐条转换且组 alias 持久化到锚定单元（成员无自身 ID 时同样生效）、子图独立成块且父图 alias 持久化、无 caption 图片/表格有合法锚定单元、citation 解析到书目规范单元并随三方合并 ID 重映射；PDF 不作为图片资产下载，SVG 原件保留快照并计入总预算但不进入 revision 资产映射；不接受的响应（重定向/错误/声明超预算）立即断开正文，不 draining 无界字节；进度记录写入失败返回结构化诊断，不穿透 IPC。
+
+```powershell
+npx playwright test -g 'arxiv-import'
+```
+
+受控 fixtures 契约测试覆盖引用／版本／transport／快照／转换／首次导入与故障注入（`tests/arxiv-*.spec.ts`）；真实 Electron 回归（`tests/arxiv-import-electron.spec.ts`）经生产 preload、IPC、Node 工程进程与真实 undici transport 覆盖无 PDF 工程创建、断网重开完整阅读、失败恢复、快照后转换失败与离线重转换、中途取消与恢复、局部图片 warning 与核心缺失的不同结果、显式 PDF 回退确认前后零 PDF 请求（含更新场景 baseRevision 交接），以及整体搬迁。渲染进程远端加载由请求监听断言为零。同版重取的快照原语（同字节复用、异字节新建、资产变化新建）已有契约测试；新版本检查、同版重取与更新候选的显式动作编排尚未实现（规格 §8，见 beads `paper-30min-1rb`）；真实 arXiv 来源验证在发布前单独执行并记录。
 
 ```powershell
 npx playwright test -g 'project-core|document-core'

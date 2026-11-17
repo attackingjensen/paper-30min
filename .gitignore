@@ -11,6 +11,9 @@ paper-list/
 .env
 .env.*
 
+# Playwright 运行产物（配置相对 cwd；app/ 内另有忽略）
+test-results/
+
 # Editors and operating systems
 .idea/
 .vscode/
