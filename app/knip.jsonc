@@ -19,7 +19,6 @@
   // arxiv.ts 的 PdfFallbackRequest 由 vx0.4（显式 PDF 回退交接）消费，届时移除此豁免。
   // 死文件、死值导出、依赖和其他文件类型仍正常检查。
   "ignoreIssues": {
-    "src/shared/parsing.ts": ["types"]
     "src/shared/parsing.ts": ["types"],
     "src/shared/arxiv.ts": ["types"]
   },
