@@ -121,6 +121,8 @@ export interface PdfParseTaskRecord {
   /** 已发布解析快照与去敏后 result.jsonl 摘要；恢复据此跳过重复下载。 */
   parseSourceSnapshotId?: string;
   sanitizedSha256?: string;
+  /** 转换候选 revision 身份；current 推进中断后恢复沿用同一候选，不重新转换。 */
+  candidateRevisionId?: string;
   diagnostic?: ImportDiagnostic;
   createdAt: string;
   updatedAt: string;

@@ -59,11 +59,11 @@ type BaiduPdfParseTaskPoint =
   | "submitting-persisted"
   | "job-persisted";
 
-interface TaskHooks {
+export interface TaskHooks {
   onPoint?: (point: BaiduPdfParseTaskPoint) => void | Promise<void>;
 }
 
-interface TaskTiming {
+export interface TaskTiming {
   requestTimeoutMs?: number;
   queryWaitMs?: number;
   pollIntervalMs?: number;
@@ -75,6 +75,11 @@ interface ExecutionOptions {
   signal?: AbortSignal;
   hooks?: TaskHooks;
   timing?: TaskTiming;
+}
+
+interface PdfParseTaskContext {
+  signal: AbortSignal;
+  setBatch: (parseBatchId: string) => void;
 }
 
 interface ExecutionContext extends ExecutionOptions {
@@ -209,6 +214,9 @@ function parseTask(value: unknown, projectId: string, paperId: string): PdfParse
       (typeof record.sanitizedSha256 !== "string" || !SHA256.test(record.sanitizedSha256))) ||
     (record.parseSourceSnapshotId === undefined) !== (record.sanitizedSha256 === undefined) ||
     (record.parseSourceSnapshotId !== undefined && record.jobId === undefined) ||
+    (record.candidateRevisionId !== undefined &&
+      (typeof record.candidateRevisionId !== "string" || !UUID.test(record.candidateRevisionId))) ||
+    (record.candidateRevisionId !== undefined && record.parseSourceSnapshotId === undefined) ||
     typeof record.createdAt !== "string" ||
     !Number.isFinite(Date.parse(record.createdAt)) ||
     typeof record.updatedAt !== "string" ||
@@ -247,6 +255,9 @@ function parseTask(value: unknown, projectId: string, paperId: string): PdfParse
           parseSourceSnapshotId: record.parseSourceSnapshotId as string,
           sanitizedSha256: record.sanitizedSha256 as string,
         }),
+    ...(record.candidateRevisionId === undefined
+      ? {}
+      : { candidateRevisionId: record.candidateRevisionId as string }),
     ...(record.diagnostic === undefined
       ? {}
       : { diagnostic: parseTaskDiagnostic(record.diagnostic) }),
@@ -628,7 +639,7 @@ async function runAcceptedTask(
   return queryAndDownload(task, context);
 }
 
-async function withActive<T>(
+export async function withActive<T>(
   root: string,
   externalSignal: AbortSignal | undefined,
   operation: (context: {
@@ -673,119 +684,139 @@ export function stopBaiduPdfParse(root: string, parseBatchId: string): boolean {
   return true;
 }
 
-export async function startBaiduPdfParse(input: {
+interface NewPdfParseInput {
   root: string;
   sourceSnapshotId: string;
   config: BaiduPdfParseConfig;
   confirmUpload: (
     request: BaiduUploadConfirmationRequest,
   ) => boolean | Promise<boolean>;
-  signal?: AbortSignal;
   hooks?: TaskHooks;
   timing?: TaskTiming;
-}): Promise<PdfParseTaskResult> {
-  return withActive(input.root, input.signal, async ({ signal, setBatch }) => {
-    const opened = await openProject(input.root);
-    const tasks = await listTasks(opened.root, opened.manifest.id, opened.manifest.paper.id);
-    assertNoBlockingTask(tasks);
-    const config = checkedConfig(input.config);
-    const { source, bytes } = await loadPdf(opened.root, input.sourceSnapshotId);
-    const confirmed = await input.confirmUpload({
-      sourceSnapshotId: source.sourceSnapshotId,
-      originalName: source.originalName,
-      pdfSha256: source.sha256,
-      pageCount: source.pageCount,
-      provider: PROVIDER,
-      model: MODEL,
-      endpoint: config.endpoint,
-      options: { ...OPTIONS },
-    });
-    if (!confirmed) return { outcome: "cancelled" };
-
-    const now = new Date().toISOString();
-    const task: PdfParseTaskRecord = {
-      formatVersion: 1,
-      parseBatchId: randomUUID(),
-      projectId: opened.manifest.id,
-      paperId: opened.manifest.paper.id,
-      parentSourceSnapshotId: source.sourceSnapshotId,
-      pdfSha256: source.sha256,
-      provider: PROVIDER,
-      model: MODEL,
-      endpoint: config.endpoint,
-      options: { ...OPTIONS },
-      phase: "preparing",
-      createdAt: now,
-      updatedAt: now,
-    };
-    setBatch(task.parseBatchId);
-    await saveTask(opened.root, task);
-    const context: ExecutionContext = {
-      root: opened.root,
-      config,
-      signal,
-      setBatch,
-      ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
-      ...(input.timing === undefined ? {} : { timing: input.timing }),
-    };
-    const submitted = await submit(task, bytes, context);
-    if (submitted) return submitted;
-    return runAcceptedTask(task, context);
-  });
 }
 
-export async function resumeBaiduPdfParse(input: {
+/** 新任务执行体：串行守卫上下文由调用方（公共入口或端到端编排）提供。 */
+export async function executeNewPdfParse(
+  input: NewPdfParseInput,
+  context: PdfParseTaskContext,
+): Promise<PdfParseTaskResult> {
+  const { signal, setBatch } = context;
+  const opened = await openProject(input.root);
+  const tasks = await listTasks(opened.root, opened.manifest.id, opened.manifest.paper.id);
+  assertNoBlockingTask(tasks);
+  const config = checkedConfig(input.config);
+  const { source, bytes } = await loadPdf(opened.root, input.sourceSnapshotId);
+  const confirmed = await input.confirmUpload({
+    sourceSnapshotId: source.sourceSnapshotId,
+    originalName: source.originalName,
+    pdfSha256: source.sha256,
+    pageCount: source.pageCount,
+    provider: PROVIDER,
+    model: MODEL,
+    endpoint: config.endpoint,
+    options: { ...OPTIONS },
+  });
+  if (!confirmed) return { outcome: "cancelled" };
+
+  const now = new Date().toISOString();
+  const task: PdfParseTaskRecord = {
+    formatVersion: 1,
+    parseBatchId: randomUUID(),
+    projectId: opened.manifest.id,
+    paperId: opened.manifest.paper.id,
+    parentSourceSnapshotId: source.sourceSnapshotId,
+    pdfSha256: source.sha256,
+    provider: PROVIDER,
+    model: MODEL,
+    endpoint: config.endpoint,
+    options: { ...OPTIONS },
+    phase: "preparing",
+    createdAt: now,
+    updatedAt: now,
+  };
+  setBatch(task.parseBatchId);
+  await saveTask(opened.root, task);
+  const execution: ExecutionContext = {
+    root: opened.root,
+    config,
+    signal,
+    setBatch,
+    ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
+    ...(input.timing === undefined ? {} : { timing: input.timing }),
+  };
+  const submitted = await submit(task, bytes, execution);
+  if (submitted) return submitted;
+  return runAcceptedTask(task, execution);
+}
+
+export async function startBaiduPdfParse(
+  input: NewPdfParseInput & { signal?: AbortSignal },
+): Promise<PdfParseTaskResult> {
+  return withActive(input.root, input.signal, (context) => executeNewPdfParse(input, context));
+}
+
+interface ResumePdfParseInput {
   root: string;
   parseBatchId: string;
   config: BaiduPdfParseConfig;
   jobId?: string;
-  signal?: AbortSignal;
   hooks?: TaskHooks;
   timing?: TaskTiming;
-}): Promise<PdfParseTaskResult> {
-  return withActive(input.root, input.signal, async ({ signal, setBatch }) => {
-    const opened = await openProject(input.root);
-    const config = checkedConfig(input.config);
-    let task = recoveredPhase(await readTask(
-      opened.root,
-      input.parseBatchId,
-      opened.manifest.id,
-      opened.manifest.paper.id,
-    ));
-    setBatch(task.parseBatchId);
-    if (["failed", "remote-failed", "candidate-complete"].includes(task.phase))
-      throw new Error("此任务已结束，不能作为未完成任务恢复。");
-    if (task.endpoint !== config.endpoint || task.model !== config.model)
-      throw new Error("恢复必须使用原 endpoint、模型与解析选项，不能改传新任务。");
-    const { source } = await loadPdf(opened.root, task.parentSourceSnapshotId);
-    if (source.sha256 !== task.pdfSha256)
-      throw new Error("PDF 摘要已变化，不能恢复此云端任务。");
-    if (!task.jobId) {
-      if (typeof input.jobId !== "string" || !JOB_ID.test(input.jobId))
-        throw new Error("提交结果不明，请提供百度控制台任务号；不能自动重传。");
-      task.jobId = input.jobId;
-    } else if (input.jobId !== undefined && input.jobId !== task.jobId) {
-      throw new Error("不能把原任务改关联到另一个任务号。");
-    }
-    const sanitized = await findBatchParseSnapshot(opened.root, task);
-    if (sanitized) {
-      task.parseSourceSnapshotId = sanitized.sourceSnapshotId;
-      task.sanitizedSha256 = sanitized.sanitizedSha256;
-      delete task.diagnostic;
-      await saveTask(opened.root, task);
-      return { outcome: "sanitized", task, snapshot: sanitized };
-    }
-    task.phase = "querying";
+}
+
+/** 恢复执行体：串行守卫上下文由调用方提供；已去敏快照直接复用，不重复下载。 */
+export async function executeResumePdfParse(
+  input: ResumePdfParseInput,
+  context: PdfParseTaskContext,
+): Promise<PdfParseTaskResult> {
+  const { signal, setBatch } = context;
+  const opened = await openProject(input.root);
+  const config = checkedConfig(input.config);
+  let task = recoveredPhase(await readTask(
+    opened.root,
+    input.parseBatchId,
+    opened.manifest.id,
+    opened.manifest.paper.id,
+  ));
+  setBatch(task.parseBatchId);
+  if (["failed", "remote-failed", "candidate-complete"].includes(task.phase))
+    throw new Error("此任务已结束，不能作为未完成任务恢复。");
+  if (task.endpoint !== config.endpoint || task.model !== config.model)
+    throw new Error("恢复必须使用原 endpoint、模型与解析选项，不能改传新任务。");
+  const { source } = await loadPdf(opened.root, task.parentSourceSnapshotId);
+  if (source.sha256 !== task.pdfSha256)
+    throw new Error("PDF 摘要已变化，不能恢复此云端任务。");
+  if (!task.jobId) {
+    if (typeof input.jobId !== "string" || !JOB_ID.test(input.jobId))
+      throw new Error("提交结果不明，请提供百度控制台任务号；不能自动重传。");
+    task.jobId = input.jobId;
+  } else if (input.jobId !== undefined && input.jobId !== task.jobId) {
+    throw new Error("不能把原任务改关联到另一个任务号。");
+  }
+  const sanitized = await findBatchParseSnapshot(opened.root, task);
+  if (sanitized) {
+    task.parseSourceSnapshotId = sanitized.sourceSnapshotId;
+    task.sanitizedSha256 = sanitized.sanitizedSha256;
     delete task.diagnostic;
     await saveTask(opened.root, task);
-    const context: ExecutionContext = {
-      root: opened.root,
-      config,
-      signal,
-      setBatch,
-      ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
-      ...(input.timing === undefined ? {} : { timing: input.timing }),
-    };
-    return runAcceptedTask(task, context);
-  });
+    return { outcome: "sanitized", task, snapshot: sanitized };
+  }
+  task.phase = "querying";
+  delete task.diagnostic;
+  await saveTask(opened.root, task);
+  const execution: ExecutionContext = {
+    root: opened.root,
+    config,
+    signal,
+    setBatch,
+    ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
+    ...(input.timing === undefined ? {} : { timing: input.timing }),
+  };
+  return runAcceptedTask(task, execution);
+}
+
+export async function resumeBaiduPdfParse(
+  input: ResumePdfParseInput & { signal?: AbortSignal },
+): Promise<PdfParseTaskResult> {
+  return withActive(input.root, input.signal, (context) => executeResumePdfParse(input, context));
 }
