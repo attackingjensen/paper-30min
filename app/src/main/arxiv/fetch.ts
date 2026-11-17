@@ -1,5 +1,6 @@
 import type { Dispatcher } from "undici";
 import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
+import type { ProjectCommitHooks } from "../project-core.js";
 import type { SourceSnapshotRecord } from "../../shared/contracts.js";
 
 /** 受控获取响应：只保留公开头，不携带 Cookie/Authorization 等请求密钥。 */
@@ -118,4 +119,6 @@ export interface FetchArxivSnapshotInput {
   assetBudgetBytes?: number;
   /** 单快照原始资产合计预算，默认 512 MiB。 */
   totalAssetBudgetBytes?: number;
+  /** 快照发布提交点故障注入；生产路径不注入。 */
+  hooks?: ProjectCommitHooks;
 }

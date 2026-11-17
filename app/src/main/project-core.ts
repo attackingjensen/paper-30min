@@ -4,6 +4,7 @@ import { constants, createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
+  ArxivImportProgress,
   ManagedFileContent,
   ManagedFileRecord,
   ProjectCoreSnapshot,
@@ -12,6 +13,7 @@ import type {
   ProjectRevisionRecord,
   SourceSnapshotRecord,
 } from "../shared/contracts.js";
+import type { ArxivReference, ImportDiagnostic } from "../shared/arxiv.js";
 import {
   parseDocumentTree,
   validateDocumentAssets,
@@ -170,7 +172,81 @@ function parseImportRecord(value: unknown, manifest: ProjectManifest): ProjectIm
     id: record.id,
     projectId: manifest.id,
     paperId: manifest.paper.id,
+    ...(record.arxiv === undefined ? {} : { arxiv: parseArxivImportProgress(record.arxiv) }),
   };
+}
+
+const importStages = ["resolve", "snapshot", "convert"] as const;
+const importActions = ["fetch-snapshot", "convert", "pdf-fallback"] as const;
+const diagnosticStages = ["resolve", "fetch", "snapshot", "convert", "validate", "publish"] as const;
+
+function parseArxivReferenceValue(value: unknown): ArxivReference {
+  const record = objectValue(value);
+  if (
+    typeof record.baseId !== "string" ||
+    typeof record.canonicalId !== "string" ||
+    !(record.version === null || (typeof record.version === "number" && Number.isInteger(record.version) && record.version >= 1))
+  ) {
+    throw new Error("首次导入记录中的 arXiv 引用无效。");
+  }
+  return { baseId: record.baseId, version: record.version, canonicalId: record.canonicalId };
+}
+
+function parseImportDiagnostic(value: unknown): ImportDiagnostic {
+  const record = objectValue(value);
+  if (
+    typeof record.code !== "string" ||
+    typeof record.messageKey !== "string" ||
+    (record.severity !== "warning" && record.severity !== "fatal") ||
+    !diagnosticStages.includes(record.stage as (typeof diagnosticStages)[number])
+  ) {
+    throw new Error("首次导入记录中的诊断无效。");
+  }
+  return {
+    code: record.code,
+    severity: record.severity,
+    stage: record.stage as ImportDiagnostic["stage"],
+    messageKey: record.messageKey,
+    ...(typeof record.sourceAlias === "string" ? { sourceAlias: record.sourceAlias } : {}),
+    ...(typeof record.sourceUrl === "string" ? { sourceUrl: record.sourceUrl } : {}),
+  };
+}
+
+function parseArxivImportProgress(value: unknown): ArxivImportProgress {
+  const record = objectValue(value);
+  if (
+    !importStages.includes(record.stage as (typeof importStages)[number]) ||
+    !importActions.includes(record.nextAction as (typeof importActions)[number]) ||
+    (record.sourceSnapshotId !== undefined &&
+      (typeof record.sourceSnapshotId !== "string" || !uuid.test(record.sourceSnapshotId)))
+  ) {
+    throw new Error("首次导入记录的 arXiv 进度无效。");
+  }
+  return {
+    reference: parseArxivReferenceValue(record.reference),
+    stage: record.stage as ArxivImportProgress["stage"],
+    nextAction: record.nextAction as ArxivImportProgress["nextAction"],
+    ...(record.sourceSnapshotId === undefined ? {} : { sourceSnapshotId: record.sourceSnapshotId as string }),
+    ...(record.diagnostic === undefined ? {} : { diagnostic: parseImportDiagnostic(record.diagnostic) }),
+  };
+}
+
+/** 原子更新首次导入记录的 arXiv 进度；身份字段由 project-core 保持权威。 */
+export async function updateArxivImportProgress(
+  root: string,
+  progress: ArxivImportProgress,
+): Promise<void> {
+  const canonical = await canonicalRoot(root);
+  return serialized(canonical, async () => {
+    const { manifest } = await readManifest(canonical);
+    if (manifest.paper.currentRevision !== null)
+      throw new Error("current 已存在，首次导入进度不再可写。");
+    const record = parseImportRecord(
+      (await readManagedJson(canonical, initialImportName, "首次导入记录")).value,
+      manifest,
+    );
+    await atomicJson(path.join(canonical, initialImportName), { ...record, arxiv: progress });
+  });
 }
 
 function digest(bytes: Uint8Array) {

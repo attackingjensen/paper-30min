@@ -9,6 +9,7 @@ import {
   commitRevision,
   openProject,
   readSourceSnapshot,
+  type ProjectCommitHooks,
 } from "../project-core.js";
 import type { ArxivAssetMapping, ArxivSourceMetadata } from "./fetch.js";
 import type {
@@ -65,9 +66,16 @@ export type ConvertLatexmlResult =
     }
   | { ok: false; diagnostic: ImportDiagnostic };
 
+export type ArxivConvertPoint = "candidate-built" | "before-publish";
+
 export interface ConvertArxivSnapshotInput {
   root: string;
   sourceSnapshotId: string;
+  /** 转换阶段故障注入：候选构建后、提交发布前；生产路径不注入。 */
+  hooks?: {
+    onConvertPoint?: (point: ArxivConvertPoint) => void | Promise<void>;
+    commitHooks?: ProjectCommitHooks;
+  };
 }
 
 export type ConvertArxivSnapshotResult =
@@ -1307,6 +1315,20 @@ export async function convertArxivSnapshot(
   });
   if (!result.ok) return result;
 
+  // 首次导入不变量：document 与 source-base 一致、baseRevision 必须为空；
+  // current 已存在时更新候选必须走 document-core 合并路径，不得在此直写。
+  if (opened.manifest.paper.currentRevision !== null)
+    return fatal("arxiv-convert-current-exists", "arxiv.convert.currentExists", "convert");
+  try {
+    await input.hooks?.onConvertPoint?.("candidate-built");
+  } catch (error) {
+    return fatal(
+      "arxiv-convert-interrupted",
+      `arxiv.convert.interrupted:${error instanceof Error ? error.message : String(error)}`,
+      "convert",
+    );
+  }
+
   const revisionId = randomUUID();
   const baseRevision = opened.manifest.paper.currentRevision;
   const documentJson = Buffer.from(JSON.stringify(result.tree));
@@ -1322,6 +1344,15 @@ export async function convertArxivSnapshot(
       files[block.asset.path] = { bytes: assetBytes[block.asset.path], mime: block.asset.mime };
   }
   try {
+    await input.hooks?.onConvertPoint?.("before-publish");
+  } catch (error) {
+    return fatal(
+      "arxiv-convert-interrupted",
+      `arxiv.convert.interrupted:${error instanceof Error ? error.message : String(error)}`,
+      "convert",
+    );
+  }
+  try {
     const revision = await commitRevision({
       root: input.root,
       sourceSnapshotId: input.sourceSnapshotId,
@@ -1329,7 +1360,7 @@ export async function convertArxivSnapshot(
       revisionId,
       files,
       metadata: {},
-    });
+    }, input.hooks?.commitHooks);
     return {
       ok: true,
       revision,

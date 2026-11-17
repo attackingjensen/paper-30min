@@ -1,4 +1,6 @@
 import type { ParsingCommand } from "./parsing.js";
+import type { ArxivReference, ImportDiagnostic } from "./arxiv.js";
+
 import type { ChatAttachment } from "./chat-input.js";
 import type { DocumentTree } from "./document/tree.js";
 
@@ -30,6 +32,17 @@ export interface ProjectImportRecord {
   id: string;
   projectId: string;
   paperId: string;
+  /** arXiv 首次导入进度（SPEC §6）；其他来源可为空。 */
+  arxiv?: ArxivImportProgress;
+}
+
+/** 首次导入恢复记录：目标版本、已完成快照、诊断与下一可行动作；不记录凭据。 */
+export interface ArxivImportProgress {
+  reference: ArxivReference;
+  stage: "resolve" | "snapshot" | "convert";
+  sourceSnapshotId?: string;
+  diagnostic?: ImportDiagnostic;
+  nextAction: "fetch-snapshot" | "convert" | "pdf-fallback";
 }
 
 export interface ManagedFileRecord {

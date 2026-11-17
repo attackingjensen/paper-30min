@@ -83,8 +83,9 @@ export function arxivLatestVersion(html: string, baseId: string): number | null 
 export async function resolveArxivVersion(
   reference: ArxivReference,
   fetchAbs: AbsFetch,
+  /** 受控端点基址注入点；默认生产 https://arxiv.org，URL 语义不变。 */
+  absUrl: string = arxivEndpointUrl(reference, "abs"),
 ): Promise<ArxivVersionResolution> {
-  const absUrl = arxivEndpointUrl(reference, "abs");
   let html: string;
   try {
     html = await fetchAbs(absUrl);

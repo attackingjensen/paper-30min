@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
 import type { ManagedFileContent } from "../../shared/contracts.js";
-import { listSourceSnapshots, publishSourceSnapshot } from "../project-core.js";
+import { listSourceSnapshots, publishSourceSnapshot, type ProjectCommitHooks } from "../project-core.js";
 import { assertArxivVersionConsistent } from "./version.js";
 import { ArxivFetchError, type ArxivFetchResponse, type FetchArxivSnapshotInput, type ArxivSnapshotResult, type ArxivAssetMapping, type ArxivSourceMetadata } from "./fetch.js";
 
@@ -296,7 +296,7 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
   }
 
   try {
-    const snapshot = await publishSourceSnapshot({ root, files, metadata: { ...metadata } });
+    const snapshot = await publishSourceSnapshot({ root, files, metadata: { ...metadata } }, input.hooks ?? {});
     return { ok: true, reused: false, snapshot, warnings, bodyReadable: false };
   } catch (error) {
     return fatal("arxiv-snapshot-publish-failed", "arxiv.snapshot.publishFailed", "snapshot", error instanceof Error ? error.message : String(error));

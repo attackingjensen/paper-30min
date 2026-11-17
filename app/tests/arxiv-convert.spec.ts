@@ -377,13 +377,11 @@ test("arxiv-import 快照转换发布：从受管快照离线转换，document �
   const after = await readSourceSnapshot(root, snapshot.sourceSnapshotId);
   expect(after.files).toEqual(snapshot.files);
 
-  // 二次转换同一快照：内容一致但生成新 revision 身份，不原地改写已发布 revision。
+  // current 已存在时直写转换被拒绝：更新候选必须走 document-core 合并路径（vx0.4 不变量）。
   const again = await convertArxivSnapshot({ root, sourceSnapshotId: snapshot.sourceSnapshotId });
-  expect(again.ok).toBe(true);
-  if (!again.ok) return;
-  expect(again.revision.revisionId).not.toBe(result.revision.revisionId);
-  const documentAgain = await readRevisionDocument(root, again.revision.revisionId, "document");
-  expect(allUnitTexts(documentAgain)).toEqual(allUnitTexts(document));
+  expect(again.ok).toBe(false);
+  if (!again.ok) expect(again.diagnostic.code).toBe("arxiv-convert-current-exists");
+  expect((await openProject(root)).manifest.paper.currentRevision).toBe(result.revision.revisionId);
 });
 
 test("arxiv-import 转换失败不发布：abs 冒充正文时 current 保持为空，快照保留", async () => {
