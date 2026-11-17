@@ -29,6 +29,9 @@ jobs:
       PAPER30MIN_TEST_WINDOW: hidden
     steps:
       - uses: actions/checkout@v4
+        with:
+          # floor-guard 需要 merge-base 与完整分支差异。
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -36,11 +39,28 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Install pinned security scanners
+        shell: bash
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
+          printf '%s\n' "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Dead code check
-        run: npm run test:dead-code
+      - name: Fast constraints
+        run: npm run check:fast
+
+      - name: Architecture boundaries
+        run: npm run check:architecture
+
+      - name: Dependency vulnerabilities
+        run: npm run check:dependencies
 
       # build 已包含 typecheck；先构建一次，再直接运行 Playwright。
       - name: Typecheck and build

@@ -11,7 +11,13 @@
     "start": "node scripts/start.mjs",
     "test": "npm run build && playwright test",
     "test:desktop": "npm test",
-    "test:dead-code": "knip --no-progress"
+    "test:dead-code": "knip --no-progress",
+    "check:fast": "npm run typecheck && npm run test:dead-code && npm run check:secrets && node scripts/floor-guard.mjs",
+    "check:task": "npm run check:fast && npm run check:architecture && playwright test -g \"project-core|document-core|arxiv-import|parsing|pdf-snapshot\"",
+    "check:full": "npm run check:fast && npm run check:architecture && npm run check:dependencies && npm run build && playwright test",
+    "check:secrets": "gitleaks dir .. --redact --no-banner --config ../.gitleaks.toml",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "check:dependencies": "node scripts/check-dependencies.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
@@ -36,7 +42,7 @@
     "codemirror": "6.0.2",
     "katex": "0.16.47",
     "lucide-react": "1.55.0",
-    "markdown-it": "15.0.2",
+    "markdown-it": "15.0.3",
     "mdast-util-from-markdown": "2.1.0",
     "parse5": "^7.3.0",
     "pngjs": "7.0.0",
@@ -45,24 +51,30 @@
     "turndown": "7.2.4",
     "turndown-plugin-gfm": "1.0.2",
     "typebox": "1.3.27",
-    "undici": "7.30.0"
+    "undici": "7.30.1"
   },
   "overrides": {
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-codemode": "1.1.0",
+    "@earendil-works/pi-coding-agent": {
+      ".": "1.1.0",
+      "undici": "8.12.2"
+    },
     "@earendil-works/pi-mcp": "1.1.0",
     "@earendil-works/pi-telemetry": "1.1.0",
     "@earendil-works/pi-tui": "1.1.0"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",
+    "@swc/core": "1.16.22",
     "@types/node": "24.10.1",
     "@types/pngjs": "6.0.5",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@types/turndown": "5.0.6",
-    "electron": "44.7.0",
+    "dependency-cruiser": "18.8.0",
+    "electron": "44.9.1",
     "knip": "6.45.1",
     "typescript": "7.0.2",
     "vite": "8.3.4"

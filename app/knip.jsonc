@@ -4,7 +4,8 @@
     "src/main/main.ts",
     "src/main/worker.ts",
     "src/main/preload.cts",
-    "src/renderer/main.tsx"
+    "src/renderer/main.tsx",
+    "scripts/quality-gate.mjs"
   ],
   "project": [
     "src/**/*.{ts,tsx,cts}",
@@ -13,6 +14,10 @@
     "*.ts"
   ],
   "includeEntryExports": true,
+  // 外部安全工具由开发机或 CI 安装，不是 npm 依赖。
+  "ignoreBinaries": ["gitleaks", "osv-scanner"],
+  // dependency-cruiser 按 parser: "swc" 动态加载，静态引用图看不到。
+  "ignoreDependencies": ["@swc/core"],
   // Phase 0 临时基线：contracts.ts 豁免已随 Phase 1 project-core 契约收敛移除
   // （FileEntry/AgentServiceSettings/AgentModelSettings 取消导出，仍由同文件契约引用）。
   // 仅剩 parsing.ts 的间接导出类型豁免，pdf-import 改造时移除。
