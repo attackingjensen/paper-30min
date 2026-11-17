@@ -64,6 +64,8 @@ Phase 1 的 project-core／document-core 以契约层提供新工程容器，与
 - 清单只保存身份与指针：`paper.currentRevision` 是 revision ID 或 `null`；`null` 仅在存在有效首次导入记录时合法。工程与主论文身份是持久化 UUID，不随路径变化，整体搬迁后按相对路径继续工作。
 - 来源快照与已发布 revision 不可变。提交先完整落盘正文内容与 revision 元数据，再原子替换 current 指针；替换前复核清单字节、基线、旧／新 revision 与来源摘要。失败保留现场，旧 current 仍可读。
 - PDF 来源快照保存 `paper.pdf` 与 `snapshot.json`（`kind: "pdf"`、原始文件名、SHA-256、页数；arXiv 回退另存 base ID、固定版本与版本化 PDF URL）。本地外部绝对路径不进入工程，普通参考 PDF 不登记清单。字节与来源谱系（本地／arXiv base ID 与固定版本）均一致才复用已验证快照，否则创建新 UUID 快照；SHA-256 不承担工程或 `paper.id` 身份。
+- Phase 3 百度任务使用 `.paper30min/parsing/<parseBatchId>/task.json` 保存 UUID 批次、父 PDF 快照、PDF 摘要、provider、固定模型与 endpoint、解析选项、`jobId`、阶段和响应摘要；它与旧 32 位批次的 `run.json` 不混读。每个新任务先经调用方显式确认，首次 POST 前原子写入“提交中”；重开把未完成的准备／提交记录视为“提交结果不明”，必须人工关联任务号，不得自动重传。Token、代理 dispatcher、签名 URL、原始错误正文均不写入该记录。
+- Phase 3 任务下载的原始 JSONL 只在主进程内存中交接给后续去敏切片，不写入工程。`downloaded` 记录只保存响应 SHA-256；去敏快照尚未发布时，恢复可从原 `jobId` 重下并核对摘要，摘要不符即保留现场。查询超时和本机停止不冒充远端失败，恢复始终沿用原 endpoint、模型、解析选项和 PDF 摘要。
 - 文档树为 `documentFormatVersion: 1` 的 Section／Unit／Sentence／Atom／Block，节点使用论文内唯一 UUID；锚点、changeset、tombstones 与三方合并由 document-core 承担。两棵文档树及其 changeset、tombstones 单文件 JSON 预算 64 MiB，单项资产 32 MiB，单 revision 引用资产总量 512 MiB，工程元数据 1 MiB。
 - 新核经 `core*` 命令接入生产 preload、IPC 与 Node utility process（命令面见 [app/README.md](../app/README.md)），由真实磁盘契约测试与真实 Electron 回归验收。arXiv 首次导入、恢复与显式 PDF 回退交接已经 `coreArxivImport`／`coreArxivResume`／`coreArxivPdfFallback` 接入同一通道（真实 transport，受控 `baseUrl` 仅供回归）；界面导入链路仍是 `formatVersion: 1` 过渡形态，界面接管由全文阅读器等后续 phase 承接。
 - 两种格式互不读取：新核遇到 `formatVersion: 1` 明确拒绝并提示旧格式处理流程；旧界面服务对 `formatVersion: 2` 清单报格式不支持。不提供自动迁移、只读兼容或双写。

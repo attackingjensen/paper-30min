@@ -1,4 +1,5 @@
 import type { DocumentRecord } from "./contracts.js";
+import type { ImportDiagnostic } from "./arxiv.js";
 
 export const defaultParsingSettings = {
   endpoint: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
@@ -81,3 +82,54 @@ export type ParsingCommand =
   | { type: "start"; root: string; documentId: string }
   | { type: "resume"; root: string; batchId: string; jobId?: string }
   | { type: "stop"; root: string; batchId: string };
+
+/** Phase 3 PDF 云端任务：仅含恢复所需的非密事实，不保存 Token、代理或签名 URL。 */
+export type PdfParseTaskPhase =
+  | "preparing"
+  | "submitting"
+  | "unknown"
+  | "querying"
+  | "downloading"
+  | "downloaded"
+  | "converting"
+  | "stopped"
+  | "failed"
+  | "remote-failed"
+  | "candidate-complete";
+
+export interface BaiduPdfParseOptions {
+  useDocOrientationClassify: boolean;
+  useDocUnwarping: boolean;
+  useChartRecognition: boolean;
+}
+
+export interface PdfParseTaskRecord {
+  formatVersion: 1;
+  parseBatchId: string;
+  projectId: string;
+  paperId: string;
+  parentSourceSnapshotId: string;
+  pdfSha256: string;
+  provider: "baidu-aistudio";
+  model: "PaddleOCR-VL-1.6";
+  endpoint: string;
+  options: BaiduPdfParseOptions;
+  phase: PdfParseTaskPhase;
+  jobId?: string;
+  /** 仅记录内存中下载响应的摘要；含密原始响应不写入任务目录。 */
+  responseSha256?: string;
+  diagnostic?: ImportDiagnostic;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BaiduUploadConfirmationRequest {
+  sourceSnapshotId: string;
+  originalName: string;
+  pdfSha256: string;
+  pageCount: number;
+  provider: "baidu-aistudio";
+  model: "PaddleOCR-VL-1.6";
+  endpoint: string;
+  options: BaiduPdfParseOptions;
+}
