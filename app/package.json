@@ -13,7 +13,7 @@
     "test:desktop": "npm test",
     "test:dead-code": "knip --no-progress",
     "check:fast": "npm run typecheck && npm run test:dead-code && npm run check:secrets && node scripts/floor-guard.mjs",
-    "check:task": "npm run check:fast && npm run check:architecture && playwright test -g \"project-core|document-core|arxiv-import|parsing|pdf-snapshot\"",
+    "check:task": "npm run check:fast && npm run check:architecture && playwright test -g \"project-core|document-core|arxiv-import|parsing|pdf-snapshot|pdf-verification\"",
     "check:full": "npm run check:fast && npm run check:architecture && npm run check:dependencies && npm run build && playwright test",
     "check:secrets": "gitleaks dir .. --redact --no-banner --config ../.gitleaks.toml",
     "check:architecture": "node scripts/check-architecture.mjs",

@@ -17,6 +17,7 @@ import {
   type DocumentMergeResult,
 } from "../../shared/document/merge.js";
 import type { DocumentTree } from "../../shared/document/tree.js";
+import { inheritVerificationSidecar } from "../pdf/verification.js";
 
 type ManagedAsset = { bytes: Uint8Array; mime?: string };
 
@@ -118,6 +119,15 @@ export async function publishDocumentMergeCandidate(candidate: DocumentMergeCand
   const currentRevision = opened.manifest.paper.currentRevision;
   if (!currentRevision) throw new Error("首次正文尚未提交，不能发布来源合并候选。");
   assertDocumentMergePublishable(candidate, currentRevision);
+
+  // 核验继承先于 current 推进：新 current 生效时侧车已按 changeset 与 PDF 谱系生成。
+  await inheritVerificationSidecar({
+    root: candidate.root,
+    baseRevision: candidate.baseRevision,
+    revisionId: candidate.revisionId,
+    sourceSnapshotId: candidate.sourceSnapshotId,
+    document: candidate.document,
+  });
 
   const assets: Record<string, ManagedAsset> = {};
   for (const relative of assetPaths([candidate.document, candidate.sourceBase])) {

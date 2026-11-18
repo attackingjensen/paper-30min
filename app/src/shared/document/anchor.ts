@@ -16,7 +16,7 @@ const QuoteSnapshotSchema = Type.Object({
   before: Type.String(),
   after: Type.String(),
 }, { additionalProperties: false });
-const DocumentAnchorSchema = Type.Union([
+export const DocumentAnchorSchema = Type.Union([
   Type.Object({
     kind: Type.Literal("section"),
     sectionId: IdSchema,

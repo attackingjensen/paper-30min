@@ -56,9 +56,10 @@ Phase 1 的 project-core／document-core 以契约层提供新工程容器，与
   paper30min.json               # formatVersion = 2；工程身份、名称、主论文身份与 current 指针
   paper/revisions/<revisionId>/ # 已发布受管正文：document.json、source-base.json、tombstones.json、changeset.json、assets/
   sources/<sourceSnapshotId>/   # 不可变来源快照与 snapshot.json（逐文件 SHA-256／大小／可选 MIME）
-  .paper30min/revisions/        # revision 元数据
+  .paper30min/revisions/        # revision 元数据与核验侧车 verification.json
   .paper30min/imports/          # 首次导入恢复记录
   .paper30min/staging/          # 尚未发布的受管候选
+  .paper30min/pdf-evidence/     # 主进程 PDF 来源读取证据
 ```
 
 - 清单只保存身份与指针：`paper.currentRevision` 是 revision ID 或 `null`；`null` 仅在存在有效首次导入记录时合法。工程与主论文身份是持久化 UUID，不随路径变化，整体搬迁后按相对路径继续工作。
@@ -69,6 +70,7 @@ Phase 1 的 project-core／document-core 以契约层提供新工程容器，与
 - 解析快照保存于 `sources/<parseSourceSnapshotId>/`：`snapshot.json`（`kind: "pdf-parse"`、父 PDF 快照、批次、`jobId`、provider、固定模型与解析选项、页数、原始响应与去敏后响应摘要、本地化／占位／未知字段丢弃计数与 warning）、`result.jsonl`（去敏并本地化资源引用后的受管响应；正文、页／块顺序与几何事实逐字保留，签名 URL 与内联资源替换为 `assets/<sha256>.<png|jpg>` 内容寻址引用或占位）、`facts.json`（规范化 vendor 页／块 ID、标签、顺序、页面尺寸、块框、预处理参数与资产映射，不含 Paper30Min 节点身份）与 `assets/`。资源下载只允许当前 endpoint origin 与百度 HTTPS 资源域名，拒绝凭据、fragment、危险 scheme 与重定向；无法取得或无法证明安全的资源写成占位与 warning，未知字段不持久化，超预算拒绝且不发布快照（预算见 CONSTRAINTS B8／B9）。快照发布后不可变；转换与文档验证诊断不回写。
 - 转换与首次发布：转换器以解析快照的受管 `result.jsonl` 与 `facts.json` 为输入，全部页面转换结束并通过 document-core 全量验证后才生成 `documentFormatVersion: 1` 规范树；初次导入 `document.json` 与 `source-base.json` 一致，由 project-core 原子推进 current。不经过可编辑 Markdown 中间权威，不做逐页渐进 current，也不要求全文 LLM 审阅；未审阅解析稿发布后即可离线阅读。vendor 页／块 ID 保存为 `sourceAliases`（`page-N/bM`）连接 facts.json，页码与 vendor 块号不替代稳定节点 ID；服务不提供章节层级时采用平铺确定结构并记录 warning，缺失 `block_order` 按响应数组顺序降级并记录 warning。HTML 表格消毒后转换为行／列／跨度，嵌套表格或不可信跨度降级为带文本投影的 raw block；公式保留 LaTeX 来源与文本投影；图片引用本地化资产随树进入 revision `assets/`，缺失或无法取得的图片成为可读占位与 warning，不猜测资产归属，云端原始字节不回写。任务阶段由 `downloaded` 经 `converting` 到 `candidate-complete`；候选身份在提交前持久化，崩溃后恢复复用已发布候选只推进指针，受管残留清理后按同一身份重新转换，不重复下载、不重转换已发布内容。相同快照离线重新转换内容结构确定；转换 warning 与转换器版本保存于 revision 元数据 `pdfParse`。current 已存在时拒绝直写覆盖，更新必须走 document-core 合并路径。
 - 文档树为 `documentFormatVersion: 1` 的 Section／Unit／Sentence／Atom／Block，节点使用论文内唯一 UUID；锚点、changeset、tombstones 与三方合并由 document-core 承担。两棵文档树及其 changeset、tombstones 单文件 JSON 预算 64 MiB，单项资产 32 MiB，单 revision 引用资产总量 512 MiB，工程元数据 1 MiB。
+- 核验记录是 revision 关联的受管侧车 `.paper30min/revisions/<revisionId>/verification.json`（单文件 64 MiB 预算），不属于文档树或不可变正文，更新侧车不修改 `document.json`、`source-base.json` 或来源摘要。每条记录固定创建时的锚点、当时展开的覆盖节点（类型、稳定 ID、必要 sentence range、内容 SHA-256 与 quote）、PDF／解析快照、actor 与核验方式；section 标记只覆盖当时存在的后代节点。用户记录必须显式确认；Agent 记录必须引用主进程来源读取证据 `.paper30min/pdf-evidence/<evidenceId>.json`（1 MiB 预算，绑定 PDF 快照、页、session／task 与所提供内容摘要），证据未覆盖请求页、current 已变化、锚点摘要不符或 PDF 快照不可用时拒绝并保留现场，不接受 Agent 自述。发布新 current 前先按实际 changeset 与 PDF 谱系继承：同 PDF 内容不变保持 `verified`，内容修正成为 `modified-unreviewed`，不同 PDF 内容未变成为 `historical-source`，拆分／合并／删除成为 `removed` 并经 tombstone 诊断，新增节点不继承旧标记；继承记录保留原 `verifiedRevisionId`、来源与证据，相同 PDF 字节复用同一快照不视为来源变化。文档级摘要按当前有效记录逐节点聚合当前来源已核验、历史来源、修改后未复核与无记录四态，不产生主观质量分数（SPEC-pdf-import §9–§11）。
 - 新核经 `core*` 命令接入生产 preload、IPC 与 Node utility process（命令面见 [app/README.md](../app/README.md)），由真实磁盘契约测试与真实 Electron 回归验收。arXiv 首次导入、恢复与显式 PDF 回退交接已经 `coreArxivImport`／`coreArxivResume`／`coreArxivPdfFallback` 接入同一通道（真实 transport，受控 `baseUrl` 仅供回归）；界面导入链路仍是 `formatVersion: 1` 过渡形态，界面接管由全文阅读器等后续 phase 承接。
 - 两种格式互不读取：新核遇到 `formatVersion: 1` 明确拒绝并提示旧格式处理流程；旧界面服务对 `formatVersion: 2` 清单报格式不支持。不提供自动迁移、只读兼容或双写。
 

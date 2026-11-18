@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { CoreCommand } from "../shared/contracts.js";
+import { parseDocumentTree } from "../shared/document/tree.js";
 import {
   commitRevision,
   createProject,
@@ -13,6 +15,7 @@ import {
   publishDocumentMergeCandidate,
   resolveDocumentMergeCandidateConflict,
 } from "./document/merge.js";
+import { inheritVerificationSidecar } from "./pdf/verification.js";
 import { importArxivPaper, prepareArxivPdfFallback, resumeArxivImport } from "./arxiv/import.js";
 import { arxivFetch } from "./arxiv/transport.js";
 import type { ArxivFetchOptions, ArxivFetchResponse, ArxivTransport } from "./arxiv/fetch.js";
@@ -57,7 +60,7 @@ export function isCoreCommand(command: { type: string }): command is CoreCommand
   return command.type in coreCommandTypes;
 }
 
-export function dispatchCoreCommand(command: CoreCommand): Promise<unknown> {
+export async function dispatchCoreCommand(command: CoreCommand): Promise<unknown> {
   switch (command.type) {
     case "coreCreate":
       return createProject({ parent: command.parent, name: command.name });
@@ -69,15 +72,33 @@ export function dispatchCoreCommand(command: CoreCommand): Promise<unknown> {
         files: command.files,
         metadata: command.metadata,
       });
-    case "coreCommit":
+    case "coreCommit": {
+      const revisionId = command.revisionId ?? randomUUID();
+      if (command.baseRevision !== null) {
+        // 核验继承先于 current 推进（SPEC-pdf-import §11）；无旧核验记录时为空操作。
+        const content = command.files["document.json"];
+        const bytes = content instanceof Uint8Array ? content : content?.bytes;
+        if (!bytes) throw new Error("coreCommit 缺少 document.json，不能发布新 current。");
+        const document = parseDocumentTree(
+          JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+        );
+        await inheritVerificationSidecar({
+          root: command.root,
+          baseRevision: command.baseRevision,
+          revisionId,
+          sourceSnapshotId: command.sourceSnapshotId,
+          document,
+        });
+      }
       return commitRevision({
         root: command.root,
         baseRevision: command.baseRevision,
         sourceSnapshotId: command.sourceSnapshotId,
-        revisionId: command.revisionId,
+        revisionId,
         files: command.files,
         metadata: command.metadata,
       });
+    }
     case "coreReadSource":
       return readSourceSnapshot(command.root, command.sourceSnapshotId);
     case "coreReadRevision":

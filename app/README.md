@@ -34,7 +34,7 @@ npm run check:task    # fast + 架构边界 + 导入/工程契约 Playwright 套
 npm run check:full    # fast + 架构 + OSV + 构建 + 全量 Electron；完整本地验证
 ```
 
-`check:task` 的过滤器为 `project-core|document-core|arxiv-import|parsing|pdf-snapshot`，不替代其他功能的定向测试；其他改动仍用 `npx playwright test -g '相关用例'` 补充。`npm run check:architecture` 和 `npm run check:dependencies` 可单独运行。gitleaks 始终使用 `--redact`，扫描排除 `.local/` 本机私有配置、`.upstream/` 只读副本、依赖和生成物，不排除产品源码中的 finding。floor guard 默认与 `origin/main` 的 merge base 比较，可用 `node scripts/floor-guard.mjs --base <ref>` 指定基线。
+`check:task` 的过滤器为 `project-core|document-core|arxiv-import|parsing|pdf-snapshot|pdf-verification`，不替代其他功能的定向测试；其他改动仍用 `npx playwright test -g '相关用例'` 补充。`npm run check:architecture` 和 `npm run check:dependencies` 可单独运行。gitleaks 始终使用 `--redact`，扫描排除 `.local/` 本机私有配置、`.upstream/` 只读副本、依赖和生成物，不排除产品源码中的 finding。floor guard 默认与 `origin/main` 的 merge base 比较，可用 `node scripts/floor-guard.mjs --base <ref>` 指定基线。
 
 CI 在两个平台执行 fast、架构、OSV 和构建门禁，Windows 继续运行完整 Electron 回归。安全工具或解析器不可用、扫描报告不完整、架构扫描为 0 modules 都按检查失败处理，不能当作通过。
 
@@ -93,7 +93,7 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
 
-新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish`、`coreArxivImport`、`coreArxivResume` 与 `coreArxivPdfFallback` 与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。界面导入链路尚未接入这些命令（arXiv 命令面已可用，界面接管见下文）。
+新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish`、`coreArxivImport`、`coreArxivResume` 与 `coreArxivPdfFallback` 与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。`coreCommit`（baseRevision 非空时）与 `coreMergePublish` 都在推进 current 前执行核验继承：按旧侧车、实际 changeset 与 PDF 来源谱系生成新 revision 的 `verification.json`，无旧核验记录时为空操作（SPEC-pdf-import §11）。界面导入链路尚未接入这些命令（arXiv 命令面已可用，界面接管见下文）。
 
 ### Phase 2 arXiv 导入契约层
 

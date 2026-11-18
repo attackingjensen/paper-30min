@@ -32,7 +32,7 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 | C4 | Architecture | `0` 个边界违规；`>= 1` 个扫描模块；SWC 与 `.ts/.tsx/.cts` 解析必须可用 | renderer 不得访问 main / Node / Electron；shared 保持进程中立；preload 只经受限契约暴露能力。非空扫描防止“0 modules 假通过” | `npm run check:architecture` | VERIFY、CI |
 | C5 | Security: dependencies | high / critical 为 `0`；unknown severity 阻断；扫描包清单 `>= 1` | 高危依赖必须有修复或有期限的明确处置；低级别不掩盖高级别；非空包清单区分“零漏洞”与“未扫描” | `npm run check:dependencies` | REVIEW、CI |
 | C6 | Build | `0` 个构建错误 | 生产运行目录必须能由锁定依赖重建；构建不等同安装包 | `npm run build` | REVIEW、CI |
-| C7 | Contract tests | `0` 个失败 | 工程、文档、来源与现有解析预算必须由真实契约回归裁决 | `npx playwright test -g "project-core|document-core|arxiv-import|parsing|pdf-snapshot"` | VERIFY |
+| C7 | Contract tests | `0` 个失败 | 工程、文档、来源、核验与现有解析预算必须由真实契约回归裁决 | `npx playwright test -g "project-core\|document-core\|arxiv-import\|parsing\|pdf-snapshot\|pdf-verification"` | VERIFY |
 | C8 | Windows Electron | `0` 个失败；环境跳过按 M1 测量并仅登记 W2 | 桌面行为不能用 Linux 构建或纯静态检查替代 | `npm test` | Windows CI、完整本地验证 |
 
 ## Contract budgets（硬约束）
@@ -41,7 +41,7 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 
 | ID | 上限或范围 | 设定理由 | Checked by |
 |---|---|---|---|
-| B1 | 工程元数据 `<= 1 MiB`；`document.json` / `source-base.json` / changeset / tombstones 单文件 `<= 64 MiB` | 小元数据应快速失败；文档树需要更大但仍必须有界的读取预算 | `npx playwright test -g "project-core|document-core"` |
+| B1 | 工程元数据与来源读取证据 `<= 1 MiB`；`document.json` / `source-base.json` / changeset / tombstones / `verification.json` 单文件 `<= 64 MiB` | 小元数据应快速失败；文档树与核验侧车需要更大但仍必须有界的读取预算 | `npx playwright test -g "project-core\|document-core\|pdf-verification"` |
 | B2 | 单棵树节点 `<= 200,000`；章节深度 `<= 64`；单个 raw HTML block `<= 2 MiB` | 限制病态树的遍历、递归和原始内容成本 | `npx playwright test -g "document-core|arxiv-import"` |
 | B3 | 单个 revision 资产 `<= 32 MiB`；单 revision 引用资产总量 `<= 512 MiB` | 防止单项或聚合资产导致无界内存与磁盘占用 | `npx playwright test -g "project-core|document-core"` |
 | B4 | arXiv `abs.html <= 8 MiB`、`document.html <= 128 MiB`、单原始资产 `<= 32 MiB`、单快照原始资产合计 `<= 512 MiB` | 外部来源的声明大小与实际字节都必须有界 | `npx playwright test -g "arxiv-import|arxiv-transport|arxiv-snapshot"` |
@@ -52,7 +52,7 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 | B9 | 单解析资产 `<= 32 MiB`、单解析快照资产合计 `<= 256 MiB`、单 PNG `<= 16,000,000` 像素 | 同时限制压缩字节与解码后像素，避免图像内存放大 | `npx playwright test -g "parsing|pdf-snapshot"` |
 | B10 | 单轮远端查询等待 `<= 30 分钟`，之后必须保留原任务供恢复 | 避免无限等待和重复计费；超时不能冒充远端失败 | `npx playwright test -g "parsing|pdf-snapshot"` |
 
-B7–B10 在当前 `main` 由既有百度解析链路及 `parsing` 回归承担；`SPEC-pdf-import` 的新 document-core 链路尚未全部实现。Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；未实现或未运行的项目不得记为已验证。translation、pdf-comparison 等尚未实现的 spec 不提前虚报为当前强制项，接入实现时必须同步收录其预算。
+B7–B10 在当前 `main` 由既有百度解析链路及 `parsing` 回归承担；`SPEC-pdf-import` 的新 document-core 链路尚未全部实现。B1 的核验侧车与来源读取证据预算自 s08.5 起由 `pdf-verification` 回归承担。Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；未实现或未运行的项目不得记为已验证。translation、pdf-comparison 等尚未实现的 spec 不提前虚报为当前强制项，接入实现时必须同步收录其预算。
 
 ## Measured, not yet enforced
 
