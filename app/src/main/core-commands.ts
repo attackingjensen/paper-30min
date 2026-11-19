@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CoreCommand } from "../shared/contracts.js";
-import { parseDocumentTree } from "../shared/document/tree.js";
+import { parseDocumentTree, type DocumentTree } from "../shared/document/tree.js";
 import {
   commitRevision,
   createProject,
@@ -19,9 +19,9 @@ import {
   createVerification,
   inheritVerificationSidecar,
   readVerificationRecords,
-  recordPdfSourceEvidence,
 } from "./pdf/verification.js";
 import { snapshotLocalPdf } from "./pdf/snapshot.js";
+import { importArxivPdfFallback } from "./pdf/fallback-import.js";
 import {
   listBaiduPdfParseTasks,
   stopBaiduPdfParse,
@@ -37,6 +37,7 @@ import {
 } from "./parsing/pdf-import.js";
 import type { DocumentMergeCandidate } from "./document/merge.js";
 import type {
+  ArxivPdfFallbackImportCommandResult,
   PdfImportCommandResult,
   PdfReparseCommandResult,
 } from "../shared/contracts.js";
@@ -79,6 +80,7 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   coreArxivImport: true,
   coreArxivResume: true,
   coreArxivPdfFallback: true,
+  coreArxivPdfFallbackImport: true,
   coreArxivCancel: true,
   corePdfSnapshot: true,
   corePdfTasks: true,
@@ -91,7 +93,6 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   corePdfResumeReparse: true,
   corePdfVerify: true,
   corePdfReadVerification: true,
-  corePdfEvidence: true,
 };
 
 export function isCoreCommand(command: { type: string }): command is CoreCommand {
@@ -122,21 +123,14 @@ export async function dispatchCoreCommand(
       });
     case "coreCommit": {
       const revisionId = command.revisionId ?? randomUUID();
+      let document: DocumentTree | undefined;
       if (command.baseRevision !== null) {
-        // 核验继承先于 current 推进（SPEC-pdf-import §11）；无旧核验记录时为空操作。
         const content = command.files["document.json"];
         const bytes = content instanceof Uint8Array ? content : content?.bytes;
         if (!bytes) throw new Error("coreCommit 缺少 document.json，不能发布新 current。");
-        const document = parseDocumentTree(
+        document = parseDocumentTree(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
         );
-        await inheritVerificationSidecar({
-          root: command.root,
-          baseRevision: command.baseRevision,
-          revisionId,
-          sourceSnapshotId: command.sourceSnapshotId,
-          document,
-        });
       }
       return commitRevision({
         root: command.root,
@@ -145,6 +139,19 @@ export async function dispatchCoreCommand(
         revisionId,
         files: command.files,
         metadata: command.metadata,
+      }, {
+        // 核验继承在 commit 校验通过后、current 替换前执行（SPEC-pdf-import §11）：
+        // 提交失败不产生孤儿侧车；无旧核验记录时为空操作。
+        onCommitPoint: async (point) => {
+          if (point !== "before-current-replace" || command.baseRevision === null || !document) return;
+          await inheritVerificationSidecar({
+            root: command.root,
+            baseRevision: command.baseRevision,
+            revisionId,
+            sourceSnapshotId: command.sourceSnapshotId,
+            document,
+          });
+        },
       });
     }
     case "coreReadSource":
@@ -179,15 +186,7 @@ export async function dispatchCoreCommand(
       });
     case "corePdfReadVerification":
       return readVerificationRecords(command.root, command.revisionId);
-    case "corePdfEvidence":
-      return recordPdfSourceEvidence({
-        root: command.root,
-        pdfSnapshotId: command.pdfSnapshotId,
-        pages: command.pages,
-        sessionId: command.sessionId,
-        taskId: command.taskId,
-        contentSha256: command.contentSha256,
-      });
+    case "coreArxivPdfFallbackImport":
     case "corePdfImport":
     case "corePdfResume":
     case "corePdfReparse":
@@ -232,6 +231,12 @@ export async function dispatchCoreCommand(
       return openProject(command.root).then((opened) =>
         prepareArxivPdfFallback(opened, command.reason, command.baseUrl, command.baseRevision),
       );
+    default: {
+      // 穷尽校验：新增命令必须接线；已退役或伪造的命令（如 corePdfEvidence）显式拒绝。
+      const retired: never = command;
+      void retired;
+      throw new Error("不支持的核心命令。");
+    }
   }
 }
 
@@ -289,15 +294,30 @@ async function pdfReconvert(
 async function pdfCloudCommand(
   command: Extract<
     CoreCommand,
+    | { type: "coreArxivPdfFallbackImport" }
     | { type: "corePdfImport" }
     | { type: "corePdfResume" }
     | { type: "corePdfReparse" }
     | { type: "corePdfResumeReparse" }
   >,
   pdf: PdfCommandContext | undefined,
-): Promise<PdfImportCommandResult | PdfReparseCommandResult> {
+): Promise<ArxivPdfFallbackImportCommandResult | PdfImportCommandResult | PdfReparseCommandResult> {
   if (!pdf) throw new Error("PDF 云端命令缺少本机解析配置；请在解析设置中保存后重试。");
   const base = { root: command.root, config: pdf.config, signal: pdf.signal };
+  if (command.type === "coreArxivPdfFallbackImport") {
+    const result = await importArxivPdfFallback({
+      root: command.root,
+      request: command.request,
+      transport: arxivTransportFor(command.baseUrl, pdf.signal),
+      config: pdf.config,
+      confirmUpload: pdf.confirmUpload,
+      signal: pdf.signal,
+      ...(fixtureGate(command.baseUrl) ? { allowFixtureLoopback: true } : {}),
+    });
+    return result.outcome === "candidate"
+      ? { ...result, candidate: candidateSummary(result.candidate) }
+      : result;
+  }
   if (command.type === "corePdfImport") {
     return importPdfToCurrent({
       ...base,
