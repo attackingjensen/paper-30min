@@ -12,7 +12,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dispatchCoreCommand } from "../src/main/core-commands";
+import { dispatchCoreCommand, isCoreCommand } from "../src/main/core-commands";
 import {
   createProject,
   openProject,
@@ -27,10 +27,7 @@ import type {
   ProjectRevisionRecord,
 } from "../src/shared/contracts";
 import type { PdfParseTaskRecord } from "../src/shared/parsing";
-import type {
-  PdfSourceEvidenceRecord,
-  VerificationRecord,
-} from "../src/shared/verification";
+import type { VerificationRecord } from "../src/shared/verification";
 import type { DocumentTree } from "../src/shared/document/tree";
 import { projectSentenceText } from "../src/shared/document/anchor";
 
@@ -289,7 +286,7 @@ test("pdf-import corePdfVerify / corePdfReadVerification：显式确认建立核
     anchor,
     actor: { kind: "user", confirmed: true },
   }) as VerificationRecord;
-  expect(record.validity).toBe("verified");
+  expect(record.coverage.every((entry) => entry.validity === "verified")).toBe(true);
   expect(record.pdfSnapshotId).toBeDefined();
   const records = await dispatchCoreCommand({
     type: "corePdfReadVerification",
@@ -300,29 +297,25 @@ test("pdf-import corePdfVerify / corePdfReadVerification：显式确认建立核
   expect(records[0].verificationId).toBe(record.verificationId);
 });
 
-test("pdf-import corePdfEvidence：登记来源读取证据，越界页码拒绝", async () => {
-  const { snapshot } = await seedPublished();
-  await expect(dispatchCoreCommand({
+test("pdf-import 命令面不再接受来源证据登记：corePdfEvidence 被拒绝且不写证据", async () => {
+  await seedPublished();
+  const command = {
     type: "corePdfEvidence",
     root,
-    pdfSnapshotId: snapshot.sourceSnapshotId,
-    pages: [3],
+    pdfSnapshotId: randomUUID(),
+    pages: [1],
     sessionId: "session-1",
     taskId: "task-1",
     contentSha256: "a".repeat(64),
-  })).rejects.toThrow(/页码/);
-
-  const evidence = await dispatchCoreCommand({
-    type: "corePdfEvidence",
-    root,
-    pdfSnapshotId: snapshot.sourceSnapshotId,
-    pages: [2, 1],
-    sessionId: "session-1",
-    taskId: "task-1",
-    contentSha256: "a".repeat(64),
-  }) as PdfSourceEvidenceRecord;
-  expect(evidence.pages).toEqual([1, 2]);
-  expect(evidence.pdfSnapshotId).toBe(snapshot.sourceSnapshotId);
+  };
+  expect(isCoreCommand(command)).toBe(false);
+  await expect(dispatchCoreCommand(command as never)).rejects.toThrow();
+  const evidenceDir = path.join(root, ".paper30min", "pdf-evidence");
+  const entries = await fs.readdir(evidenceDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  expect(entries).toEqual([]);
 });
 
 test("pdf-import corePdfStop：无活动任务时返回 false，不触碰任务记录", async () => {

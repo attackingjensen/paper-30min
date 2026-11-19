@@ -121,7 +121,18 @@ async function continueToCandidate(
       await saveTask(root, task);
       return { outcome: "stopped", task };
     }
-    throw error;
+    // 非中止失败落为 failed＋稳定诊断（SPEC §3/§5）：任务不再永久 converting，
+    // 不阻塞新任务；已发布解析快照保留，修复后可离线重新转换或恢复重建候选。
+    const diagnostic: ImportDiagnostic = {
+      code: "pdf-convert-failed",
+      severity: "fatal",
+      stage: "convert",
+      messageKey: "pdf.convert.failed",
+    };
+    task.phase = "failed";
+    task.diagnostic = diagnostic;
+    await saveTask(root, task);
+    return { outcome: "incomplete", task, diagnostic };
   }
   task.candidateRevisionId = merged.candidate.revisionId;
   task.phase = "candidate-complete";
@@ -166,11 +177,8 @@ export async function reparsePdfToCandidate(input: {
       return { outcome: "incomplete", task: started.task, diagnostic: started.task.diagnostic! };
     // 候选身份在任务受理后固定；恢复沿用同一候选，不重新分配。
     if (started.task.candidateRevisionId === undefined) {
-      const identity = createHash("sha256")
-        .update(`${started.task.parseBatchId}:${input.baseRevision}`)
-        .digest("hex");
       started.task.candidateRevisionId =
-        `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(12, 15)}-8${identity.slice(15, 18)}-${identity.slice(18, 30)}`;
+        candidateIdentity(`${started.task.parseBatchId}:${input.baseRevision}`);
       await saveTask(opened.root, started.task);
     }
     const options: ReparseContinueOptions = {
@@ -371,13 +379,16 @@ export async function resumePdfImport(input: {
   });
 }
 
+/** 确定性 UUID 派生：同一输入沿用同一候选身份（v4 形状，非随机）。 */
+function candidateIdentity(seed: string): string {
+  const identity = createHash("sha256").update(seed).digest("hex");
+  return `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(12, 15)}-8${identity.slice(15, 18)}-${identity.slice(18, 30)}`;
+}
+
 /** 候选身份按批次与本次基线确定性派生：同一基线重转换沿用同一候选，
  * 不复用首次导入的 revisionId（changeset 禁止 baseRevision 与 revisionId 相同）。 */
 function reconvertIdentity(parseBatchId: string, baseRevision: string): string {
-  const identity = createHash("sha256")
-    .update(`reconvert:${parseBatchId}:${baseRevision}`)
-    .digest("hex");
-  return `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(12, 15)}-8${identity.slice(15, 18)}-${identity.slice(18, 30)}`;
+  return candidateIdentity(`reconvert:${parseBatchId}:${baseRevision}`);
 }
 
 /** 离线重新转换（SPEC §8.4）：复用已发布解析快照形成三方合并候选，

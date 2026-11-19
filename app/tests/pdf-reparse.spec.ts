@@ -632,7 +632,7 @@ test("pdf-import 新 PDF 更新：形成候选不覆盖 current，内容改变�
   expect(await currentRevisionId()).toBe(published.revisionId);
   const inherited = await readVerificationRecords(root, published.revisionId);
   expect(inherited).toHaveLength(1);
-  expect(inherited[0].validity).toBe("modified-unreviewed");
+  expect(inherited[0].coverage.every((entry) => entry.validity === "modified-unreviewed")).toBe(true);
   expect(inherited[0].pdfSourceChanged).toBe(true);
   expect(inherited[0].verifiedRevisionId).toBe(first.revision.revisionId);
   expect(inherited[0].pdfSnapshotId).toBe(sourceSnapshotId);
@@ -690,7 +690,7 @@ test("pdf-import 新 PDF 更新：内容未变节点保留历史来源核验，�
   expect(inherited).toHaveLength(2);
   const bySentence = new Map(inherited.map((record) => [
     record.anchor.kind === "sentence" ? record.anchor.sentenceId : null,
-    record.validity,
+    record.coverage.find((entry) => entry.nodeType === "sentence")?.validity,
   ]));
   expect(bySentence.get(firstSentence)).toBe("historical-source");
   expect(bySentence.get(secondSentence)).toBe("removed");
@@ -724,7 +724,11 @@ test("pdf-import 重解析：PDF 快照缺失时不发起上传，current 保持
 test("pdf-import 重解析：解析结果无可读正文时保留快照与诊断，不形成候选", async () => {
   const counts: ControlledCounts = { posts: 0, queries: 0, downloads: 0 };
   const endpoint = await controlledParseService(
-    [() => parseResponse("Second page text"), () => jsonl([row([vendorPage([]), vendorPage([])])])],
+    [
+      () => parseResponse("Second page text"),
+      () => jsonl([row([vendorPage([]), vendorPage([])])]),
+      () => parseResponse("Second page text v2"),
+    ],
     counts,
   );
   const first = await importPdfToCurrent({
@@ -736,16 +740,38 @@ test("pdf-import 重解析：解析结果无可读正文时保留快照与诊断
   expect(first.outcome).toBe("published");
   if (first.outcome !== "published") throw new Error("import did not publish");
 
-  await expect(reparsePdfToCandidate({
+  const failed = await reparsePdfToCandidate({
     root,
     sourceSnapshotId,
     baseRevision: first.revision.revisionId,
     config: config(endpoint),
     confirmUpload: async () => true,
-  })).rejects.toThrow(/bodyEmpty|正文/);
+  });
+  expect(failed.outcome).toBe("incomplete");
+  if (failed.outcome !== "incomplete") throw new Error("expected incomplete reparse");
+  expect(failed.diagnostic).toMatchObject({
+    code: "pdf-convert-failed",
+    severity: "fatal",
+    stage: "convert",
+    messageKey: "pdf.convert.failed",
+  });
+  expect(failed.task.phase).toBe("failed");
+  const persisted = await readTaskRecord(failed.task.parseBatchId);
+  expect(persisted.phase).toBe("failed");
+  expect(persisted.diagnostic).toEqual(failed.diagnostic);
   expect(await currentRevisionId()).toBe(first.revision.revisionId);
   // 解析快照已去敏发布并保留，可供修复后离线重新转换。
   expect((await parseSnapshots()).length).toBe(2);
+  // 失败任务不永久阻塞：用户可以显式发起新的云端任务。
+  const retry = await reparsePdfToCandidate({
+    root,
+    sourceSnapshotId,
+    baseRevision: first.revision.revisionId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  });
+  expect(retry.outcome).toBe("candidate");
+  expect(counts.posts).toBe(3);
 });
 
 test("pdf-import 重解析：存在未结束任务时拒绝新建云端任务", async () => {

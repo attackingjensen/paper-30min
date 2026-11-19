@@ -319,3 +319,103 @@ test("document-core 重解析句子数量变化按拆分合并处理：旧句子
   expect(result.changeset.changes.filter((entry) =>
     entry.nodeType === "sentence" && entry.status === "added")).toHaveLength(2);
 });
+
+/** 重建 unit 的句子列表为新 UUID 句子（确定性重转换形状）。 */
+function reissueSentences(tree: DocumentTree, unitId: string, texts: string[]): string[] {
+  const ids = texts.map(() => randomUUID());
+  for (const oldId of tree.units[unitId].sentenceIds) delete tree.sentences[oldId];
+  texts.forEach((text, index) => {
+    tree.sentences[ids[index]] = {
+      id: ids[index],
+      unitId,
+      content: [{ kind: "text", text }],
+    };
+  });
+  tree.units[unitId].sentenceIds = ids;
+  return ids;
+}
+
+test("document-core 等长 split+merge 不串旧 ID：两句变两句但边界重组按 tombstone 处理", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Alpha one. Beta", "two. Gamma three."]);
+  const current = structuredClone(base);
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  // 等长但边界重组：候选第一句＝base 两句投影的精确拼接，第二句＝全新文本；
+  // 两句对两句，位置延续必须被拒绝，旧句 tombstone、新句 added。
+  const newIds = reissueSentences(candidate, selectionIds.secondUnit, [
+    "Alpha one. Betatwo. Gamma three.",
+    "Fresh inserted sentence.",
+  ]);
+
+  const result = merge(base, current, candidate);
+
+  const oldIds = base.units[selectionIds.secondUnit].sentenceIds;
+  for (const oldId of oldIds) {
+    expect(result.changeset.changes.find((entry) =>
+      entry.nodeType === "sentence" && entry.nodeId === oldId)?.status).toBe("removed");
+    expect(result.document.sentences[oldId]).toBeUndefined();
+  }
+  expect(result.changeset.changes.filter((entry) =>
+    entry.nodeType === "sentence" && entry.status === "added")).toHaveLength(2);
+  for (const newId of newIds)
+    expect(result.document.sentences[newId]).toBeDefined();
+  expect(result.tombstones.some((entry) =>
+    entry.nodeType === "sentence" && oldIds.includes(entry.nodeId))).toBe(true);
+});
+
+test("document-core 删除＋插入同数量不串旧 ID：无边界证据的位置延续被拒绝", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Keep me.", "Delete me."]);
+  const current = structuredClone(base);
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  // 数量不变：删一句、插一句；保留句经内容证据延续，被删句 tombstone。
+  const [keptOld, deletedOld] = base.units[selectionIds.secondUnit].sentenceIds;
+  const newIds = reissueSentences(candidate, selectionIds.secondUnit, [
+    "Keep me.",
+    "Inserted sentence.",
+  ]);
+
+  const result = merge(base, current, candidate);
+
+  expect(result.document.sentences[keptOld]).toBeDefined();
+  expect(projectSentenceText(result.document, keptOld)).toBe("Keep me.");
+  expect(result.changeset.changes.find((entry) =>
+    entry.nodeType === "sentence" && entry.nodeId === deletedOld)?.status).toBe("removed");
+  expect(result.document.sentences[deletedOld]).toBeUndefined();
+  expect(result.changeset.changes.filter((entry) =>
+    entry.nodeType === "sentence" && entry.status === "added")).toHaveLength(1);
+  expect(result.document.sentences[newIds[1]]).toBeDefined();
+  expect(projectSentenceText(result.document, newIds[1])).toBe("Inserted sentence.");
+});
+
+test("document-core 相邻 unchanged anchor 证明的 1:1 位置延续仍然成立", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Anchor head.", "Middle old.", "Anchor tail."]);
+  const current = structuredClone(base);
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const [head, , tail] = base.units[selectionIds.secondUnit].sentenceIds;
+  const middleNew = randomUUID();
+  const baseOrder = base.units[selectionIds.secondUnit].sentenceIds;
+  delete candidate.sentences[baseOrder[1]];
+  candidate.sentences[middleNew] = {
+    id: middleNew,
+    unitId: selectionIds.secondUnit,
+    content: [{ kind: "text", text: "Middle revised." }],
+  };
+  candidate.units[selectionIds.secondUnit].sentenceIds = [head, middleNew, tail];
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  expect(projectSentenceText(result.document, baseOrder[1])).toBe("Middle revised.");
+  expect(result.changeset.changes.find((entry) =>
+    entry.nodeType === "sentence" && entry.nodeId === baseOrder[1])?.status).toBe("changed");
+  expect(result.changeset.changes.some((entry) =>
+    entry.nodeType === "sentence" && entry.status === "added")).toBe(false);
+});

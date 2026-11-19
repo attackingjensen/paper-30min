@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
+import { PNG } from "pngjs";
 import {
   documentAnchorDependencies,
   createRangeAnchor,
@@ -31,9 +32,11 @@ import { snapshotLocalPdf } from "../src/main/pdf/snapshot";
 import {
   createVerification,
   readVerificationRecords,
-  recordPdfSourceEvidence,
+  recordReadPdfEvidence,
   resolveVerificationCoverage,
 } from "../src/main/pdf/verification";
+import { createPdfTools } from "../src/main/pdf-tools";
+import { ProjectService } from "../src/main/project-service";
 import {
   createDocumentMergeCandidate,
   publishDocumentMergeCandidate,
@@ -47,32 +50,43 @@ const PARSE_A = "33333333-3333-4333-8333-333333333333";
 const REV_A = "44444444-4444-4444-8444-444444444444";
 const DIGEST = "a".repeat(64);
 
-function coverageOf(tree: DocumentTree, anchor: DocumentAnchor): VerificationCoverageEntry[] {
+function coverageOf(
+  tree: DocumentTree,
+  anchor: DocumentAnchor,
+  validity: VerificationCoverageEntry["validity"] = "verified",
+): VerificationCoverageEntry[] {
   return documentAnchorDependencies(tree, anchor).map((dependency) => ({
     nodeType: dependency.nodeType,
     nodeId: dependency.nodeId,
     contentSha256: DIGEST,
     quote: "fixture quote",
+    validity,
   }));
 }
 
 function makeRecord(
   tree: DocumentTree,
   anchor: DocumentAnchor,
-  overrides: Partial<VerificationRecord> = {},
+  overrides: Partial<VerificationRecord> & { validity?: VerificationCoverageEntry["validity"] } = {},
 ): VerificationRecord {
+  const { validity, ...rest } = overrides;
   return {
     verificationId: randomUUID(),
     verifiedRevisionId: REV_A,
     anchor,
-    coverage: coverageOf(tree, anchor),
+    coverage: coverageOf(tree, anchor, validity),
     pdfSnapshotId: PDF_A,
     parseSnapshotId: PARSE_A,
     actor: { kind: "user", confirmed: true },
     createdAt: "2026-11-17T00:00:00.000Z",
-    validity: "verified",
-    ...overrides,
+    ...rest,
   };
+}
+
+function entryOf(record: VerificationRecord, nodeId: string): VerificationCoverageEntry {
+  const entry = record.coverage.find((candidate) => candidate.nodeId === nodeId);
+  if (!entry) throw new Error(`coverage 缺少节点 ${nodeId}`);
+  return entry;
 }
 
 function unitAnchor(): DocumentAnchor {
@@ -122,7 +136,7 @@ test("pdf-verification 继承：同一 PDF 内容不变的 retained/moved 保持
     currentPdfSnapshotId: PDF_A,
   });
   expect(inherited).toHaveLength(1);
-  expect(inherited[0].validity).toBe("verified");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("verified");
   expect(inherited[0].verifiedRevisionId).toBe(REV_A);
   expect(inherited[0].pdfSnapshotId).toBe(PDF_A);
   expect(inherited[0].parseSnapshotId).toBe(PARSE_A);
@@ -138,9 +152,12 @@ test("pdf-verification 继承：同一 PDF 内容改变成为 modified-unreviewe
     changeset: changesetFrom(base, changedTree(base)),
     currentPdfSnapshotId: PDF_A,
   });
-  expect(inherited[0].validity).toBe("modified-unreviewed");
+  expect(entryOf(inherited[0], selectionIds.sentence).validity).toBe("modified-unreviewed");
+  expect(entryOf(inherited[0], selectionIds.sentence).contentSha256)
+    .toBe(entryOf(record, selectionIds.sentence).contentSha256);
+  expect(entryOf(inherited[0], selectionIds.sentence).quote)
+    .toBe(entryOf(record, selectionIds.sentence).quote);
   expect(inherited[0].verifiedRevisionId).toBe(REV_A);
-  expect(inherited[0].coverage).toEqual(record.coverage);
   expect(inherited[0].pdfSourceChanged).toBeUndefined();
 });
 
@@ -152,7 +169,7 @@ test("pdf-verification 继承：不同 PDF 内容未变成为 historical-source 
     changeset: changesetFrom(base, movedTree(base)),
     currentPdfSnapshotId: PDF_B,
   });
-  expect(inherited[0].validity).toBe("historical-source");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("historical-source");
   expect(inherited[0].pdfSourceChanged).toBe(true);
   expect(inherited[0].verifiedRevisionId).toBe(REV_A);
   expect(inherited[0].pdfSnapshotId).toBe(PDF_A);
@@ -166,11 +183,11 @@ test("pdf-verification 继承：不同 PDF 且内容改变同时表达修改与�
     changeset: changesetFrom(base, changedTree(base)),
     currentPdfSnapshotId: PDF_B,
   });
-  expect(inherited[0].validity).toBe("modified-unreviewed");
+  expect(entryOf(inherited[0], selectionIds.sentence).validity).toBe("modified-unreviewed");
   expect(inherited[0].pdfSourceChanged).toBe(true);
 });
 
-test("pdf-verification 继承：删除节点使旧记录 removed，新增节点没有旧核验", () => {
+test("pdf-verification 继承：删除节点使对应 coverage removed，新增节点没有旧核验", () => {
   const base = testSelectionTree(randomUUID());
   const record = makeRecord(base, { kind: "unit", unitId: selectionIds.secondUnit });
   const current = treeWithoutSecondUnit(base);
@@ -179,13 +196,55 @@ test("pdf-verification 继承：删除节点使旧记录 removed，新增节点�
     changeset: changesetFrom(base, current),
     currentPdfSnapshotId: PDF_A,
   });
-  expect(inherited[0].validity).toBe("removed");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("removed");
   const summary = summarizeVerification(current, inherited);
   expect(summary.counts.unrecorded).toBe(
     Object.keys(current.sections).length + Object.keys(current.units).length +
     Object.keys(current.sentences).length + Object.keys(current.atoms).length +
     current.blocks.length,
   );
+});
+
+test("pdf-verification 继承：section 内一兄弟句子改变另一不变，逐节点分别降级", () => {
+  const base = testSelectionTree(randomUUID());
+  const record = makeRecord(base, { kind: "section", sectionId: selectionIds.section });
+  const current = changedTree(base);
+  const inherited = inheritVerificationRecords({
+    records: [record],
+    changeset: changesetFrom(base, current),
+    currentPdfSnapshotId: PDF_A,
+  });
+  expect(entryOf(inherited[0], selectionIds.sentence).validity).toBe("modified-unreviewed");
+  expect(entryOf(inherited[0], selectionIds.secondSentence).validity).toBe("verified");
+  expect(entryOf(inherited[0], selectionIds.thirdSentence).validity).toBe("verified");
+  expect(entryOf(inherited[0], selectionIds.secondUnit).validity).toBe("verified");
+  const summary = summarizeVerification(current, inherited);
+  const statusOf = (nodeId: string) =>
+    summary.nodes.find((node) => node.nodeId === nodeId)?.status;
+  expect(statusOf(selectionIds.sentence)).toBe("modified-unreviewed");
+  expect(statusOf(selectionIds.secondSentence)).toBe("verified");
+  expect(statusOf(selectionIds.thirdSentence)).toBe("verified");
+});
+
+test("pdf-verification 继承：section 部分删除只 tombstone 被删节点，存活节点保留核验", () => {
+  const base = testSelectionTree(randomUUID());
+  const record = makeRecord(base, { kind: "section", sectionId: selectionIds.section });
+  const current = treeWithoutSecondUnit(base);
+  const inherited = inheritVerificationRecords({
+    records: [record],
+    changeset: changesetFrom(base, current),
+    currentPdfSnapshotId: PDF_A,
+  });
+  for (const nodeId of [selectionIds.secondUnit, selectionIds.thirdSentence, selectionIds.secondBlock])
+    expect(entryOf(inherited[0], nodeId).validity).toBe("removed");
+  for (const nodeId of [selectionIds.unit, selectionIds.sentence, selectionIds.secondSentence, selectionIds.atom])
+    expect(entryOf(inherited[0], nodeId).validity).toBe("verified");
+  const summary = summarizeVerification(current, inherited);
+  const statusOf = (nodeId: string) =>
+    summary.nodes.find((node) => node.nodeId === nodeId)?.status;
+  expect(statusOf(selectionIds.unit)).toBe("verified");
+  expect(statusOf(selectionIds.sentence)).toBe("verified");
+  expect(statusOf(selectionIds.secondSentence)).toBe("verified");
 });
 
 test("pdf-verification 继承：modified-unreviewed 与 historical-source 不因内容不变自动恢复", () => {
@@ -200,8 +259,8 @@ test("pdf-verification 继承：modified-unreviewed 与 historical-source 不因
     changeset: changesetFrom(base, movedTree(base)),
     currentPdfSnapshotId: PDF_B,
   });
-  expect(inherited[0].validity).toBe("modified-unreviewed");
-  expect(inherited[1].validity).toBe("historical-source");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("modified-unreviewed");
+  for (const entry of inherited[1].coverage) expect(entry.validity).toBe("historical-source");
 });
 
 test("pdf-verification 继承：removed 记录保持 removed，不重新挂回留存节点", () => {
@@ -212,7 +271,7 @@ test("pdf-verification 继承：removed 记录保持 removed，不重新挂回�
     changeset: changesetFrom(base, movedTree(base)),
     currentPdfSnapshotId: PDF_A,
   });
-  expect(inherited[0].validity).toBe("removed");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("removed");
 });
 
 test("pdf-verification 继承：coverage 节点不在 changeset 中时保守判为 removed", () => {
@@ -235,7 +294,7 @@ test("pdf-verification 继承：coverage 节点不在 changeset 中时保守判�
     changeset: changesetFrom(foreign, foreignMoved),
     currentPdfSnapshotId: PDF_A,
   });
-  expect(inherited[0].validity).toBe("removed");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("removed");
 });
 
 test("pdf-verification 摘要：按当前有效记录聚合四态，不产生质量分数", () => {
@@ -299,7 +358,13 @@ test("pdf-verification 侧车 schema：拒绝坏格式、revisionId 不符与重
     revisionId,
   )).toThrow();
   expect(() => parseVerificationSidecar(
-    { ...sidecar, records: [{ ...record, validity: "excellent" }] },
+    {
+      ...sidecar,
+      records: [{
+        ...record,
+        coverage: record.coverage.map((entry) => ({ ...entry, validity: "excellent" })),
+      }],
+    },
     revisionId,
   )).toThrow();
 });
@@ -429,7 +494,7 @@ test("pdf-verification 用户核验：section 展开固定当时节点，侧车�
     anchor: { kind: "section", sectionId: selectionIds.section },
     actor: USER,
   });
-  expect(record.validity).toBe("verified");
+  for (const entry of record.coverage) expect(entry.validity).toBe("verified");
   expect(record.verifiedRevisionId).toBe(revision.revisionId);
   expect(record.actor).toEqual({ kind: "user", confirmed: true });
   const covered = new Set(record.coverage.map((entry) => entry.nodeId));
@@ -524,21 +589,22 @@ test("pdf-verification 用户核验：range 锚点固定 sentence range 与精�
 test("pdf-verification Agent 核验：主进程来源证据覆盖请求页时建立记录", async () => {
   const base = withAliases(testSelectionTree(randomUUID()));
   const { root, pdf, revision } = await pdfProject("Agent 证据", base);
-  const evidence = await recordPdfSourceEvidence({
+  const evidence = await recordReadPdfEvidence({
     root,
-    pdfSnapshotId: pdf.sourceSnapshotId,
-    pages: [1],
+    pdfSha256: pdf.sha256,
+    page: 1,
+    png: Buffer.from("rendered-page-1"),
     sessionId: "session-1",
     taskId: "task-1",
-    contentSha256: sha256("rendered-page-1"),
   });
+  if (!evidence) throw new Error("真实读取路径未签发证据");
   const record = await createVerification({
     root,
     expectedRevisionId: revision.revisionId,
     anchor: unitAnchor(),
     actor: { kind: "agent", sessionId: "session-1", taskId: "task-1", evidenceIds: [evidence.evidenceId] },
   });
-  expect(record.validity).toBe("verified");
+  for (const entry of record.coverage) expect(entry.validity).toBe("verified");
   expect(record.actor).toEqual({
     kind: "agent",
     sessionId: "session-1",
@@ -564,36 +630,48 @@ test("pdf-verification Agent 核验：无证据、页不足、session/task 不�
   await expect(attempt([])).rejects.toThrow(/证据/);
   await expect(attempt([randomUUID()])).rejects.toThrow(/不存在/);
 
-  const insufficient = await recordPdfSourceEvidence({
+  const insufficient = await recordReadPdfEvidence({
     root,
-    pdfSnapshotId: pdf.sourceSnapshotId,
-    pages: [1],
+    pdfSha256: pdf.sha256,
+    page: 1,
+    png: Buffer.from("page-1"),
     sessionId: "session-1",
     taskId: "task-1",
-    contentSha256: sha256("page-1"),
   });
+  if (!insufficient) throw new Error("真实读取路径未签发证据");
   await expect(attempt([insufficient.evidenceId])).rejects.toThrow(/覆盖/);
 
-  const wrongSession = await recordPdfSourceEvidence({
+  const wrongSessionPage1 = await recordReadPdfEvidence({
     root,
-    pdfSnapshotId: pdf.sourceSnapshotId,
-    pages: [1, 2],
+    pdfSha256: pdf.sha256,
+    page: 1,
+    png: Buffer.from("pages-1"),
     sessionId: "other-session",
     taskId: "task-1",
-    contentSha256: sha256("pages"),
   });
-  await expect(attempt([wrongSession.evidenceId])).rejects.toThrow(/session|task/);
+  const wrongSessionPage2 = await recordReadPdfEvidence({
+    root,
+    pdfSha256: pdf.sha256,
+    page: 2,
+    png: Buffer.from("pages-2"),
+    sessionId: "other-session",
+    taskId: "task-1",
+  });
+  if (!wrongSessionPage1 || !wrongSessionPage2) throw new Error("真实读取路径未签发证据");
+  await expect(attempt([wrongSessionPage1.evidenceId, wrongSessionPage2.evidenceId]))
+    .rejects.toThrow(/session|task/);
 
   const otherPdf = await snapshotLocalPdf({ root, source: OTHER_PDF });
   if (!otherPdf.ok) throw new Error("second PDF snapshot failed");
-  const wrongSource = await recordPdfSourceEvidence({
+  const wrongSource = await recordReadPdfEvidence({
     root,
-    pdfSnapshotId: otherPdf.snapshot.sourceSnapshotId,
-    pages: [1],
+    pdfSha256: otherPdf.snapshot.sha256,
+    page: 1,
+    png: Buffer.from("other-pdf"),
     sessionId: "session-1",
     taskId: "task-1",
-    contentSha256: sha256("other-pdf"),
   });
+  if (!wrongSource) throw new Error("真实读取路径未签发证据");
   await expect(attempt([wrongSource.evidenceId])).rejects.toThrow(/快照/);
   expect(await readVerificationRecords(root, revision.revisionId)).toEqual([]);
 });
@@ -601,19 +679,33 @@ test("pdf-verification Agent 核验：无证据、页不足、session/task 不�
 test("pdf-verification Agent 核验：范围没有页级来源事实时拒绝，用户核验不受影响", async () => {
   const base = testSelectionTree(randomUUID());
   const { root, pdf, revision } = await pdfProject("无页级来源", base);
-  const evidence = await recordPdfSourceEvidence({
+  const evidencePage1 = await recordReadPdfEvidence({
     root,
-    pdfSnapshotId: pdf.sourceSnapshotId,
-    pages: [1, 2],
+    pdfSha256: pdf.sha256,
+    page: 1,
+    png: Buffer.from("pages-1"),
     sessionId: "session-1",
     taskId: "task-1",
-    contentSha256: sha256("pages"),
   });
+  const evidencePage2 = await recordReadPdfEvidence({
+    root,
+    pdfSha256: pdf.sha256,
+    page: 2,
+    png: Buffer.from("pages-2"),
+    sessionId: "session-1",
+    taskId: "task-1",
+  });
+  if (!evidencePage1 || !evidencePage2) throw new Error("真实读取路径未签发证据");
   await expect(createVerification({
     root,
     expectedRevisionId: revision.revisionId,
     anchor: unitAnchor(),
-    actor: { kind: "agent", sessionId: "session-1", taskId: "task-1", evidenceIds: [evidence.evidenceId] },
+    actor: {
+      kind: "agent",
+      sessionId: "session-1",
+      taskId: "task-1",
+      evidenceIds: [evidencePage1.evidenceId, evidencePage2.evidenceId],
+    },
   })).rejects.toThrow(/页级/);
   const user = await createVerification({
     root,
@@ -621,43 +713,101 @@ test("pdf-verification Agent 核验：范围没有页级来源事实时拒绝，
     anchor: unitAnchor(),
     actor: USER,
   });
-  expect(user.validity).toBe("verified");
+  for (const entry of user.coverage) expect(entry.validity).toBe("verified");
 });
 
-test("pdf-verification 证据登记：绑定快照/页/session/task 与内容摘要，拒绝无效页码", async () => {
+test("pdf-verification 证据签发：绑定快照/页/session/task 与实际 PNG 摘要，无快照不签发", async () => {
   const base = testSelectionTree(randomUUID());
   const { root, pdf } = await pdfProject("证据契约", base);
-  const evidence = await recordPdfSourceEvidence({
+  const png = PNG.sync.write(new PNG({ width: 2, height: 2 }));
+  const evidence = await recordReadPdfEvidence({
     root,
-    pdfSnapshotId: pdf.sourceSnapshotId,
-    pages: [2, 1, 2],
+    pdfSha256: pdf.sha256,
+    page: 2,
+    png,
     sessionId: "session-1",
     taskId: "task-1",
-    contentSha256: sha256("rendered-pages"),
   });
-  expect(evidence.pages).toEqual([1, 2]);
+  if (!evidence) throw new Error("真实读取路径未签发证据");
+  expect(evidence.pages).toEqual([2]);
   expect(evidence.pdfSnapshotId).toBe(pdf.sourceSnapshotId);
+  expect(evidence.contentSha256).toBe(sha256(png));
   const file = path.join(root, ".paper30min", "pdf-evidence", `${evidence.evidenceId}.json`);
   const persisted = parsePdfSourceEvidence(JSON.parse(await fs.readFile(file, "utf8")));
   expect(persisted).toEqual(evidence);
-  for (const pages of [[], [0], [3], [1.5]]) {
-    await expect(recordPdfSourceEvidence({
-      root,
-      pdfSnapshotId: pdf.sourceSnapshotId,
-      pages,
-      sessionId: "session-1",
-      taskId: "task-1",
-      contentSha256: sha256("bad-pages"),
-    })).rejects.toThrow(/页/);
-  }
-  await expect(recordPdfSourceEvidence({
+  // 文件摘要不对应任何已发布 PDF 快照：不签发证据。
+  expect(await recordReadPdfEvidence({
     root,
-    pdfSnapshotId: pdf.sourceSnapshotId,
-    pages: [1],
-    sessionId: "",
+    pdfSha256: sha256("not-a-snapshot"),
+    page: 1,
+    png,
+    sessionId: "session-1",
     taskId: "task-1",
-    contentSha256: sha256("no-session"),
-  })).rejects.toThrow(/session|task/);
+  })).toBeNull();
+  // 页码超出快照页数：拒绝签发。
+  await expect(recordReadPdfEvidence({
+    root,
+    pdfSha256: pdf.sha256,
+    page: pdf.pageCount + 1,
+    png,
+    sessionId: "session-1",
+    taskId: "task-1",
+  })).rejects.toThrow(/页/);
+});
+
+test("pdf-verification read_pdf 真实渲染签发证据：摘要等于实际 PNG，未登记快照不签发", async () => {
+  const base = withAliases(testSelectionTree(randomUUID()));
+  const { root, pdf, revision } = await pdfProject("readpdf 证据", base);
+  await fs.mkdir(path.join(root, "text"), { recursive: true });
+  await fs.copyFile(SAMPLE, path.join(root, "text", "paper.pdf"));
+  const service = new ProjectService(path.join(sandbox, "readpdf-config.json"));
+  try {
+    const tool = createPdfTools(root, service, true, () => true, { sessionId: "session-live" })[0];
+    const result = await tool.execute(
+      "call-1",
+      { path: "text/paper.pdf", page: 1 },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    const info = JSON.parse((result.content[0] as { text: string }).text);
+    expect(info.evidenceId).toMatch(/^[0-9a-f-]{36}$/);
+    const png = Buffer.from((result.content[1] as { data: string }).data, "base64");
+    const evidenceFile = path.join(root, ".paper30min", "pdf-evidence", `${info.evidenceId}.json`);
+    const evidence = parsePdfSourceEvidence(JSON.parse(await fs.readFile(evidenceFile, "utf8")));
+    expect(evidence.contentSha256).toBe(sha256(png));
+    expect(evidence.pages).toEqual([1]);
+    expect(evidence.pdfSnapshotId).toBe(pdf.sourceSnapshotId);
+    expect(evidence.sessionId).toBe("session-live");
+    expect(evidence.taskId).toBe("call-1");
+    const record = await createVerification({
+      root,
+      expectedRevisionId: revision.revisionId,
+      anchor: unitAnchor(),
+      actor: {
+        kind: "agent",
+        sessionId: "session-live",
+        taskId: "call-1",
+        evidenceIds: [info.evidenceId],
+      },
+    });
+    for (const entry of record.coverage) expect(entry.validity).toBe("verified");
+
+    // 未登记为来源快照的 PDF：读取仍成功，但不签发证据。
+    await fs.copyFile(OTHER_PDF, path.join(root, "text", "other.pdf"));
+    const other = await tool.execute(
+      "call-2",
+      { path: "text/other.pdf", page: 1 },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    const otherInfo = JSON.parse((other.content[0] as { text: string }).text);
+    expect(otherInfo.evidenceId).toBeUndefined();
+    expect(other.content.some((item) => item.type === "image")).toBe(true);
+  } finally {
+    await service.close();
+  }
 });
 
 test("pdf-verification 继承接线：merge 发布修改已核验正文后标为 modified-unreviewed", async () => {
@@ -678,11 +828,12 @@ test("pdf-verification 继承接线：merge 发布修改已核验正文后标为
   const second = await publishDocumentMergeCandidate(candidate);
   const inherited = await readVerificationRecords(root, second.revisionId);
   expect(inherited).toHaveLength(1);
-  expect(inherited[0].validity).toBe("modified-unreviewed");
+  expect(entryOf(inherited[0], selectionIds.sentence).validity).toBe("modified-unreviewed");
   expect(inherited[0].verifiedRevisionId).toBe(first.revisionId);
-  expect(inherited[0].coverage).toEqual(record.coverage);
+  expect(inherited[0].coverage.map(({ validity: _validity, ...rest }) => rest))
+    .toEqual(record.coverage.map(({ validity: _validity, ...rest }) => rest));
   const old = await readVerificationRecords(root, first.revisionId);
-  expect(old[0].validity).toBe("verified");
+  for (const entry of old[0].coverage) expect(entry.validity).toBe("verified");
   const tree = await readRevisionDocument(root, second.revisionId, "document");
   const summary = summarizeVerification(tree, inherited);
   expect(summary.nodes.find((node) => node.nodeId === selectionIds.sentence)?.status)
@@ -706,7 +857,7 @@ test("pdf-verification 继承接线：coreCommit 内容不变的移动保留 ver
     base,
   );
   const inherited = await readVerificationRecords(root, second.revisionId);
-  expect(inherited[0].validity).toBe("verified");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("verified");
   expect(inherited[0].pdfSourceChanged).toBeUndefined();
 });
 
@@ -729,7 +880,7 @@ test("pdf-verification 继承接线：拆分删除进入 tombstone 与 removed�
   });
   const second = await publishDocumentMergeCandidate(candidate);
   const inherited = await readVerificationRecords(root, second.revisionId);
-  expect(inherited[0].validity).toBe("removed");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("removed");
   const tombstones = await readRevisionTombstones(root, second.revisionId);
   expect(tombstones.some((entry) => entry.nodeId === selectionIds.secondUnit)).toBe(true);
   const tree = await readRevisionDocument(root, second.revisionId, "document");
@@ -757,7 +908,7 @@ test("pdf-verification 继承接线：旧 section 核验不覆盖后加入的节
     base,
   );
   const inherited = await readVerificationRecords(root, second.revisionId);
-  expect(inherited[0].validity).toBe("modified-unreviewed");
+  expect(entryOf(inherited[0], selectionIds.section).validity).toBe("modified-unreviewed");
   const tree = await readRevisionDocument(root, second.revisionId, "document");
   const summary = summarizeVerification(tree, inherited);
   for (const nodeId of [added.unitId, added.sentenceId, added.blockId])
@@ -806,7 +957,7 @@ test("pdf-verification 继承接线：同 PDF 新解析快照内容不变保持 
     base,
   );
   const inherited = await readVerificationRecords(root, second.revisionId);
-  expect(inherited[0].validity).toBe("verified");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("verified");
   expect(inherited[0].verifiedRevisionId).toBe(first.revisionId);
   expect(inherited[0].parseSnapshotId).toBe(record.parseSnapshotId);
   expect(inherited[0].pdfSnapshotId).toBe(pdf.sourceSnapshotId);
@@ -833,7 +984,7 @@ test("pdf-verification 继承接线：相同 PDF 字节复用不误判为来源�
     base,
   );
   const inherited = await readVerificationRecords(root, second.revisionId);
-  expect(inherited[0].validity).toBe("verified");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("verified");
   expect(inherited[0].pdfSourceChanged).toBeUndefined();
 });
 
@@ -856,7 +1007,7 @@ test("pdf-verification 继承接线：不同 PDF 内容未变成为 historical-s
     base,
   );
   const inherited = await readVerificationRecords(root, second.revisionId);
-  expect(inherited[0].validity).toBe("historical-source");
+  for (const entry of inherited[0].coverage) expect(entry.validity).toBe("historical-source");
   expect(inherited[0].pdfSourceChanged).toBe(true);
   const tree = await readRevisionDocument(root, second.revisionId, "document");
   const summary = summarizeVerification(tree, inherited);
@@ -883,7 +1034,7 @@ test("pdf-verification 继承接线：不同 PDF 且内容改变同时表达两�
     base,
   );
   const inherited = await readVerificationRecords(root, second.revisionId);
-  expect(inherited[0].validity).toBe("modified-unreviewed");
+  expect(entryOf(inherited[0], selectionIds.sentence).validity).toBe("modified-unreviewed");
   expect(inherited[0].pdfSourceChanged).toBe(true);
 });
 
@@ -904,7 +1055,7 @@ test("pdf-verification 重新核验：修改后对新 current 核验，摘要按
     base,
   );
   const stale = await readVerificationRecords(root, second.revisionId);
-  expect(stale[0].validity).toBe("modified-unreviewed");
+  expect(entryOf(stale[0], selectionIds.sentence).validity).toBe("modified-unreviewed");
   const fresh = await createVerification({
     root,
     expectedRevisionId: second.revisionId,
@@ -938,14 +1089,15 @@ test("pdf-verification PDF 快照损坏时拒绝核验并保留现场", async ()
 test("pdf-verification 预算：超 64 MiB 侧车与超 1 MiB 证据拒绝读取", async () => {
   const base = withAliases(testSelectionTree(randomUUID()));
   const { root, pdf, revision } = await pdfProject("预算", base);
-  const evidence = await recordPdfSourceEvidence({
+  const evidence = await recordReadPdfEvidence({
     root,
-    pdfSnapshotId: pdf.sourceSnapshotId,
-    pages: [1],
+    pdfSha256: pdf.sha256,
+    page: 1,
+    png: Buffer.from("page-1"),
     sessionId: "session-1",
     taskId: "task-1",
-    contentSha256: sha256("page-1"),
   });
+  if (!evidence) throw new Error("真实读取路径未签发证据");
   const sidecarPath = path.join(
     root, ".paper30min", "revisions", revision.revisionId, "verification.json",
   );
@@ -961,4 +1113,132 @@ test("pdf-verification 预算：超 64 MiB 侧车与超 1 MiB 证据拒绝读取
     anchor: unitAnchor(),
     actor: { kind: "agent", sessionId: "session-1", taskId: "task-1", evidenceIds: [evidence.evidenceId] },
   })).rejects.toThrow(/预算/);
+});
+
+test("pdf-verification 并发：两个同时发起的核验都保留，不互相覆盖", async () => {
+  const base = testSelectionTree(randomUUID());
+  const { root, revision } = await pdfProject("并发核验", base);
+  const [first, second] = await Promise.all([
+    createVerification({
+      root,
+      expectedRevisionId: revision.revisionId,
+      anchor: unitAnchor(),
+      actor: USER,
+    }),
+    createVerification({
+      root,
+      expectedRevisionId: revision.revisionId,
+      anchor: { kind: "unit", unitId: selectionIds.secondUnit },
+      actor: USER,
+    }),
+  ]);
+  const records = await readVerificationRecords(root, revision.revisionId);
+  expect(records).toHaveLength(2);
+  expect(new Set(records.map((record) => record.verificationId)))
+    .toEqual(new Set([first.verificationId, second.verificationId]));
+});
+
+test("pdf-verification 并发：核验与 commit 串行互斥，不写旧 revision 也不丢记录", async () => {
+  const base = testSelectionTree(randomUUID());
+  const { root, pdf, revision: first } = await pdfProject("核验提交互斥", base);
+  const staleAttempt = createVerification({
+    root,
+    expectedRevisionId: first.revisionId,
+    anchor: unitAnchor(),
+    actor: USER,
+  }).then(
+    () => "accepted" as const,
+    (error: Error) => error.message,
+  );
+  const second = await commitViaCore(
+    root,
+    first.revisionId,
+    pdf.sourceSnapshotId,
+    changedTree(base),
+    base,
+  );
+  const outcome = await staleAttempt;
+  if (outcome === "accepted") {
+    // 核验先取得写锁：记录落在旧 current，commit 继承必须带上它。
+    const old = await readVerificationRecords(root, first.revisionId);
+    expect(old).toHaveLength(1);
+    const inherited = await readVerificationRecords(root, second.revisionId);
+    expect(inherited).toHaveLength(1);
+    expect(inherited[0].verifiedRevisionId).toBe(first.revisionId);
+  } else {
+    // commit 先推进 current：过期核验被拒绝，旧 revision 不新增侧车。
+    expect(outcome).toMatch(/current/);
+    expect(await readVerificationRecords(root, first.revisionId)).toEqual([]);
+    expect(await readVerificationRecords(root, second.revisionId)).toEqual([]);
+  }
+});
+
+test("pdf-verification 继承：merge 发布失败不留下孤儿侧车", async () => {
+  const base = testSelectionTree(randomUUID());
+  const { root, pdf, revision: first } = await pdfProject("孤儿侧车", base);
+  await createVerification({
+    root,
+    expectedRevisionId: first.revisionId,
+    anchor: unitAnchor(),
+    actor: USER,
+  });
+  const candidate = await createDocumentMergeCandidate({
+    root,
+    baseRevision: first.revisionId,
+    sourceSnapshotId: pdf.sourceSnapshotId,
+    candidate: changedTree(base),
+  });
+  // 先把 current 推进到别的 revision：候选基线过期，发布必须失败。
+  const moved = await commitViaCore(
+    root,
+    first.revisionId,
+    pdf.sourceSnapshotId,
+    movedTree(base),
+    base,
+  );
+  await expect(publishDocumentMergeCandidate(candidate)).rejects.toThrow(/baseRevision/);
+  expect(await readVerificationRecords(root, candidate.revisionId)).toEqual([]);
+  const orphanDir = path.join(root, ".paper30min", "revisions", candidate.revisionId);
+  const entries = await fs.readdir(orphanDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  expect(entries).not.toContain("verification.json");
+  // 旧 current 的核验记录不受失败发布影响。
+  const old = await readVerificationRecords(root, first.revisionId);
+  expect(old).toHaveLength(1);
+  const inherited = await readVerificationRecords(root, moved.revisionId);
+  expect(inherited).toHaveLength(1);
+});
+
+test("pdf-verification 继承：coreCommit 失败不留下孤儿侧车", async () => {
+  const base = testSelectionTree(randomUUID());
+  const { root, pdf, revision: first } = await pdfProject("core 孤儿", base);
+  await createVerification({
+    root,
+    expectedRevisionId: first.revisionId,
+    anchor: unitAnchor(),
+    actor: USER,
+  });
+  const revisionId = randomUUID();
+  await expect(dispatchCoreCommand({
+    type: "coreCommit",
+    root,
+    baseRevision: randomUUID(),
+    sourceSnapshotId: pdf.sourceSnapshotId,
+    revisionId,
+    files: {
+      "document.json": json(changedTree(base)),
+      "source-base.json": json(base),
+      "tombstones.json": json([]),
+      "changeset.json": json({ baseRevision: first.revisionId }),
+    },
+  })).rejects.toThrow(/baseRevision/);
+  expect(await readVerificationRecords(root, revisionId)).toEqual([]);
+  const orphanDir = path.join(root, ".paper30min", "revisions", revisionId);
+  const entries = await fs.readdir(orphanDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  expect(entries).not.toContain("verification.json");
 });

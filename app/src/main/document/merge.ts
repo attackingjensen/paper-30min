@@ -140,15 +140,6 @@ export async function publishDocumentMergeCandidate(candidate: DocumentMergeCand
   if (!currentRevision) throw new Error("首次正文尚未提交，不能发布来源合并候选。");
   assertDocumentMergePublishable(candidate, currentRevision);
 
-  // 核验继承先于 current 推进：新 current 生效时侧车已按 changeset 与 PDF 谱系生成。
-  await inheritVerificationSidecar({
-    root: candidate.root,
-    baseRevision: candidate.baseRevision,
-    revisionId: candidate.revisionId,
-    sourceSnapshotId: candidate.sourceSnapshotId,
-    document: candidate.document,
-  });
-
   const assets: Record<string, ManagedAsset> = {};
   for (const relative of assetPaths([candidate.document, candidate.sourceBase])) {
     const asset = candidate.assets[relative];
@@ -168,5 +159,18 @@ export async function publishDocumentMergeCandidate(candidate: DocumentMergeCand
       ...assets,
     },
     metadata: { normalizationVersion: 1, operation: "source-merge", ...candidate.metadata },
+  }, {
+    // 核验继承在 commit 校验通过后、current 替换前执行（SPEC-pdf-import §11）：
+    // 提交失败不产生孤儿侧车；无旧核验记录时为空操作。
+    onCommitPoint: async (point) => {
+      if (point !== "before-current-replace") return;
+      await inheritVerificationSidecar({
+        root: candidate.root,
+        baseRevision: candidate.baseRevision,
+        revisionId: candidate.revisionId,
+        sourceSnapshotId: candidate.sourceSnapshotId,
+        document: candidate.document,
+      });
+    },
   });
 }

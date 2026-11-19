@@ -2,10 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import {
+  listSourceSnapshots,
   openProject,
   readRevision,
   readRevisionDocument,
   readSourceSnapshot,
+  withProjectWriteLock,
 } from "../project-core.js";
 import {
   createRangeAnchor,
@@ -38,7 +40,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 
 
-function sha256(value: string): string {
+function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -129,6 +131,7 @@ export function resolveVerificationCoverage(
       nodeId: dependency.nodeId,
       contentSha256: sha256(documentNodeContentFingerprint(tree, dependency.nodeType, dependency.nodeId)),
       quote: documentNodeExcerpt(tree, dependency.nodeType, dependency.nodeId),
+      validity: "verified",
     };
     const range = dependency.nodeType === "sentence"
       ? rangeBySentence.get(dependency.nodeId)
@@ -230,9 +233,10 @@ async function loadEvidence(
   return parsePdfSourceEvidence(value, { projectId, paperId });
 }
 
-/** 主进程 PDF 来源读取路径在实际提供页面内容后登记证据（SPEC-pdf-import §10.3）：
- * 绑定 PDF 快照、页、session/task 与所提供内容的摘要；Agent 自述不能替代。 */
-export async function recordPdfSourceEvidence(input: {
+/** 主进程 PDF 来源读取路径在实际提供页面字节后登记证据（SPEC-pdf-import §10.3）：
+ * 绑定 PDF 快照、页、session/task 与实际提供内容的摘要；Agent 自述不能替代。
+ * 仅供 read_pdf 真实渲染路径内部调用，不暴露给命令面。 */
+async function recordPdfSourceEvidence(input: {
   root: string;
   pdfSnapshotId: string;
   pages: number[];
@@ -280,8 +284,44 @@ export async function recordPdfSourceEvidence(input: {
   return evidence;
 }
 
+/** read_pdf 真实渲染并提供页面字节后，在同一调用内按实际 PNG 摘要签发来源读取证据：
+ * 文件摘要必须对应已发布 PDF 来源快照（谱系 sha256）；找不到快照时不签发，读取仍成功。
+ * session 由 Agent 会话权威注入，task 为本次工具调用 id，renderer 与 Agent 均不能伪造。 */
+export async function recordReadPdfEvidence(input: {
+  root: string;
+  pdfSha256: string;
+  page: number;
+  png: Uint8Array;
+  sessionId: string;
+  taskId: string;
+}): Promise<PdfSourceEvidenceRecord | null> {
+  if (!SHA256.test(input.pdfSha256)) return null;
+  const opened = await openProject(input.root);
+  let snapshotId: string | null = null;
+  for (const snapshot of await listSourceSnapshots(opened.root)) {
+    if (snapshot.kind !== "pdf" || snapshot.sha256 !== input.pdfSha256) continue;
+    // 同一字节可存在多个快照（不同谱系）：取最新发布的快照作为证据绑定。
+    if (snapshotId === null) snapshotId = snapshot.sourceSnapshotId;
+    else {
+      const previous = await readSourceSnapshot(opened.root, snapshotId);
+      if (snapshot.createdAt.localeCompare(previous.createdAt) > 0)
+        snapshotId = snapshot.sourceSnapshotId;
+    }
+  }
+  if (snapshotId === null) return null;
+  return recordPdfSourceEvidence({
+    root: opened.root,
+    pdfSnapshotId: snapshotId,
+    pages: [input.page],
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    contentSha256: sha256(input.png),
+  });
+}
+
 /** 核验命令（SPEC-pdf-import §9–§10）：主进程校验锚点、coverage、来源与证据后原子写入侧车；
- * 不修改 document.json、source-base.json 或来源摘要。拒绝时保留现场，不写任何记录。 */
+ * 不修改 document.json、source-base.json 或来源摘要。拒绝时保留现场，不写任何记录。
+ * 复核 current、读侧车、追加与写入整体在工程写锁内，与 commitRevision 串行互斥。 */
 export async function createVerification(input: {
   root: string;
   expectedRevisionId: string;
@@ -289,69 +329,72 @@ export async function createVerification(input: {
   actor: VerificationActorInput;
 }): Promise<VerificationRecord> {
   const opened = await openProject(input.root);
-  const root = opened.root;
-  const current = opened.manifest.paper.currentRevision;
-  if (current === null || current !== input.expectedRevisionId)
-    throw new Error(`current 已变化：核验请求基于 ${input.expectedRevisionId}，当前为 ${current ?? "无"}；拒绝建立核验记录。`);
-  if (input.actor.kind === "user" && input.actor.confirmed !== true)
-    throw new Error("用户核验必须显式确认已对照此 PDF 范围。");
-  const revision = await readRevision(root, current);
-  const tree = await readRevisionDocument(root, current, "document");
-  const anchor = parseDocumentAnchor(tree, input.anchor);
-  const lineage = await pdfLineage(root, revision.sourceSnapshotId);
-  if (lineage.pdfSnapshotId === null)
-    throw new Error("当前 revision 没有 PDF 来源，不能建立 PDF 核验。");
-  const coverage = resolveVerificationCoverage(tree, anchor);
-  let actor: VerificationActor;
-  if (input.actor.kind === "user") {
-    actor = { kind: "user", confirmed: true };
-  } else {
-    const { sessionId, taskId } = input.actor;
-    const evidenceIds = [...new Set(input.actor.evidenceIds ?? [])];
-    if (!sessionId || !taskId || sessionId.length > 200 || taskId.length > 200)
-      throw new Error("Agent 核验必须绑定有效的 session 与 task。");
-    if (evidenceIds.length === 0)
-      throw new Error("Agent 核验必须提供主进程来源读取证据。");
-    const required = requiredPages(tree, coverage);
-    if (required.size === 0)
-      throw new Error("核验范围没有页级来源事实，Agent 不能建立核验。");
-    const covered = new Set<number>();
-    for (const evidenceId of evidenceIds) {
-      const evidence = await loadEvidence(
-        root,
-        evidenceId,
-        opened.manifest.id,
-        opened.manifest.paper.id,
-      );
-      if (evidence.sessionId !== sessionId || evidence.taskId !== taskId)
-        throw new Error("来源读取证据与核验任务的 session/task 不一致。");
-      if (evidence.pdfSnapshotId !== lineage.pdfSnapshotId)
-        throw new Error("来源读取证据不属于当前 PDF 快照。");
-      for (const page of evidence.pages) covered.add(page);
+  return withProjectWriteLock(opened.root, async () => {
+    const root = opened.root;
+    const latest = await openProject(root);
+    const current = latest.manifest.paper.currentRevision;
+    if (current === null || current !== input.expectedRevisionId)
+      throw new Error(`current 已变化：核验请求基于 ${input.expectedRevisionId}，当前为 ${current ?? "无"}；拒绝建立核验记录。`);
+    if (input.actor.kind === "user" && input.actor.confirmed !== true)
+      throw new Error("用户核验必须显式确认已对照此 PDF 范围。");
+    const revision = await readRevision(root, current);
+    const tree = await readRevisionDocument(root, current, "document");
+    const anchor = parseDocumentAnchor(tree, input.anchor);
+    const lineage = await pdfLineage(root, revision.sourceSnapshotId);
+    if (lineage.pdfSnapshotId === null)
+      throw new Error("当前 revision 没有 PDF 来源，不能建立 PDF 核验。");
+    const coverage = resolveVerificationCoverage(tree, anchor);
+    let actor: VerificationActor;
+    if (input.actor.kind === "user") {
+      actor = { kind: "user", confirmed: true };
+    } else {
+      const { sessionId, taskId } = input.actor;
+      const evidenceIds = [...new Set(input.actor.evidenceIds ?? [])];
+      if (!sessionId || !taskId || sessionId.length > 200 || taskId.length > 200)
+        throw new Error("Agent 核验必须绑定有效的 session 与 task。");
+      if (evidenceIds.length === 0)
+        throw new Error("Agent 核验必须提供主进程来源读取证据。");
+      const required = requiredPages(tree, coverage);
+      if (required.size === 0)
+        throw new Error("核验范围没有页级来源事实，Agent 不能建立核验。");
+      const covered = new Set<number>();
+      for (const evidenceId of evidenceIds) {
+        const evidence = await loadEvidence(
+          root,
+          evidenceId,
+          latest.manifest.id,
+          latest.manifest.paper.id,
+        );
+        if (evidence.sessionId !== sessionId || evidence.taskId !== taskId)
+          throw new Error("来源读取证据与核验任务的 session/task 不一致。");
+        if (evidence.pdfSnapshotId !== lineage.pdfSnapshotId)
+          throw new Error("来源读取证据不属于当前 PDF 快照。");
+        for (const page of evidence.pages) covered.add(page);
+      }
+      const missing = [...required].filter((page) => !covered.has(page)).sort((a, b) => a - b);
+      if (missing.length > 0)
+        throw new Error(`来源读取证据未覆盖请求范围：缺少页 ${missing.join("、")}。`);
+      actor = { kind: "agent", sessionId, taskId, evidenceIds };
     }
-    const missing = [...required].filter((page) => !covered.has(page)).sort((a, b) => a - b);
-    if (missing.length > 0)
-      throw new Error(`来源读取证据未覆盖请求范围：缺少页 ${missing.join("、")}。`);
-    actor = { kind: "agent", sessionId, taskId, evidenceIds };
-  }
-  const record: VerificationRecord = {
-    verificationId: randomUUID(),
-    verifiedRevisionId: current,
-    anchor,
-    coverage,
-    pdfSnapshotId: lineage.pdfSnapshotId,
-    parseSnapshotId: lineage.parseSnapshotId,
-    actor,
-    createdAt: new Date().toISOString(),
-    validity: "verified",
-  };
-  const existing = await readVerificationRecords(root, current);
-  await writeVerificationSidecar(root, current, [...existing, record]);
-  return record;
+    const record: VerificationRecord = {
+      verificationId: randomUUID(),
+      verifiedRevisionId: current,
+      anchor,
+      coverage,
+      pdfSnapshotId: lineage.pdfSnapshotId,
+      parseSnapshotId: lineage.parseSnapshotId,
+      actor,
+      createdAt: new Date().toISOString(),
+    };
+    const existing = await readVerificationRecords(root, current);
+    await writeVerificationSidecar(root, current, [...existing, record]);
+    return record;
+  });
 }
 
 /** 发布新 current 前生成继承侧车（SPEC-pdf-import §11）：按旧记录、实际 changeset
- * 与 PDF 谱系另存 validity；无旧记录时不写侧车。写入先于 current 推进，失败保留现场。 */
+ * 与 PDF 谱系逐节点另存 validity；无旧记录时不写侧车。由 commitRevision 的
+ * before-current-replace 钩子在串行临界区内调用：校验失败不产生孤儿侧车。 */
 export async function inheritVerificationSidecar(input: {
   root: string;
   baseRevision: string;

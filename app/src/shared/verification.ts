@@ -27,6 +27,7 @@ const CoverageEntrySchema = Type.Object({
   nodeId: IdSchema,
   contentSha256: Sha256Schema,
   quote: Type.String({ maxLength: 2000 }),
+  validity: ValiditySchema,
   range: Type.Optional(Type.Object({
     sentenceId: IdSchema,
     start: Type.Integer({ minimum: 0 }),
@@ -54,7 +55,6 @@ const VerificationRecordSchema = Type.Object({
   parseSnapshotId: Type.Union([IdSchema, Type.Null()]),
   actor: ActorSchema,
   createdAt: Type.String({ minLength: 1, maxLength: 40 }),
-  validity: ValiditySchema,
   pdfSourceChanged: Type.Optional(Type.Literal(true)),
 }, { additionalProperties: false });
 const VerificationSidecarSchema = Type.Object({
@@ -125,7 +125,8 @@ export function parsePdfSourceEvidence(
 }
 
 /** 发布新 current 时的核验继承（SPEC-pdf-import §11）：保留原 verifiedRevisionId、来源与证据，
- * 只按实际 changeset 与 PDF 谱系另存当前 validity；不改写历史，不自动重挂新增节点。 */
+ * 逐节点按实际 changeset 与 PDF 谱系另存 coverage validity；不改写历史，不自动重挂新增节点。
+ * 删除节点的 tombstone 只使该 coverage entry 成为 removed，不连带清除同记录存活节点。 */
 export function inheritVerificationRecords(input: {
   records: VerificationRecord[];
   changeset: DocumentChangeset;
@@ -134,29 +135,24 @@ export function inheritVerificationRecords(input: {
   const changeset = parseDocumentChangeset(input.changeset);
   const statuses = new Map(changeset.changes.map((entry) => [entry.nodeId, entry.status]));
   return input.records.map((record) => {
-    if (record.validity === "removed") return structuredClone(record);
-    let changed = false;
-    let gone = false;
-    for (const entry of record.coverage) {
-      const status = statuses.get(entry.nodeId);
-      if (status === undefined || status === "removed" || status === "conflicted" || status === "added") {
-        gone = true;
-        break;
-      }
-      if (status === "changed") changed = true;
-    }
     const samePdf = input.currentPdfSnapshotId !== null &&
       record.pdfSnapshotId === input.currentPdfSnapshotId;
-    const validity: VerificationValidity = gone
-      ? "removed"
-      : changed
-        ? "modified-unreviewed"
-        : record.validity === "verified" && !samePdf
-          ? "historical-source"
-          : record.validity;
+    const coverage = record.coverage.map((entry) => {
+      if (entry.validity === "removed") return structuredClone(entry);
+      const status = statuses.get(entry.nodeId);
+      const validity: VerificationValidity =
+        status === undefined || status === "removed" || status === "conflicted" || status === "added"
+          ? "removed"
+          : status === "changed"
+            ? "modified-unreviewed"
+            : entry.validity === "verified" && !samePdf
+              ? "historical-source"
+              : entry.validity;
+      return { ...structuredClone(entry), validity };
+    });
     return {
       ...structuredClone(record),
-      validity,
+      coverage,
       ...(samePdf ? {} : { pdfSourceChanged: true as const }),
     };
   });
@@ -178,18 +174,19 @@ interface VerificationSummary {
   }>;
 }
 
-/** 文档级摘要（SPEC-pdf-import §9.5、§11）：按当前有效记录逐节点聚合四态，
- * 不合并为“全篇已审阅”，不产生任何主观质量分数。 */
+/** 文档级摘要（SPEC-pdf-import §9.5、§11）：按节点取最新有效 coverage 状态聚合四态，
+ * removed entry 不参与聚合；不合并为“全篇已审阅”，不产生任何主观质量分数。 */
 export function summarizeVerification(
   tree: DocumentTree,
   records: VerificationRecord[],
 ): VerificationSummary {
-  const effective = new Map<string, VerificationRecord>();
-  const ordered = records
-    .filter((record) => record.validity !== "removed")
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const effective = new Map<string, { entry: VerificationCoverageEntry; record: VerificationRecord }>();
+  const ordered = [...records].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const record of ordered)
-    for (const entry of record.coverage) effective.set(entry.nodeId, record);
+    for (const entry of record.coverage) {
+      if (entry.validity === "removed") continue;
+      effective.set(entry.nodeId, { entry, record });
+    }
   const counts: Record<VerificationNodeStatus, number> = {
     verified: 0,
     "historical-source": 0,
@@ -198,12 +195,12 @@ export function summarizeVerification(
   };
   const nodes: VerificationSummary["nodes"] = [];
   const add = (nodeType: VerificationNodeType, nodeId: string) => {
-    const record = effective.get(nodeId);
-    const status: VerificationNodeStatus = record
-      ? (record.validity as VerificationNodeStatus)
+    const found = effective.get(nodeId);
+    const status: VerificationNodeStatus = found
+      ? (found.entry.validity as VerificationNodeStatus)
       : "unrecorded";
     counts[status] += 1;
-    nodes.push({ nodeType, nodeId, status, verificationId: record?.verificationId ?? null });
+    nodes.push({ nodeType, nodeId, status, verificationId: found?.record.verificationId ?? null });
   };
   for (const section of Object.values(tree.sections)) add("section", section.id);
   for (const unit of Object.values(tree.units)) add("unit", unit.id);
