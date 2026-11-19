@@ -117,7 +117,9 @@ npx playwright test -g 'project-core|document-core'
 
 ### Phase 3 PDF 导入契约层
 
-`src/main/parsing/` 与 `src/main/pdf/` 按 [pdf-import 规格](../docs/spec/SPEC-pdf-import.md) 实现 PDF 云端解析到同一规范文档树：PDF 快照与来源谱系（`pdf/snapshot.ts`）、百度任务提交／恢复与费用安全（`parsing/baidu-task.ts`）、响应去敏与本地化（`parsing/parse-snapshot.ts`）、确定性转换与首次发布（`parsing/parse-convert.ts`）、重解析三方合并编排（`parsing/pdf-import.ts`）与核验记录／继承（`pdf/verification.ts`）。
+`src/main/parsing/` 与 `src/main/pdf/` 按 [pdf-import 规格](../docs/spec/SPEC-pdf-import.md) 实现 PDF 云端解析到同一规范文档树：PDF 快照与来源谱系（`pdf/snapshot.ts`）、百度任务提交／恢复与费用安全（`parsing/baidu-task.ts`）、响应去敏与本地化（`parsing/parse-snapshot.ts`）、确定性转换与首次发布（`parsing/parse-convert.ts`）、重解析三方合并编排（`parsing/pdf-import.ts`）、核验记录／继承（`pdf/verification.ts`）与原页区域裁切（`pdf/page-crop.ts`）。
+
+无云端资产的 image／chart／display_formula 视觉块可引用从原 PDF 生成的候选裁剪图（SPEC §6.7）：仅无旋转、CropBox 与 MediaBox 重合、未预处理且宽高比校验通过的页面产出区域裁剪；区域不可校准时只声明页级来源并保留 warning。裁剪图经 PDFium 渲染为内容寻址 PNG，执行单请求 16M 像素与 revision 资产预算，随候选 revision 发布，不回写原始 PDF 或解析快照；云端资产存在时优先云端字节。公式块的裁剪引用是可选区域证据，LaTeX／文本仍是权威。
 
 PDF 命令族经同一 `project:command` 通道在 Node utility process 执行：
 

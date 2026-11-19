@@ -48,6 +48,7 @@ async function loadCandidateAssets(
   result: DocumentMergeResult,
   root: string,
   sourceSnapshotId: string,
+  derivedAssets: Record<string, ManagedAsset>,
 ) {
   const [revision, snapshot] = await Promise.all([
     readRevision(root, result.baseRevision),
@@ -55,6 +56,12 @@ async function loadCandidateAssets(
   ]);
   const selected: Array<{ relative: string; record: { path: string; size: number }; snapshot: boolean }> = [];
   for (const relative of assetPaths([result.base, result.current, result.sourceBase])) {
+    const derived = derivedAssets[relative];
+    if (derived) {
+      // 派生裁剪资产不在快照或基线 revision 中：由来源模块随候选提供。
+      selected.push({ relative, record: { path: relative, size: derived.bytes.byteLength }, snapshot: false });
+      continue;
+    }
     const snapshotRecord = snapshot.files.find((file) => file.path === relative);
     const revisionRecord = revision.files.find((file) => file.path === relative);
     if (snapshotRecord) selected.push({ relative, record: snapshotRecord, snapshot: true });
@@ -65,6 +72,11 @@ async function loadCandidateAssets(
 
   const assets: Record<string, ManagedAsset> = {};
   for (const entry of selected) {
+    const derived = derivedAssets[entry.relative];
+    if (derived) {
+      assets[entry.relative] = derived;
+      continue;
+    }
     assets[entry.relative] = entry.snapshot
       ? await readSourceSnapshotAsset(root, sourceSnapshotId, entry.relative)
       : await readRevisionAsset(root, result.baseRevision, entry.relative);
@@ -79,6 +91,8 @@ export async function createDocumentMergeCandidate(input: {
   candidate: DocumentTree;
   /** 调用方固定的候选身份（恢复沿用）；缺省新分配。 */
   revisionId?: string;
+  /** 来源模块派生资产（如原页裁剪图）：不在快照或基线 revision 中，随候选发布。 */
+  derivedAssets?: Record<string, ManagedAsset>;
 }): Promise<DocumentMergeCandidate> {
   const opened = await openProject(input.root);
   if (opened.manifest.paper.currentRevision !== input.baseRevision)
@@ -97,7 +111,7 @@ export async function createDocumentMergeCandidate(input: {
     revisionId: input.revisionId ?? randomUUID(),
     previousTombstones,
   });
-  const assets = await loadCandidateAssets(result, root, input.sourceSnapshotId);
+  const assets = await loadCandidateAssets(result, root, input.sourceSnapshotId, input.derivedAssets ?? {});
   return {
     ...result,
     root,

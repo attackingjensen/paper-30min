@@ -14,6 +14,7 @@ import {
   createProject,
   listSourceSnapshots,
   openProject,
+  readRevisionAsset,
   readRevisionDocument,
 } from "../src/main/project-core";
 import { snapshotLocalPdf } from "../src/main/pdf/snapshot";
@@ -787,4 +788,90 @@ test("pdf-import 重解析：存在未结束任务时拒绝新建云端任务", 
     confirmUpload: async () => true,
   })).rejects.toThrow(/恢复原任务|重复付费/);
   expect(counts.posts).toBe(postsBefore);
+});
+
+/** 300x200pt 单页 PDF：黑矩形 top-left (20,30)-(100,60)。 */
+function inkPdf(): Buffer {
+  const stream = "0 g 20 140 80 30 re f";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R >>",
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 5\n0000000000 65535 f \n${offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("")}trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
+}
+
+function cropVisualResponse(text: string): Buffer {
+  return jsonl([row([{
+    prunedResult: {
+      width: 1200,
+      height: 800,
+      model_settings: { use_doc_preprocessor: false, merge_layout_blocks: true },
+      parsing_res_list: [
+        block(0, text, { block_bbox: [40, 40, 600, 80] }),
+        block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+      ],
+    },
+  }])]);
+}
+
+test("pdf-import 重解析携带原页裁剪候选：发布后裁剪资产可读，旧 current 不受影响", async () => {
+  const file = path.join(sandbox, "ink.pdf");
+  await fs.writeFile(file, inkPdf());
+  const snapshot = await snapshotLocalPdf({ root, source: file });
+  expect(snapshot.ok).toBe(true);
+  if (!snapshot.ok) throw new Error("ink PDF snapshot failed");
+  const inkSnapshotId = snapshot.snapshot.sourceSnapshotId;
+  const counts: ControlledCounts = { posts: 0, queries: 0, downloads: 0 };
+  const endpoint = await controlledParseService(
+    [() => cropVisualResponse("First page paragraph"), () => cropVisualResponse("First page paragraph v2")],
+    counts,
+  );
+  const first = await importPdfToCurrent({
+    root,
+    sourceSnapshotId: inkSnapshotId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  });
+  expect(first.outcome).toBe("published");
+  if (first.outcome !== "published") throw new Error("import did not publish");
+  const firstTree = await readRevisionDocument(root, first.revision.revisionId, "document");
+  const firstFigure = firstTree.blocks.find((entry) => entry.kind === "figure")!;
+  if (firstFigure.kind !== "figure" || !firstFigure.asset) throw new Error("figure asset missing");
+  const firstCrop = await readRevisionAsset(root, first.revision.revisionId, firstFigure.asset.path);
+
+  const reparse = await reparsePdfToCandidate({
+    root,
+    sourceSnapshotId: inkSnapshotId,
+    baseRevision: first.revision.revisionId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  });
+  expect(reparse.outcome).toBe("candidate");
+  if (reparse.outcome !== "candidate") throw new Error("reparse did not form candidate");
+  // 候选未发布：current 仍是首次导入 revision。
+  expect(await currentRevisionId()).toBe(first.revision.revisionId);
+  expect(reparse.candidate.assets[firstFigure.asset.path]).toBeTruthy();
+
+  const published = await publishDocumentMergeCandidate(reparse.candidate);
+  const publishedTree = await readRevisionDocument(root, published.revisionId, "document");
+  const figure = publishedTree.blocks.find((entry) => entry.kind === "figure")!;
+  if (figure.kind !== "figure" || !figure.asset) throw new Error("published figure asset missing");
+  const crop = await readRevisionAsset(root, published.revisionId, figure.asset.path);
+  expect(Buffer.from(crop.bytes).equals(Buffer.from(firstCrop.bytes))).toBe(true);
+  expect(normalized(unitText(publishedTree, Object.values(publishedTree.units)
+    .find((unit) => unit.kind === "paragraph")!.id))).toBe("First page paragraph v2");
+  expect(counts.posts).toBe(2);
 });

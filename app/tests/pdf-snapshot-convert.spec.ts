@@ -1233,3 +1233,182 @@ test("pdf-import 离线重新转换：候选保留 revision 资产，发布后�
   expect(Buffer.from(asset.bytes).equals(image)).toBe(true);
   expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });
+
+/** 300x200pt 单页 PDF：黑矩形 top-left (20,30)-(100,60)，与 sample 同为无旋转标准页。 */
+function inkPdf(pageDict = "/MediaBox [0 0 300 200]"): Buffer {
+  const stream = "0 g 20 140 80 30 re f";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R ${pageDict} /Contents 4 0 R >>`,
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 5\n0000000000 65535 f \n${offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("")}trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
+}
+
+/** vendor 页 1200x800 与 300x200pt PDF 同宽高比；bbox 对应黑矩形区域。 */
+function cropPage(blocks: ReturnType<typeof block>[]) {
+  return {
+    prunedResult: {
+      width: 1200,
+      height: 800,
+      model_settings: { use_doc_preprocessor: false, merge_layout_blocks: true },
+      parsing_res_list: blocks,
+    },
+  };
+}
+
+function cropRow(pages: ReturnType<typeof cropPage>[]) {
+  return {
+    result: {
+      dataInfo: {
+        type: "pdf",
+        numPages: pages.length,
+        pages: pages.map((page) => ({
+          width: page.prunedResult.width,
+          height: page.prunedResult.height,
+        })),
+      },
+      layoutParsingResults: pages,
+    },
+  };
+}
+
+async function useInkPdf(pageDict?: string) {
+  const file = path.join(sandbox, "ink.pdf");
+  await fs.writeFile(file, inkPdf(pageDict));
+  const snapshot = await snapshotLocalPdf({ root, source: file });
+  expect(snapshot.ok).toBe(true);
+  if (!snapshot.ok) throw new Error("ink PDF snapshot failed");
+  sourceSnapshotId = snapshot.snapshot.sourceSnapshotId;
+}
+
+function cropVisualResponse(): Buffer {
+  return jsonl([cropRow([cropPage([
+    block(0, "Intro text.", { block_bbox: [40, 40, 600, 80] }),
+    block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+    block(2, " $$ E=mc^2 $$ ", { block_label: "display_formula", block_bbox: [80, 300, 400, 360] }),
+  ])])]);
+}
+
+test("pdf-import 无云端资产视觉块引用原页裁剪图：派生资产进入 revision，快照不回写", async () => {
+  await useInkPdf();
+  const fixture = await importFixture(() => cropVisualResponse());
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const { revision, warnings } = fixture.result;
+  const tree = await publishedTree(revision);
+
+  const figure = tree.blocks.find((entry) => entry.kind === "figure")!;
+  expect(figure.kind).toBe("figure");
+  if (figure.kind !== "figure") throw new Error("figure missing");
+  expect(figure.asset).not.toBeNull();
+  expect(figure.warning).toBeUndefined();
+  const cropAsset = await readRevisionAsset(root, revision.revisionId, figure.asset!.path);
+  const image = PNG.sync.read(Buffer.from(cropAsset.bytes));
+  // bbox (80,120)-(400,240) → 80x30pt × scale 2 = 160x60，全部为黑矩形墨迹。
+  expect(image.width).toBe(160);
+  expect(image.height).toBe(60);
+  let ink = 0;
+  for (let i = 0; i < image.data.length; i += 4) if (image.data[i] < 128) ink++;
+  expect(ink).toBe(160 * 60);
+
+  const formula = tree.blocks.find((entry) => entry.kind === "formula")!;
+  expect(formula.kind).toBe("formula");
+  if (formula.kind !== "formula") throw new Error("formula missing");
+  expect(formula.source).toEqual({ format: "latex", value: "E=mc^2" });
+  expect(formula.asset).toBeTruthy();
+  expect(formula.asset!.path).toMatch(/^assets\/[a-f0-9]{64}\.png$/);
+
+  // 派生资产只进 revision：解析快照与 PDF 快照文件清单不含裁剪图。
+  const snapshots = await listSourceSnapshots(root);
+  for (const snapshot of snapshots)
+    expect(snapshot.files.some((file) => file.path === figure.asset!.path)).toBe(false);
+  expect(warningCodes(warnings)).not.toContain("pdf-crop-region-uncalibrated");
+  expect(fixture.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
+});
+
+test("pdf-import 云端资产存在时优先云端字节，不产生原页裁剪", async () => {
+  await useInkPdf();
+  const image = pngBytes();
+  const page = cropPage([
+    block(0, "Intro text.", { block_bbox: [40, 40, 600, 80] }),
+    block(1, "![Figure A](imgs/fig.png)", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+  ]);
+  const withManifest = { ...page, markdown: { images: { "imgs/fig.png": image.toString("base64") } } };
+  const fixture = await importFixture(() => jsonl([cropRow([withManifest])]));
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const tree = await publishedTree(fixture.result.revision);
+  const figure = tree.blocks.find((entry) => entry.kind === "figure")!;
+  if (figure.kind !== "figure" || !figure.asset) throw new Error("figure asset missing");
+  expect(figure.asset.path).toBe(`assets/${sha256(image)}.png`);
+  const asset = await readRevisionAsset(root, fixture.result.revision.revisionId, figure.asset.path);
+  expect(Buffer.from(asset.bytes).equals(image)).toBe(true);
+});
+
+test("pdf-import 旋转页视觉块只声明页级来源：warning 保留，正文仍发布", async () => {
+  await useInkPdf("/MediaBox [0 0 300 200] /Rotate 90");
+  const fixture = await importFixture(() => cropVisualResponse());
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const tree = await publishedTree(fixture.result.revision);
+  const figure = tree.blocks.find((entry) => entry.kind === "figure")!;
+  if (figure.kind !== "figure") throw new Error("figure missing");
+  expect(figure.asset).toBeNull();
+  expect(figure.warning).toBeTruthy();
+  const formula = tree.blocks.find((entry) => entry.kind === "formula")!;
+  if (formula.kind !== "formula") throw new Error("formula missing");
+  expect(formula.asset).toBeUndefined();
+  expect(warningCodes(fixture.result.warnings)).toContain("pdf-crop-region-uncalibrated");
+  expect(paragraphTexts(tree)).toContain("Intro text.");
+});
+
+test("pdf-import 预处理页面拒绝区域裁剪：只保留页级事实与 warning", async () => {
+  await useInkPdf();
+  const raw = cropVisualResponse();
+  const rows = raw.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  rows[0].result.layoutParsingResults[0].prunedResult.model_settings.use_doc_preprocessor = true;
+  const fixture = await importFixture(() => jsonl(rows));
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const tree = await publishedTree(fixture.result.revision);
+  const figure = tree.blocks.find((entry) => entry.kind === "figure")!;
+  if (figure.kind !== "figure") throw new Error("figure missing");
+  expect(figure.asset).toBeNull();
+  expect(warningCodes(fixture.result.warnings)).toContain("pdf-crop-region-uncalibrated");
+});
+
+test("pdf-import 离线重转换重建同一裁剪资产：候选发布后离线可读且字节一致", async () => {
+  await useInkPdf();
+  const first = await importFixture(() => cropVisualResponse());
+  expect(first.result.outcome).toBe("published");
+  if (first.result.outcome !== "published") throw new Error("import did not publish");
+  const firstTree = await publishedTree(first.result.revision);
+  const firstFigure = firstTree.blocks.find((entry) => entry.kind === "figure")!;
+  if (firstFigure.kind !== "figure" || !firstFigure.asset) throw new Error("figure asset missing");
+  const firstBytes = await readRevisionAsset(root, first.result.revision.revisionId, firstFigure.asset.path);
+
+  const candidate = await reconvertParseCandidate({
+    root,
+    parseBatchId: first.result.task.parseBatchId,
+    baseRevision: first.result.revision.revisionId,
+  });
+  expect(candidate.conflicts).toHaveLength(0);
+  expect(candidate.assets[firstFigure.asset.path]).toBeTruthy();
+  const published = await publishDocumentMergeCandidate(candidate);
+  const asset = await readRevisionAsset(root, published.revisionId, firstFigure.asset.path);
+  expect(Buffer.from(asset.bytes).equals(Buffer.from(firstBytes.bytes))).toBe(true);
+  expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
+});

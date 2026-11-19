@@ -22,13 +22,15 @@ import {
   inspectImportCandidate,
   openProject,
   readRevision,
+  readSourceSnapshot,
   type ProjectCommitHooks,
 } from "../project-core.js";
 import { createDocumentMergeCandidate, type DocumentMergeCandidate } from "../document/merge.js";
+import { cropPdfPageRegions, type PdfCropAsset, type PdfCropRequest } from "../pdf/page-crop.js";
 import { MISSING_ASSET_PLACEHOLDER } from "./parse-snapshot.js";
 
 /** 转换器持久版本：算法变化必须递增（SPEC-pdf-import §6.10 确定性契约）。 */
-export const PDF_CONVERTER_VERSION = 1;
+export const PDF_CONVERTER_VERSION = 2;
 
 const MAX_TABLE_ROWS = 4096;
 const MAX_TABLE_COLUMNS = 256;
@@ -58,11 +60,22 @@ interface ConvertParseInput {
   /** 已去敏并本地化的受管 result.jsonl 字节。 */
   resultBytes: Uint8Array;
   facts: PdfParseFactsFile;
+  /** 原页裁切请求（无云端资产的视觉块）；纯转换不渲染，由调用方先行裁切。 */
+  cropRequests?: PdfCropRequest[];
+  /** 已渲染裁剪资产：key（首个块别名）→ 内容寻址 PNG。 */
+  cropAssets?: Map<string, PdfCropAsset>;
   signal?: AbortSignal;
 }
 
 type ConvertParseResult =
-  | { ok: true; tree: DocumentTree; warnings: ImportDiagnostic[] }
+  | {
+      ok: true;
+      tree: DocumentTree;
+      warnings: ImportDiagnostic[];
+      cropRequests: PdfCropRequest[];
+      /** 已渲染裁剪资产；convertParseResult 输入按块别名键，convertSnapshotTree 输出按资产路径键。 */
+      cropAssets?: Map<string, PdfCropAsset>;
+    }
   | { ok: false; diagnostic: ImportDiagnostic };
 
 interface PublishParseDocumentInput {
@@ -210,6 +223,8 @@ interface ConvertedPage {
   /** vendorPath → 本地资产引用或去敏占位。 */
   images: Record<string, string>;
   assets: PdfParseAssetFact[];
+  /** 页面预处理事实：use_doc_preprocessor 为 true 时区域映射不可靠。 */
+  preprocessed: boolean;
 }
 
 function nullableNumber(value: unknown): number | null {
@@ -340,7 +355,10 @@ function parseSanitizedRows(bytes: Uint8Array, facts: PdfParseFactsFile): Conver
           }
         }
       }
-      pages.push({ page: pages.length + 1, width, height, blocks, images, assets: [] });
+      const settings = data.model_settings;
+      const preprocessed = settings !== null && typeof settings === "object" &&
+        (settings as Record<string, unknown>).use_doc_preprocessor === true;
+      pages.push({ page: pages.length + 1, width, height, blocks, images, assets: [], preprocessed });
     }
   }
   if (pages.length !== facts.pageCount) fatal("pdf-convert-snapshot-invalid");
@@ -600,13 +618,19 @@ class TreeBuilder {
     if (!ordered.length) this.tree.blocks.push(block);
   }
 
-  addFormula(source: { format: "latex" | "text"; value: string }, text: string, aliases?: string[]): void {
+  addFormula(
+    source: { format: "latex" | "text"; value: string },
+    text: string,
+    aliases?: string[],
+    asset?: AssetReference,
+  ): void {
     this.tree.blocks.push({
       id: randomUUID(),
       sectionId: this.currentSectionId,
       kind: "formula",
       source,
       text,
+      ...(asset ? { asset } : {}),
       ...(aliases ? { sourceAliases: aliases } : {}),
     });
   }
@@ -958,6 +982,53 @@ interface PageContext {
   page: ConvertedPage;
   referenced: Set<string>;
   state: ConversionState;
+  cropRequests: PdfCropRequest[];
+  cropAssets: Map<string, PdfCropAsset>;
+}
+
+/** 无云端资产的视觉块登记原页裁切请求（SPEC §6.7）：预处理页区域映射不可靠，
+ * 只声明页级来源并记录 warning；几何是否可校准由裁切模块按 PDF 事实判定。 */
+function requestCrop(
+  context: PageContext,
+  aliases: string[],
+  bbox: [number, number, number, number] | null,
+): void {
+  const key = aliases[0];
+  if (context.cropAssets.has(key)) return;
+  if (context.page.preprocessed) {
+    if (!context.cropRequests.some((request) => request.key === key)) {
+      context.builder.warnings.push({
+        code: "pdf-crop-region-uncalibrated",
+        severity: "warning",
+        stage: "convert",
+        messageKey: "pdf.crop.regionUncalibrated",
+        sourceAlias: key,
+      });
+      context.cropRequests.push({
+        key,
+        page: context.page.page,
+        pageWidth: context.page.width,
+        pageHeight: context.page.height,
+        bbox: null,
+      });
+    }
+    return;
+  }
+  if (!context.cropRequests.some((request) => request.key === key)) {
+    context.cropRequests.push({
+      key,
+      page: context.page.page,
+      pageWidth: context.page.width,
+      pageHeight: context.page.height,
+      bbox,
+    });
+  }
+}
+
+/** 裁切资产引用：仅当调用方已渲染出该块区域的裁剪图时返回。 */
+function cropReference(context: PageContext, aliases: string[]): AssetReference | null {
+  const asset = context.cropAssets.get(aliases[0]);
+  return asset ? { path: asset.path, sha256: asset.sha256, mime: asset.mime } : null;
 }
 
 function fulfillTitle(context: PageContext): void {
@@ -994,10 +1065,11 @@ function addParagraph(
 function figureFromReference(
   vendorPath: string,
   alt: string,
-  aliases: string[],
+  group: BlockGroup,
   context: PageContext,
   caption: CaptionInput | null,
 ): FigureBlock {
+  const aliases = group.aliases;
   fulfillTitle(context);
   const builder = context.builder;
   const reference = context.page.images[vendorPath];
@@ -1006,15 +1078,18 @@ function figureFromReference(
   if (reference !== undefined && reference !== MISSING_ASSET_PLACEHOLDER && fact) {
     context.referenced.add(fact.path);
     asset = { path: fact.path, sha256: fact.sha256, mime: fact.mime };
-  } else {
-    warn(builder, "pdf-convert-figure-missing", aliases[0]);
   }
+  if (asset === null) {
+    // 无云端资产：登记原页裁切请求；已渲染裁剪图直接引用（SPEC §6.7）。
+    requestCrop(context, aliases, group.blocks[0]?.bbox ?? null);
+    asset = cropReference(context, aliases);
+  }
+  if (asset === null) warn(builder, "pdf-convert-figure-missing", aliases[0]);
   const block = builder.addFigure({
     asset,
     ...(asset === null ? { warning: MESSAGE_KEYS["pdf-convert-figure-missing"] } : {}),
     aliases,
   });
-  // 配对的 figure_title 优先；否则用引用 alt 文本作图注。
   if (caption) {
     builder.attachCaption(block, caption);
   } else if (alt.trim()) {
@@ -1045,7 +1120,7 @@ function convertTextGroup(
       warn(context.builder, "pdf-convert-image-unresolved", group.aliases[0]);
       addParagraph(context, match[0], group.aliases, kind);
     } else {
-      figureFromReference(vendorPath, match[1], group.aliases, context, null);
+      figureFromReference(vendorPath, match[1], group, context, null);
     }
     cursor = match.index + match[0].length;
   }
@@ -1062,10 +1137,12 @@ function convertVisualGroup(
   const content = group.content.trim();
   const placeholder = (): FigureBlock => {
     fulfillTitle(context);
-    warn(builder, "pdf-convert-figure-missing", group.aliases[0]);
+    requestCrop(context, group.aliases, group.blocks[0]?.bbox ?? null);
+    const crop = cropReference(context, group.aliases);
+    if (crop === null) warn(builder, "pdf-convert-figure-missing", group.aliases[0]);
     return builder.addFigure({
-      asset: null,
-      warning: MESSAGE_KEYS["pdf-convert-figure-missing"],
+      asset: crop,
+      ...(crop === null ? { warning: MESSAGE_KEYS["pdf-convert-figure-missing"] } : {}),
       aliases: group.aliases,
     });
   };
@@ -1080,7 +1157,7 @@ function convertVisualGroup(
     const before = content.slice(cursor, match.index);
     if (before.trim()) addParagraph(context, before, group.aliases);
     // 图注必须紧随首个 figure 落树，先于后续文本单元。
-    const block = figureFromReference(match[2], match[1], group.aliases, context, first ? null : caption);
+    const block = figureFromReference(match[2], match[1], group, context, first ? null : caption);
     first ??= block;
     cursor = match.index + match[0].length;
   }
@@ -1098,10 +1175,12 @@ function convertFormulaGroup(group: BlockGroup, context: PageContext): void {
   const content = group.content.trim();
   if (!content) {
     fulfillTitle(context);
-    warn(builder, "pdf-convert-formula-empty", group.aliases[0]);
+    requestCrop(context, group.aliases, group.blocks[0]?.bbox ?? null);
+    const crop = cropReference(context, group.aliases);
+    if (crop === null) warn(builder, "pdf-convert-formula-empty", group.aliases[0]);
     builder.addFigure({
-      asset: null,
-      warning: MESSAGE_KEYS["pdf-convert-formula-empty"],
+      asset: crop,
+      ...(crop === null ? { warning: MESSAGE_KEYS["pdf-convert-formula-empty"] } : {}),
       aliases: group.aliases,
     });
     return;
@@ -1111,10 +1190,12 @@ function convertFormulaGroup(group: BlockGroup, context: PageContext): void {
   const inner = delimited
     ? (delimited[1] ?? delimited[2] ?? delimited[3] ?? delimited[4] ?? "").trim()
     : "";
+  requestCrop(context, group.aliases, group.blocks[0]?.bbox ?? null);
   builder.addFormula(
     inner ? { format: "latex", value: inner } : { format: "text", value: content },
     content,
     group.aliases,
+    cropReference(context, group.aliases) ?? undefined,
   );
 }
 
@@ -1218,6 +1299,8 @@ export function convertParseResult(input: ConvertParseInput): ConvertParseResult
     const pages = parseSanitizedRows(input.resultBytes, facts);
     const builder = new TreeBuilder(input.paperId);
     const state: ConversionState = { pendingTitle: null, flattened: false };
+    const cropRequests: PdfCropRequest[] = [];
+    const cropAssets = input.cropAssets ?? new Map<string, PdfCropAsset>();
     for (const page of pages) {
       input.signal?.throwIfAborted();
       const context: PageContext = {
@@ -1225,6 +1308,8 @@ export function convertParseResult(input: ConvertParseInput): ConvertParseResult
         page,
         referenced: new Set(),
         state,
+        cropRequests,
+        cropAssets,
       };
       if (page.blocks.length === 0)
         warn(builder, "pdf-convert-page-empty", `page-${page.page}`);
@@ -1281,7 +1366,7 @@ export function convertParseResult(input: ConvertParseInput): ConvertParseResult
         },
       };
     }
-    return { ok: true, tree: builder.tree, warnings: builder.warnings };
+    return { ok: true, tree: builder.tree, warnings: builder.warnings, cropRequests };
   } catch (error) {
     if (input.signal?.aborted)
       return { ok: false, diagnostic: diagnostic("pdf-convert-stopped", "fatal", "convert") };
@@ -1409,11 +1494,17 @@ export async function publishParseDocument(
       "changeset.json": Buffer.from(JSON.stringify(changeset)),
     };
     for (const block of converted.tree.blocks) {
-      if (block.kind === "figure" && block.asset)
+      if ((block.kind !== "figure" && block.kind !== "formula") || !block.asset) continue;
+      const crop = converted.cropAssets?.get(block.asset.path);
+      if (crop) {
+        // 派生裁剪资产进入候选 revision，不回写原始 PDF 或解析快照（SPEC §4.6）。
+        files[block.asset.path] = { bytes: crop.bytes, mime: block.asset.mime };
+      } else {
         files[block.asset.path] = {
           bytes: await readSnapshotFile(input.root, snapshot, block.asset.path),
           mime: block.asset.mime,
         };
+      }
     }
     try {
       await input.hooks?.onConvertPoint?.("before-publish");
@@ -1495,12 +1586,44 @@ async function convertSnapshotTree(input: {
     fatal("pdf-convert-snapshot-invalid");
   }
   input.signal?.throwIfAborted();
-  return convertParseResult({
+  const convertInput = {
     paperId: input.paperId,
     resultBytes,
     facts,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
+  };
+  // 第一遍纯转换收集裁切请求；有请求才读父 PDF 渲染，第二遍带资产重转换。
+  const first = convertParseResult(convertInput);
+  if (!first.ok || !first.cropRequests.length) return first;
+  const pdf = await loadParentPdf(input.root, task);
+  const cropped = await cropPdfPageRegions({
+    pdf,
+    requests: first.cropRequests,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
+  const cropAssets = new Map(cropped.assets.map((asset) => [asset.key, asset]));
+  const second = convertParseResult({ ...convertInput, cropAssets });
+  if (!second.ok) return second;
+  return {
+    ok: true,
+    tree: second.tree,
+    warnings: [...second.warnings, ...cropped.warnings],
+    cropRequests: [],
+    cropAssets: new Map(cropped.assets.map((asset) => [asset.path, asset])),
+  };
+}
+
+/** 读取父 PDF 快照字节并核验摘要；缺失或摘要不符立即拒绝，不重猜来源。 */
+async function loadParentPdf(root: string, task: PdfParseTaskRecord): Promise<Buffer> {
+  const source = await readSourceSnapshot(root, task.parentSourceSnapshotId);
+  if (source.kind !== "pdf" || source.sha256 !== task.pdfSha256)
+    fatal("pdf-convert-snapshot-invalid");
+  const file = source.files.find((entry) => entry.path === "paper.pdf");
+  if (!file || file.sha256 !== source.sha256) fatal("pdf-convert-snapshot-invalid");
+  const bytes = await fs.readFile(path.join(root, source.path, "paper.pdf"));
+  if (bytes.byteLength !== file.size || hash(bytes) !== source.sha256)
+    fatal("pdf-convert-snapshot-digest");
+  return bytes;
 }
 
 /** 按登记摘要读取受管快照文件；缺失或摘要不符立即拒绝，不采用另一份字节。 */
@@ -1562,6 +1685,10 @@ export async function createParseMergeCandidate(input: {
     sourceSnapshotId: input.snapshot.sourceSnapshotId,
     candidate: converted.tree,
     ...(input.revisionId === undefined ? {} : { revisionId: input.revisionId }),
+    ...(converted.cropAssets === undefined ? {} : {
+      derivedAssets: Object.fromEntries([...converted.cropAssets].map(([relative, asset]) =>
+        [relative, { bytes: asset.bytes, mime: asset.mime }])),
+    }),
   });
   return {
     candidate: {
