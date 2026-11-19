@@ -122,3 +122,65 @@ test("floor-guard 细化后仍拦截产品源码的新抑制注释", async () =>
   expect(result.status).toBe(1);
   expect(result.stderr).toContain("silenced-checker");
 });
+
+test("floor-guard 已登记退役例外按文件豁免删除测试与移除断言", async () => {
+  await fixtureRepo();
+  await fs.mkdir(path.join(sandbox, "tests"), { recursive: true });
+  await fs.writeFile(
+    path.join(sandbox, "tests/old.spec.ts"),
+    'test("old", () => { expect(1).toBe(1); });\n',
+  );
+  await fs.writeFile(
+    path.join(sandbox, "tests/old2.spec.ts"),
+    'test("old2", () => { expect(2).toBe(2); });\n',
+  );
+  git(sandbox, "add", "-A");
+  git(sandbox, "commit", "-qm", "tests");
+  await appendException(
+    `| W4 | 旧解析退役删除测试与断言 | \`tests/old.spec.ts\`、\`tests/old2.spec.ts\` | 被新链路取代 | @attackingjensen | ${futureDate(30)} |`,
+  );
+  await fs.rm(path.join(sandbox, "tests/old.spec.ts"));
+  await fs.writeFile(
+    path.join(sandbox, "tests/old2.spec.ts"),
+    'test("old2", () => { /* 断言随旧实现退役 */ });\n',
+  );
+  const result = runGuard();
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("clean");
+});
+
+test("floor-guard 未登记或过期的退役例外不豁免删除测试", async () => {
+  await fixtureRepo();
+  await fs.mkdir(path.join(sandbox, "tests"), { recursive: true });
+  await fs.writeFile(
+    path.join(sandbox, "tests/old.spec.ts"),
+    'test("old", () => { expect(1).toBe(1); });\n',
+  );
+  git(sandbox, "add", "-A");
+  git(sandbox, "commit", "-qm", "tests");
+  await appendException(
+    `| W4 | 旧解析退役删除测试与断言 | \`tests/old.spec.ts\` | 被新链路取代 | @attackingjensen | ${futureDate(-1)} |`,
+  );
+  await fs.rm(path.join(sandbox, "tests/old.spec.ts"));
+  const result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("test-deleted");
+});
+
+test("floor-guard 棘轮收紧放行而放宽仍拦截", async () => {
+  await fixtureRepo();
+  await appendException(
+    "| M1 | 默认回归环境跳过数 | `4` | 不得增长 | 基线 | @attackingjensen | " + futureDate(30) + " |",
+  );
+  git(sandbox, "add", "-A");
+  git(sandbox, "commit", "-qm", "metric");
+  const file = path.join(sandbox, "CONSTRAINTS.md");
+  const tighten = (await fs.readFile(file, "utf8")).replace("`4`", "`3`");
+  await fs.writeFile(file, tighten);
+  expect(runGuard().status).toBe(0);
+  const loosen = (await fs.readFile(file, "utf8")).replace("`3`", "`5`");
+  await fs.writeFile(file, loosen);
+  const result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("threshold");
+});

@@ -18,13 +18,8 @@
   "ignoreBinaries": ["gitleaks", "osv-scanner"],
   // dependency-cruiser 按 parser: "swc" 动态加载，静态引用图看不到。
   "ignoreDependencies": ["@swc/core"],
-  // Phase 0 临时基线：contracts.ts 豁免已随 Phase 1 project-core 契约收敛移除
-  // （FileEntry/AgentServiceSettings/AgentModelSettings 取消导出，仍由同文件契约引用）。
-  // 仅剩 parsing.ts 的间接导出类型豁免，pdf-import 改造时移除。
-  // arxiv.ts 豁免已随 vx0.4/vx0.5 移除：PdfFallbackRequest 由 coreArxivPdfFallback 消费。
-  // 死文件、死值导出、依赖和其他文件类型仍正常检查。
-  "ignoreIssues": {
-    "src/shared/parsing.ts": ["types"]
-  },
+  // Phase 0 临时豁免已全部移除：contracts.ts 随 Phase 1 契约收敛、arxiv.ts 随
+  // vx0.4/vx0.5、parsing.ts 随 Phase 3 旧解析路径退役（s08.6）清理。
+  // 死文件、死导出、死类型、依赖和文件类型均正常检查，不再保留类型豁免。
   "treatConfigHintsAsErrors": true
 }

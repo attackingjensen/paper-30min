@@ -9,19 +9,12 @@ import type {
   PdfImportWorkerCommand,
   PdfUploadConfirmationReply,
 } from "../shared/contracts.js";
-import type { BaiduUploadConfirmationRequest, ParsingCommand } from "../shared/parsing.js";
-import type { ParsingConfig } from "./parsing-settings.js";
+import type { BaiduUploadConfirmationRequest } from "../shared/parsing.js";
 import { Agent, EnvHttpProxyAgent, ProxyAgent, type Dispatcher } from "undici";
-import { ParsingService } from "./parsing-service.js";
 import path from "node:path";
 import { ProductSkills } from "./product-skills.js";
 
 const port = process.parentPort!;
-let nextId = 0;
-const trashRequests = new Map<
-  number,
-  { resolve: () => void; reject: (error: Error) => void }
->();
 /** 进行中的 PDF 云端操作：operationId → 取消控制器（worker 进程内权威）。 */
 const pdfOperations = new Map<string, AbortController>();
 /** 上传确认往返：operationId → renderer 应答；未应答前不发起 POST。 */
@@ -70,16 +63,7 @@ async function dispatchPdfCloud(command: PdfImportWorkerCommand): Promise<unknow
     await network.destroy();
   }
 }
-const service = new ProjectService(
-  process.argv[2],
-  (file) =>
-    new Promise((resolve, reject) => {
-      const id = ++nextId;
-      trashRequests.set(id, { resolve, reject });
-      port.postMessage({ trash: { id, file } });
-    }),
-);
-const parsing = new ParsingService(service);
+const service = new ProjectService(process.argv[2]);
 const agent = new AgentService(
   (state) => port.postMessage({ agentState: state }),
   service,
@@ -96,21 +80,12 @@ port.on(
       command?:
         | Command
         | { type: "agent"; command: AgentCommand; config: ModelConfig }
-        | { type: "parsing"; command: ParsingCommand; config: ParsingConfig }
         | PdfImportWorkerCommand;
       shutdown?: boolean;
-      trashResult?: boolean;
       pdfUploadConfirmReply?: PdfUploadConfirmationReply;
       error?: string;
     };
   }) => {
-    if (data.trashResult !== undefined) {
-      const request = trashRequests.get(data.id);
-      trashRequests.delete(data.id);
-      if (data.error) request?.reject(new Error(data.error));
-      else request?.resolve();
-      return;
-    }
     if (data.pdfUploadConfirmReply !== undefined) {
       const reply = data.pdfUploadConfirmReply;
       const resolve = pdfConfirmations.get(reply.operationId);
@@ -123,15 +98,8 @@ port.on(
       let value: unknown;
       if (data.shutdown) {
         for (const controller of pdfOperations.values()) controller.abort();
-        await Promise.all([agent.close(), parsing.close()]);
+        await agent.close();
         await service.close();
-      } else if (command?.type === "parsing") {
-        if (
-          command.command.type === "settings" ||
-          command.command.type === "saveSettings"
-        )
-          throw new Error("无效解析命令。");
-        value = await parsing.dispatch(command.command, command.config);
       } else if (command?.type === "agent") {
         if (
           command.command.type === "settings" ||

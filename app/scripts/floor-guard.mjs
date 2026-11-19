@@ -97,6 +97,25 @@ const exceptionRegistered = (text) => {
   return expires > today && days <= 90;
 };
 
+// 已登记退役例外（CONSTRAINTS Exceptions）：Rule 含「退役」且 Path 反引号列出具体
+// 测试文件的 W/E 行，按文件豁免 test-deleted / assertion-removed。登记要素仍须通过
+// exceptionRegistered 验证；其他 finding 类型不受影响，到期后豁免自动失效。
+const retirementWaivers = (() => {
+  let text;
+  try { text = readFileSync("CONSTRAINTS.md", "utf8"); }
+  catch { return []; }
+  const waivers = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!/^\| *(W|E)\d+ *\|/.test(line) || !exceptionRegistered(line)) continue;
+    const cells = line.split("|").map((cell) => cell.trim());
+    if (!cells[2] || !cells[2].includes("退役")) continue;
+    for (const match of cells[3].matchAll(/`([^`]+)`/g)) {
+      if (isTest(match[1])) waivers.push(match[1]);
+    }
+  }
+  return waivers;
+})();
+
 const SUPPRESSIONS = /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|biome-ignore|# *noqa|# *type: *ignore|istanbul ignore|nosemgrep|gitleaks:allow|Stryker disable/;
 const STUBS = /throw new (Error|NotImplemented).*[Nn]ot implemented|catch\s*\(\w*\)\s*\{\s*\}|catch\s*\{\s*\}|\bTODO\b|\bpass\s*# *stub/;
 const SKIPS = /\.(skip|todo)\b|\bxit\(|\bxdescribe\(|@pytest\.mark\.skip|t\.Skip\(/;
@@ -124,9 +143,11 @@ for (const { file, text } of added) {
   if (SKIPS.test(text)) flag("test-made-easier", file, text);
 }
 
-for (const f of deleted) if (isTest(f)) flag("test-deleted", f, "file deleted");
+for (const f of deleted)
+  if (isTest(f) && !retirementWaivers.includes(f)) flag("test-deleted", f, "file deleted");
 for (const { file, text } of removed) {
-  if (isTest(file) && !deleted.includes(file) && /\b(expect|assert|should)\b/.test(text)) {
+  if (isTest(file) && !deleted.includes(file) && !retirementWaivers.includes(file)
+      && /\b(expect|assert|should)\b/.test(text)) {
     flag("assertion-removed", file, text);
   }
 }
@@ -170,11 +191,15 @@ for (const r of removedRules) {
     was.forEach((b, i) => {
       const n = now[i];
       if (verdict) return;
-      if (!n) verdict = "threshold-removed";
-      else if (n.n === b.n) return;
-      else if (dir === "min" ? n.n < b.n : dir === "max" ? n.n > b.n : true) {
-        verdict = dir ? "threshold-loosened" : "threshold-changed";
+      // 棘轮收紧放行：max 上限变小、min 下限变大、无方向计数（豁免/跳过数）变小
+      // 都是提高标准；数字消失只在归零语义下放行（如「除 W1」豁免移除）。
+      if (!n) {
+        if (dir === null && b.n > 0 && /除\s*W\d+|豁免/.test(r.text)) return;
+        verdict = "threshold-removed";
       }
+      else if (n.n === b.n) return;
+      else if (dir === "min" ? n.n > b.n : dir === "max" ? n.n < b.n : n.n < b.n) return;
+      else verdict = dir ? "threshold-loosened" : "threshold-changed";
     });
   }
   if (verdict) flag(verdict, r.file, r.text + "  ->  " + a.text);

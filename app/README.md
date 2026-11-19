@@ -20,7 +20,7 @@ npm run build
 npm test
 ```
 
-`npm test` 先构建，再运行 Playwright 的真实 Electron 高层测试。测试只替代系统文件选择器，使用生产 preload、IPC、Node 工程进程和真实磁盘操作；回收站调用也使用 Electron 系统接口。默认测试使用临时配置与可控模型服务，覆盖流式回复、代理、失败恢复、并发停止和迟到事件。失败保留 trace，布局截图位于 `test-results/`。
+`npm test` 先构建，再运行 Playwright 的真实 Electron 高层测试。测试只替代系统文件选择器，使用生产 preload、IPC、Node 工程进程和真实磁盘操作。默认测试使用临时配置与可控模型服务，覆盖流式回复、代理、失败恢复、并发停止和迟到事件。失败保留 trace，布局截图位于 `test-results/`。
 
 GitHub 的 `Electron CI` 使用 Node.js 24 和 `npm ci`，在 Windows、Linux 上运行 `check:fast`、`check:architecture`、`check:dependencies` 和 `npm run build`（包含类型检查），随后仅在 Windows 上运行 `npx playwright test --reporter=list,html`，避免重复构建。Windows 回归使用隐藏窗口和受控服务，不配置真实模型或百度服务凭据；HTML 报告、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天。可从 Actions 页面手动运行工作流。Linux 构建通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
 
@@ -34,7 +34,7 @@ npm run check:task    # fast + 架构边界 + 导入/工程契约 Playwright 套
 npm run check:full    # fast + 架构 + OSV + 构建 + 全量 Electron；完整本地验证
 ```
 
-`check:task` 的过滤器为 `project-core|document-core|arxiv-import|parsing|pdf-snapshot|pdf-verification`，不替代其他功能的定向测试；其他改动仍用 `npx playwright test -g '相关用例'` 补充。`npm run check:architecture` 和 `npm run check:dependencies` 可单独运行。gitleaks 始终使用 `--redact`，扫描排除 `.local/` 本机私有配置、`.upstream/` 只读副本、依赖和生成物，不排除产品源码中的 finding。floor guard 默认与 `origin/main` 的 merge base 比较，可用 `node scripts/floor-guard.mjs --base <ref>` 指定基线。
+`check:task` 的过滤器为 `project-core|document-core|arxiv-import|pdf-import|pdf-reparse|pdf-snapshot|pdf-verification`，不替代其他功能的定向测试；其他改动仍用 `npx playwright test -g '相关用例'` 补充。`npm run check:architecture` 和 `npm run check:dependencies` 可单独运行。gitleaks 始终使用 `--redact`，扫描排除 `.local/` 本机私有配置、`.upstream/` 只读副本、依赖和生成物，不排除产品源码中的 finding。floor guard 默认与 `origin/main` 的 merge base 比较，可用 `node scripts/floor-guard.mjs --base <ref>` 指定基线。
 
 CI 在两个平台执行 fast、架构、OSV 和构建门禁，Windows 继续运行完整 Electron 回归。安全工具或解析器不可用、扫描报告不完整、架构扫描为 0 modules 都按检查失败处理，不能当作通过。
 
@@ -48,13 +48,12 @@ npm run test:dead-code
 
 命令有问题时退出码为 1，配置或内部错误为 2；Electron CI 在 Windows 和 Linux 均把它作为阻断门禁。`src/main/main.ts`、`worker.ts`、`preload.cts` 和 `src/renderer/main.tsx` 显式登记为入口，因为 Electron 的进程启动/预加载路径不都经过静态 import；`includeEntryExports` 同时检查入口文件的导出。
 
-### Phase 0 基线与有限豁免
+### Phase 0 基线与有限豁免（已全部移除）
 
 首次无配置扫描成功识别 TypeScript 项目，报告 6 个入口相关未使用文件、3 个未使用依赖、1 个未使用开发依赖、8 处未声明依赖、2 个未使用导出和 6 个未使用导出类型。补全入口后，级联误报消失，剩余问题按以下方式处理：
 
 - 不使用 `ignoreFiles` 或全局关闭规则。`@embedpdf/pdfium`、`@embedpdf/plugin-spread`、`@embedpdf/plugin-rotate` 是源码直接 import，已按实际安装版本显式声明；Viewer 已传递提供的 annotation、capture、interaction-manager、render、selection、stamp 与默认印章资源不重复声明；`markdown-it` 自带类型，冗余 `@types/markdown-it` 已移除。
-- `ignoreIssues` 现在只对 `src/shared/parsing.ts` 的 `types` 问题生效，对应 `ParsingPhase` 间接导出类型，留待 pdf-import 收敛契约时移除。`src/shared/contracts.ts` 的豁免已随 Phase 1 project-core 契约收敛移除：`FileEntry`、`AgentServiceSettings`、`AgentModelSettings` 取消导出，仍由同文件导出契约结构性引用。
-- 剩余豁免会覆盖 `parsing.ts` 以后新增的未使用导出类型，因此只是短期基线；对应模块改造时必须移除豁免并复扫。死文件、死值导出、依赖问题和其他文件的类型问题不受影响。
+- `ignoreIssues` 豁免已全部移除：`contracts.ts` 随 Phase 1 project-core 契约收敛、`arxiv.ts` 随 vx0.4/vx0.5、`parsing.ts` 随 Phase 3 旧解析路径退役（s08.6）清理。死文件、死导出、死类型、依赖和文件类型均正常检查。
 
 knip 能证明静态引用和依赖层面的死代码情况，不能单独证明旧引用、旧映射、旧材料或旧导入的语义残留为零；Phase 0 checkpoint 还需对照退役清单做定向协议、通道和入口检查。配置依据见官方 [entry/project 与 ignoreIssues](https://knip.dev/reference/configuration)、[issue types](https://knip.dev/reference/issue-types) 和 [CLI 退出码](https://knip.dev/reference/cli)。
 
@@ -72,9 +71,9 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 ## 工程格式
 
-详见 [工程文件契约](../docs/project-format.md)。`src/main/project-service.ts` 是界面及后续 Agent 共享的文件操作入口，由 Node utility process 执行；主进程负责系统选择器、回收站和外部打开，React 通过受限 preload 调用。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统。
+详见 [工程文件契约](../docs/project-format.md)。`src/main/project-service.ts` 是界面及后续 Agent 共享的文件操作入口，由 Node utility process 执行；主进程负责系统选择器和外部打开，React 通过受限 preload 调用。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统。
 
-当前支持从 PDF 创建、打开与最近工程、默认位置和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索和侧栏等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。停止输入约 600 毫秒后自动保存，标签和设置往返中保留编辑位置与撤销历史；Ctrl+S 仍可立即保存。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。百度解析生成可编辑正文，Agent 可按需对照原页核对。
+当前支持从 PDF 创建、打开与最近工程、默认位置和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索和侧栏等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。停止输入约 600 毫秒后自动保存，标签和设置往返中保留编辑位置与撤销历史；Ctrl+S 仍可立即保存。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。PDF 云端解析经 `corePdf*` 命令链发布规范文档树，界面阅读器接入前由真实 Electron 回归驱动；Agent 可按需对照原页核对。
 
 ### Phase 1 新工程核契约层
 
@@ -139,27 +138,19 @@ npx playwright test -g 'pdf-import'
 
 ## 百度解析
 
-在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token，再从工程「论文解析」选择工程论文 PDF 并确认上传。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置。每批次只生成一份完整 Markdown：`text/<batchId>/paper.md`，图片就地出现；恢复状态、原始返回和块映射保存在隐藏目录 `.paper30min/parsing/<batchId>/`。已有旧布局继续原位读取，不删除旧成果。结果可离线重开和整体搬迁。
+在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置；凭据只从主进程注入 PDF 云端命令，renderer 命令不携带 Token。
 
-旧逐页审阅、`complete_review_page` 工具与日常 Agent 的审阅门禁已于 v2.0.0 Phase 0 退役：不再提供「开始审阅」「继续审阅」入口，普通会话直接发送即可，Agent 读取解析稿并按需用 `read_pdf` 对照原页。历史审阅会话作为普通会话记录保留。
+旧解析批次路径（`parsing-service`／`baidu-candidate`／「论文解析」面板、`text/<batchId>/paper.md` 可编辑 Markdown 权威与 `mapping.json` 块映射）已随 Phase 3 检查点退役：PDF 解析统一走 `corePdf*` 命令链，解析结果直接进入规范文档树（见上文「PDF 云端解析」）。旧工程中的历史批次文件保留原位，不再提供读取、恢复或删除入口；旧格式工程按 legacy-projects 规格明确拒绝。上传确认对话框保留，供 PDF 云端命令显式确认使用。
 
-正文可随时通过编辑器及 Agent read/write/edit 纠错；提示词要求无必要不修改 `text/`，解释、翻译和扩写另写成果。PDF、图片与内部文件仍受保护。PDF 替换会使既有解析批次的身份核验失效。映射中的 `text` 保留解析时的摘录，当前 Markdown 才是正文，旧摘录不能冒充修正后内容。
+旧逐页审阅、`complete_review_page` 工具与日常 Agent 的审阅门禁已于 v2.0.0 Phase 0 退役：不再提供「开始审阅」「继续审阅」入口，普通会话直接发送即可，Agent 读取正文并按需用 `read_pdf` 对照原页。历史审阅会话作为普通会话记录保留。
 
 接口沿用 [百度官方异步任务服务](https://ai.baidu.com/ai-doc/AISTUDIO/Mml7n69e7)：向 `/api/v2/ocr/jobs` 提交 multipart PDF，收到 `data.jobId` 后查询 `data.state`，完成后下载 `data.resultUrl.jsonUrl`。实际 JSONL 按返回顺序包含 `result.layoutParsingResults`（`prunedResult`、`markdown.text/images`）及 `result.dataInfo`；块含 `block_id`、`block_label`、`block_content`、`block_bbox`、`group_id` 等。图片实际支持签名 HTTPS 地址和 Base64，不假设 Gemini 格式。
 
-本机上传上限为 50 MiB、1 至 1000 页；请求超时 120 秒，单轮查询最长 30 分钟，超时可恢复原任务。原始 JSONL 上限 256 MiB、单张图片 32 MiB、图片合计 256 MiB，PNG 像素上限 1600 万，候选 Markdown 上限 2 MiB。超预算保留可恢复现场，不截断后报成功。配额及服务端实际模型版本由百度账户和服务决定，请求模型名不等于服务端版本证据。
+本机上传上限为 50 MiB、1 至 1000 页；请求超时 120 秒，单轮查询最长 30 分钟，超时可恢复原任务。原始 JSONL 上限 256 MiB、单张图片 32 MiB、图片合计 256 MiB，PNG 像素上限 1600 万。超预算保留可恢复现场，不截断后报成功。配额及服务端实际模型版本由百度账户和服务决定，请求模型名不等于服务端版本证据。
 
-停止会保留云端任务号；提交回执未到时显示等待回执，应用退出可能留下「提交结果不明」。此时需从百度控制台取得任务号并关联，不能自动重传，避免重复调用。OCR 位置是块区域信息；页面旋转、裁切、预处理或区域无效时明确降为页级。当前不能检测同尺寸页面的语义换位，公式和表格质量仍需对照原页核对。四份旧版真实 JSONL 与对应 PDF 共 49 页由新版公共接口回归，真实服务质量证据记录在 STE-82。
+停止会保留云端任务号；提交回执未到时显示等待回执，应用退出可能留下「提交结果不明」。此时需从百度控制台取得任务号并关联，不能自动重传，避免重复调用。OCR 位置是块区域信息；页面旋转、裁切、预处理或区域无效时明确降为页级。当前不能检测同尺寸页面的语义换位，公式和表格质量仍需对照原页核对。
 
-真实解析测试默认跳过；可使用本机加密配置及同目录配套的 Electron `Local State`（两者均须来自本机同一配置目录），测试自动关闭 trace，临时工程和原始返回保存在被忽略的 `tmp/ste82-real/`。配置和产物路径均不应提交：
-
-```powershell
-$env:PAPER30MIN_REAL_PARSING_CONFIG='C:\local\parsing-settings.json'
-npx playwright test -g '真实百度服务生成'
-Remove-Item Env:PAPER30MIN_REAL_PARSING_CONFIG
-```
-
-可用 `PAPER30MIN_REAL_PARSING_SOURCE` 指定扫描 PDF、`PAPER30MIN_REAL_PARSING_PROJECT` 复用已有真实候选或恢复原任务、`PAPER30MIN_REAL_PARSING_OUTPUT` 隔离证据目录。只复查完整候选时无需再次提交或提供 Token。真实调用另验质量，受控服务测试覆盖停止、提交不明、下载失败、重开恢复、区域降级、图片完整性与搬迁。
+真实百度验收须由用户明确授权、使用其凭据并单独记录实际任务号、模型、PDF 摘要与费用相关界面（SPEC-pdf-import Commands）；默认回归使用受控百度服务与本地 fixtures，不访问真实云端。
 
 ## Agent 对话与模型
 
@@ -203,7 +194,5 @@ Remove-Item Env:PAPER30MIN_REAL_MODEL
 Viewer 的 WASM 使用本地资源，界面字体使用系统字体，不加载默认远端字体。工程 PDF 只读，不写回原生批注；Agent 可通过 `read_pdf` 查看完整页面。
 
 真实模型验证仅覆盖实际使用的供应商、模型与场景，不代表所有协议或图文、工具能力都已验证；公式文字仍需对照原页核验。当前检查不覆盖安装包、v1 升级或持续内存表现；触控板的实际手感需在设备上体验。旧客户端测试不构成新版验证证据，远端验证以对应提交的 `Electron CI` 实际结果为准。
-
-解析记录卡片支持「删除解析」：确认后将该批次正文、图片和任务记录移入系统回收站，保留原 PDF。运行中的批次须先停止；删除本机记录不会取消云端任务。新旧解析目录均支持，回收失败会保留剩余记录以便重试。
 
 Agent 读取论文时使用普通 `read` 读取实际工程内正文，需要核对原页时使用 `read_pdf`；当前版本不提供按解析稿位置展开旧引用或 PDF 原生批注的工具。

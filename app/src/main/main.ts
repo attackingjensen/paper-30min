@@ -23,12 +23,8 @@ import type {
 } from "../shared/contracts.js";
 import { defaultAgentSettings } from "../shared/contracts.js";
 import { AgentSettingsStore, type ModelConfig } from "./agent-settings.js";
-import {
-  ParsingSettingsStore,
-  type ParsingConfig,
-} from "./parsing-settings.js";
+import { ParsingSettingsStore } from "./parsing-settings.js";
 import type { ParsingCommand } from "../shared/parsing.js";
-import { defaultParsingSettings } from "../shared/parsing.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 protocol.registerSchemesAsPrivileged([
@@ -51,11 +47,6 @@ function request(
   command:
     | Command
     | { type: "agent"; command: AgentCommand; config: ModelConfig }
-    | {
-        type: "parsing";
-        command: ParsingCommand;
-        config: ParsingConfig & { proxy?: string; proxyUrl?: string };
-      }
     | PdfImportWorkerCommand
     | null,
 ): Promise<unknown> {
@@ -139,19 +130,6 @@ async function start() {
       else running.delete(key);
       if (window && !window.isDestroyed())
         window.webContents.send("agent:changed", message.agentState);
-      return;
-    }
-    if (message.trash) {
-      try {
-        await shell.trashItem(message.trash.file);
-        worker.postMessage({ id: message.trash.id, trashResult: true });
-      } catch (error) {
-        worker.postMessage({
-          id: message.trash.id,
-          trashResult: true,
-          error: (error as Error).message,
-        });
-      }
       return;
     }
     if (message.pdfUploadConfirm) {
@@ -284,26 +262,9 @@ async function start() {
       parsingSettingsWrite = result.catch(() => undefined);
       return result;
     }
-    if (
-      command.type === "stop" ||
-      command.type === "status" ||
-      command.type === "delete" ||
-      command.type === "verify"
-    )
-      return request({
-        type: "parsing",
-        command,
-        config: { ...defaultParsingSettings, apiKey: "" },
-      });
     await parsingSettingsWrite;
     if (command.type === "settings") return parsingSettings.publicSettings();
-    const config = await parsingSettings.read();
-    const { proxy, proxyUrl } = await agentSettings.read();
-    return request({
-      type: "parsing",
-      command,
-      config: { ...config, proxy, proxyUrl },
-    });
+    throw new Error("无效解析命令。");
   });
   ipcMain.handle("agent:command", async (event, command: AgentCommand) => {
     trusted(event);

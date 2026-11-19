@@ -39,7 +39,7 @@ import { AgentPanel } from "./AgentPanel";
 import type { ChatAttachment } from "../shared/chat-input";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { ProductSkillsForm } from "./ProductSkillsForm";
-import { ParsingPanel, ParsingSettingsForm } from "./ParsingPanel";
+import { ParsingSettingsForm } from "./ParsingSettingsForm";
 import {
   useMarkdownDocuments,
   isMarkdown,
@@ -262,7 +262,7 @@ export function App() {
     };
     positions.current[p.root] = p.reading.pdf;
     const restored = p.reading.tabs.filter(
-      (t) => !["map", "explanations", "translations", "materials"].includes(t.key) &&
+      (t) => !["map", "explanations", "translations", "materials", "parsing"].includes(t.key) &&
         (!t.path || p.files.some((f) => f.path === t.path && !f.directory)),
     );
     setTabs(restored.length ? restored : [tab]);
@@ -375,15 +375,6 @@ export function App() {
   }
   function contentView() {
     if (!current) return <div className="empty">尚未打开文档</div>;
-    if (current.key === "parsing")
-      return (
-        <ParsingPanel
-          key={root}
-          project={project!}
-          onOpen={openPath}
-          onSettings={() => setSettings("parsing")}
-        />
-      );
     if (current.path && isMarkdown(current.path)) {
       const draft = documents.drafts.get(current.path);
       return draft ? (
@@ -732,10 +723,6 @@ export function App() {
                       key: project.manifest.paper.path,
                       path: project.manifest.paper.path,
                       title: project.manifest.paper.path.split("/").at(-1)!,
-                    })}
-                    {nav("论文解析", <FileText />, {
-                      key: "parsing",
-                      title: "论文解析",
                     })}
                     {nav("笔记", <FileText />, { key: "notes", title: "笔记" })}
                   </>
