@@ -197,6 +197,10 @@ port.on(
         await Promise.allSettled([...pdfOperations.values()].map((operation) => operation.done));
         await agent.close();
         await service.close();
+        // 落定应答发出后主动退出：主进程等 exit 事件再 app.exit，
+        // 不再依赖恒等 2s 强杀收尾中的进程。
+        port.postMessage({ id: data.id, value: null });
+        process.exit(0);
       } else if (command?.type === "agent") {
         if (
           command.command.type === "settings" ||

@@ -78,6 +78,7 @@ export async function importArxivPdfFallback(input: {
   root: string;
   request: PdfFallbackRequest;
   transport: ArxivTransport;
+  baseUrl?: string;
   config: BaiduPdfParseConfig;
   confirmUpload: (request: BaiduUploadConfirmationRequest) => boolean | Promise<boolean>;
   signal: AbortSignal;
@@ -95,6 +96,7 @@ export async function importArxivPdfFallback(input: {
       root: input.root,
       request: input.request,
       transport: input.transport,
+      ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
       signal: input.signal,
       ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
     });

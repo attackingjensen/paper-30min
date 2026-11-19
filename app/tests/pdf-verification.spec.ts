@@ -614,6 +614,45 @@ test("pdf-verification Agent 核验：主进程来源证据覆盖请求页时建
   expect(record.pdfSnapshotId).toBe(pdf.sourceSnapshotId);
 });
 
+test("pdf-verification 证据一次性：核验成功后重放同一 evidenceId 被拒绝，失败不消费", async () => {
+  const base = withAliases(testSelectionTree(randomUUID()));
+  const { root, pdf, revision } = await pdfProject("证据重放", base);
+  const evidence = await recordReadPdfEvidence({
+    root,
+    pdfSha256: pdf.sha256,
+    page: 1,
+    png: Buffer.from("rendered-page-1"),
+    sessionId: "session-1",
+    taskId: "task-1",
+  });
+  if (!evidence) throw new Error("真实读取路径未签发证据");
+  // nonce 只存在于受管文件，不进入 read_pdf 输出形状（evidenceId 之外的字段）。
+  expect(evidence.consumeNonce).toMatch(/^[a-f0-9]{64}$/);
+  expect(evidence.consumedAt).toBeUndefined();
+  const verify = () => createVerification({
+    root,
+    expectedRevisionId: revision.revisionId,
+    anchor: unitAnchor(),
+    actor: { kind: "agent", sessionId: "session-1", taskId: "task-1", evidenceIds: [evidence.evidenceId] },
+  });
+  // 失败（current 不符）不消费证据：修正后仍可建立。
+  await expect(createVerification({
+    root,
+    expectedRevisionId: randomUUID(),
+    anchor: unitAnchor(),
+    actor: { kind: "agent", sessionId: "session-1", taskId: "task-1", evidenceIds: [evidence.evidenceId] },
+  })).rejects.toThrow(/current/);
+  const first = await verify();
+  expect(first.coverage.every((entry) => entry.validity === "verified")).toBe(true);
+  // 重放：同一证据已消费，拒绝建立第二条记录。
+  await expect(verify()).rejects.toThrow(/已消费/);
+  expect(await readVerificationRecords(root, revision.revisionId)).toHaveLength(1);
+  const persisted = parsePdfSourceEvidence(JSON.parse(await fs.readFile(
+    path.join(root, ".paper30min", "pdf-evidence", `${evidence.evidenceId}.json`), "utf8",
+  )));
+  expect(persisted.consumedAt).toBeDefined();
+});
+
 test("pdf-verification Agent 核验：无证据、页不足、session/task 不符或证据属于其他 PDF 均拒绝", async () => {
   const base = withAliases(testSelectionTree(randomUUID()));
   const { root, pdf, revision } = await pdfProject("Agent 拒绝", base);

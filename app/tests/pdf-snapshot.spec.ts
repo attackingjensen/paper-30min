@@ -28,17 +28,16 @@ function sha256(bytes: Uint8Array) {
 }
 
 function fallbackRequest(version = 2): PdfFallbackRequest {
-  const canonicalId = `2401.01234v${version}`;
   return {
     kind: "arxiv-pdf",
     baseId: "2401.01234",
     version,
-    absUrl: `https://arxiv.org/abs/${canonicalId}`,
-    pdfUrl: `https://arxiv.org/pdf/${canonicalId}`,
     reasonCode: "arxiv-html-not-found",
     baseRevision: null,
   };
 }
+
+const pdfUrlOf = (version: number) => `https://arxiv.org/pdf/2401.01234v${version}`;
 
 function pdfTransport(bytes: Uint8Array, finalUrl = PDF_URL) {
   const calls: string[] = [];
@@ -173,13 +172,35 @@ test("pdf-import arXiv 回退只获取固定版本并保存来源谱系", async 
   expect(result.snapshot.sourceSnapshotId).not.toBe(result.snapshot.sha256);
 });
 
-test("pdf-import arXiv 请求版本混用在网络前拒绝", async () => {
+test("pdf-import arXiv 下载 URL 由主进程按固定版本重建，renderer 注入 URL 被忽略", async () => {
   const bytes = await fs.readFile(SAMPLE);
   const { transport, calls } = pdfTransport(bytes);
   const result = await snapshotArxivPdf({
     root,
-    request: { ...fallbackRequest(), pdfUrl: "https://arxiv.org/pdf/2401.01234v3" },
+    // 契约上请求不携带 URL；即使运行时被注入恶意 URL 也不得影响下载目标。
+    request: { ...fallbackRequest(), pdfUrl: "https://evil.example/pdf/2401.01234v3" } as PdfFallbackRequest,
     transport,
+  });
+  expect(result.ok).toBe(true);
+  expect(calls).toEqual([pdfUrlOf(2)]);
+});
+
+test("pdf-import arXiv 请求版本混用在网络前拒绝", async () => {
+  const bytes = await fs.readFile(SAMPLE);
+  const { transport, calls } = pdfTransport(bytes);
+  // 请求不携带 URL：网络前拦截由取消守卫承担；版本混用守卫作用于响应最终 URL。
+  const controller = new AbortController();
+  controller.abort();
+  await snapshotArxivPdf({
+    root,
+    request: fallbackRequest(),
+    transport,
+    signal: controller.signal,
+  });
+  const result = await snapshotArxivPdf({
+    root,
+    request: fallbackRequest(),
+    transport: pdfTransport(bytes, "https://arxiv.org/pdf/2401.01234v3").transport,
   });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.diagnostic.code).toBe("arxiv-version-mixed");
@@ -254,12 +275,12 @@ test("pdf-import 同字节但 arXiv 固定版本不同不复用", async () => {
   const second = await snapshotArxivPdf({
     root,
     request: v2,
-    transport: pdfTransport(bytes, v2.pdfUrl).transport,
+    transport: pdfTransport(bytes, pdfUrlOf(2)).transport,
   });
   const first = await snapshotArxivPdf({
     root,
     request: v1,
-    transport: pdfTransport(bytes, v1.pdfUrl).transport,
+    transport: pdfTransport(bytes, pdfUrlOf(1)).transport,
   });
   expect(second.ok).toBe(true);
   expect(first.ok).toBe(true);
@@ -275,7 +296,7 @@ test("pdf-import 同字节但 arXiv 固定版本不同不复用", async () => {
   const repeated = await snapshotArxivPdf({
     root,
     request: v2,
-    transport: pdfTransport(bytes, v2.pdfUrl).transport,
+    transport: pdfTransport(bytes, pdfUrlOf(2)).transport,
   });
   expect(repeated.ok).toBe(true);
   if (!repeated.ok) return;

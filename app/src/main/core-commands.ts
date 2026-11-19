@@ -309,6 +309,8 @@ async function pdfCloudCommand(
       root: command.root,
       request: command.request,
       transport: arxivTransportFor(command.baseUrl, pdf.signal),
+      // baseUrl 只在受控 fixture 门控下传入；生产命令携带的 baseUrl 不生效。
+      ...(fixtureGate(command.baseUrl) ? { baseUrl: command.baseUrl } : {}),
       config: pdf.config,
       confirmUpload: pdf.confirmUpload,
       signal: pdf.signal,

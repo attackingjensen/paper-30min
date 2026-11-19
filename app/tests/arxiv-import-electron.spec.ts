@@ -271,8 +271,6 @@ test("arxiv-import 真实 Electron 显式 PDF 回退确认前后均无 PDF 请�
     kind: "arxiv-pdf",
     baseId: ID,
     version: 1,
-    absUrl: `${baseUrl}${ABS_PATH}`,
-    pdfUrl: `${baseUrl}/pdf/${ID}v1`,
     reasonCode: failed.diagnostic.code,
     baseRevision: null,
   });

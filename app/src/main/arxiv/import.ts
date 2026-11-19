@@ -436,8 +436,7 @@ export async function prepareArxivPdfFallback(
       kind: "arxiv-pdf",
       baseId: reference.baseId,
       version: reference.version as number,
-      absUrl: endpointUrl(baseUrl, "abs", reference),
-      pdfUrl: endpointUrl(baseUrl, "pdf", reference),
+      // 交接只携带身份事实；下载 URL 由主进程在 snapshotArxivPdf 重建。
       reasonCode: reason.code,
       baseRevision: handoffBase,
     },

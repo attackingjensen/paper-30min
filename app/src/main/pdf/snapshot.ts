@@ -35,6 +35,8 @@ export interface SnapshotArxivPdfInput {
   root: string;
   request: PdfFallbackRequest;
   transport: ArxivTransport;
+  /** 受控端点基址：仅 fixture 门控开启时生效；生产省略即 https://arxiv.org。 */
+  baseUrl?: string;
   signal?: AbortSignal;
   allowFixtureLoopback?: boolean;
   hooks?: ProjectCommitHooks;
@@ -265,14 +267,17 @@ export async function snapshotArxivPdf(
     version: request.version,
     canonicalId: `${request.baseId}v${request.version}`,
   };
-  const requestGuard = assertArxivVersionConsistent(pinned, request.pdfUrl);
+  // 下载 URL 由主进程按固定版本重建（renderer 不携带 URL）；baseUrl 仅在
+  // 受控 fixture 门控开启时生效，生产恒为 https://arxiv.org。
+  const pdfUrl = `${(input.baseUrl ?? "https://arxiv.org").replace(/\/+$/, "")}/pdf/${pinned.canonicalId}`;
+  const requestGuard = assertArxivVersionConsistent(pinned, pdfUrl);
   if (!requestGuard.ok) return requestGuard;
   if (input.signal?.aborted) {
     return {
       ok: false,
       diagnostic: fetchDiagnostic(
-        new ArxivFetchError("arxiv-fetch-cancelled", request.pdfUrl),
-        request.pdfUrl,
+        new ArxivFetchError("arxiv-fetch-cancelled", pdfUrl),
+        pdfUrl,
         "pdf",
       ),
     };
@@ -280,7 +285,7 @@ export async function snapshotArxivPdf(
 
   let response;
   try {
-    response = await input.transport(request.pdfUrl, {
+    response = await input.transport(pdfUrl, {
       budgetBytes: MAX_PDF_BYTES,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
@@ -288,7 +293,7 @@ export async function snapshotArxivPdf(
   } catch (error) {
     return {
       ok: false,
-      diagnostic: fetchDiagnostic(error, request.pdfUrl, "pdf"),
+      diagnostic: fetchDiagnostic(error, pdfUrl, "pdf"),
     };
   }
   const responseGuard = assertArxivVersionConsistent(pinned, response.url);

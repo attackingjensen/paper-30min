@@ -76,6 +76,10 @@ const PdfSourceEvidenceSchema = Type.Object({
   sessionId: SessionFieldSchema,
   taskId: SessionFieldSchema,
   contentSha256: Sha256Schema,
+  /** 一次性消费凭据：只存在于受管证据文件，read_pdf 输出与核验记录都不携带；
+   * 核验成功后烧掉，同一证据不得再次用于建立核验（防重放）。 */
+  consumeNonce: Sha256Schema,
+  consumedAt: Type.Optional(Type.String({ minLength: 1, maxLength: 40 })),
   createdAt: Type.String({ minLength: 1, maxLength: 40 }),
 }, { additionalProperties: false });
 

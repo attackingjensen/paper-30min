@@ -205,7 +205,7 @@ test("pdf-fallback 组合：交接与工程谱系不符在网络前拒绝", asyn
   const { root, request } = await fallbackProject("组合篡改");
   const requested: string[] = [];
   const pdfBytes = await fs.readFile(SAMPLE);
-  const tampered: PdfFallbackRequest = { ...request, version: 2, pdfUrl: `https://arxiv.org/pdf/${ID}v2` };
+  const tampered: PdfFallbackRequest = { ...request, version: 2 };
   await expect(importArxivPdfFallback({
     root,
     request: tampered,

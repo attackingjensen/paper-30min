@@ -269,11 +269,18 @@ async function start() {
     "pdf:uploadConfirmReply",
     (event, reply: PdfUploadConfirmationReply) => {
       trusted(event);
-      // 应答须匹配未决确认；未知 confirmationId（重复／迟到应答）直接忽略。
-      if (pendingUploadConfirms.has(reply.confirmationId)) {
-        pendingUploadConfirms.delete(reply.confirmationId);
-        worker.postMessage({ pdfUploadConfirmReply: reply });
+      // 应答须同时匹配未决确认的 confirmationId 与 operationId；错配不得
+      // 消费表项（否则正确应答随后被当迟到丢弃，操作挂到超时）。
+      const entry = pendingUploadConfirms.get(reply.confirmationId);
+      if (!entry) return;
+      if (entry.operationId !== reply.operationId) {
+        worker.postMessage({
+          pdfUploadConfirmReply: { ...reply, confirmed: false },
+        });
+        return;
       }
+      pendingUploadConfirms.delete(reply.confirmationId);
+      worker.postMessage({ pdfUploadConfirmReply: reply });
     },
   );
   ipcMain.handle("parsing:command", async (event, command: ParsingCommand) => {
@@ -445,12 +452,19 @@ async function start() {
     if (shuttingDown) return;
     event.preventDefault();
     shuttingDown = true;
+    // shutdown 请求落定（worker 回 id 应答）后仍等 worker 真实退出：
+    // 应答先于进程结束，立即 app.exit 会抽掉正在收尾的进程。2s 是兜底强杀。
     const deadline = setTimeout(() => {
       if (!workerExited) worker.kill();
       app.exit(0);
     }, 2000);
+    const exited = new Promise<void>((resolve) => {
+      if (workerExited) resolve();
+      else worker.once("exit", () => resolve());
+    });
     void request(null)
       .catch((error) => console.error(error))
+      .then(() => exited)
       .finally(() => {
         clearTimeout(deadline);
         if (!workerExited) worker.kill();

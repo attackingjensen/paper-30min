@@ -735,6 +735,22 @@ test("pdf-import 真实 Electron 确认应答 fail-closed：truthy 非布尔按�
   expect(tasks).toHaveLength(1);
 });
 
+test("pdf-import 真实 Electron 错 operationId 应答不消费确认：正确应答随后仍可确认上传", async () => {
+  await captureConfirmations();
+  const root = await createCoreProject("错配恢复");
+  const snapshot = await snapshotPdf(root);
+  const { operationId, run } = startImport(root, snapshot.sourceSnapshotId);
+  await expect(confirmDialog()).toBeVisible();
+  await expect.poll(async () => (await readCapturedConfirmations()).length).toBe(1);
+  const [confirmation] = await readCapturedConfirmations();
+  // 错 operationId 的应答不得消费表项：worker 按拒绝处理该应答，但确认仍待答。
+  await replyConfirmation("wrong-operation", confirmation.confirmationId, true);
+  // 正确 operationId + confirmationId 的显式 true 随后仍能确认并上传。
+  await replyConfirmation(operationId, confirmation.confirmationId, true);
+  expect((await run).outcome).toBe("published");
+  expect(counts.posts).toBe(1);
+});
+
 test("pdf-import 真实 Electron 错误 confirmationId 与重复应答不命中，旧应答不命中复用 ID 的新操作", async () => {
   await captureConfirmations();
   const root = await createCoreProject("应答身份");
