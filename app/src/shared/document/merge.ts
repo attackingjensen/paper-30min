@@ -326,6 +326,28 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
         if (baseContextKnown && candidateContextKnown) tryMap(group.base[0], group.candidate[0]);
       }
 
+      // 已对齐 unit 内的句子按位置延续稳定 ID（SPEC-pdf-import §8.3）：
+      // 确定性重转换会为句子重新分配 UUID，数量一致时 1:1 延续使来源修正成为
+      // changed 而非删除＋新增；数量变化视为拆分／合并，交由 tombstone 规则处理。
+      // 双方均已按内容对齐的句子不参与位置配对，避免重复文本错位。
+      if (kind === "sentence") {
+        for (const unit of nodes(base, "unit")) {
+          const candidateUnitId = [...mapping.entries()].find(([, baseId]) => baseId === unit.id)?.[0];
+          if (!candidateUnitId) continue;
+          const baseOrder = orderedIds(base, "sentence", unit.id);
+          const candidateOrder = orderedIds(candidate, "sentence", candidateUnitId);
+          if (!baseOrder.length || baseOrder.length !== candidateOrder.length) continue;
+          for (let index = 0; index < baseOrder.length; index++) {
+            const baseId = baseOrder[index];
+            const candidateId = candidateOrder[index];
+            if (usedBaseIds.has(baseId) || mapping.has(candidateId)) continue;
+            const baseNode = base.sentences[baseId];
+            const candidateNode = candidate.sentences[candidateId];
+            tryMap(baseNode, candidateNode);
+          }
+        }
+      }
+
       for (const baseParent of nodes(base, kind === "section" ? "section" : kind === "unit" || kind === "block" ? "section" : "unit")) {
         const candidateParentId = [...mapping.entries()].find(([, baseId]) => baseId === baseParent.id)?.[0];
         if (!candidateParentId) continue;

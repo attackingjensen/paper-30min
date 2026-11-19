@@ -237,3 +237,85 @@ test("document-core 候选书目单元经 alias 对齐后 citation 目标随之�
   expect(result.document.units[baseBibUnit]).toBeDefined();
   expect(() => assertDocumentMergePublishable(result, result.baseRevision)).not.toThrow();
 });
+
+/** 模拟确定性转换器重跑：unit 经 source alias 对齐，但句子是新分配的 UUID。 */
+function reconvertedSecondUnit(base: DocumentTree, text: string): DocumentTree {
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const newSentenceId = randomUUID();
+  delete candidate.sentences[selectionIds.thirdSentence];
+  candidate.sentences[newSentenceId] = {
+    id: newSentenceId,
+    unitId: selectionIds.secondUnit,
+    content: [{ kind: "text", text }],
+  };
+  candidate.units[selectionIds.secondUnit].sentenceIds = [newSentenceId];
+  return candidate;
+}
+
+test("document-core 重解析对齐 unit 后句子延续稳定 ID：来源修正成为 changed 而非删除新增", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const current = structuredClone(base);
+  const candidate = reconvertedSecondUnit(base, "Next unit revised.");
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  expect(projectSentenceText(result.document, selectionIds.thirdSentence)).toBe("Next unit revised.");
+  const sentenceChange = result.changeset.changes.find((entry) =>
+    entry.nodeType === "sentence" && entry.nodeId === selectionIds.thirdSentence);
+  expect(sentenceChange?.status).toBe("changed");
+  expect(result.changeset.changes.some((entry) =>
+    entry.nodeType === "sentence" && entry.status === "added")).toBe(false);
+});
+
+test("document-core 重解析对齐 unit 后本地句子修正与来源修正产生 content 冲突", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const current = structuredClone(base);
+  setThirdSentence(current, "local edit");
+  const candidate = reconvertedSecondUnit(base, "source edit");
+
+  const unresolved = merge(base, current, candidate);
+  expect(unresolved.conflicts).toHaveLength(1);
+  expect(unresolved.conflicts[0]).toMatchObject({
+    type: "content",
+    anchors: [{ kind: "unit", unitId: selectionIds.secondUnit }],
+  });
+
+  const resolved = resolveDocumentMergeConflict(unresolved, unresolved.conflicts[0].id, "candidate");
+  expect(projectSentenceText(resolved.document, selectionIds.thirdSentence)).toBe("source edit");
+  expect(() => assertDocumentMergePublishable(resolved, resolved.baseRevision)).not.toThrow();
+});
+
+test("document-core 重解析句子数量变化按拆分合并处理：旧句子不自动挂到新内容", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const current = structuredClone(base);
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const firstNew = randomUUID();
+  const secondNew = randomUUID();
+  delete candidate.sentences[selectionIds.thirdSentence];
+  candidate.sentences[firstNew] = {
+    id: firstNew,
+    unitId: selectionIds.secondUnit,
+    content: [{ kind: "text", text: "Split one." }],
+  };
+  candidate.sentences[secondNew] = {
+    id: secondNew,
+    unitId: selectionIds.secondUnit,
+    content: [{ kind: "text", text: "Split two." }],
+  };
+  candidate.units[selectionIds.secondUnit].sentenceIds = [firstNew, secondNew];
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  const sentenceChange = result.changeset.changes.find((entry) =>
+    entry.nodeType === "sentence" && entry.nodeId === selectionIds.thirdSentence);
+  expect(sentenceChange?.status).toBe("removed");
+  expect(result.changeset.changes.filter((entry) =>
+    entry.nodeType === "sentence" && entry.status === "added")).toHaveLength(2);
+});
