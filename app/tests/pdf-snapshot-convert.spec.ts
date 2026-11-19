@@ -575,7 +575,8 @@ test("pdf-import 恶意 HTML 表格被消毒，危险内容不进入规范树", 
 
 test("pdf-import 嵌套表格与不可信跨度降级为 raw block 并保留文本投影", async () => {
   const nested = "<table><tr><td><table><tr><td>inner</td></tr></table></td></tr></table>";
-  const badSpan = '<table><tr><td colspan="1e3">wide</td></tr></table>';
+  // 超过列预算的数字跨度由转换器整体降级 raw；非数字跨度在去敏阶段即被移除。
+  const badSpan = '<table><tr><td colspan="999">wide</td></tr></table>';
   const fixture = await importFixture(() => jsonl([
     row([
       vendorPage([
@@ -1388,6 +1389,130 @@ test("pdf-import 预处理页面拒绝区域裁剪：只保留页级事实与 wa
   if (figure.kind !== "figure") throw new Error("figure missing");
   expect(figure.asset).toBeNull();
   expect(warningCodes(fixture.result.warnings)).toContain("pdf-crop-region-uncalibrated");
+});
+
+test("pdf-import 跨度范围重叠的表格整体降级 raw，不产生重叠单元", async () => {
+  // 真实网格冲突：row0 的 D 以 rowspan=2 占据 (1,2)；row1 的 colspan=3 从空闲列 0
+  // 开始，while-skip 不移动起点，但跨度范围内部 (1,2) 已被占用 → 整体降级 raw。
+  const overlap = '<table><tr><td rowspan="2">A</td><td>B</td><td rowspan="2">D</td></tr>' +
+    '<tr><td colspan="3">C</td></tr></table>';
+  const fixture = await importFixture(() => jsonl([
+    row([
+      vendorPage([block(0, overlap, { block_label: "table" })]),
+      vendorPage([block(0, "Second page text")]),
+    ]),
+  ]));
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const tree = await publishedTree(fixture.result.revision);
+  expect(tree.blocks.some((entry) => entry.kind === "table")).toBe(false);
+  const raw = tree.blocks.find((entry) => entry.kind === "raw")!;
+  expect(raw.kind).toBe("raw");
+  if (raw.kind !== "raw") throw new Error("raw block missing");
+  expect(raw.text).toContain("A");
+  expect(raw.text).toContain("B");
+  expect(raw.text).toContain("C");
+  expect(warningCodes(fixture.result.warnings)).toContain("pdf-convert-table-lossy");
+});
+
+test("pdf-import 危险内容独占表格时只留占位，清洗前原文不进入 revision", async () => {
+  const dangerous = '<table><tr><td><script>var payload = "table-secret-payload";</script></td></tr></table>';
+  const fixture = await importFixture(() => jsonl([
+    row([
+      vendorPage([block(0, dangerous, { block_label: "table" })]),
+      vendorPage([block(0, "Second page text")]),
+    ]),
+  ]));
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const { revision } = fixture.result;
+  for (const file of await filesUnder(path.join(root, revision.path))) {
+    const bytes = await fs.readFile(file);
+    expect(bytes.includes("table-secret-payload"), `${path.basename(file)} leaked payload`).toBe(false);
+    expect(bytes.includes("<script"), `${path.basename(file)} leaked script`).toBe(false);
+  }
+  const tree = await publishedTree(revision);
+  expect(tree.blocks.some((entry) => entry.kind === "table")).toBe(false);
+  expect(tree.blocks.some((entry) => entry.kind === "raw")).toBe(false);
+  const figure = tree.blocks.find((entry) => entry.kind === "figure")!;
+  expect(figure.kind).toBe("figure");
+  if (figure.kind !== "figure") throw new Error("placeholder figure missing");
+  expect(figure.warning).toBeTruthy();
+  expect(warningCodes(fixture.result.warnings)).toContain("pdf-convert-table-lossy");
+  expect(warningCodes(fixture.result.warnings)).toContain("pdf-convert-html-sanitized");
+});
+
+test("pdf-import 纯文本快照离线重转换：父 PDF 被删除时拒绝", async () => {
+  const first = await importFixture(() => twoPages());
+  expect(first.result.outcome).toBe("published");
+  if (first.result.outcome !== "published") throw new Error("import did not publish");
+  const pdfSnapshots = (await listSourceSnapshots(root)).filter((entry) => entry.kind === "pdf");
+  await fs.rm(path.join(root, pdfSnapshots[0].path, "paper.pdf"));
+  await expect(reconvertParseCandidate({
+    root,
+    parseBatchId: first.result.task.parseBatchId,
+    baseRevision: first.result.revision.revisionId,
+  })).rejects.toThrow();
+  expect(await currentRevisionId()).toBe(first.result.revision.revisionId);
+  expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
+});
+
+test("pdf-import 纯文本快照离线重转换：父 PDF 被篡改时拒绝", async () => {
+  const first = await importFixture(() => twoPages());
+  expect(first.result.outcome).toBe("published");
+  if (first.result.outcome !== "published") throw new Error("import did not publish");
+  const pdfSnapshots = (await listSourceSnapshots(root)).filter((entry) => entry.kind === "pdf");
+  const pdfPath = path.join(root, pdfSnapshots[0].path, "paper.pdf");
+  await fs.writeFile(pdfPath, Buffer.concat([await fs.readFile(pdfPath), Buffer.from("%tampered")]));
+  await expect(reconvertParseCandidate({
+    root,
+    parseBatchId: first.result.task.parseBatchId,
+    baseRevision: first.result.revision.revisionId,
+  })).rejects.toThrow();
+  expect(await currentRevisionId()).toBe(first.result.revision.revisionId);
+});
+
+test("pdf-import 同页两视觉块同 bbox：二者引用同一 revision 裁剪资产", async () => {
+  await useInkPdf();
+  const fixture = await importFixture(() => jsonl([cropRow([cropPage([
+    block(0, "Intro text.", { block_bbox: [40, 40, 600, 80] }),
+    block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+    block(2, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+  ])])]));
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const { revision } = fixture.result;
+  const tree = await publishedTree(revision);
+  const figures = tree.blocks.filter((entry) => entry.kind === "figure");
+  expect(figures).toHaveLength(2);
+  for (const figure of figures) {
+    if (figure.kind !== "figure") throw new Error("figure missing");
+    expect(figure.asset).not.toBeNull();
+    expect(figure.warning).toBeUndefined();
+  }
+  const [first, second] = figures;
+  if (first.kind !== "figure" || second.kind !== "figure") throw new Error("figures missing");
+  expect(first.asset!.path).toBe(second.asset!.path);
+  const asset = await readRevisionAsset(root, revision.revisionId, first.asset!.path);
+  const image = PNG.sync.read(Buffer.from(asset.bytes));
+  expect(image.width).toBe(160);
+  expect(image.height).toBe(60);
+  expect(warningCodes(fixture.result.warnings)).not.toContain("pdf-convert-figure-missing");
+});
+
+test("pdf-import 预处理页视觉块只保留一条 warning，不产生无谓裁切", async () => {
+  await useInkPdf();
+  const raw = cropVisualResponse();
+  const rows = raw.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  rows[0].result.layoutParsingResults[0].prunedResult.model_settings.use_doc_preprocessor = true;
+  const fixture = await importFixture(() => jsonl(rows));
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const uncalibrated = fixture.result.warnings.filter(
+    (entry) => entry.code === "pdf-crop-region-uncalibrated",
+  );
+  expect(uncalibrated).toHaveLength(2);
+  expect(new Set(uncalibrated.map((entry) => entry.sourceAlias)).size).toBe(2);
 });
 
 test("pdf-import 离线重转换重建同一裁剪资产：候选发布后离线可读且字节一致", async () => {

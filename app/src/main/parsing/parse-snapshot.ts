@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { PNG } from "pngjs";
 import { fetch, type Dispatcher } from "undici";
+import { parseFragment, serialize, type DefaultTreeAdapterMap } from "parse5";
 import { readDiagnosticArray, type ImportDiagnostic } from "../../shared/arxiv.js";
 import type {
   ManagedFileContent,
@@ -19,6 +20,7 @@ import {
   type ProjectCommitHooks,
 } from "../project-core.js";
 import { findBatchParseSnapshot, resultResource, saveTask } from "./baidu-task.js";
+import { validateJpeg } from "./parse-image.js";
 
 const ASSET_BUDGET = 32 * 1024 * 1024;
 const SNAPSHOT_ASSET_BUDGET = 256 * 1024 * 1024;
@@ -27,6 +29,9 @@ const PAGE_BLOCK_BUDGET = 10_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 const PNG_MAGIC = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const BASE64_ASSET_CHARS = Math.ceil(ASSET_BUDGET / 3) * 4;
+const MANAGED_RESULT_BUDGET = 256 * 1024 * 1024;
+/** facts.json 显式上限：页块预算内的来源事实远小于此，超限即结构异常。 */
+const FACTS_BUDGET = 64 * 1024 * 1024;
 
 /** 无法取得或无法证明安全的资源占位；转换器据此给出缺失诊断，不渲染远端内容。 */
 export const MISSING_ASSET_PLACEHOLDER = "missing-asset";
@@ -57,6 +62,7 @@ const MESSAGE_KEYS: Record<string, string> = {
   "parse-page-empty": "parse.page.empty",
   "parse-response-fields-dropped": "parse.response.fieldsDropped",
   "parse-stopped": "parse.stopped",
+  "parse-response-budget-exceeded": "parse.response.budgetExceeded",
 };
 
 interface PublishParseSnapshotInput {
@@ -68,6 +74,8 @@ interface PublishParseSnapshotInput {
   signal?: AbortSignal;
   dispatcher?: Dispatcher;
   hooks?: ProjectCommitHooks;
+  /** 受管产物字节预算注入（边界测试用）；缺省为契约预算，生产调用不设置。 */
+  budgets?: { managedResultBytes?: number; factsBytes?: number };
 }
 
 type ParseSnapshotResult =
@@ -187,7 +195,11 @@ function validateRows(
   bytes: Uint8Array,
   signal: AbortSignal | undefined,
   context: SanitizeContext,
+  expectedPages: number,
+  resultBudget: number,
 ): ValidatedRow[] {
+  // 期望页数传入校验阶段：超限立即失败，不先物化全部页面。
+  if (bytes.byteLength > resultBudget) fatal("parse-response-budget-exceeded");
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -195,7 +207,6 @@ function validateRows(
     fatal("parse-response-invalid");
   }
   const rows: ValidatedRow[] = [];
-  const seen = new Set<string>();
   let pageCount = 0;
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -225,6 +236,7 @@ function validateRows(
       unknownKeyCount(rowRecord, ["result", "errorCode"]) +
       unknownKeyCount(result, ["dataInfo", "layoutParsingResults"]) +
       unknownKeyCount(info, ["type", "numPages", "pages"]);
+    if (pageCount + list.length > expectedPages) fatal("parse-page-count-mismatch");
     const pages: ValidatedPage[] = [];
     for (const [index, entry] of list.entries()) {
       signal?.throwIfAborted();
@@ -238,6 +250,12 @@ function validateRows(
       context.dropped +=
         unknownKeyCount(infoPage, ["width", "height"]) +
         unknownKeyCount(pageRecord, ["prunedResult", "markdown"]);
+      context.dropped += unknownKeyCount(data, [
+        "width",
+        "height",
+        "model_settings",
+        "parsing_res_list",
+      ]);
       const settings = whitelistSettings(data.model_settings, context);
       const rawBlocks = data.parsing_res_list;
       if (!Array.isArray(rawBlocks)) fatal("parse-response-invalid");
@@ -317,6 +335,7 @@ function validateRows(
         }
       }
       pageCount += 1;
+      if (pageCount > expectedPages) fatal("parse-page-count-mismatch");
       const page: ValidatedPage = {
         pageNumber: pageCount,
         width,
@@ -325,22 +344,37 @@ function validateRows(
         blocks,
         images,
       };
-      const canonical = hash(Buffer.from(JSON.stringify({
-        width: page.width,
-        height: page.height,
-        settings: page.settings,
-        blocks: page.blocks,
-      })));
-      if (seen.has(canonical) && blocks.some((block) => block.content.trim()))
-        fatal("parse-page-duplicate");
-      seen.add(canonical);
       if (blocks.length === 0)
         context.warnings.push(diagnostic("parse-page-empty", "warning", "validate", `page-${page.pageNumber}`));
       pages.push(page);
     }
     rows.push({ pages });
   }
+  if (pageCount !== expectedPages) fatal("parse-page-count-mismatch");
   return rows;
+}
+
+/** 重复页判定在资源本地化之后：指纹纳入去敏正文、块事实与本地资产引用／占位，
+ * 非空 = 存在块或资产；同文字不同图片可发布，重复纯视觉页仍拒绝。 */
+function assertDistinctPages(pages: Array<{
+  fact: PdfParsePageFact;
+  images: Record<string, string>;
+  contents: string[];
+}>): void {
+  const seen = new Set<string>();
+  for (const { fact, images, contents } of pages) {
+    const canonical = hash(Buffer.from(JSON.stringify({
+      width: fact.width,
+      height: fact.height,
+      settings: fact.modelSettings,
+      blocks: fact.blocks,
+      contents,
+      images: Object.entries(images).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    })));
+    const nonEmpty = fact.blocks.length > 0 || Object.keys(images).length > 0;
+    if (seen.has(canonical) && nonEmpty) fatal("parse-page-duplicate");
+    seen.add(canonical);
+  }
 }
 
 interface StoredAsset {
@@ -362,6 +396,21 @@ interface LocalizedResource {
   fact: PdfParseAssetFact | null;
 }
 
+/** 页级本地化结果：manifest 引用与资产事实，供正文资源定位与重复页指纹共用。 */
+interface LocalizedPage {
+  images: Record<string, string>;
+  facts: PdfParseAssetFact[];
+  /** vendorPath → 原始资源值；正文引用按原值精确匹配已知 manifest 资源。 */
+  sources: Map<string, unknown>;
+}
+
+/** 正文内资源定位：已知 manifest 资源精确替换为本地事实；无法安全处理的写占位。 */
+interface BlockResourceLocator {
+  page: LocalizedPage;
+  pageNumber: number;
+  blockId: number;
+}
+
 function missingResource(
   store: AssetStore,
   context: SanitizeContext,
@@ -375,7 +424,7 @@ function missingResource(
   return { reference: MISSING_ASSET_PLACEHOLDER, fact: null };
 }
 
-/** 校验实际字节：PNG 先查像素预算再完整解码；JPEG 查完整首尾标记。 */
+/** 校验实际字节：PNG 先查像素预算再完整解码；JPEG 解析 SOF 尺寸并核验结构完整。 */
 function imageKind(bytes: Buffer): { ext: string; mime: string } | null {
   if (bytes.length >= 24 && bytes.subarray(0, 8).equals(PNG_MAGIC)) {
     if (bytes.readUInt32BE(16) * bytes.readUInt32BE(20) > PNG_PIXEL_BUDGET)
@@ -387,15 +436,12 @@ function imageKind(bytes: Buffer): { ext: string; mime: string } | null {
     }
     return { ext: "png", mime: "image/png" };
   }
-  if (
-    bytes.length >= 4 &&
-    bytes[0] === 0xff &&
-    bytes[1] === 0xd8 &&
-    bytes[2] === 0xff &&
-    bytes.at(-2) === 0xff &&
-    bytes.at(-1) === 0xd9
-  )
-    return { ext: "jpg", mime: "image/jpeg" };
+  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    const jpeg = validateJpeg(bytes);
+    if (jpeg.status === "pixel-budget-exceeded")
+      fatal("parse-asset-budget-exceeded", "fetch");
+    if (jpeg.status === "ok") return { ext: "jpg", mime: "image/jpeg" };
+  }
   return null;
 }
 
@@ -536,23 +582,138 @@ async function localizeValue(
   return storeAsset(Buffer.from(value, "base64"), store, context, vendorPath, pageNumber);
 }
 
+/** HTML 型正文的资源本地化：已知 manifest 资源精确替换；签名 URL 经受控下载提取；
+ * data URI 提取为内容寻址资产；其余资源写占位 + warning。无法证明安全时拒绝发布。 */
+async function localizeBlockResources(
+  input: PublishParseSnapshotInput,
+  content: string,
+  locator: BlockResourceLocator,
+  store: AssetStore,
+  context: SanitizeContext,
+): Promise<string> {
+  if (!content.includes("<")) return content;
+  const fragment = parseFragment(content);
+  let touched = false;
+  let ordinal = 0;
+  const visit = async (node: DefaultTreeAdapterMap["node"]): Promise<void> => {
+    if ("tagName" in node) {
+      const element = node;
+      const urlAttribute = element.tagName === "img" ? "src"
+        : element.tagName === "image" ? "href"
+        : undefined;
+      if (urlAttribute !== undefined) {
+        const attribute = element.attrs.find((entry) => entry.name === urlAttribute);
+        const value = attribute?.value;
+        if (attribute && value !== undefined && value !== "") {
+          ordinal += 1;
+          const alias = `block-${locator.blockId}/resource-${ordinal}`;
+          let reference: string;
+          let known: string | undefined;
+          for (const [vendorPath, source] of locator.page.sources) {
+            if (source === value) {
+              known = locator.page.images[vendorPath];
+              break;
+            }
+          }
+          if (known !== undefined) {
+            // 已知 manifest 资源：精确替换为同一本地引用，不重复下载。
+            reference = known;
+          } else if (/^https?:\/\//i.test(value)) {
+            let approved = true;
+            try {
+              resultResource(value, input.task.endpoint);
+            } catch {
+              approved = false;
+            }
+            if (!approved) {
+              // 非允许 host／含凭据或 fragment：不发起访问，写占位 + warning。
+              reference = missingResource(store, context, alias, locator.pageNumber).reference;
+            } else {
+              const localized = await localizeValue(
+                input, value, store, context, alias, locator.pageNumber,
+              );
+              reference = localized.reference;
+              if (localized.fact) {
+                locator.page.images[alias] = localized.reference;
+                locator.page.facts.push(localized.fact);
+              }
+            }
+          } else if (/^data:image\/(?:png|jpeg|jpg);base64,/i.test(value)) {
+            const localized = await localizeValue(
+              input, value, store, context, alias, locator.pageNumber,
+            );
+            reference = localized.reference;
+            if (localized.fact) {
+              locator.page.images[alias] = localized.reference;
+              locator.page.facts.push(localized.fact);
+            }
+          } else if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.includes("://")) {
+            // 危险或未知 scheme：不能保证安全，拒绝发布而不是原样落盘。
+            fatal("parse-resource-url-rejected", "fetch");
+          } else {
+            reference = missingResource(store, context, alias, locator.pageNumber).reference;
+          }
+          attribute.value = reference;
+          touched = true;
+        }
+      }
+      // 资源元素的属性可能携带签名参数或凭据：除已本地化的 URL 属性外全部移除。
+      // 表格 colspan/rowspan 是可证明安全的正整数结构事实，逐字保留；其余属性移除。
+      const kept = element.attrs.filter((entry) => {
+        if (
+          urlAttribute !== undefined && entry.name === urlAttribute &&
+          entry.value !== undefined &&
+          (entry.value.startsWith("assets/") || entry.value === MISSING_ASSET_PLACEHOLDER)
+        )
+          return true;
+        return (
+          (element.tagName === "td" || element.tagName === "th") &&
+          (entry.name === "colspan" || entry.name === "rowspan") &&
+          /^[0-9]+$/.test(entry.value.trim())
+        );
+      });
+      if (kept.length !== element.attrs.length) {
+        element.attrs = kept;
+        touched = true;
+      }
+    }
+    if ("childNodes" in node)
+      for (const child of node.childNodes) await visit(child);
+  };
+  await visit(fragment);
+  if (!touched) return content;
+  return serialize(fragment);
+}
+
 /** 第二遍：资源本地化与受管响应重建；正文、页／块顺序与几何事实逐字保留。 */
 async function localizeRows(
   input: PublishParseSnapshotInput,
   rows: ValidatedRow[],
   context: SanitizeContext,
+  resultBudget: number,
 ) {
   const store: AssetStore = { files: new Map(), total: 0, replaced: 0, missing: 0 };
-  const sanitizedRows: unknown[] = [];
+  const chunks: string[] = [];
+  let resultSize = 0;
+  const appendManaged = (line: string): void => {
+    // 受管行构建即跟踪字节：超预算立即失败，不先物化完整 result.jsonl。
+    resultSize += Buffer.byteLength(line) + 1;
+    if (resultSize > resultBudget) fatal("parse-response-budget-exceeded");
+    chunks.push(line);
+  };
   const factsPages: PdfParsePageFact[] = [];
+  const pageImages: Array<Record<string, string>> = [];
+  const pageContents: string[][] = [];
   for (const row of rows) {
     const sanitizedPages: unknown[] = [];
     for (const page of row.pages) {
       input.signal?.throwIfAborted();
-      const assetFacts: PdfParseAssetFact[] = [];
-      let localizedImages: Record<string, string> | null = null;
+      const localizedPage: LocalizedPage = {
+        images: {},
+        facts: [],
+        sources: new Map(Object.entries(page.images ?? {})),
+      };
       if (page.images !== null) {
-        localizedImages = {};
         for (const [vendorPath, value] of Object.entries(page.images)) {
           const localized = await localizeValue(
             input,
@@ -562,25 +723,38 @@ async function localizeRows(
             vendorPath,
             page.pageNumber,
           );
-          localizedImages[vendorPath] = localized.reference;
-          if (localized.fact) assetFacts.push(localized.fact);
+          localizedPage.images[vendorPath] = localized.reference;
+          if (localized.fact) localizedPage.facts.push(localized.fact);
         }
+      }
+      const sanitizedBlocks: unknown[] = [];
+      const contents: string[] = [];
+      for (const block of page.blocks) {
+        const content = await localizeBlockResources(
+          input,
+          block.content,
+          { page: localizedPage, pageNumber: page.pageNumber, blockId: block.id },
+          store,
+          context,
+        );
+        contents.push(content);
+        sanitizedBlocks.push({
+          block_label: block.label,
+          block_content: content,
+          block_bbox: block.bbox,
+          block_id: block.id,
+          block_order: block.order,
+          group_id: block.groupId,
+        });
       }
       sanitizedPages.push({
         prunedResult: {
           width: page.width,
           height: page.height,
           model_settings: page.settings,
-          parsing_res_list: page.blocks.map((block) => ({
-            block_label: block.label,
-            block_content: block.content,
-            block_bbox: block.bbox,
-            block_id: block.id,
-            block_order: block.order,
-            group_id: block.groupId,
-          })),
+          parsing_res_list: sanitizedBlocks,
         },
-        ...(localizedImages === null ? {} : { markdown: { images: localizedImages } }),
+        ...(page.images === null ? {} : { markdown: { images: localizedPage.images } }),
       });
       const blockFacts: PdfParseBlockFact[] = page.blocks.map((block) => ({
         blockId: block.id,
@@ -595,10 +769,12 @@ async function localizeRows(
         height: page.height,
         modelSettings: page.settings,
         blocks: blockFacts,
-        assets: assetFacts,
+        assets: localizedPage.facts,
       });
+      pageImages.push(localizedPage.images);
+      pageContents.push(contents);
     }
-    sanitizedRows.push({
+    appendManaged(JSON.stringify({
       result: {
         dataInfo: {
           type: "pdf",
@@ -607,9 +783,9 @@ async function localizeRows(
         },
         layoutParsingResults: sanitizedPages,
       },
-    });
+    }));
   }
-  return { sanitizedRows, factsPages, store };
+  return { resultText: chunks.join("\n") + "\n", factsPages, pageImages, pageContents, store };
 }
 
 async function attachSnapshot(
@@ -653,15 +829,23 @@ export async function publishParseSnapshot(
       throw new Error("父 PDF 来源快照无效，不能发布解析快照。");
     input.signal?.throwIfAborted();
     const context: SanitizeContext = { dropped: 0, warnings: [] };
-    const rows = validateRows(input.response.bytes, input.signal, context);
-    const pageCount = rows.reduce((total, row) => total + row.pages.length, 0);
-    if (pageCount !== parent.pageCount) fatal("parse-page-count-mismatch");
-    const { sanitizedRows, factsPages, store } = await localizeRows(input, rows, context);
-    const resultBytes = Buffer.from(
-      sanitizedRows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+    const resultBudget = input.budgets?.managedResultBytes ?? MANAGED_RESULT_BUDGET;
+    const factsBudget = input.budgets?.factsBytes ?? FACTS_BUDGET;
+    const rows = validateRows(
+      input.response.bytes, input.signal, context, parent.pageCount, resultBudget,
     );
+    const pageCount = rows.reduce((total, row) => total + row.pages.length, 0);
+    const { resultText, factsPages, pageImages, pageContents, store } =
+      await localizeRows(input, rows, context, resultBudget);
+    assertDistinctPages(factsPages.map((fact, index) => ({
+      fact,
+      images: pageImages[index],
+      contents: pageContents[index],
+    })));
+    const resultBytes = Buffer.from(resultText);
     const facts: PdfParseFactsFile = { formatVersion: 1, pageCount, pages: factsPages };
     const factsBytes = Buffer.from(JSON.stringify(facts, null, 2) + "\n");
+    if (factsBytes.byteLength > factsBudget) fatal("parse-response-budget-exceeded");
     const sanitizedSha256 = hash(resultBytes);
     const files: Record<string, ManagedFileContent> = {
       "result.jsonl": { bytes: resultBytes, mime: "application/x-ndjson" },

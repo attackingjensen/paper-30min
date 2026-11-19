@@ -95,6 +95,35 @@ function pngBytes(width = 2, height = 2): Buffer {
   return PNG.sync.write(image);
 }
 
+/** 最小结构完整 JPEG：SOI + SOF0 + DHT + SOS + 扫描数据 + EOI。 */
+function jpegBytes(width = 8, height = 8, extra?: Buffer): Buffer {
+  const sof = Buffer.alloc(11);
+  sof.writeUInt16BE(11, 0);
+  sof[2] = 8;
+  sof.writeUInt16BE(height, 3);
+  sof.writeUInt16BE(width, 5);
+  sof[7] = 1;
+  sof[8] = 1;
+  sof[9] = 0x11;
+  sof[10] = 0;
+  const dht = Buffer.from([
+    0x00, 0x1a, 0x00,
+    0, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+  ]);
+  const sos = Buffer.from([0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]);
+  const segment = (marker: number, payload: Buffer) =>
+    Buffer.concat([Buffer.from([0xff, marker]), payload]);
+  return Buffer.concat([
+    Buffer.from([0xff, 0xd8]),
+    segment(0xc0, sof),
+    segment(0xc4, dht),
+    segment(0xda, sos),
+    extra ?? Buffer.from([0x12, 0x34]),
+    Buffer.from([0xff, 0xd9]),
+  ]);
+}
+
 function block(id: number, content: string, extra: Record<string, unknown> = {}) {
   return {
     block_label: "text",
@@ -534,12 +563,20 @@ test("pdf-import 单资产实际字节超预算拒绝", async () => {
 });
 
 test("pdf-import 快照资产合计超预算拒绝", async () => {
-  const jpeg = Buffer.alloc(ASSET_LIMIT, 0x61);
-  jpeg[0] = 0xff;
-  jpeg[1] = 0xd8;
-  jpeg[2] = 0xff;
-  jpeg[ASSET_LIMIT - 2] = 0xff;
-  jpeg[ASSET_LIMIT - 1] = 0xd9;
+  // 结构完整的大 JPEG：SOF 声明 8x8 像素，SOS 之前插入多个受控 APP1 段填充。
+  const jpegHead = jpegBytes();
+  const sosIndex = jpegHead.length - 14;
+  const head = jpegHead.subarray(0, sosIndex);
+  const tail = jpegHead.subarray(sosIndex);
+  const fillers: Buffer[] = [];
+  let remaining = ASSET_LIMIT - 65_536 - jpegHead.length;
+  while (remaining > 0) {
+    const segmentBytes = Math.min(remaining, 65_530);
+    const length = Buffer.alloc(2);
+    length.writeUInt16BE(segmentBytes, 0);
+    fillers.push(Buffer.from([0xff, 0xe1]), length, Buffer.alloc(segmentBytes - 2, 0x61));
+    remaining -= segmentBytes;
+  }
   let served = 0;
   const fixture = await downloadResponse(
     (endpoint) => {
@@ -551,9 +588,19 @@ test("pdf-import 快照资产合计超预算拒绝", async () => {
       ])]);
     },
     async (_request, response) => {
-      jpeg[3] = served;
+      tail[tail.length - 4] = served;
       served += 1;
-      response.end(jpeg);
+      const body = Buffer.concat([head, ...fillers, tail]);
+      response.writeHead(200, { "transfer-encoding": "chunked" });
+      for (let offset = 0; offset < body.length; offset += 16_384) {
+        const piece = body.subarray(offset, offset + 16_384);
+        if (!response.write(piece)) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          response.once("drain", resolve);
+          await promise;
+        }
+      }
+      response.end();
     },
   );
   const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
@@ -787,4 +834,251 @@ test("pdf-import 停止信号中断去敏，不发布快照也不记失败诊断
   const [persisted] = await listBaiduPdfParseTasks(root);
   expect(persisted.phase).toBe("downloaded");
   expect(persisted.diagnostic).toBeUndefined();
+});
+
+test("pdf-import 表格 HTML 内签名 URL 被本地化，签名不进入工程", async () => {
+  const image = pngBytes();
+  const fixture = await downloadResponse(
+    (endpoint) => jsonl([row([
+      vendorPage([block(0,
+        `<table><tr><td><img src="${endpoint}/asset?${SIGNED_URL_MARKER}" alt="图"></td></tr></table>`,
+        { block_label: "table" })]),
+      vendorPage([block(0, "Second page text")]),
+    ])]),
+    async (request, response) => {
+      expect(request.url).toBe(`/jobs/asset?${SIGNED_URL_MARKER}`);
+      response.end(image);
+    },
+  );
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("table HTML localization failed");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const content = rows[0].result.layoutParsingResults[0].prunedResult.parsing_res_list[0].block_content as string;
+  expect(content).toContain(`src="assets/${sha256(image)}.png"`);
+  expect(content).not.toContain(SIGNED_URL_MARKER);
+  expect(result.snapshot.sanitization.replaced).toBe(1);
+  const facts = JSON.parse((await readSnapshotFile(result.snapshot, "facts.json")).toString("utf8")) as PdfParseFactsFile;
+  expect(facts.pages[0].assets).toEqual([
+    expect.objectContaining({ path: `assets/${sha256(image)}.png`, sha256: sha256(image) }),
+  ]);
+  await expectProjectDoesNotContain(TOKEN, SIGNED_URL_MARKER);
+});
+
+test("pdf-import 正文 HTML 内 data URI 提取为资产，原始 base64 不落盘", async () => {
+  const image = pngBytes(3, 3);
+  const base64 = image.toString("base64");
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, `<p>前文<img src="data:image/png;base64,${base64}">后文</p>`)]),
+    vendorPage([block(0, "Second page text")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("inline HTML localization failed");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const content = rows[0].result.layoutParsingResults[0].prunedResult.parsing_res_list[0].block_content as string;
+  expect(content).toContain(`src="assets/${sha256(image)}.png"`);
+  expect(managed.includes(base64)).toBe(false);
+  expect((await readSnapshotFile(result.snapshot, `assets/${sha256(image)}.png`)).equals(image)).toBe(true);
+  await expectProjectDoesNotContain(TOKEN);
+});
+
+test("pdf-import 正文 HTML 引用已知 manifest 资源时精确替换，不重复下载", async () => {
+  const image = pngBytes();
+  let assetHits = 0;
+  const fixture = await downloadResponse(
+    (endpoint) => jsonl([row([
+      vendorPage([block(0, `<table><tr><td><img src="${endpoint}/asset?${SIGNED_URL_MARKER}"></td></tr></table>`,
+        { block_label: "table" })], {
+        images: { "imgs/fig.png": `${endpoint}/asset?${SIGNED_URL_MARKER}` },
+      }),
+      vendorPage([block(0, "Second page text")]),
+    ])]),
+    async (_request, response) => {
+      assetHits += 1;
+      response.end(image);
+    },
+  );
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("manifest reuse failed");
+  expect(assetHits).toBe(1);
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const page = rows[0].result.layoutParsingResults[0];
+  expect(page.prunedResult.parsing_res_list[0].block_content)
+    .toContain(`src="assets/${sha256(image)}.png"`);
+  expect(page.markdown.images["imgs/fig.png"]).toBe(`assets/${sha256(image)}.png`);
+  await expectProjectDoesNotContain(TOKEN, SIGNED_URL_MARKER);
+});
+
+test("pdf-import 正文 HTML 无法取得的资源写占位 warning，签名不落盘", async () => {
+  const fixture = await downloadResponse(
+    (endpoint) => jsonl([row([
+      vendorPage([block(0, `<p><img src="${endpoint}/gone?${SIGNED_URL_MARKER}"></p>`)]),
+      vendorPage([block(0, "Second page text")]),
+    ])]),
+    async (_request, response) => {
+      response.writeHead(500).end();
+    },
+  );
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("missing HTML resource blocked publication");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  expect(rows[0].result.layoutParsingResults[0].prunedResult.parsing_res_list[0].block_content)
+    .toContain(`src="${MISSING_ASSET_PLACEHOLDER}"`);
+  expect(result.snapshot.sanitization.missing).toBe(1);
+  expect(result.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ code: "parse-asset-missing", severity: "warning" }),
+  ]));
+  await expectProjectDoesNotContain(SIGNED_URL_MARKER);
+});
+
+test("pdf-import 正文 HTML 危险 scheme 资源拒绝发布，不原样落盘", async () => {
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, '<p><img src="javascript:alert(1)"></p>')]),
+    vendorPage([block(0, "Second page text")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("dangerous HTML resource was accepted");
+  expect(result.diagnostic.code).toBe("parse-resource-url-rejected");
+  expect(await parseSnapshots()).toEqual([]);
+  await expectProjectDoesNotContain("javascript:alert");
+});
+
+test("pdf-import 同文字不同图片的页面可发布", async () => {
+  const first = pngBytes(2, 2);
+  const second = pngBytes(3, 3);
+  const distinct = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, "Same caption")], { images: { "imgs/a.png": first.toString("base64") } }),
+    vendorPage([block(0, "Same caption")], { images: { "imgs/a.png": second.toString("base64") } }),
+  ])]));
+  const published = await publishParseSnapshot({ root, task: distinct.task, response: distinct.response });
+  expect(published.ok).toBe(true);
+});
+
+test("pdf-import 同几何同块身份但文字不同的两页可发布", async () => {
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, "First distinct text")]),
+    vendorPage([block(0, "Second distinct text")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("distinct text pages were rejected");
+  expect(result.snapshot.pageCount).toBe(2);
+});
+
+test("pdf-import 重复纯视觉页拒绝", async () => {
+  const visualFixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, "", { block_label: "image" })]),
+    vendorPage([block(0, "", { block_label: "image" })]),
+  ])]));
+  const rejected = await publishParseSnapshot({
+    root,
+    task: visualFixture.task,
+    response: visualFixture.response,
+  });
+  expect(rejected.ok).toBe(false);
+  if (rejected.ok) throw new Error("duplicate visual page was accepted");
+  expect(rejected.diagnostic.code).toBe("parse-page-duplicate");
+});
+
+test("pdf-import 受管 result.jsonl 超注入预算时拒绝，不发布部分快照", async () => {
+  const fixture = await downloadResponse(() => twoPages());
+  const result = await publishParseSnapshot({
+    root,
+    task: fixture.task,
+    response: fixture.response,
+    budgets: { managedResultBytes: 64 },
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("oversized managed result was accepted");
+  expect(result.diagnostic.code).toBe("parse-response-budget-exceeded");
+  expect(await parseSnapshots()).toEqual([]);
+});
+
+test("pdf-import facts.json 超注入预算时拒绝发布", async () => {
+  const fixture = await downloadResponse(() => twoPages());
+  const result = await publishParseSnapshot({
+    root,
+    task: fixture.task,
+    response: fixture.response,
+    budgets: { factsBytes: 16 },
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("oversized facts was accepted");
+  expect(result.diagnostic.code).toBe("parse-response-budget-exceeded");
+  expect(await parseSnapshots()).toEqual([]);
+});
+
+test("pdf-import JPEG 首尾标记合法但中间损坏时降级为占位 warning", async () => {
+  const broken = Buffer.concat([
+    Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x04]),
+    Buffer.alloc(32, 0x61),
+    Buffer.from([0xff, 0xd9]),
+  ]);
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, "First")], { images: { "imgs/broken.jpg": broken.toString("base64") } }),
+    vendorPage([block(0, "Second")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("corrupt JPEG blocked publication");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  expect(rows[0].result.layoutParsingResults[0].markdown.images["imgs/broken.jpg"])
+    .toBe(MISSING_ASSET_PLACEHOLDER);
+  expect(result.diagnostics[0].code).toBe("parse-asset-missing");
+});
+
+test("pdf-import 结构完整 JPEG 被接受为内容寻址资产", async () => {
+  const jpeg = jpegBytes();
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, "First")], { images: { "imgs/photo.jpg": jpeg.toString("base64") } }),
+    vendorPage([block(0, "Second")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("valid JPEG was rejected");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  expect(rows[0].result.layoutParsingResults[0].markdown.images["imgs/photo.jpg"])
+    .toBe(`assets/${sha256(jpeg)}.jpg`);
+  expect((await readSnapshotFile(result.snapshot, `assets/${sha256(jpeg)}.jpg`)).equals(jpeg)).toBe(true);
+});
+
+test("pdf-import JPEG 超大声明尺寸在解码前拒绝", async () => {
+  const huge = jpegBytes(8000, 4000);
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, "First")], { images: { "imgs/huge.jpg": huge.toString("base64") } }),
+    vendorPage([block(0, "Second")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("oversized JPEG was accepted");
+  expect(result.diagnostic.code).toBe("parse-asset-budget-exceeded");
+  expect(await parseSnapshots()).toEqual([]);
+});
+
+test("pdf-import prunedResult 未知字段计入 dropped 并不持久化", async () => {
+  const fixture = await downloadResponse((endpoint) => {
+    const page = vendorPage([block(0, "First")]);
+    (page.prunedResult as Record<string, unknown>).layout_extra = `${endpoint}/x?${SIGNED_URL_MARKER}`;
+    return jsonl([row([page, vendorPage([block(0, "Second")])])]);
+  });
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("dropped pruned field publish failed");
+  expect(result.snapshot.sanitization.dropped).toBeGreaterThanOrEqual(1);
+  expect(result.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ code: "parse-response-fields-dropped", severity: "warning" }),
+  ]));
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  expect(managed.includes("layout_extra")).toBe(false);
+  await expectProjectDoesNotContain(SIGNED_URL_MARKER);
 });

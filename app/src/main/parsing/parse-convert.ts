@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import { parseFragment, serialize, type DefaultTreeAdapterMap } from "parse5";
 import { readDiagnosticArray, type ImportDiagnostic } from "../../shared/arxiv.js";
 import type { DocumentTree } from "../../shared/document/tree.js";
 import { parseDocumentTree } from "../../shared/document/tree.js";
@@ -28,25 +27,18 @@ import {
 import { createDocumentMergeCandidate, type DocumentMergeCandidate } from "../document/merge.js";
 import { cropPdfPageRegions, type PdfCropAsset, type PdfCropRequest } from "../pdf/page-crop.js";
 import { MISSING_ASSET_PLACEHOLDER } from "./parse-snapshot.js";
+import { convertTable } from "./parse-table.js";
+import {
+  TreeBuilder,
+  textSentences,
+  type AssetReference,
+  type CaptionInput,
+  type FigureBlock,
+  type UnitKind,
+} from "./parse-tree.js";
 
 /** 转换器持久版本：算法变化必须递增（SPEC-pdf-import §6.10 确定性契约）。 */
-export const PDF_CONVERTER_VERSION = 2;
-
-const MAX_TABLE_ROWS = 4096;
-const MAX_TABLE_COLUMNS = 256;
-
-type Node = DefaultTreeAdapterMap["node"];
-type Element = DefaultTreeAdapterMap["element"];
-type ParentNode = DefaultTreeAdapterMap["parentNode"];
-type InlinePart = DocumentTree["sentences"][string]["content"][number];
-type BlockNode = DocumentTree["blocks"][number];
-type FigureBlock = Extract<BlockNode, { kind: "figure" }>;
-type UnitKind = DocumentTree["units"][string]["kind"];
-type AssetReference = FigureBlock["asset"];
-type AtomValue = DocumentTree["atoms"][string];
-type AtomInput = AtomValue extends infer T
-  ? T extends AtomValue ? Omit<T, "id" | "unitId"> : never
-  : never;
+export const PDF_CONVERTER_VERSION = 3;
 
 type PdfConvertPoint = "candidate-built" | "before-publish";
 
@@ -62,7 +54,7 @@ interface ConvertParseInput {
   facts: PdfParseFactsFile;
   /** 原页裁切请求（无云端资产的视觉块）；纯转换不渲染，由调用方先行裁切。 */
   cropRequests?: PdfCropRequest[];
-  /** 已渲染裁剪资产：key（首个块别名）→ 内容寻址 PNG。 */
+  /** 已渲染裁剪资产：key（每个块别名）→ 内容寻址 PNG。 */
   cropAssets?: Map<string, PdfCropAsset>;
   signal?: AbortSignal;
 }
@@ -178,28 +170,6 @@ function objectValue(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     fatal("pdf-convert-snapshot-invalid");
   return value as Record<string, unknown>;
-}
-
-function isElement(node: Node): node is Element {
-  return "tagName" in node;
-}
-
-function isParent(node: Node): node is ParentNode {
-  return "childNodes" in node;
-}
-
-function attr(element: Element, name: string): string | undefined {
-  return element.attrs.find((entry) => entry.name === name)?.value;
-}
-
-function findTag(root: Node, tagName: string): Element | null {
-  if (isElement(root) && root.tagName === tagName) return root;
-  if (!isParent(root)) return null;
-  for (const child of root.childNodes) {
-    const found = findTag(child, tagName);
-    if (found) return found;
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,540 +364,8 @@ function parseSanitizedRows(bytes: Uint8Array, facts: PdfParseFactsFile): Conver
   return pages;
 }
 
-// ---------------------------------------------------------------------------
-// 规范树构建
-// ---------------------------------------------------------------------------
-
-function mergeTextParts(parts: InlinePart[]): InlinePart[] {
-  const merged: InlinePart[] = [];
-  for (const part of parts) {
-    if (part.kind === "text") {
-      if (!part.text) continue;
-      const last = merged[merged.length - 1];
-      if (last && last.kind === "text") {
-        last.text += part.text;
-        continue;
-      }
-      merged.push({ kind: "text", text: part.text });
-    } else {
-      merged.push(part);
-    }
-  }
-  return merged;
-}
-
-/** 确定句切分：英文终止符后随空白或结尾，中文终止符直接断句；不猜测语义。 */
-function splitSentences(parts: InlinePart[]): InlinePart[][] {
-  const sentences: InlinePart[][] = [];
-  let current: InlinePart[] = [];
-  const flush = (): void => {
-    const merged = mergeTextParts(current);
-    if (merged.some((part) => part.kind === "atom" || part.text.trim())) sentences.push(merged);
-    current = [];
-  };
-  for (const part of parts) {
-    if (part.kind === "atom") {
-      current.push(part);
-      continue;
-    }
-    let rest = part.text;
-    for (;;) {
-      const match = /[.!?](?=\s|$)|[。！？]/.exec(rest);
-      if (!match) {
-        if (rest) current.push({ kind: "text", text: rest });
-        break;
-      }
-      const end = match.index + match[0].length;
-      current.push({ kind: "text", text: rest.slice(0, end) });
-      flush();
-      rest = rest.slice(end).replace(/^\s+/, "");
-    }
-  }
-  flush();
-  return sentences;
-}
-
-interface CaptionInput {
-  unitId: string;
-  sentences: InlinePart[][];
-  aliases?: string[];
-}
-
-interface CellInput {
-  unitId: string;
-  sentences: InlinePart[][];
-  rowSpan: number;
-  columnSpan: number;
-  aliases?: string[];
-}
-
-class TreeBuilder {
-  readonly tree: DocumentTree;
-  readonly warnings: ImportDiagnostic[] = [];
-  readonly rootId: string;
-  currentSectionId: string;
-  readableUnits = 0;
-
-  constructor(paperId: string) {
-    this.rootId = randomUUID();
-    this.currentSectionId = this.rootId;
-    this.tree = {
-      documentFormatVersion: 1,
-      paperId,
-      sections: {
-        [this.rootId]: {
-          id: this.rootId,
-          parentSectionId: null,
-          title: "",
-          childSectionIds: [],
-          unitIds: [],
-        },
-      },
-      units: {},
-      sentences: {},
-      atoms: {},
-      blocks: [],
-    };
-  }
-
-  reserveUnit(): string {
-    return randomUUID();
-  }
-
-  addAtom(unitId: string, atom: AtomInput): string {
-    const atomId = randomUUID();
-    (this.tree.atoms as Record<string, unknown>)[atomId] = { id: atomId, unitId, ...atom };
-    return atomId;
-  }
-
-  setRootTitle(title: string, aliases?: string[]): void {
-    const root = this.tree.sections[this.rootId];
-    root.title = title;
-    if (aliases) root.sourceAliases = aliases;
-  }
-
-  /** 平铺章节：vendor 不提供层级，全部直属根章节（SPEC §6.2 确定降级）。 */
-  addSection(title: string, aliases?: string[]): string {
-    const id = randomUUID();
-    this.tree.sections[id] = {
-      id,
-      parentSectionId: this.rootId,
-      title,
-      childSectionIds: [],
-      unitIds: [],
-      ...(aliases ? { sourceAliases: aliases } : {}),
-    };
-    this.tree.sections[this.rootId].childSectionIds.push(id);
-    this.currentSectionId = id;
-    return id;
-  }
-
-  flushUnit(
-    unitId: string,
-    kind: UnitKind,
-    sentences: InlinePart[][],
-    block: BlockNode | null,
-    aliases?: string[],
-  ): void {
-    const sectionId = this.currentSectionId;
-    const sentenceIds: string[] = [];
-    let readable = false;
-    for (const parts of sentences) {
-      const merged = mergeTextParts(parts);
-      if (!merged.length) continue;
-      if (merged.some((part) => part.kind === "atom" || part.text.trim())) readable = true;
-      const sentenceId = randomUUID();
-      this.tree.sentences[sentenceId] = { id: sentenceId, unitId, content: merged };
-      sentenceIds.push(sentenceId);
-      for (const part of merged)
-        if (part.kind === "atom") this.tree.atoms[part.atomId].unitId = unitId;
-    }
-    if (!sentenceIds.length) {
-      const sentenceId = randomUUID();
-      this.tree.sentences[sentenceId] = {
-        id: sentenceId,
-        unitId,
-        content: [{ kind: "text", text: " " }],
-      };
-      sentenceIds.push(sentenceId);
-    }
-    this.tree.units[unitId] = {
-      id: unitId,
-      sectionId,
-      kind,
-      sentenceIds,
-      ...(aliases ? { sourceAliases: aliases } : {}),
-    };
-    this.tree.sections[sectionId].unitIds.push(unitId);
-    if (block) this.tree.blocks.push(block);
-    if (readable) this.readableUnits += 1;
-  }
-
-  addUnit(kind: UnitKind, sentences: InlinePart[][], aliases?: string[]): string {
-    const unitId = this.reserveUnit();
-    this.flushUnit(unitId, kind, sentences, {
-      id: randomUUID(),
-      sectionId: this.currentSectionId,
-      kind: "unit",
-      unitId,
-      ...(aliases ? { sourceAliases: aliases } : {}),
-    }, aliases);
-    return unitId;
-  }
-
-  addFigure(input: { asset: AssetReference; warning?: string; aliases?: string[] }): FigureBlock {
-    const block: FigureBlock = {
-      id: randomUUID(),
-      sectionId: this.currentSectionId,
-      kind: "figure",
-      asset: input.asset,
-      captionUnitId: null,
-      ...(input.warning ? { warning: input.warning } : {}),
-      ...(input.aliases ? { sourceAliases: input.aliases } : {}),
-    };
-    this.tree.blocks.push(block);
-    return block;
-  }
-
-  /** 图注紧随视觉块落树：单元顺序与阅读块顺序一致（validateBlocks 契约）。 */
-  attachCaption(block: FigureBlock, caption: CaptionInput): void {
-    block.captionUnitId = caption.unitId;
-    this.flushUnit(caption.unitId, "caption", caption.sentences, null, caption.aliases);
-  }
-
-  addTable(rows: CellInput[][], caption: CaptionInput | null, aliases?: string[]): void {
-    const sectionId = this.currentSectionId;
-    const block: BlockNode = {
-      id: randomUUID(),
-      sectionId,
-      kind: "table",
-      captionUnitId: caption?.unitId ?? null,
-      rows: rows.map((row) => row.map((cell) => ({
-        unitId: cell.unitId,
-        rowSpan: cell.rowSpan,
-        columnSpan: cell.columnSpan,
-      }))),
-      ...(aliases ? { sourceAliases: aliases } : {}),
-    };
-    const ordered: Array<{ kind: UnitKind; entry: CaptionInput | CellInput }> = [
-      ...(caption ? [{ kind: "caption" as UnitKind, entry: caption }] : []),
-      ...rows.flat().map((cell) => ({ kind: "table-cell" as UnitKind, entry: cell })),
-    ];
-    for (const [index, { kind, entry }] of ordered.entries())
-      this.flushUnit(entry.unitId, kind, entry.sentences, index === 0 ? block : null, entry.aliases);
-    if (!ordered.length) this.tree.blocks.push(block);
-  }
-
-  addFormula(
-    source: { format: "latex" | "text"; value: string },
-    text: string,
-    aliases?: string[],
-    asset?: AssetReference,
-  ): void {
-    this.tree.blocks.push({
-      id: randomUUID(),
-      sectionId: this.currentSectionId,
-      kind: "formula",
-      source,
-      text,
-      ...(asset ? { asset } : {}),
-      ...(aliases ? { sourceAliases: aliases } : {}),
-    });
-  }
-
-  addRaw(html: string, text: string, limitations: string[], aliases?: string[]): void {
-    this.tree.blocks.push({
-      id: randomUUID(),
-      sectionId: this.currentSectionId,
-      kind: "raw",
-      html,
-      text,
-      limitations,
-      ...(aliases ? { sourceAliases: aliases } : {}),
-    });
-  }
-}
-
 function warn(builder: TreeBuilder, code: string, sourceAlias?: string): void {
   builder.warnings.push(diagnostic(code, "warning", "convert", sourceAlias));
-}
-
-/** 行内内容：$$…$$ 与 $…$ 成为 math atom，其余逐字保留为文本投影。 */
-function inlineParts(text: string, unitId: string, builder: TreeBuilder): InlinePart[] {
-  const parts: InlinePart[] = [];
-  const pattern = /\$\$([\s\S]+?)\$\$|\$([^\n$]+?)\$/g;
-  let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
-    const inner = (match[1] ?? match[2] ?? "").trim();
-    if (!inner) continue;
-    if (match.index > cursor)
-      parts.push({ kind: "text", text: text.slice(cursor, match.index) });
-    const atomId = builder.addAtom(unitId, {
-      kind: "math",
-      text: match[0],
-      source: { format: "latex", value: inner },
-    });
-    parts.push({ kind: "atom", atomId });
-    cursor = match.index + match[0].length;
-  }
-  if (cursor < text.length) parts.push({ kind: "text", text: text.slice(cursor) });
-  return parts;
-}
-
-function textSentences(text: string, unitId: string, builder: TreeBuilder): InlinePart[][] {
-  return splitSentences(inlineParts(text, unitId, builder));
-}
-
-// ---------------------------------------------------------------------------
-// HTML 表格：结构化转换与安全消毒
-// ---------------------------------------------------------------------------
-
-const RAW_HTML_TAGS = new Set([
-  "blockquote", "br", "code", "em", "li", "ol", "p", "pre", "span", "strong",
-  "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
-]);
-const CELL_INLINE_TAGS = new Set(["br", "code", "em", "p", "span", "strong", "sub", "sup"]);
-const DANGEROUS_TAGS = new Set([
-  "script", "style", "iframe", "object", "embed", "noscript", "template", "link", "meta", "base",
-]);
-
-interface TableContext {
-  builder: TreeBuilder;
-  page: ConvertedPage;
-  referenced: Set<string>;
-  sanitized: boolean;
-  tableImage: boolean;
-}
-
-function resolveImage(vendorPath: string, context: TableContext): AssetReference {
-  const reference = context.page.images[vendorPath];
-  if (reference === undefined || reference === MISSING_ASSET_PLACEHOLDER) return null;
-  const fact = context.page.assets.find((asset) => asset.vendorPath === vendorPath);
-  if (!fact) return null;
-  context.referenced.add(fact.path);
-  return { path: fact.path, sha256: fact.sha256, mime: fact.mime };
-}
-
-function imagePlaceholder(element: Element, context: TableContext): string {
-  const src = attr(element, "src");
-  if (src !== undefined) resolveImage(src, context);
-  context.tableImage = true;
-  const alt = attr(element, "alt");
-  return alt && alt.trim() ? alt.trim() : "[image]";
-}
-
-/** 单元格文本投影：保留文字，图片给可读占位，危险与未知标记消毒。 */
-function cellText(node: Node, context: TableContext): string {
-  if (node.nodeName === "#text")
-    return (node as DefaultTreeAdapterMap["textNode"]).value;
-  if (node.nodeName === "#comment") {
-    context.sanitized = true;
-    return "";
-  }
-  if (!isElement(node))
-    return isParent(node) ? node.childNodes.map((child) => cellText(child, context)).join("") : "";
-  const element = node;
-  if (DANGEROUS_TAGS.has(element.tagName)) {
-    context.sanitized = true;
-    return "";
-  }
-  if (element.tagName === "img") {
-    context.sanitized = true;
-    return imagePlaceholder(element, context);
-  }
-  if (element.tagName === "br") return " ";
-  const structural = element.tagName === "td" || element.tagName === "th";
-  for (const entry of element.attrs) {
-    if (structural && (entry.name === "colspan" || entry.name === "rowspan")) continue;
-    context.sanitized = true;
-  }
-  if (!CELL_INLINE_TAGS.has(element.tagName)) context.sanitized = true;
-  const children = element.childNodes.map((child) => cellText(child, context)).join("");
-  return element.tagName === "p" ? ` ${children} ` : children;
-}
-
-interface SpanCell {
-  unitId: string;
-  rowSpan: number;
-  columnSpan: number;
-  text: string;
-}
-
-/** 行列跨度提取：来源跨度不可信，超出网格规模或非安全整数时整体降级 raw。 */
-function tableRows(tabular: Element, context: TableContext): SpanCell[][] | null {
-  const trs: Element[] = [];
-  const collectRows = (node: Node): void => {
-    if (isElement(node) && node.tagName === "tr") {
-      trs.push(node);
-      return;
-    }
-    if (isElement(node) && node.tagName === "table" && node !== tabular) return;
-    if (isParent(node)) for (const child of node.childNodes) collectRows(child);
-  };
-  collectRows(tabular);
-  if (!trs.length || trs.length > MAX_TABLE_ROWS) return null;
-  const cellsOf = (tr: Element): Element[] => tr.childNodes.filter(
-    (child): child is Element => isElement(child) && (child.tagName === "td" || child.tagName === "th"),
-  );
-  for (const tr of trs) {
-    const cells = cellsOf(tr);
-    if (!cells.length) return null;
-    // 任意深度的嵌套表格都无法用行列跨度无损表达。
-    for (const cell of cells)
-      if (findTag(cell, "table")) return null;
-  }
-  const spanOf = (cell: Element, name: string): number | null => {
-    const raw = attr(cell, name);
-    if (raw === undefined) return 1;
-    if (!/^[0-9]+$/.test(raw.trim())) return null;
-    const value = Number(raw.trim());
-    if (!Number.isSafeInteger(value) || value < 1) return null;
-    return value;
-  };
-  const rows: SpanCell[][] = [];
-  const occupied = new Map<string, true>();
-  const key = (row: number, column: number): string => `${row}:${column}`;
-  for (let rowIndex = 0; rowIndex < trs.length; rowIndex += 1) {
-    const row: SpanCell[] = [];
-    let columnIndex = 0;
-    for (const cell of cellsOf(trs[rowIndex])) {
-      while (occupied.has(key(rowIndex, columnIndex))) columnIndex += 1;
-      const rowSpan = spanOf(cell, "rowspan");
-      const columnSpan = spanOf(cell, "colspan");
-      if (rowSpan === null || columnSpan === null) return null;
-      if (rowSpan > trs.length - rowIndex || columnSpan > MAX_TABLE_COLUMNS) return null;
-      if (columnIndex + columnSpan > MAX_TABLE_COLUMNS) return null;
-      row.push({
-        unitId: context.builder.reserveUnit(),
-        rowSpan,
-        columnSpan,
-        text: cellText(cell, context),
-      });
-      for (let dr = 0; dr < rowSpan; dr += 1)
-        for (let dc = 0; dc < columnSpan; dc += 1)
-          occupied.set(key(rowIndex + dr, columnIndex + dc), true);
-      columnIndex += columnSpan;
-    }
-    rows.push(row);
-  }
-  return rows;
-}
-
-/** 重建消毒后的 HTML：白名单标记、无属性、危险内容移除、未知标记解包。 */
-function sanitizeNode(node: Node, context: TableContext): Node[] {
-  if (node.nodeName === "#text") return [node];
-  if (node.nodeName === "#comment") {
-    context.sanitized = true;
-    return [];
-  }
-  if (!isElement(node)) {
-    context.sanitized = true;
-    return [];
-  }
-  const element = node;
-  if (DANGEROUS_TAGS.has(element.tagName)) {
-    context.sanitized = true;
-    return [];
-  }
-  if (element.tagName === "img") {
-    context.sanitized = true;
-    const placeholder = imagePlaceholder(element, context);
-    return [{ nodeName: "#text", value: placeholder, parentNode: null } as unknown as Node];
-  }
-  const children = element.childNodes.flatMap((child) => sanitizeNode(child, context));
-  if (element.attrs.length) context.sanitized = true;
-  if (!RAW_HTML_TAGS.has(element.tagName)) {
-    context.sanitized = true;
-    return children;
-  }
-  return [{
-    ...element,
-    attrs: [],
-    childNodes: children as DefaultTreeAdapterMap["element"]["childNodes"],
-  }];
-}
-
-function textProjection(nodes: Node[]): string {
-  const parts: string[] = [];
-  const walk = (node: Node): void => {
-    if (node.nodeName === "#text") {
-      parts.push((node as DefaultTreeAdapterMap["textNode"]).value);
-      return;
-    }
-    if (isElement(node) && DANGEROUS_TAGS.has(node.tagName)) return;
-    if (isParent(node)) for (const child of node.childNodes) walk(child);
-  };
-  for (const node of nodes) walk(node);
-  return parts.join("");
-}
-
-function escapeText(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function convertTable(
-  content: string,
-  aliases: string[],
-  caption: CaptionInput | null,
-  context: TableContext,
-): void {
-  const builder = context.builder;
-  const trimmed = content.trim();
-  const fallback = (html: string, text: string): void => {
-    warn(builder, "pdf-convert-table-lossy", aliases[0]);
-    builder.addRaw(html, text, ["pdf.convert.tableLossy"], aliases);
-    // 图注随 raw 降级为普通段落，按 vendor 顺序落在表格投影之后，不丢弃。
-    if (caption)
-      builder.flushUnit(caption.unitId, "paragraph", caption.sentences, {
-        id: randomUUID(),
-        sectionId: builder.currentSectionId,
-        kind: "unit",
-        unitId: caption.unitId,
-        ...(caption.aliases ? { sourceAliases: caption.aliases } : {}),
-      }, caption.aliases);
-  };
-  if (!trimmed) {
-    // 空表格无法结构化：保留视觉块事实与可读占位。
-    warn(builder, "pdf-convert-table-lossy", aliases[0]);
-    const block = builder.addFigure({
-      asset: null,
-      warning: MESSAGE_KEYS["pdf-convert-figure-missing"],
-      aliases,
-    });
-    if (caption) builder.attachCaption(block, caption);
-    return;
-  }
-  if (!trimmed.startsWith("<")) {
-    fallback(escapeText(content), content);
-    return;
-  }
-  const fragment = parseFragment(content);
-  const tables = fragment.childNodes.filter(
-    (child): child is Element => isElement(child) && child.tagName === "table",
-  );
-  const onlyTable = tables.length === 1 && fragment.childNodes.every(
-    (child) => child === tables[0] ||
-      (child.nodeName === "#text" && !(child as DefaultTreeAdapterMap["textNode"]).value.trim()),
-  );
-  const rows = onlyTable ? tableRows(tables[0], context) : null;
-  if (rows) {
-    const cells: CellInput[][] = rows.map((row) => row.map((cell) => ({
-      unitId: cell.unitId,
-      rowSpan: cell.rowSpan,
-      columnSpan: cell.columnSpan,
-      sentences: textSentences(cell.text || " ", cell.unitId, builder),
-      ...(aliases ? { aliases } : {}),
-    })));
-    builder.addTable(cells, caption, aliases);
-  } else {
-    const cleaned = fragment.childNodes.flatMap((child) => sanitizeNode(child, context));
-    const html = cleaned.map((node) => isElement(node)
-      ? serialize(node)
-      : escapeText((node as DefaultTreeAdapterMap["textNode"]).value)).join("");
-    fallback(html || escapeText(content), textProjection(cleaned) || content);
-  }
-  if (context.tableImage) warn(builder, "pdf-convert-table-image", aliases[0]);
-  if (context.sanitized) warn(builder, "pdf-convert-html-sanitized", aliases[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -987,7 +425,8 @@ interface PageContext {
 }
 
 /** 无云端资产的视觉块登记原页裁切请求（SPEC §6.7）：预处理页区域映射不可靠，
- * 只声明页级来源并记录 warning；几何是否可校准由裁切模块按 PDF 事实判定。 */
+ * 只声明页级来源并记录 warning，不入队必然失败的裁切请求；
+ * 几何是否可校准由裁切模块按 PDF 事实判定。 */
 function requestCrop(
   context: PageContext,
   aliases: string[],
@@ -996,20 +435,14 @@ function requestCrop(
   const key = aliases[0];
   if (context.cropAssets.has(key)) return;
   if (context.page.preprocessed) {
-    if (!context.cropRequests.some((request) => request.key === key)) {
+    if (!context.builder.warnings.some((entry) =>
+      entry.code === "pdf-crop-region-uncalibrated" && entry.sourceAlias === key)) {
       context.builder.warnings.push({
         code: "pdf-crop-region-uncalibrated",
         severity: "warning",
         stage: "convert",
         messageKey: "pdf.crop.regionUncalibrated",
         sourceAlias: key,
-      });
-      context.cropRequests.push({
-        key,
-        page: context.page.page,
-        pageWidth: context.page.width,
-        pageHeight: context.page.height,
-        bbox: null,
       });
     }
     return;
@@ -1253,10 +686,21 @@ function convertGroup(
   }
   if (label === "table") {
     fulfillTitle(context);
-    convertTable(group.content, group.aliases, caption, {
+    convertTable(group.content, {
       builder,
       page: context.page,
       referenced: context.referenced,
+      aliases: group.aliases,
+      caption,
+      placeholder: (warning) => {
+        requestCrop(context, group.aliases, group.blocks[0]?.bbox ?? null);
+        return builder.addFigure({
+          asset: cropReference(context, group.aliases),
+          warning,
+          aliases: group.aliases,
+        });
+      },
+      warn: (code, sourceAlias) => warn(builder, code, sourceAlias),
       sanitized: false,
       tableImage: false,
     });
@@ -1586,23 +1030,25 @@ async function convertSnapshotTree(input: {
     fatal("pdf-convert-snapshot-invalid");
   }
   input.signal?.throwIfAborted();
+  // 任何转换前都校验父 PDF 摘要与页数：纯文本快照离线重转换同样不得脱离来源。
+  const parent = await loadParentPdf(input.root, task);
+  if (parent.pageCount !== facts.pageCount || parent.pageCount !== snapshot.pageCount)
+    fatal("pdf-convert-snapshot-invalid");
   const convertInput = {
     paperId: input.paperId,
     resultBytes,
     facts,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
-  // 第一遍纯转换收集裁切请求；有请求才读父 PDF 渲染，第二遍带资产重转换。
+  // 第一遍纯转换收集裁切请求；有请求才用父 PDF 字节渲染，第二遍带资产重转换。
   const first = convertParseResult(convertInput);
   if (!first.ok || !first.cropRequests.length) return first;
-  const pdf = await loadParentPdf(input.root, task);
   const cropped = await cropPdfPageRegions({
-    pdf,
+    pdf: parent.bytes,
     requests: first.cropRequests,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
-  const cropAssets = new Map(cropped.assets.map((asset) => [asset.key, asset]));
-  const second = convertParseResult({ ...convertInput, cropAssets });
+  const second = convertParseResult({ ...convertInput, cropAssets: cropped.assetByKey });
   if (!second.ok) return second;
   return {
     ok: true,
@@ -1613,17 +1059,26 @@ async function convertSnapshotTree(input: {
   };
 }
 
-/** 读取父 PDF 快照字节并核验摘要；缺失或摘要不符立即拒绝，不重猜来源。 */
-async function loadParentPdf(root: string, task: PdfParseTaskRecord): Promise<Buffer> {
+/** 读取父 PDF 快照字节并核验摘要与页数；缺失或摘要不符立即拒绝，不重猜来源。 */
+async function loadParentPdf(
+  root: string,
+  task: PdfParseTaskRecord,
+): Promise<{ bytes: Buffer; pageCount: number }> {
   const source = await readSourceSnapshot(root, task.parentSourceSnapshotId);
-  if (source.kind !== "pdf" || source.sha256 !== task.pdfSha256)
+  if (
+    source.kind !== "pdf" ||
+    source.sha256 !== task.pdfSha256 ||
+    typeof source.pageCount !== "number" ||
+    !Number.isSafeInteger(source.pageCount) ||
+    source.pageCount < 1
+  )
     fatal("pdf-convert-snapshot-invalid");
   const file = source.files.find((entry) => entry.path === "paper.pdf");
   if (!file || file.sha256 !== source.sha256) fatal("pdf-convert-snapshot-invalid");
   const bytes = await fs.readFile(path.join(root, source.path, "paper.pdf"));
   if (bytes.byteLength !== file.size || hash(bytes) !== source.sha256)
     fatal("pdf-convert-snapshot-digest");
-  return bytes;
+  return { bytes, pageCount: source.pageCount };
 }
 
 /** 按登记摘要读取受管快照文件；缺失或摘要不符立即拒绝，不采用另一份字节。 */

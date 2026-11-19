@@ -40,12 +40,15 @@ export interface PdfCropAsset {
 
 export interface PdfCropResult {
   assets: PdfCropAsset[];
+  /** key（每个块别名）→ 资产；同区域别名共享同一内容寻址资产，assets 仍按内容去重。 */
+  assetByKey: Map<string, PdfCropAsset>;
   warnings: ImportDiagnostic[];
 }
 
 const MESSAGE_KEYS: Record<string, string> = {
   "pdf-crop-region-uncalibrated": "pdf.crop.regionUncalibrated",
   "pdf-crop-budget-exceeded": "pdf.crop.budgetExceeded",
+  "pdf-crop-render-failed": "pdf.crop.renderFailed",
 };
 
 function warning(code: string, key: string): ImportDiagnostic {
@@ -120,10 +123,13 @@ export async function cropPdfPageRegions(input: {
   pdf: Uint8Array;
   requests: PdfCropRequest[];
   signal?: AbortSignal;
+  /** 渲染失败注入（测试与故障演练）；生产路径不设置。 */
+  renderFailure?: (key: string) => boolean;
 }): Promise<PdfCropResult> {
   const assets: PdfCropAsset[] = [];
   const warnings: ImportDiagnostic[] = [];
-  if (!input.requests.length) return { assets, warnings };
+  const assetByKey = new Map<string, PdfCropAsset>();
+  if (!input.requests.length) return { assets, assetByKey, warnings };
   const uncalibrated = (key: string) => {
     warnings.push(warning("pdf-crop-region-uncalibrated", key));
   };
@@ -164,7 +170,7 @@ export async function cropPdfPageRegions(input: {
       );
     } catch {
       for (const request of input.requests) uncalibrated(request.key);
-      return { assets, warnings };
+      return { assets, assetByKey, warnings };
     }
     const byPath = new Map<string, PdfCropAsset>();
     for (const request of input.requests) {
@@ -190,21 +196,33 @@ export async function cropPdfPageRegions(input: {
         warnings.push(warning("pdf-crop-budget-exceeded", request.key));
         continue;
       }
-      const png = await task(
-        engine.renderPageRect(
-          doc,
-          page,
-          {
-            origin: { x: rect.x, y: rect.y },
-            size: { width: rect.width, height: rect.height },
-          },
-          { scaleFactor: scale, rotation: 0, dpr: 1 },
-        ),
-      );
+      let png: Uint8Array;
+      try {
+        input.signal?.throwIfAborted();
+        if (input.renderFailure?.(request.key)) throw new Error("pdf-crop-render-failed");
+        png = await task(
+          engine.renderPageRect(
+            doc,
+            page,
+            {
+              origin: { x: rect.x, y: rect.y },
+              size: { width: rect.width, height: rect.height },
+            },
+            { scaleFactor: scale, rotation: 0, dpr: 1 },
+          ),
+        );
+      } catch {
+        // 单请求渲染失败降级 warning，不拖垮整篇导入；本机中断继续抛出。
+        input.signal?.throwIfAborted();
+        warnings.push(warning("pdf-crop-render-failed", request.key));
+        continue;
+      }
       const sha256 = createHash("sha256").update(png).digest("hex");
       const relative = `assets/${sha256}.png`;
-      if (byPath.has(relative)) {
-        // 相同区域不同块别名：共享同一内容寻址资产，只登记一次。
+      const shared = byPath.get(relative);
+      if (shared) {
+        // 相同区域不同块别名：共享同一内容寻址资产，只登记一次，但每个别名都可引用。
+        assetByKey.set(request.key, shared);
         continue;
       }
       try {
@@ -224,9 +242,10 @@ export async function cropPdfPageRegions(input: {
         bytes: new Uint8Array(png),
       };
       byPath.set(relative, asset);
+      assetByKey.set(request.key, asset);
       assets.push(asset);
     }
-    return { assets, warnings };
+    return { assets, assetByKey, warnings };
   } finally {
     try {
       await engine.closeAllDocuments().toPromise();

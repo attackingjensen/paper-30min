@@ -150,6 +150,46 @@ test("page-crop 相同区域去重：同页同 bbox 只登记一份内容寻址�
   expect(result.warnings).toEqual([]);
 });
 
+test("page-crop 同区域别名共享资产：assetByKey 覆盖每个块别名", async () => {
+  const result = await cropPdfPageRegions({
+    pdf: inkPdf(),
+    requests: [request(), request({ key: "page-1/b2" })],
+  });
+  expect(result.assets).toHaveLength(1);
+  expect(result.warnings).toEqual([]);
+  const first = result.assetByKey.get("page-1/b1");
+  const second = result.assetByKey.get("page-1/b2");
+  expect(first).toBeTruthy();
+  expect(second).toBe(first);
+  expect(second!.path).toBe(result.assets[0].path);
+});
+
+test("page-crop 单请求渲染失败降级 warning，不拖垮其他裁剪", async () => {
+  const result = await cropPdfPageRegions({
+    pdf: inkPdf(),
+    requests: [request({ key: "page-1/bad" }), request({ key: "page-1/b1" })],
+    renderFailure: (key) => key === "page-1/bad",
+  });
+  expect(result.assets.map((asset) => asset.key)).toEqual(["page-1/b1"]);
+  expect(result.assetByKey.has("page-1/bad")).toBe(false);
+  expect(result.warnings).toHaveLength(1);
+  expect(result.warnings[0].code).toBe("pdf-crop-render-failed");
+  expect(result.warnings[0].sourceAlias).toBe("page-1/bad");
+});
+
+test("page-crop 渲染阶段本机中止继续抛出，不降级为 warning", async () => {
+  const controller = new AbortController();
+  await expect(cropPdfPageRegions({
+    pdf: inkPdf(),
+    requests: [request()],
+    signal: controller.signal,
+    renderFailure: () => {
+      controller.abort();
+      return true;
+    },
+  })).rejects.toThrow();
+});
+
 test("page-crop 损坏 PDF 不抛裸异常：全部请求页级降级", async () => {
   const result = await cropPdfPageRegions({
     pdf: Buffer.from("%PDF-1.7\nbroken document\n"),
