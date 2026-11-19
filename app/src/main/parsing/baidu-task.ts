@@ -217,6 +217,8 @@ function parseTask(value: unknown, projectId: string, paperId: string): PdfParse
     (record.candidateRevisionId !== undefined &&
       (typeof record.candidateRevisionId !== "string" || !UUID.test(record.candidateRevisionId))) ||
     (record.candidateRevisionId !== undefined && record.parseSourceSnapshotId === undefined) ||
+    (record.baseRevision !== undefined &&
+      (typeof record.baseRevision !== "string" || !UUID.test(record.baseRevision))) ||
     typeof record.createdAt !== "string" ||
     !Number.isFinite(Date.parse(record.createdAt)) ||
     typeof record.updatedAt !== "string" ||
@@ -258,6 +260,7 @@ function parseTask(value: unknown, projectId: string, paperId: string): PdfParse
     ...(record.candidateRevisionId === undefined
       ? {}
       : { candidateRevisionId: record.candidateRevisionId as string }),
+    ...(record.baseRevision === undefined ? {} : { baseRevision: record.baseRevision as string }),
     ...(record.diagnostic === undefined
       ? {}
       : { diagnostic: parseTaskDiagnostic(record.diagnostic) }),
@@ -691,6 +694,8 @@ interface NewPdfParseInput {
   confirmUpload: (
     request: BaiduUploadConfirmationRequest,
   ) => boolean | Promise<boolean>;
+  /** 重解析／更新任务的合并基线；随首条任务记录原子持久化，崩溃后恢复可识别。 */
+  baseRevision?: string;
   hooks?: TaskHooks;
   timing?: TaskTiming;
 }
@@ -730,6 +735,7 @@ export async function executeNewPdfParse(
     model: MODEL,
     endpoint: config.endpoint,
     options: { ...OPTIONS },
+    ...(input.baseRevision === undefined ? {} : { baseRevision: input.baseRevision }),
     phase: "preparing",
     createdAt: now,
     updatedAt: now,

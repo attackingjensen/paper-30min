@@ -123,6 +123,8 @@ export interface PdfParseTaskRecord {
   sanitizedSha256?: string;
   /** 转换候选 revision 身份；current 推进中断后恢复沿用同一候选，不重新转换。 */
   candidateRevisionId?: string;
+  /** 重解析／更新候选的合并基线；首次导入不携带。发布前必须复核 current 仍等于该基线。 */
+  baseRevision?: string;
   diagnostic?: ImportDiagnostic;
   createdAt: string;
   updatedAt: string;

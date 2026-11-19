@@ -76,6 +76,8 @@ export async function createDocumentMergeCandidate(input: {
   baseRevision: string;
   sourceSnapshotId: string;
   candidate: DocumentTree;
+  /** 调用方固定的候选身份（恢复沿用）；缺省新分配。 */
+  revisionId?: string;
 }): Promise<DocumentMergeCandidate> {
   const opened = await openProject(input.root);
   if (opened.manifest.paper.currentRevision !== input.baseRevision)
@@ -91,7 +93,7 @@ export async function createDocumentMergeCandidate(input: {
     current,
     candidate: input.candidate,
     baseRevision: input.baseRevision,
-    revisionId: randomUUID(),
+    revisionId: input.revisionId ?? randomUUID(),
     previousTombstones,
   });
   const assets = await loadCandidateAssets(result, root, input.sourceSnapshotId);

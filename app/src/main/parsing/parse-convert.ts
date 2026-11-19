@@ -1517,6 +1517,12 @@ async function readSnapshotFile(
   return bytes;
 }
 
+/** 重解析／重转换的合并候选与转换警告；候选未发布，current 保持不变。 */
+export interface ParseMergeConversion {
+  candidate: DocumentMergeCandidate;
+  warnings: ImportDiagnostic[];
+}
+
 /** 重解析／离线重新转换候选（SPEC §8.3–§8.4）：解析快照重新转换后与旧
  * source-base、current 做三方合并；本地修正与冲突由 document-core 决定，不由转换器覆盖。
  * 不访问云端、不写任务记录；发布前 baseRevision 复核由合并发布负责。 */
@@ -1525,8 +1531,10 @@ export async function createParseMergeCandidate(input: {
   task: PdfParseTaskRecord;
   snapshot: PdfParseSourceSnapshotRecord;
   baseRevision: string;
+  /** 恢复沿用同一候选身份；缺省由调用方固定或新分配，重转换不重排 revision。 */
+  revisionId?: string;
   signal?: AbortSignal;
-}): Promise<{ candidate: DocumentMergeCandidate; warnings: ImportDiagnostic[] }> {
+}): Promise<ParseMergeConversion> {
   const opened = await openProject(input.root);
   const current = opened.manifest.paper.currentRevision;
   if (current === null)
@@ -1553,6 +1561,7 @@ export async function createParseMergeCandidate(input: {
     baseRevision: input.baseRevision,
     sourceSnapshotId: input.snapshot.sourceSnapshotId,
     candidate: converted.tree,
+    ...(input.revisionId === undefined ? {} : { revisionId: input.revisionId }),
   });
   return {
     candidate: {

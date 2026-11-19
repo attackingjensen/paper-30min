@@ -1,4 +1,5 @@
 import type { Dispatcher } from "undici";
+import { createHash } from "node:crypto";
 import { readDiagnosticArray, type ImportDiagnostic } from "../../shared/arxiv.js";
 import type {
   PdfParseSourceSnapshotRecord,
@@ -21,7 +22,12 @@ import {
   type TaskTiming,
 } from "./baidu-task.js";
 import { publishParseSnapshot } from "./parse-snapshot.js";
-import { createParseMergeCandidate, publishParseDocument, type PdfConvertHooks } from "./parse-convert.js";
+import {
+  createParseMergeCandidate,
+  publishParseDocument,
+  type ParseMergeConversion,
+  type PdfConvertHooks,
+} from "./parse-convert.js";
 import type { DocumentMergeCandidate } from "../document/merge.js";
 
 /** 端到端 PDF 导入结果：published 表示 current 已原子推进，正文可离线阅读。 */
@@ -35,6 +41,143 @@ export type PdfImportResult =
       revision: ProjectRevisionRecord;
       warnings: ImportDiagnostic[];
     };
+
+/** 重解析／更新结果：candidate 表示三方合并候选已形成但未发布 current，
+ * 冲突与发布时机由用户决定；旧 current 始终可读。 */
+export type PdfReparseResult =
+  | { outcome: "cancelled" }
+  | { outcome: "incomplete"; task: PdfParseTaskRecord; diagnostic: ImportDiagnostic }
+  | { outcome: "stopped"; task: PdfParseTaskRecord }
+  | {
+      outcome: "candidate";
+      task: PdfParseTaskRecord;
+      candidate: DocumentMergeCandidate;
+      warnings: ImportDiagnostic[];
+    };
+
+interface ReparseContinueOptions {
+  signal: AbortSignal;
+  dispatcher?: Dispatcher;
+}
+
+/** 重解析下载完成后继续：去敏发布新解析快照 → 重新转换 → 三方合并候选（SPEC §8）。
+ * 不推进 current；致命失败保留任务现场与诊断，本机停止不冒充远端失败。 */
+async function continueToCandidate(
+  root: string,
+  task: PdfParseTaskRecord,
+  baseRevision: string,
+  source: { response: { bytes: Uint8Array; sha256: string } } | { snapshot: PdfParseSourceSnapshotRecord },
+  options: ReparseContinueOptions,
+): Promise<PdfReparseResult> {
+  let snapshot: PdfParseSourceSnapshotRecord;
+  if ("response" in source) {
+    const sanitized = await publishParseSnapshot({
+      root,
+      task,
+      response: source.response,
+      signal: options.signal,
+      ...(options.dispatcher === undefined ? {} : { dispatcher: options.dispatcher }),
+    });
+    if (!sanitized.ok) {
+      if (sanitized.diagnostic.code === "parse-stopped") {
+        task.phase = "stopped";
+        task.diagnostic = sanitized.diagnostic;
+        await saveTask(root, task);
+        return { outcome: "stopped", task };
+      }
+      return { outcome: "incomplete", task: sanitized.task, diagnostic: sanitized.diagnostic };
+    }
+    task = sanitized.task;
+    snapshot = sanitized.snapshot;
+  } else {
+    snapshot = source.snapshot;
+  }
+  task.phase = "converting";
+  delete task.diagnostic;
+  await saveTask(root, task);
+  let merged: ParseMergeConversion;
+  try {
+    merged = await createParseMergeCandidate({
+      root,
+      task,
+      snapshot,
+      baseRevision,
+      ...(task.candidateRevisionId === undefined ? {} : { revisionId: task.candidateRevisionId }),
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (options.signal.aborted) {
+      task.phase = "stopped";
+      task.diagnostic = {
+        code: "pdf-convert-stopped",
+        severity: "fatal",
+        stage: "convert",
+        messageKey: "pdf.convert.stopped",
+      };
+      await saveTask(root, task);
+      return { outcome: "stopped", task };
+    }
+    throw error;
+  }
+  task.candidateRevisionId = merged.candidate.revisionId;
+  task.phase = "candidate-complete";
+  delete task.diagnostic;
+  await saveTask(root, task);
+  return { outcome: "candidate", task, candidate: merged.candidate, warnings: merged.warnings };
+}
+
+/** 显式重解析／更新主论文 PDF（SPEC §8.1–§8.3）：每个新云端任务重新确认上传与费用，
+ * 新结果只形成三方合并候选，不直接覆盖 current；同 PDF 复用 PDF 快照、产生新解析快照。 */
+export async function reparsePdfToCandidate(input: {
+  root: string;
+  sourceSnapshotId: string;
+  baseRevision: string;
+  config: BaiduPdfParseConfig;
+  confirmUpload: (request: BaiduUploadConfirmationRequest) => boolean | Promise<boolean>;
+  signal?: AbortSignal;
+  taskHooks?: TaskHooks;
+  timing?: TaskTiming;
+}): Promise<PdfReparseResult> {
+  return withActive(input.root, input.signal, async ({ signal, setBatch }) => {
+    const opened = await openProject(input.root);
+    const current = opened.manifest.paper.currentRevision;
+    if (current === null)
+      throw new Error("首次正文尚未发布，请使用首次导入而不是重解析。");
+    if (current !== input.baseRevision)
+      throw new Error(`baseRevision 已变化：候选基线为 ${input.baseRevision}，current 为 ${current}。`);
+    const started = await executeNewPdfParse(
+      {
+        root: opened.root,
+        sourceSnapshotId: input.sourceSnapshotId,
+        config: input.config,
+        confirmUpload: input.confirmUpload,
+        baseRevision: input.baseRevision,
+        ...(input.taskHooks === undefined ? {} : { hooks: input.taskHooks }),
+        ...(input.timing === undefined ? {} : { timing: input.timing }),
+      },
+      { signal, setBatch },
+    );
+    if (started.outcome === "cancelled") return { outcome: "cancelled" };
+    if (started.outcome === "incomplete")
+      return { outcome: "incomplete", task: started.task, diagnostic: started.task.diagnostic! };
+    // 候选身份在任务受理后固定；恢复沿用同一候选，不重新分配。
+    if (started.task.candidateRevisionId === undefined) {
+      const identity = createHash("sha256")
+        .update(`${started.task.parseBatchId}:${input.baseRevision}`)
+        .digest("hex");
+      started.task.candidateRevisionId =
+        `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(12, 15)}-8${identity.slice(15, 18)}-${identity.slice(18, 30)}`;
+      await saveTask(opened.root, started.task);
+    }
+    const options: ReparseContinueOptions = {
+      signal,
+      ...(input.config.dispatcher === undefined ? {} : { dispatcher: input.config.dispatcher }),
+    };
+    if (started.outcome === "downloaded")
+      return continueToCandidate(opened.root, started.task, input.baseRevision, { response: started.response }, options);
+    return continueToCandidate(opened.root, started.task, input.baseRevision, { snapshot: started.snapshot }, options);
+  });
+}
 
 interface ContinueOptions {
   signal: AbortSignal;
@@ -243,7 +386,60 @@ export async function reconvertParseCandidate(input: {
     task,
     snapshot,
     baseRevision: input.baseRevision,
+    ...(task.candidateRevisionId === undefined ? {} : { revisionId: task.candidateRevisionId }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   return candidate;
+}
+
+/** 恢复重解析／更新任务到合并候选（SPEC §8）：已发布快照纯离线重建候选，
+ * 不重复下载、不推进 current；未完成任务沿用原 jobId 查询下载，绝不自动重传。 */
+export async function resumePdfReparse(input: {
+  root: string;
+  parseBatchId: string;
+  config?: BaiduPdfParseConfig;
+  jobId?: string;
+  signal?: AbortSignal;
+  taskHooks?: TaskHooks;
+  timing?: TaskTiming;
+}): Promise<PdfReparseResult> {
+  return withActive(input.root, input.signal, async ({ signal, setBatch }) => {
+    const opened = await openProject(input.root);
+    const tasks = await listBaiduPdfParseTasks(input.root);
+    const task = tasks.find((entry) => entry.parseBatchId === input.parseBatchId);
+    if (!task) throw new Error("PDF 云端任务不存在。");
+    if (task.baseRevision === undefined)
+      throw new Error("该任务不是重解析／更新任务，请使用首次导入恢复。");
+    setBatch(task.parseBatchId);
+    const options: ReparseContinueOptions = {
+      signal,
+      ...(input.config?.dispatcher === undefined ? {} : { dispatcher: input.config.dispatcher }),
+    };
+    const snapshot = await findBatchParseSnapshot(opened.root, task);
+    if (snapshot) {
+      task.parseSourceSnapshotId = snapshot.sourceSnapshotId;
+      task.sanitizedSha256 = snapshot.sanitizedSha256;
+      delete task.diagnostic;
+      return continueToCandidate(opened.root, task, task.baseRevision, { snapshot }, options);
+    }
+    if (input.config === undefined)
+      throw new Error("恢复未完成云端任务需要本机解析配置；已有解析快照时可离线重建候选。");
+    const resumed = await executeResumePdfParse(
+      {
+        root: opened.root,
+        parseBatchId: input.parseBatchId,
+        config: input.config,
+        ...(input.jobId === undefined ? {} : { jobId: input.jobId }),
+        ...(input.taskHooks === undefined ? {} : { hooks: input.taskHooks }),
+        ...(input.timing === undefined ? {} : { timing: input.timing }),
+      },
+      { signal, setBatch },
+    );
+    if (resumed.outcome === "incomplete")
+      return { outcome: "incomplete", task: resumed.task, diagnostic: resumed.task.diagnostic! };
+    if (resumed.outcome === "cancelled") return { outcome: "cancelled" };
+    if (resumed.outcome === "downloaded")
+      return continueToCandidate(opened.root, resumed.task, task.baseRevision, { response: resumed.response }, options);
+    return continueToCandidate(opened.root, resumed.task, task.baseRevision, { snapshot: resumed.snapshot }, options);
+  });
 }
