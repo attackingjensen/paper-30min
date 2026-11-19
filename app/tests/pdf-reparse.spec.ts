@@ -694,3 +694,97 @@ test("pdf-import 新 PDF 更新：内容未变节点保留历史来源核验，�
   expect(bySentence.get(firstSentence)).toBe("historical-source");
   expect(bySentence.get(secondSentence)).toBe("removed");
 });
+
+test("pdf-import 重解析：PDF 快照缺失时不发起上传，current 保持可读", async () => {
+  const counts: ControlledCounts = { posts: 0, queries: 0, downloads: 0 };
+  const endpoint = await controlledParseService([() => parseResponse("Second page text")], counts);
+  const first = await importPdfToCurrent({
+    root,
+    sourceSnapshotId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  });
+  expect(first.outcome).toBe("published");
+  if (first.outcome !== "published") throw new Error("import did not publish");
+  const pdfSnapshots = (await listSourceSnapshots(root)).filter((entry) => entry.kind === "pdf");
+  await fs.rm(path.join(root, pdfSnapshots[0].path), { recursive: true, force: true });
+
+  await expect(reparsePdfToCandidate({
+    root,
+    sourceSnapshotId,
+    baseRevision: first.revision.revisionId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  })).rejects.toThrow();
+  expect(counts.posts).toBe(1);
+  expect(await currentRevisionId()).toBe(first.revision.revisionId);
+});
+
+test("pdf-import 重解析：解析结果无可读正文时保留快照与诊断，不形成候选", async () => {
+  const counts: ControlledCounts = { posts: 0, queries: 0, downloads: 0 };
+  const endpoint = await controlledParseService(
+    [() => parseResponse("Second page text"), () => jsonl([row([vendorPage([]), vendorPage([])])])],
+    counts,
+  );
+  const first = await importPdfToCurrent({
+    root,
+    sourceSnapshotId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  });
+  expect(first.outcome).toBe("published");
+  if (first.outcome !== "published") throw new Error("import did not publish");
+
+  await expect(reparsePdfToCandidate({
+    root,
+    sourceSnapshotId,
+    baseRevision: first.revision.revisionId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  })).rejects.toThrow(/bodyEmpty|正文/);
+  expect(await currentRevisionId()).toBe(first.revision.revisionId);
+  // 解析快照已去敏发布并保留，可供修复后离线重新转换。
+  expect((await parseSnapshots()).length).toBe(2);
+});
+
+test("pdf-import 重解析：存在未结束任务时拒绝新建云端任务", async () => {
+  const counts: ControlledCounts = { posts: 0, queries: 0, downloads: 0 };
+  const endpoint = await controlledParseService(
+    [() => parseResponse("Second page text"), () => parseResponse("Second page text v2")],
+    counts,
+  );
+  const first = await importPdfToCurrent({
+    root,
+    sourceSnapshotId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  });
+  expect(first.outcome).toBe("published");
+  if (first.outcome !== "published") throw new Error("import did not publish");
+  const controller = new AbortController();
+  const stopped = await reparsePdfToCandidate({
+    root,
+    sourceSnapshotId,
+    baseRevision: first.revision.revisionId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+    signal: controller.signal,
+    taskHooks: {
+      onPoint: (point) => {
+        if (point === "job-persisted") controller.abort();
+      },
+    },
+  });
+  expect(stopped.outcome).toBe("incomplete");
+  if (stopped.outcome !== "incomplete") throw new Error("expected stopped task");
+  const postsBefore = counts.posts;
+
+  await expect(reparsePdfToCandidate({
+    root,
+    sourceSnapshotId,
+    baseRevision: first.revision.revisionId,
+    config: config(endpoint),
+    confirmUpload: async () => true,
+  })).rejects.toThrow(/恢复原任务|重复付费/);
+  expect(counts.posts).toBe(postsBefore);
+});

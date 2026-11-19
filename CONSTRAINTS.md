@@ -53,7 +53,7 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 | B9 | 单解析资产 `<= 32 MiB`、单解析快照资产合计 `<= 256 MiB`、单 PNG `<= 16,000,000` 像素 | 同时限制压缩字节与解码后像素，避免图像内存放大 | `npx playwright test -g "parsing|pdf-snapshot"` |
 | B10 | 单轮远端查询等待 `<= 30 分钟`，之后必须保留原任务供恢复 | 避免无限等待和重复计费；超时不能冒充远端失败 | `npx playwright test -g "parsing|pdf-snapshot"` |
 
-B7–B10 在当前 `main` 由既有百度解析链路及 `parsing` 回归承担；`SPEC-pdf-import` 的新 document-core 链路尚未全部实现。B1 的核验侧车与来源读取证据预算自 s08.5 起由 `pdf-verification` 回归承担。Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；未实现或未运行的项目不得记为已验证。translation、pdf-comparison 等尚未实现的 spec 不提前虚报为当前强制项，接入实现时必须同步收录其预算。
+B7–B10 在当前 `main` 由既有百度解析链路及 `parsing` 回归承担；`SPEC-pdf-import` 的新 document-core 链路尚未全部实现。B1 的核验侧车与来源读取证据预算自 s08.5 起由 `pdf-verification` 回归承担。s08.7 起，重解析／更新的候选合并、`baseRevision` 复核、恢复不重传与核验继承由 `pdf-reparse` 回归承担（受控百度服务，不访问真实云端）；离线重新转换由 `pdf-snapshot-convert` 的离线重新转换用例承担。Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；未实现或未运行的项目不得记为已验证。translation、pdf-comparison 等尚未实现的 spec 不提前虚报为当前强制项，接入实现时必须同步收录其预算。
 
 ## Measured, not yet enforced
 
