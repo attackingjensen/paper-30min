@@ -182,7 +182,9 @@ function diagnostic(code: string): ImportDiagnostic {
 
 function parseTaskDiagnostic(value: unknown): ImportDiagnostic {
   const record = objectValue(value);
-  if (Object.keys(record).some((key) => !["code", "severity", "stage", "messageKey"].includes(key)))
+  // errorDetail 为去敏截断后的底层原文（7uo），允许随任务诊断持久化；
+  // 其余未知字段仍拒绝，防止签名 URL/凭据借诊断落盘。
+  if (Object.keys(record).some((key) => !["code", "severity", "stage", "messageKey", "errorDetail"].includes(key)))
     throw new Error("PDF 任务诊断包含不允许持久化的字段。");
   return parseImportDiagnostic(record);
 }
