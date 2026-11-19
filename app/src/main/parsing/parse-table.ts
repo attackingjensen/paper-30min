@@ -58,7 +58,7 @@ function findTag(root: Node, tagName: string): Element | null {
   return null;
 }
 
-export interface TablePageFacts {
+interface TablePageFacts {
   /** vendorPath → 本地资产引用或去敏占位。 */
   images: Record<string, string>;
   assets: PdfParseAssetFact[];

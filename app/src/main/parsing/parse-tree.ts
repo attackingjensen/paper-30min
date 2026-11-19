@@ -29,7 +29,7 @@ export interface CellInput {
   aliases?: string[];
 }
 
-export function mergeTextParts(parts: InlinePart[]): InlinePart[] {
+function mergeTextParts(parts: InlinePart[]): InlinePart[] {
   const merged: InlinePart[] = [];
   for (const part of parts) {
     if (part.kind === "text") {
@@ -48,7 +48,7 @@ export function mergeTextParts(parts: InlinePart[]): InlinePart[] {
 }
 
 /** 确定句切分：英文终止符后随空白或结尾，中文终止符直接断句；不猜测语义。 */
-export function splitSentences(parts: InlinePart[]): InlinePart[][] {
+function splitSentences(parts: InlinePart[]): InlinePart[][] {
   const sentences: InlinePart[][] = [];
   let current: InlinePart[] = [];
   const flush = (): void => {
@@ -266,7 +266,7 @@ export class TreeBuilder {
 }
 
 /** 行内内容：$$…$$ 与 $…$ 成为 math atom，其余逐字保留为文本投影。 */
-export function inlineParts(text: string, unitId: string, builder: TreeBuilder): InlinePart[] {
+function inlineParts(text: string, unitId: string, builder: TreeBuilder): InlinePart[] {
   const parts: InlinePart[] = [];
   const pattern = /\$\$([\s\S]+?)\$\$|\$([^\n$]+?)\$/g;
   let cursor = 0;
