@@ -1083,24 +1083,28 @@ test("pdf-import prunedResult 未知字段计入 dropped 并不持久化", async
   await expectProjectDoesNotContain(SIGNED_URL_MARKER);
 });
 
-test("pdf-import 正文与表格的 template/noscript/script/style 资源整体拒绝发布", async () => {
-  const unsafe = [
-    `<template><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></template>`,
-    `<noscript><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></noscript>`,
-    `<script>var u="https://evil.example/x.png?${SIGNED_URL_MARKER}"</script>`,
-    `<style>a{background:url(https://evil.example/x.png?${SIGNED_URL_MARKER})}</style>`,
-  ];
+async function expectUnsafeBlockRejected(tag: string, unsafe: string) {
   const fixture = await downloadResponse(() => jsonl([row([
-    vendorPage(unsafe.map((html, index) => block(index, html))),
+    vendorPage([block(0, unsafe)]),
     vendorPage([block(0, "Second page text")]),
   ])]));
   const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
   expect(result.ok).toBe(false);
-  if (result.ok) throw new Error("unsafe block was accepted");
+  if (result.ok) throw new Error(`${tag} block was accepted`);
   expect(result.diagnostic.code).toBe("parse-resource-url-rejected");
   expect(await parseSnapshots()).toEqual([]);
   await expectProjectDoesNotContain(SIGNED_URL_MARKER);
-});
+}
+
+for (const [tag, unsafe] of [
+  ["template", `<template><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></template>`],
+  ["noscript", `<noscript><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></noscript>`],
+  ["script", `<script>var u="https://evil.example/x.png?${SIGNED_URL_MARKER}"</script>`],
+  ["style", `<style>a{background:url(https://evil.example/x.png?${SIGNED_URL_MARKER})}</style>`],
+] as const) {
+  test(`pdf-import 正文危险标签 ${tag} 独立拒绝发布`, () =>
+    expectUnsafeBlockRejected(tag, unsafe));
+}
 
 test("pdf-import 表格单元格内 template 资源同样拒绝发布，签名不进入快照", async () => {
   const fixture = await downloadResponse(() => jsonl([row([
@@ -1145,8 +1149,9 @@ test("pdf-import markdown 图片引用的签名 URL 被本地化，签名不进�
 test("pdf-import 含 HTML 样字符的普通正文逐字保留，不被重序列化吞字或转义", async () => {
   const tricky = "x<y and z>w";
   const ampersand = "A & B <span class=\"x\">ok</span>";
+  const tagLike = "<script-foo>safe</script-foo> <style-guide>x</style-guide>";
   const fixture = await downloadResponse(() => jsonl([row([
-    vendorPage([block(0, tricky), block(1, ampersand)]),
+    vendorPage([block(0, tricky), block(1, ampersand), block(2, tagLike)]),
     vendorPage([block(0, "Second page text")]),
   ])]));
   const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
@@ -1157,6 +1162,7 @@ test("pdf-import 含 HTML 样字符的普通正文逐字保留，不被重序列
   const blocks = rows[0].result.layoutParsingResults[0].prunedResult.parsing_res_list;
   expect(blocks[0].block_content).toBe(tricky);
   expect(blocks[1].block_content).toBe(ampersand);
+  expect(blocks[2].block_content).toBe(tagLike);
 });
 
 test("pdf-import 非表格正文内联资源只做定点替换，其余文字逐字保留", async () => {
@@ -1194,6 +1200,12 @@ test("pdf-import 无 markdown 页的块内联资源持久化 alias，快照可�
   // 无原始 markdown 的页也必须落 markdown.images，alias 与 facts 一致。
   expect(page.markdown).toBeTruthy();
   const facts = JSON.parse((await readSnapshotFile(result.snapshot, "facts.json")).toString("utf8")) as PdfParseFactsFile;
-  for (const asset of facts.pages[0].assets)
+  const expectedPath = `assets/${sha256(image)}.png`;
+  expect(facts.pages[0].assets).toHaveLength(1);
+  expect(page.markdown.images).toEqual({ "block-0/resource-1": expectedPath });
+  for (const asset of facts.pages[0].assets) {
+    expect(asset.path).toBe(expectedPath);
     expect(page.markdown.images[asset.vendorPath]).toBe(asset.path);
+    expect((await readSnapshotFile(result.snapshot, asset.path)).equals(image)).toBe(true);
+  }
 });

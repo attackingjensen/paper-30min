@@ -423,7 +423,7 @@ test("多服务模型选择、思考流与会话恢复", async () => {
     await expect(page.locator(".chat-message.assistant")).toHaveCount(3);
     expect(requests[2].key).toBe("Bearer isolated-secret");
     expect(requests[2].path).toBe("/two/chat/completions");
-    expect(page.locator(".thinking-card")).toHaveCount(1);
+    await expect(page.locator(".thinking-card")).toHaveCount(1);
     await page.getByRole("button", { name: "选择模型" }).click();
     await page.getByLabel("搜索模型").fill("模型 D");
     await page.getByRole("button", { name: /模型 D.*共享服务/ }).click();

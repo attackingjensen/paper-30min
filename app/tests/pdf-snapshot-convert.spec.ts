@@ -895,11 +895,12 @@ test("pdf-import revision-content 中断留下残留，恢复清理后按同一�
 
 test("pdf-import before-current-replace 中断：候选已完整发布，恢复只推进指针", async () => {
   const convertPoints: string[] = [];
+  const onConvertPoint = (point: string) => {
+    convertPoints.push(point);
+  };
   const fixture = await importFixture(() => twoPages(), {
     convertHooks: {
-      onConvertPoint: (point) => {
-        convertPoints.push(point);
-      },
+      onConvertPoint,
       commitHooks: {
         onCommitPoint: (point) => {
           if (point === "before-current-replace") throw new Error("crash before current replace");
@@ -915,8 +916,14 @@ test("pdf-import before-current-replace 中断：候选已完整发布，恢复�
   expect(revision.revisionId).toBe(revisionId);
   expect(await currentRevisionId()).toBeNull();
   const pointsBeforeResume = convertPoints.length;
+  const pointValuesBeforeResume = [...convertPoints];
+  expect(pointsBeforeResume).toBeGreaterThan(0);
 
-  const resumed = await resumePdfImport({ root, parseBatchId: interrupted.parseBatchId });
+  const resumed = await resumePdfImport({
+    root,
+    parseBatchId: interrupted.parseBatchId,
+    convertHooks: { onConvertPoint },
+  });
   expect(resumed.outcome).toBe("published");
   if (resumed.outcome !== "published") throw new Error("resume did not publish");
   expect(resumed.revision.revisionId).toBe(revisionId);
@@ -924,11 +931,18 @@ test("pdf-import before-current-replace 中断：候选已完整发布，恢复�
   expect(await currentRevisionId()).toBe(revisionId);
   // 恢复只核验并推进指针，不重新转换。
   expect(convertPoints.length).toBe(pointsBeforeResume);
+  expect(convertPoints).toEqual(pointValuesBeforeResume);
   expect(fixture.counts.downloads).toBe(1);
 });
 
 test("pdf-import current 推进后任务记录丢失：恢复幂等补齐，不重转换", async () => {
-  const fixture = await importFixture(() => twoPages());
+  const convertPoints: string[] = [];
+  const onConvertPoint = (point: string) => {
+    convertPoints.push(point);
+  };
+  const fixture = await importFixture(() => twoPages(), {
+    convertHooks: { onConvertPoint },
+  });
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const { revision, task } = fixture.result;
@@ -936,12 +950,21 @@ test("pdf-import current 推进后任务记录丢失：恢复幂等补齐，不�
   // 模拟 current 已推进但 candidate-complete 未落盘的崩溃窗口。
   await writeTaskRecord({ ...before, phase: "converting" });
   expect(await currentRevisionId()).toBe(revision.revisionId);
+  const pointsBeforeResume = convertPoints.length;
+  const pointValuesBeforeResume = [...convertPoints];
+  expect(pointsBeforeResume).toBeGreaterThan(0);
 
-  const resumed = await resumePdfImport({ root, parseBatchId: task.parseBatchId });
+  const resumed = await resumePdfImport({
+    root,
+    parseBatchId: task.parseBatchId,
+    convertHooks: { onConvertPoint },
+  });
   expect(resumed.outcome).toBe("published");
   if (resumed.outcome !== "published") throw new Error("resume did not complete");
   expect(resumed.revision.revisionId).toBe(revision.revisionId);
   expect(await currentRevisionId()).toBe(revision.revisionId);
+  expect(convertPoints.length).toBe(pointsBeforeResume);
+  expect(convertPoints).toEqual(pointValuesBeforeResume);
   const after = await readTaskRecord(task.parseBatchId);
   expect(after.phase).toBe("candidate-complete");
   expect(fixture.counts.downloads).toBe(1);
@@ -1543,7 +1566,7 @@ test("pdf-import 无 markdown 页的块内联资源：发布→转换→current 
   const base64 = image.toString("base64");
   const fixture = await importFixture(() => jsonl([
     row([
-      vendorPage([block(0, `<p>内联<img src="data:image/png;base64,${base64}"></p>`)]),
+      vendorPage([block(0, `<p>内联<img src=data:image/png;base64,${base64}></p>`)]),
       vendorPage([block(0, "Second page text")]),
     ]),
   ]));
@@ -1556,6 +1579,17 @@ test("pdf-import 无 markdown 页的块内联资源：发布→转换→current 
     ),
   );
   expect(texts.join(" ")).toContain("内联");
+  const figures = tree.blocks.filter((entry) => entry.kind === "figure");
+  expect(figures).toHaveLength(1);
+  const [figure] = figures;
+  if (figure.kind !== "figure" || !figure.asset) throw new Error("inline figure asset missing");
+  expect(figure.asset).toEqual({
+    path: `assets/${sha256(image)}.png`,
+    sha256: sha256(image),
+    mime: "image/png",
+  });
+  const asset = await readRevisionAsset(root, fixture.result.revision.revisionId, figure.asset.path);
+  expect(Buffer.from(asset.bytes).equals(image)).toBe(true);
   expect(fixture.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });
 
