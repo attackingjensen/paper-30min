@@ -381,12 +381,19 @@ export async function reconvertParseCandidate(input: {
   if (!task) throw new Error("PDF 云端任务不存在。");
   const snapshot = await findBatchParseSnapshot(opened.root, task);
   if (!snapshot) throw new Error("解析快照缺失，不能离线重新转换；不自动重新上传。");
+  // 候选身份按批次与本次基线确定性派生：同一基线重转换沿用同一候选，
+  // 不复用首次导入的 revisionId（changeset 禁止 baseRevision 与 revisionId 相同）。
+  const identity = createHash("sha256")
+    .update(`reconvert:${task.parseBatchId}:${input.baseRevision}`)
+    .digest("hex");
+  const revisionId =
+    `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(12, 15)}-8${identity.slice(15, 18)}-${identity.slice(18, 30)}`;
   const { candidate } = await createParseMergeCandidate({
     root: opened.root,
     task,
     snapshot,
     baseRevision: input.baseRevision,
-    ...(task.candidateRevisionId === undefined ? {} : { revisionId: task.candidateRevisionId }),
+    revisionId,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   return candidate;
