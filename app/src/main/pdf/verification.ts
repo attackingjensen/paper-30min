@@ -9,6 +9,7 @@ import {
   readRevisionDocument,
   readSourceSnapshot,
   withProjectWriteLock,
+  type ProjectCommitHooks,
 } from "../project-core.js";
 import {
   createRangeAnchor,
@@ -407,9 +408,9 @@ export async function createVerification(input: {
 }
 
 /** 发布新 current 前生成继承侧车（SPEC-pdf-import §11）：按旧记录、实际 changeset
- * 与 PDF 谱系逐节点另存 validity；无旧记录时不写侧车。由 commitRevision 的
- * before-current-replace 钩子在串行临界区内调用：校验失败不产生孤儿侧车。 */
-export async function inheritVerificationSidecar(input: {
+ * 与 PDF 谱系逐节点另存 validity；无旧记录时不写侧车。仅经 verificationInheritCommitHooks
+ * 注入 commitRevision 的 before-current-replace 钩子调用：校验失败不产生孤儿侧车。 */
+async function inheritVerificationSidecar(input: {
   root: string;
   baseRevision: string;
   revisionId: string;
@@ -434,4 +435,28 @@ export async function inheritVerificationSidecar(input: {
     currentPdfSnapshotId: lineage.pdfSnapshotId,
   });
   await writeVerificationSidecar(root, input.revisionId, inherited);
+}
+
+/** PDF 侧核验继承的 commit 钩子：由持有 PDF 语义的调用方注入通用提交路径
+ * （coreCommit、merge 发布、重解析候选发布）。在 commit 校验通过后、current
+ * 替换前的串行临界区内执行：提交失败不产生孤儿侧车；首次发布无旧记录，空操作。 */
+export function verificationInheritCommitHooks(input: {
+  root: string;
+  baseRevision: string | null;
+  revisionId: string;
+  sourceSnapshotId: string;
+  document: DocumentTree;
+}): ProjectCommitHooks {
+  return {
+    onCommitPoint: async (point) => {
+      if (point !== "before-current-replace" || input.baseRevision === null) return;
+      await inheritVerificationSidecar({
+        root: input.root,
+        baseRevision: input.baseRevision,
+        revisionId: input.revisionId,
+        sourceSnapshotId: input.sourceSnapshotId,
+        document: input.document,
+      });
+    },
+  };
 }

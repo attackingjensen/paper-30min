@@ -1,139 +1,106 @@
 # 本地工程文件契约
 
-本契约对应 v2 的 S1/S2/S3 与 STE-69、STE-76、STE-79、STE-81、STE-82。工程围绕创建时的论文，正文以普通文件为权威，首版不使用 SQLite，也不自动初始化 Git。
+本文是工程磁盘格式与读写行为的契约摘要：文件组织、身份与路径规则、提交/恢复语义、本机配置边界。行为规格的权威在 [docs/spec/](spec/)（project-core、document-core、arxiv-import、pdf-import、agent-integration 等），数值预算的权威在 [CONSTRAINTS.md](../CONSTRAINTS.md)（B1–B10）；本文不重复规格全文，冲突时以规格与实现为准。
 
 ## 文件组织
 
-```text
-工程文件夹/
-  paper30min.json       # 轻量清单，formatVersion = 1
-  text/paper.pdf        # 创建时复制的工程论文
-  text/<batchId>/paper.md # 独立解析批次的完整正文，尚待 Agent 审阅
-  text/<batchId>/images/ # 正文图片
-  .paper30min/parsing/<batchId>/ # 解析原始返回、恢复状态与块映射
-  notes/               # 笔记与用户文档
-  memories/            # 用户按需生成的可编辑记忆卡片
-  tmp/                 # 临时脚本与产物
-  .pi/sessions/        # Pi 原生 JSONL 会话
-```
+两种格式并存、互不读取：新核遇到 `formatVersion: 1` 明确拒绝并提示旧格式处理流程；旧界面服务对 `formatVersion: 2` 清单报格式不支持。不提供自动迁移、只读兼容或双写。
 
-允许增加普通文件和目录，文件树直接从磁盘读取，不要求逐个登记。内部隐藏目录、隐藏临时文件与 `node_modules` 不展示。应用持续监听当前工程，文件树自动更新；也可手动刷新，窗口重新获得焦点时刷新。Markdown 支持阅读、CodeMirror 源码编辑和分屏预览，笔记入口可新建 `.md` 文件。
-
-清单字段：
-
-| 字段 | 含义 |
-| --- | --- |
-| `formatVersion` | 工程格式版本，目前只接受 `1` |
-| `id`、`name` | 工程身份与名称 |
-| `paper` | 固定工程论文的 `id`、相对 `path`、原文件 `sha256` |
-
-当前为 Phase 0 后的过渡形态：旧 `materials`、`map`、`explanations`、`translations` 字段在读取时忽略，不再由应用生成或校验；既有清单中的这些字段按原样保留，不解释其内容。参考材料登记、阅读地图与全文译文入口均已退役。`formatVersion: 2` 清单由 project-core 定义，见下文「formatVersion 2 新核容器」。
-
-相对路径使用 `/`，不允许父级穿越、绝对路径、Windows 保留名称或指向工程外的符号链接。工程论文身份在应用内改名／移动后保持不变，清单中的 `paper.path` 随路径更新。
-
-普通新增文件不一定具有已登记的文档身份。工程论文必须有独立身份和路径；旧参考材料登记与移出入口已退役，工程论文身份保持固定，不能被替换。
-
-旧文档记录中的 `annotationSha256` 原生批注谱系字段不再读取和使用。解析开始、处理中、恢复只接受登记原始 `sha256` 对应的字节版本，其他外部修改明确失效；`readPdf` 在同一次工程队列操作中返回字节、哈希和可选的已登记文档快照，避免清单与字节版本错配。应用不再提供 PDF 保存或原生批注写入口。
-
-## 创建、失败与搬迁
-
-创建前展示名称和完整工程路径，用户可修改名称和本次保存位置。保存位置必须已存在且可写，同名子目录不覆盖。新目录由独占创建取得；PDF 复制到 `text/paper.pdf`，再计算 SHA-256 和写入清单。复制、初始化和本机最近工程登记均成功后才返回成功。
-
-复制或初始化失败、用户取消、正常退出应用时取消未完成的创建，清理本次拥有的目录，不登记成功工程。登记开始后是提交点，迟到的取消不撤回已提交工程。强制杀进程或断电不保证清理未完成目录；没有成功登记的目录需要用户检查，不自动删除。
-
-外部 PDF 保持不变，其原路径不写入工程清单。后续使用工程内副本；整体复制或移动工程后，可从任意位置重开。搬迁不携带机器配置；PDF 阅读位置及 Markdown 视图、位置保存在工程内 `.paper30min-reading.json`，Pi 原生会话保存在 `.pi/sessions/`。PDF 页码、滚动、缩放与布局按工程内路径恢复，不再保存或比较位置记录中的 PDF 哈希；旧记录中多余的 `sha256` 字段仍可读取，但不参与恢复判断。
-
-改名／移动只操作文件，目标父目录须已存在且目标不能覆盖；清单保存失败时尝试回到原路径。文件移动依赖本地文件系统硬链接提供不覆盖保证，跨卷挂载点不支持。旧参考材料添加、重新关联与移出回收站入口已退役。
-
-外部改名／移动后，缺失文件显示「找不到文件」提示；旧按哈希重新关联入口已退役，不再提供材料身份核对或 PDF 写回。
-
-## formatVersion 2 新核容器
-
-Phase 1 的 project-core／document-core 以契约层提供新工程容器，与上文过渡形态并存；权威规格见 [SPEC-project-core](spec/SPEC-project-core.md) 与 [SPEC-document-core](spec/SPEC-document-core.md)。
+### formatVersion 2（新核容器，导入命令链使用）
 
 ```text
 工程文件夹/
-  paper30min.json               # formatVersion = 2；工程身份、名称、主论文身份与 current 指针
+  paper30min.json               # 工程身份、名称、主论文身份与 current 指针
   paper/revisions/<revisionId>/ # 已发布受管正文：document.json、source-base.json、tombstones.json、changeset.json、assets/
   sources/<sourceSnapshotId>/   # 不可变来源快照与 snapshot.json（逐文件 SHA-256／大小／可选 MIME）
   .paper30min/revisions/        # revision 元数据与核验侧车 verification.json
   .paper30min/imports/          # 首次导入恢复记录
   .paper30min/staging/          # 尚未发布的受管候选
-  .paper30min/pdf-evidence/     # 主进程 PDF 来源读取证据
+  .paper30min/pdf-evidence/     # 主进程 PDF 来源读取证据（一次性消费）
+  .paper30min/parsing/<parseBatchId>/ # PDF 云端任务 task.json
+  notes/ memories/ tmp/         # 用户文档、记忆卡片、临时产物
+  .pi/sessions/                 # Pi 原生 JSONL 会话
 ```
 
-- 清单只保存身份与指针：`paper.currentRevision` 是 revision ID 或 `null`；`null` 仅在存在有效首次导入记录时合法。工程与主论文身份是持久化 UUID，不随路径变化，整体搬迁后按相对路径继续工作。
-- 来源快照与已发布 revision 不可变。提交先完整落盘正文内容与 revision 元数据，再原子替换 current 指针；替换前复核清单字节、基线、旧／新 revision 与来源摘要。失败保留现场，旧 current 仍可读。
-- PDF 来源快照保存 `paper.pdf` 与 `snapshot.json`（`kind: "pdf"`、原始文件名、SHA-256、页数；arXiv 回退另存 base ID、固定版本与版本化 PDF URL）。本地外部绝对路径不进入工程，普通参考 PDF 不登记清单。字节与来源谱系（本地／arXiv base ID 与固定版本）均一致才复用已验证快照，否则创建新 UUID 快照；SHA-256 不承担工程或 `paper.id` 身份。
-- Phase 3 百度任务使用 `.paper30min/parsing/<parseBatchId>/task.json` 保存 UUID 批次、父 PDF 快照、PDF 摘要、provider、固定模型与 endpoint、解析选项、`jobId`、阶段、响应摘要与转换候选 revision 身份（`candidateRevisionId`）；它与旧 32 位批次的 `run.json` 不混读。每个新任务先经调用方显式确认，首次 POST 前原子写入“提交中”；重开把未完成的准备／提交记录视为“提交结果不明”，必须人工关联任务号，不得自动重传。Token、代理 dispatcher、签名 URL、原始错误正文均不写入该记录。
-- Phase 3 任务下载的原始 JSONL 只存在于主进程内存，经去敏与资源本地化后发布为解析快照；含密原始字节不写入工程。`downloaded` 记录保存响应 SHA-256；去敏快照发布后任务另关联 `parseSourceSnapshotId` 与去敏后 `result.jsonl` 摘要，恢复直接复用已发布快照，不重复下载；发布后崩溃丢失关联时，恢复按批次找回快照并核对谱系与摘要。快照尚未发布时，恢复可从原 `jobId` 重下并核对摘要，摘要不符即保留现场。查询超时和本机停止不冒充远端失败，恢复始终沿用原 endpoint、模型、解析选项和 PDF 摘要。
-- 解析快照保存于 `sources/<parseSourceSnapshotId>/`：`snapshot.json`（`kind: "pdf-parse"`、父 PDF 快照、批次、`jobId`、provider、固定模型与解析选项、页数、原始响应与去敏后响应摘要、本地化／占位／未知字段丢弃计数与 warning）、`result.jsonl`（去敏并本地化资源引用后的受管响应；正文、页／块顺序与几何事实逐字保留，签名 URL 与内联资源替换为 `assets/<sha256>.<png|jpg>` 内容寻址引用或占位）、`facts.json`（规范化 vendor 页／块 ID、标签、顺序、页面尺寸、块框、预处理参数与资产映射，不含 Paper30Min 节点身份）与 `assets/`。资源下载只允许当前 endpoint origin 与百度 HTTPS 资源域名，拒绝凭据、fragment、危险 scheme 与重定向；无法取得或无法证明安全的资源写成占位与 warning，未知字段不持久化，超预算拒绝且不发布快照（预算见 CONSTRAINTS B8／B9）。快照发布后不可变；转换与文档验证诊断不回写。
-- 转换与首次发布：转换器以解析快照的受管 `result.jsonl` 与 `facts.json` 为输入，全部页面转换结束并通过 document-core 全量验证后才生成 `documentFormatVersion: 1` 规范树；初次导入 `document.json` 与 `source-base.json` 一致，由 project-core 原子推进 current。不经过可编辑 Markdown 中间权威，不做逐页渐进 current，也不要求全文 LLM 审阅；未审阅解析稿发布后即可离线阅读。vendor 页／块 ID 保存为 `sourceAliases`（`page-N/bM`）连接 facts.json，页码与 vendor 块号不替代稳定节点 ID；服务不提供章节层级时采用平铺确定结构并记录 warning，缺失 `block_order` 按响应数组顺序降级并记录 warning。HTML 表格消毒后转换为行／列／跨度，嵌套表格或不可信跨度降级为带文本投影的 raw block；公式保留 LaTeX 来源与文本投影；图片引用本地化资产随树进入 revision `assets/`，缺失或无法取得的图片成为可读占位与 warning，不猜测资产归属，云端原始字节不回写。任务阶段由 `downloaded` 经 `converting` 到 `candidate-complete`；候选身份在提交前持久化，崩溃后恢复复用已发布候选只推进指针，受管残留清理后按同一身份重新转换，不重复下载、不重转换已发布内容。相同快照离线重新转换内容结构确定；转换 warning 与转换器版本保存于 revision 元数据 `pdfParse`。current 已存在时拒绝直写覆盖，更新必须走 document-core 合并路径。
-- 文档树为 `documentFormatVersion: 1` 的 Section／Unit／Sentence／Atom／Block，节点使用论文内唯一 UUID；锚点、changeset、tombstones 与三方合并由 document-core 承担。两棵文档树及其 changeset、tombstones 单文件 JSON 预算 64 MiB，单项资产 32 MiB，单 revision 引用资产总量 512 MiB，工程元数据 1 MiB。
-- 核验记录是 revision 关联的受管侧车 `.paper30min/revisions/<revisionId>/verification.json`（单文件 64 MiB 预算），不属于文档树或不可变正文，更新侧车不修改 `document.json`、`source-base.json` 或来源摘要。每条记录固定创建时的锚点、当时展开的覆盖节点（类型、稳定 ID、必要 sentence range、内容 SHA-256 与 quote）、PDF／解析快照、actor 与核验方式；section 标记只覆盖当时存在的后代节点。用户记录必须显式确认；Agent 记录必须引用主进程来源读取证据 `.paper30min/pdf-evidence/<evidenceId>.json`（1 MiB 预算，绑定 PDF 快照、页、session／task 与所提供内容摘要），证据未覆盖请求页、current 已变化、锚点摘要不符或 PDF 快照不可用时拒绝并保留现场，不接受 Agent 自述。发布新 current 前先按实际 changeset 与 PDF 谱系继承：同 PDF 内容不变保持 `verified`，内容修正成为 `modified-unreviewed`，不同 PDF 内容未变成为 `historical-source`，拆分／合并／删除成为 `removed` 并经 tombstone 诊断，新增节点不继承旧标记；继承记录保留原 `verifiedRevisionId`、来源与证据，相同 PDF 字节复用同一快照不视为来源变化。文档级摘要按当前有效记录逐节点聚合当前来源已核验、历史来源、修改后未复核与无记录四态，不产生主观质量分数（SPEC-pdf-import §9–§11）。
-- 新核经 `core*` 命令接入生产 preload、IPC 与 Node utility process（命令面见 [app/README.md](../app/README.md)），由真实磁盘契约测试与真实 Electron 回归验收。arXiv 首次导入、恢复与显式 PDF 回退交接已经 `coreArxivImport`／`coreArxivResume`／`coreArxivPdfFallback` 接入同一通道（真实 transport，受控 `baseUrl` 仅供回归）；界面导入链路仍是 `formatVersion: 1` 过渡形态，界面接管由全文阅读器等后续 phase 承接。
-- 两种格式互不读取：新核遇到 `formatVersion: 1` 明确拒绝并提示旧格式处理流程；旧界面服务对 `formatVersion: 2` 清单报格式不支持。不提供自动迁移、只读兼容或双写。
+### formatVersion 1（界面过渡形态）
+
+```text
+工程文件夹/
+  paper30min.json       # 轻量清单：id、name、paper{id,path,sha256}
+  text/paper.pdf        # 创建时复制的工程论文
+  notes/ memories/ tmp/ .pi/sessions/
+```
+
+界面创建/打开链路仍产出此格式；新核界面接管由全文阅读器等后续 phase 承接。旧 `materials`、`map`、`explanations`、`translations` 字段读取时忽略、不再写入，既有清单按原样保留。旧解析批次产物（`text/<batchId>/paper.md`、`.paper30min/parsing/<batchId>/run.json`／`mapping.json`、`text/candidates/`）已随旧解析路径退役：文件保留原位，不再提供读取、恢复或删除入口。
+
+允许增加普通文件和目录，文件树直接从磁盘读取，不要求逐个登记。内部隐藏目录、隐藏临时文件与 `node_modules` 不展示。应用持续监听当前工程，文件树自动更新；也可手动刷新，窗口重新获得焦点时刷新。
+
+## 身份、路径与提交语义
+
+- 相对路径使用 `/`，不允许父级穿越、绝对路径、Windows 保留名称或指向工程外的符号链接。工程与主论文身份是持久化 UUID，不随路径变化；整体搬迁后按相对路径继续工作，机器配置不随工程搬迁。
+- 工程论文身份固定，不能被替换；改名／移动只操作文件，清单 `paper.path` 随路径更新，目标不能覆盖，清单保存失败时尝试回到原路径。外部改名／移动后缺失文件显示「找不到文件」。
+- 清单只保存身份与指针：`paper.currentRevision` 是 revision ID 或 `null`；`null` 仅在存在有效首次导入记录时合法。
+- 来源快照与已发布 revision 不可变。提交先完整落盘正文内容与 revision 元数据，再原子替换 current 指针；替换前复核清单字节、基线、旧／新 revision 与来源摘要。失败保留现场，旧 current 仍可读。受管写入按工程根在进程内串行；文件系统不提供面向任意外部写入的原子 compare-and-swap，不承诺任意跨进程竞态或断电场景的完整事务。
+- 快照复用要求字节与来源谱系均一致（PDF：SHA-256＋本地／arXiv base ID 与固定版本；arXiv：abs/HTML 与全部已接受资产的完整摘要集合），否则新建 UUID 快照。SHA-256 不承担工程或 `paper.id` 身份。本地外部绝对路径不进入工程。
+- project-core 不按字段名猜测或清洗凭据；来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 等来源秘密的语义脱敏。
+
+## 创建、失败与搬迁（界面链路）
+
+创建前展示名称和完整工程路径，用户可修改。保存位置必须已存在且可写，同名子目录不覆盖；新目录独占创建，PDF 复制到 `text/paper.pdf` 后计算 SHA-256 并写清单。复制、初始化与最近工程登记均成功才返回成功；登记是提交点，迟到的取消不撤回已提交工程。失败或取消清理本次拥有的目录；强制杀进程或断电不保证清理，未登记目录需用户检查，不自动删除。
+
+PDF 阅读位置及 Markdown 视图、位置保存在工程内 `.paper30min-reading.json`，按工程内路径恢复，不比较 PDF 哈希。文件移动依赖本地文件系统硬链接提供不覆盖保证，跨卷挂载点不支持。
+
+## PDF 云端任务与解析快照
+
+- `task.json` 保存 UUID 批次、父 PDF 快照、PDF 摘要、provider、固定模型与 endpoint、解析选项、`jobId`、阶段、响应摘要与候选 revision 身份；不保存 Token、代理、签名 URL 或原始错误正文（`errorDetail` 为去敏截断后的定位原文）。每个新任务先经调用方显式确认，首次 POST 前原子写入「提交中」；重开把未完成的准备／提交记录视为「提交结果不明」，必须人工关联任务号，不得自动重传。
+- 原始 JSONL 只存在于主进程内存，经去敏与资源本地化后发布为解析快照（`kind: "pdf-parse"`：`snapshot.json`、`result.jsonl`、`facts.json`、`assets/`）；含密原始字节不写入工程。资源下载只允许当前 endpoint origin 与百度 HTTPS 资源域名，拒绝凭据、fragment、危险 scheme 与重定向；无法取得或无法证明安全的资源写成占位与 warning，未知字段不持久化，超预算拒绝且不发布快照。快照发布后不可变，转换与验证诊断不回写。
+- 恢复直接复用已发布快照，不重复下载；发布后崩溃丢失关联时按批次找回快照并核对谱系与摘要。快照未发布时可从原 `jobId` 重下并核对摘要，不符即保留现场。查询超时和本机停止不冒充远端失败，恢复沿用原 endpoint、模型、解析选项与 PDF 摘要。
+- 转换以 `result.jsonl` 与 `facts.json` 为输入，全部页面转换并通过 document-core 全量验证后才生成规范树；初次导入 `document.json` 与 `source-base.json` 一致。不经过可编辑 Markdown 中间权威、不逐页渐进 current、不要求全文 LLM 审阅。vendor 页／块 ID 保存为 `sourceAliases`（`page-N/bM`），不替代稳定节点 ID；章节层级缺失采用平铺结构＋warning，`block_order` 缺失按响应顺序降级＋warning。表格消毒后转换，嵌套或不可信跨度降级 raw block；公式保留 LaTeX 与文本投影；缺失图片成为占位＋warning。
+- 任务阶段由 `downloaded` 经 `converting` 到 `candidate-complete`；候选身份提交前持久化，崩溃恢复复用已发布候选只推进指针，残留清理后按同一身份重新转换。相同快照离线重新转换内容结构确定；warning 与转换器版本存于 revision 元数据 `pdfParse`。current 已存在时拒绝直写覆盖，更新必须走 document-core 合并路径。
+- 无云端资产的视觉块可引用原页裁剪图：仅无旋转、CropBox 与 MediaBox 重合、未预处理且宽高比校验通过的页面产出区域裁剪，否则降为页级＋warning。裁剪图为内容寻址 PNG，随候选 revision 发布，不回写原始 PDF 或解析快照；云端资产存在时优先云端字节。公式块裁剪是可选区域证据，LaTeX／文本仍是权威。
+
+## 文档树、合并与核验
+
+- 文档树为 `documentFormatVersion: 1` 的 Section／Unit／Sentence／Atom／Block，节点论文内唯一 UUID；锚点、changeset、tombstones 与三方合并由 document-core 承担（[SPEC-document-core](spec/SPEC-document-core.md)）。重开只读取并验证已持久化内容，不重新分配 ID、不重新分段、不改写 revision 字节。
+- 合并候选发布后 current 是合并树，source-base 只含新来源树，后续轮次仍能识别保留的本地修正。冲突必须逐项显式解决；未解决冲突或 baseRevision 变化拒绝发布。提交失败后只有内容、来源、基线与元数据完全一致的同一候选可按原 revisionId 重试。
+- 核验记录是 revision 关联的受管侧车 `verification.json`，不属于文档树或不可变正文。每条记录固定创建时的锚点、覆盖节点、内容摘要、PDF／解析快照、actor 与核验方式；用户记录显式确认，Agent 记录必须引用一次性消费的来源读取证据，不接受自述。发布新 current 前按实际 changeset 与 PDF 谱系继承：同 PDF 内容不变保持 `verified`，内容修正 `modified-unreviewed`，换 PDF 内容未变 `historical-source`，拆分／合并／删除 `removed`，新增节点不继承；继承保留原 `verifiedRevisionId`、来源与证据。继承逻辑属 PDF 来源语义，由 `coreCommit`、来源合并发布与重解析候选发布等 PDF 侧调用方经 commit 钩子注入通用提交路径（`before-current-replace`，串行临界区内执行）；通用文档合并（`document/merge`）不依赖来源模块，arXiv 等无核验记录的来源发布为空操作。文档级摘要聚合已核验／历史来源／修改后未复核／无记录四态，不产生主观质量分数（[SPEC-pdf-import](spec/SPEC-pdf-import.md) §9–§11）。
+- 新核经 `core*` 命令接入生产 preload、IPC 与 Node utility process（命令面见 [app/README.md](../app/README.md)）。`coreCommit` 是低层容器协议：tombstones 累积与退役语义由 document-core 合并命令层保证，直接调用方自行维护。
 
 ## PDF 阅读与来源信息
 
-工程 PDF 只读，阅读器不提供原生批注创建、引用框选、引用字典或 `#annotation=` 链接。已有 PDF 字节不会因阅读、选区复制、缩放或位置恢复而改变；阅读位置仍按工程内路径保存。
+工程 PDF 只读，阅读器不提供原生批注创建、引用框选、引用字典或 `#annotation=` 链接。已有 PDF 字节不因阅读、选区复制、缩放或位置恢复而改变。
 
-`read_pdf` 每次读取当前 PDF 并独立渲染整页 PNG，不接受区域坐标或预期哈希参数。结果包含图像、路径、文档身份、文件版本、页码、总页数、顶层 `width` / `height`（PDF 点单位）、实际缩放与来源信息；不提取文本层，不执行 OCR 或短句匹配，也不创建引用或修改 PDF。模型指出原文位置时使用真实文件路径和页码，不猜链接、坐标或引用 ID。
-
-历史 Pi 会话中由旧版本生成的来源快照仍完整保留在 JSONL 内，界面仅在显示投影中隐藏快照 JSON，不解析或恢复旧引用跳转。
-
-## 解析候选
-
-百度解析每批次只生成一份完整正文 `text/<batchId>/paper.md`，图片位于同目录下的 `images/<sha256>.<png|jpg>`，`batchId` 为 32 位小写十六进制。正文按阅读顺序组织，图片就地出现；不显示独立块 ID、供应商图片路径或页末重复图片，也不另存逐页 Markdown。任务状态、供应商原始返回与块映射分别保存在隐藏目录 `.paper30min/parsing/<batchId>/` 的 `run.json`、`result.jsonl`、`mapping.json`，不进入文件树。独立批次保留旧有效产物，不自动删除或覆盖；已有 `text/candidates/<batchId>/` 布局继续原位读取、恢复和校验，不自动迁移。解析正文可随时编辑，同一份 Markdown 始终是当前正文。
-
-`run.json` 的 `formatVersion` 为 `1`，保存工程身份、批次、PDF 文档记录、端点、请求模型、任务号、阶段、页数、累计本机处理耗时和错误；完成时保存原始返回、映射和正文的 SHA-256。阶段为准备、提交、提交结果不明、查询、下载、映射、停止、本机失败、云端失败或候选完成。重开将无活动进程的中间状态呈现为可恢复；磁盘上的提交中状态视为结果不明，必须关联百度任务号才能继续查询，禁止自动重传 PDF。明确的鉴权、参数或额度拒绝视为未受理，用户修正后可主动重试；已下载原始结果但本地映射失败时也允许主动建立独立新批次。停止等待在途提交回执并保存任务号，不承诺取消云端计费。退出超过两秒会强制结束工程进程，未收到回执仍按结果不明处理。
-
-`mapping.json` 的 `formatVersion` 为 `1`，绑定 `projectId`、`batchId`、`document` 和 `rawSha256`。每块保留 `id`、供应商 `vendorIds`、`label`、原始 `text`、本地 `images` 路径和 `limitation`。块 ID 为 `<batchId>:p<1 起始页码>:b<供应商块号>`；同批次恢复稳定，不跨批次复用块号。`text` 是解析时的原始摘录，纠错不改写这份来源记录；读取、搜索和生成须以当前 Markdown 为准，不能把原始摘录当成修正后正文。原文同组多区域用于图片裁切和页级定位说明，任一区域不可信则整块降级。OCR 块区域不能声称逐字精确。STE-98 自动短句精细引用已取消；当前版本不生成正式引用字典。
-
-供应商坐标按图像尺寸缩放到 PDF 点坐标；仅接受无旋转、CropBox 与原点一致的 MediaBox 重合、未开启图像预处理且宽高比通过校验的页面。其余情况保留正文并明确降为页级，不编造矩形。当前服务批次未提供可独立核验的绝对页号，按校验后的 JSONL 返回顺序对应 PDF 页；页数、尺寸或重复非空页异常会失败，但同尺寸页面的语义换位无法自动检出，仍需对照原页核对。
-
-图片支持供应商 Base64 或受限百度 HTTPS 域名下载，正文图片通过 Markdown 语法树重写为本批次相对路径；HTML 表格转换后同样重写。公式、图表和表格另按可信区域从原 PDF 裁切，保存在图片清单供后续核对；正文已有图文时不重复展示裁切图，空白视觉块则在原位置显示裁切图。图片清单记录页码、摘要及可用的供应商路径或块 ID；无法可靠关联的供应商图像仅在清单中保留页级关联，不推测属于哪个块。打开与日常读取核验当前 PDF、映射和图片摘要；Markdown 允许纠错，不再与初次解析摘要作相等校验。重新解析仍不得覆盖旧批次。原始 JSONL 可能含服务签名地址，仅用于保留现场；离线展示依赖本地图片，不依赖其 URL。
+`read_pdf` 每次读取当前 PDF 并独立渲染整页 PNG，不接受区域坐标或预期哈希参数。结果包含图像、路径、文档身份、文件版本、页码、总页数、尺寸（PDF 点单位）、实际缩放与来源信息；不提取文本层、不执行 OCR 或短句匹配，也不创建引用或修改 PDF。模型指出原文位置时使用真实文件路径和页码，不猜链接、坐标或引用 ID。历史 Pi 会话中旧版本生成的来源快照仍完整保留在 JSONL 内，界面仅在显示投影中隐藏。
 
 ## 记忆卡片
 
-「记忆卡片」由用户在对话中按需调用，指定原文、笔记或讨论的范围，生成普通的 `memories/*.md`。卡片可自由编辑、改名和搬迁，不需清单登记。提示词要求保留必要解释、推理、条件和待核实问题；来源使用实际读取过的文件路径与页码，没有来源的讨论理解不伪造引用。普通聊天不自动生成卡片，不提供复习调度或独立卡片数据库。旧阅读地图与逐节精解（建图）能力已退役：不再提供生成入口、`tmp/mapping-<id>/` 候选与发布流程，历史建图会话仅作为普通会话记录保留。
+「记忆卡片」由用户在对话中按需调用，生成普通 `memories/*.md`，可自由编辑、改名和搬迁，不需清单登记。保留必要解释、推理、条件和待核实问题；来源使用实际读取过的文件路径与页码，不伪造引用。普通聊天不自动生成卡片，不提供复习调度或独立卡片数据库。
 
 ## 本机配置
 
-Electron `userData/preferences.json` 保存 `defaultFolder` 与最多 20 个最近工程的路径和名称。默认目录只影响后续新建，不搬迁已有工程，也不限制打开位置。默认目录不存在或不可写时要求重新选择，不自动改存其他位置。该配置不放进工程，不随工程搬迁。
-
-工程进程对本应用的操作串行处理，创建取消可独立送达。后续外部编辑与 Agent 并发写入不能仅依赖该队列，须按 STE-78、STE-81、STE-86 的正文基线与冲突契约接入。
-
-模型和代理配置保存在本机 `agent-settings.json`；API 密钥使用 Electron `safeStorage` 加密，不进入工程或会话。复制工程到另一台机器后需要配置该机器的模型与凭据。
-
-新版产品 Skill 默认提示词位于应用的 `skills/`（仓库路径 `app/skills/`）。「设置 → 产品 Skill」可编辑并保存本机覆盖文件 `userData/product-skills/`；保存按内容 SHA-256 检查冲突，失败保留草稿。每次调用把当时实际使用的提示词和版本写入用户消息，历史重开不受后续提示词修改影响。本机覆盖不随工程搬迁，旧根目录 `skills/` 的文本工具协议不在新版加载。
-
-百度解析配置独立保存在本机 `parsing-settings.json`，Token 同样使用 `safeStorage` 加密，仅在请求时解密。解析复用 Agent 的直连／环境／自定义代理选择；停止和查看任务状态不依赖凭据配置。机器配置不随工程搬迁，已有候选可离线阅读。
+- `userData/preferences.json`：`defaultFolder` 与最多 20 个最近工程。默认目录只影响后续新建；不存在或不可写时要求重新选择。不随工程搬迁。
+- `agent-settings.json`：模型与代理配置；API 密钥用 Electron `safeStorage` 加密，不进工程或会话。换机需重新配置。
+- `parsing-settings.json`：百度解析配置，Token 同样加密、仅请求时解密；代理复用 Agent 选择。停止和查看任务状态不依赖凭据。
+- 产品 Skill：默认提示词在 `app/skills/`，本机覆盖存 `userData/product-skills/`，保存按内容 SHA-256 检查冲突。每次调用把实际提示词与版本写入用户消息，历史重开不受后续修改影响。旧根目录 `skills/` 不在新版加载。
 
 ## Pi 会话
 
-普通对话使用 Pi SDK 的 JSONL 持久化，开启原生自动上下文压缩，不另建聊天数据库或摘要机制。会话包含用户消息、模型回复及 Pi 元数据；历史 `cwd` 可能保留原工程绝对路径，但重开时使用当前工程目录，不以历史路径过滤会话。普通会话分支建立新的原生会话文件，原会话可继续打开。空会话在首次消息写入前不保证落盘。旧逐页审阅会话与 `complete_review_page` 工具已退役，历史会话作为普通记录保留。
+普通对话使用 Pi SDK 的 JSONL 持久化与原生自动上下文压缩，不另建聊天数据库。历史 `cwd` 可能保留原绝对路径，重开使用当前工程目录。分支建立新的原生会话文件；空会话在首次消息写入前不保证落盘。
 
-运行、补充消息队列和输入草稿是临时状态。停止清空待执行补充消息，保留已收到的回复及已完成文件修改；停止后迟到事件不得追加到会话，排队中的文件写入在提交前检查取消。会话按工程目录与 Pi 会话身份隔离，停止不等待文件操作队列。退出取消运行，工程进程未及时结束时由主进程在两秒期限后终止；进程强制终止不保证保存尚未落盘的流式片段。Pi 原生工具调用、结果、改动与冲突数据保存在对应消息中，历史重开按 toolCallId 关联；普通对话可根据用户请求连续修改成果和运行 PowerShell，仍保留原始论文保护、写入冲突检测与取消检查。
+运行、补充消息队列和输入草稿是临时状态。停止清空待执行补充消息，保留已收到回复与已完成文件修改；迟到事件不追加到会话，排队写入在提交前检查取消。退出取消运行，工程进程未及时结束时主进程等待落定后关闭（超时兜底强杀）；强制终止不保证保存未落盘的流式片段。工具调用、结果、改动与冲突数据保存在对应消息中，历史重开按 toolCallId 关联。
 
 ## Agent 文件与 Shell
 
-read、write、edit 复用 Pi 原生工具，工程服务提供真实读写。读取限定工程内 UTF-8 文本（2 MiB），拒绝父目录、内部隐藏文件、符号链接及 PDF。已有文件必须先 read；edit 使用已读取的基线，write 使用同一基线。冲突返回基线、当前磁盘和本次拟写入内容，先重读再决定整合，不覆盖双方输入。新文件独占创建，已有文件使用与界面保存相同的暂存、同步和替换流程；任意外部编辑器的最后检查与替换之间仍存在文件系统竞态。
+read、write、edit 复用 Pi 原生工具，工程服务提供真实读写。读取限定工程内 UTF-8 文本（预算见 CONSTRAINTS B6），拒绝父目录、内部隐藏文件、符号链接及 PDF。已有文件必须先 read；edit/write 使用已读取基线，冲突返回基线、当前磁盘与拟写入内容，先重读再整合，不覆盖双方输入。新文件独占创建，已有文件走与界面保存相同的暂存、同步和替换流程；最后一次检查与替换之间仍存在文件系统竞态。
 
-`text/` 中的 Markdown 允许界面及 Agent read/write/edit 修正，仍使用正文基线与冲突检查。`sources/`、`text/` 中的图片和其他非 Markdown 文件、任何 PDF、已登记工程论文及内部文件保持保护；百度解析通过受限二进制入口落地。可手动阅读和编辑；日常 Agent 发送不再要求逐页审阅门禁，Agent 直接读取解析稿并按需对照原页。
+`text/`、`notes/` 等普通 Markdown 允许界面及 Agent 修正；`sources/`、`paper/`、任何 PDF、已登记工程论文及内部受管文件保持保护，来源模块经受限入口落地。
 
-Markdown 保存由工程服务统一执行基线检查、暂存、同步和替换，界面与 Agent write/edit 共用保存路径。当前没有额外链接转换或保存前引用校验。
-
-bash 在 Windows x64 上使用 PowerShell，输出截断及退出错误复用 Pi，默认超时 120 秒。每次 Shell 建立带 kill-on-close 的 Windows Job Object，正常退出、取消及工程进程退出时子进程随 Shell 退出。模型密钥不放进子进程环境；输出在 Pi 保存全文临时文件前脱敏。工具卡片提供本次 Shell 新增文件入口，已有文件变更可用 read 查看。
-
-Shell 按用户确认采用受信任主机执行，没有强制文件隔离；工作目录与 Job Object 不构成文件沙箱。模型指令禁止借 Shell 修改受保护文件，但恶意或不遵守指令的脚本仍具有当前用户权限。越界、系统修改和上传／发布工程内容须有明确任务授权，本切片不实现完整权限管理。
+bash 在 Windows x64 上执行 PowerShell，默认超时 120 秒。每次 Shell 建立 kill-on-close 的 Windows Job Object，退出/取消时清理进程树。模型密钥不进子进程环境；输出在持久化前脱敏。Shell 按用户确认采用受信任主机执行，没有强制文件沙箱：模型指令禁止借 Shell 修改受保护文件，但恶意脚本仍具当前用户权限；越界、系统修改和上传／发布须有明确任务授权。
 
 ## Markdown 编辑与外部协作
 
-UTF-8 Markdown 正文为权威（含 BOM），单文件编辑预算为 2 MiB。打开、阅读和切换视图不写正文。CodeMirror 仅应用用户编辑范围；未修改范围的 CRLF、LF、混合换行、注释、空行和尾随空格保留。新输入换行沿用文档首个换行样式。阅读渲染不反向生成 Markdown，原始 HTML 按文本显示。公式由 KaTeX 渲染，图片限工程内相对路径，链接可打开工程文件或 HTTP/HTTPS 外部网页。工程外文件与符号链接图片不加载。
+UTF-8 Markdown 正文为权威（含 BOM），编辑预算见 B6。打开、阅读和切换视图不写正文。CodeMirror 仅应用用户编辑范围；未修改范围的换行风格、注释、空行和尾随空格保留，新输入换行沿用文档首个换行样式。阅读渲染不反向生成 Markdown，原始 HTML 按文本显示；公式 KaTeX 渲染，图片限工程内相对路径，工程外文件与符号链接图片不加载。
 
-保存为显式操作，可用 Ctrl+S。各标签独立保留草稿和撤销记录，切换标签、视图和设置不丢编辑；关闭脏标签、离开工程或退出窗口需确认放弃。草稿尚不提供崩溃恢复。
+保存为显式操作（Ctrl+S 或停止输入约 600 毫秒自动保存）。各标签独立保留草稿和撤销记录；关闭脏标签、离开工程或退出需确认放弃，草稿不提供崩溃恢复。保存先检查 SHA-256 基线，再同目录暂存、同步、替换，替换前再次核对磁盘内容，失败不截断旧正文。
 
-Node 读入时返回正文的 SHA-256 基线。保存先检查基线，再在同目录写入并同步临时文件，替换前再次核对磁盘内容；失败不截断旧正文。此检查能识别普通外部写入，但文件系统不提供面向任意外部编辑器的原子 compare-and-swap，不能承诺消除最后一次检查与 rename 之间的竞态；后续 Agent 写入必须复用工程服务并遵守重读契约。
-
-无本地修改时载入外部更新；双方修改时保留当前草稿并显示磁盘内容，禁止直接覆盖，第三次外部更新继续显示最新磁盘内容。删除／改名保留已打开标签内的文本并提示。语义整合由后续 Agent 切片接入，本切片不模拟合并。
+无本地修改时载入外部更新；双方修改时保留当前草稿并显示磁盘内容，禁止直接覆盖。删除／改名保留已打开标签内的文本并提示。

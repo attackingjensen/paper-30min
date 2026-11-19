@@ -2,6 +2,8 @@
 
 Electron + React / TypeScript 客户端。旧 v1 Tauri 客户端源码已删除，历史实现经 git 历史与 Release/tag 追溯。
 
+本文只写开发入口、验证方式与各模块的实现位置；行为契约的权威在 [docs/spec/](../docs/spec/) 与 [工程文件契约](../docs/project-format.md)，预算与质量线在 [CONSTRAINTS.md](../CONSTRAINTS.md)，检查点验证证据在对应 PR 与 beads，不在此复述。
+
 ## 开发与验证
 
 在 Windows 上使用 Node.js 24 和 npm，依赖版本由 `package-lock.json` 锁定。
@@ -46,16 +48,11 @@ CI 在两个平台执行 fast、架构、OSV 和构建门禁，Windows 继续运
 npm run test:dead-code
 ```
 
-命令有问题时退出码为 1，配置或内部错误为 2；Electron CI 在 Windows 和 Linux 均把它作为阻断门禁。`src/main/main.ts`、`worker.ts`、`preload.cts` 和 `src/renderer/main.tsx` 显式登记为入口，因为 Electron 的进程启动/预加载路径不都经过静态 import；`includeEntryExports` 同时检查入口文件的导出。
+命令有问题时退出码为 1，配置或内部错误为 2；Electron CI 在 Windows 和 Linux 均把它作为阻断门禁。`src/main/main.ts`、`worker.ts`、`preload.cts` 和 `src/renderer/main.tsx` 显式登记为入口，因为 Electron 的进程启动/预加载路径不都经过静态 import；`includeEntryExports` 同时检查入口文件的导出。当前无 `ignoreFiles`、无 `ignoreIssues` 豁免；历史豁免的清理过程见 git 历史与对应 PR。配置依据见官方 [entry/project 与 ignoreIssues](https://knip.dev/reference/configuration)、[issue types](https://knip.dev/reference/issue-types) 和 [CLI 退出码](https://knip.dev/reference/cli)。
 
-### Phase 0 基线与有限豁免（已全部移除）
+knip 能证明静态引用和依赖层面的死代码情况，不能单独证明旧引用、旧映射、旧材料或旧导入的语义残留为零；退役类任务还需对照退役清单做定向协议、通道和入口检查。
 
-首次无配置扫描成功识别 TypeScript 项目，报告 6 个入口相关未使用文件、3 个未使用依赖、1 个未使用开发依赖、8 处未声明依赖、2 个未使用导出和 6 个未使用导出类型。补全入口后，级联误报消失，剩余问题按以下方式处理：
-
-- 不使用 `ignoreFiles` 或全局关闭规则。`@embedpdf/pdfium`、`@embedpdf/plugin-spread`、`@embedpdf/plugin-rotate` 是源码直接 import，已按实际安装版本显式声明；Viewer 已传递提供的 annotation、capture、interaction-manager、render、selection、stamp 与默认印章资源不重复声明；`markdown-it` 自带类型，冗余 `@types/markdown-it` 已移除。
-- `ignoreIssues` 豁免已全部移除：`contracts.ts` 随 Phase 1 project-core 契约收敛、`arxiv.ts` 随 vx0.4/vx0.5、`parsing.ts` 随 Phase 3 旧解析路径退役（s08.6）清理。死文件、死导出、死类型、依赖和文件类型均正常检查。
-
-knip 能证明静态引用和依赖层面的死代码情况，不能单独证明旧引用、旧映射、旧材料或旧导入的语义残留为零；Phase 0 checkpoint 还需对照退役清单做定向协议、通道和入口检查。配置依据见官方 [entry/project 与 ignoreIssues](https://knip.dev/reference/configuration)、[issue types](https://knip.dev/reference/issue-types) 和 [CLI 退出码](https://knip.dev/reference/cli)。
+## 测试窗口与配置隔离
 
 桌面回归默认隐藏原生窗口，不显示任务栏按钮，也不抢占桌面焦点；每次启动将原生窗口内容区设为 1440 × 960，避免 runner 的小屏幕改变桌面测试布局，用例内仍可调整为窄窗口。后台仍进行真实渲染和截图，并通过 CDP 保持浏览器输入与剪贴板 API 可用。需要现场视觉检查或验证原生焦点时，只显式显示所选用例：
 
@@ -69,89 +66,41 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 可用 `PAPER30MIN_PROFILE` 指定独立本机配置目录，用于隔离试用；普通启动使用 Electron 的 `userData`。启动运行器会移除宿主的 `ELECTRON_RUN_AS_NODE`，防止 Electron 被当成 Node 启动。
 
-## 工程格式
+## 实现地图
 
-详见 [工程文件契约](../docs/project-format.md)。`src/main/project-service.ts` 是界面及后续 Agent 共享的文件操作入口，由 Node utility process 执行；主进程负责系统选择器和外部打开，React 通过受限 preload 调用。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统。
+| 领域 | 位置 | 权威规格 | 定向回归 |
+|---|---|---|---|
+| 工程容器与文档树（formatVersion 2） | `src/main/project-core.ts`、`src/shared/document/`、`src/main/document/merge.ts` | [SPEC-project-core](../docs/spec/SPEC-project-core.md)、[SPEC-document-core](../docs/spec/SPEC-document-core.md) | `-g 'project-core\|document-core'` |
+| 命令面与 IPC | `src/main/core-commands.ts`（`core*` 命令族）、`src/main/preload.cts`、`src/main/worker.ts` | [工程文件契约](../docs/project-format.md) | `pdf-core-commands`、真实 Electron 套件 |
+| arXiv 导入 | `src/main/arxiv/`（reference／version／transport／snapshot／convert／import） | [SPEC-arxiv-import](../docs/spec/SPEC-arxiv-import.md) | `-g 'arxiv-import'` |
+| PDF 云端解析 | `src/main/parsing/`（baidu-task／parse-snapshot／parse-convert／pdf-import）、`src/main/pdf/`（snapshot／verification／page-crop／fallback-import） | [SPEC-pdf-import](../docs/spec/SPEC-pdf-import.md) | `-g 'pdf-import'` |
+| 界面工程服务（formatVersion 1 过渡形态） | `src/main/project-service.ts` | [工程文件契约](../docs/project-format.md) | `desktop.spec.ts` |
+| Agent 与模型 | `src/main/agent-service.ts`、`agent-tools.ts`、`pdf-tools.ts`、`web-tools.ts` | [SPEC-agent-integration](../docs/spec/SPEC-agent-integration.md) | `agent-files`、`web-tools` 等 |
 
-当前支持从 PDF 创建、打开与最近工程、默认位置和工作台外壳。PDF 使用 EmbedPDF 完整 Viewer，保留原生缩放、手型拖动、搜索和侧栏等工具，文字选区使用浅紫色。工程 PDF 的阅读位置保存在工程内，Viewer 中临时打开的其他文件不会自动加入工程。Markdown 支持 CodeMirror 编辑、阅读和分屏，提供搜索替换、撤销重做、公式与工程内图片预览；笔记入口可新建文档。停止输入约 600 毫秒后自动保存，标签和设置往返中保留编辑位置与撤销历史；Ctrl+S 仍可立即保存。外部文件变化自动同步，双方修改时保留内容并提示冲突。其他文本文件可只读查看。PDF 云端解析经 `corePdf*` 命令链发布规范文档树，界面阅读器接入前由真实 Electron 回归驱动；Agent 可按需对照原页核对。
+要点（细节以规格与契约为准）：
 
-### Phase 1 新工程核契约层
-
-`src/main/project-core.ts` 按 [project-core 规格](../docs/spec/SPEC-project-core.md) 实现新工程容器，由真实磁盘契约测试与真实 Electron IPC 回归验收；界面导入链路仍是上述 `project-service.ts` 的 `formatVersion: 1` 过渡形态，新核界面接管由 arXiv 导入与全文阅读器等后续 phase 承接：
-
-- `createProject` 创建 `formatVersion: 2` 清单和首次导入恢复记录。
-- `publishSourceSnapshot` 在 staging 中同步并核验文件，再发布到 `sources/<sourceSnapshotId>/`；`snapshot.json` 保存身份、相对路径、逐文件 SHA-256／大小及可选 MIME。已发布快照不接受原地更新。
-- `commitRevision` 要求四个 revision JSON 容器文件，先发布 `paper/revisions/<revisionId>/`，再写 `.paper30min/revisions/<revisionId>/revision.json`，最后原子替换清单中的 current 指针。`baseRevision` 仅在首次导入时为 `null`，之后必须等于 current。
-- `openProject`、`readSourceSnapshot` 和 `readRevision` 校验身份、受管路径、文件清单与摘要；current 可读不依赖来源快照仍可用，首次导入记录只在 current 为空时承担恢复作用。
-- `src/shared/document/tree.ts` 定义 `documentFormatVersion: 1` 的 Section、Unit、Sentence、Atom 与 Block 树。节点使用论文内唯一的 UUID，记录键与节点 ID 必须一致；章节、单元、句子、内联原子和阅读块保存显式父子关系及顺序。`commitRevision` 对 `document.json` 与 `source-base.json` 调用同一运行时 schema、引用完整性、paperId 和资产引用校验。
-- `readRevisionDocument` 通过显式 `document` / `source-base` 参数读取对应树，避免把来源基线混入普通正文入口。重开只读取并验证已持久化的节点和句子，不重新分配 ID、不重新分段，也不改写 revision 字节。两棵文档树及其 changeset、tombstones 的单文件读取预算为 64 MiB；单个资产上限为 32 MiB，单 revision 引用资产总量上限为 512 MiB；工程元数据仍为 1 MiB。
-- `src/shared/document/anchor.ts` 提供结构化锚点和精确选区。普通文本偏移按 UTF-16 code unit，内联 atom 占一个逻辑位置；跨句／跨单元选区必须按阅读顺序显式保存全部连续 ranges。`QuoteSnapshot` 保存选中文本及前后各最多 32 个逻辑位置的上下文，解析只用于校验和诊断，不凭重复 quote 或相似文本自动重锚。
-- `src/shared/document/changeset.ts` 按稳定 ID 生成 `retained` / `moved` / `changed` / `removed` / `added` 变化，并支持合并阶段的 `conflicted`。派生状态以锚点实际依赖为边界：纯移动保持 `fresh`，内容变化为 `stale`，删除或冲突为 `invalid`，新增目标为 `missing`；不会因 revisionId 改变而全篇失效。`tombstones` 保存最后出现 revision、原摘录和原因，采用不修改旧数组的累积方式，并禁止退役 ID 复用。
-- `src/shared/document/merge.ts` 以旧 source-base、current 和新 candidate 执行单元级三方合并。候选对齐依次使用稳定 ID、唯一 source alias、同父级唯一规范内容和可证明的未变顺序；重复文本或歧义对齐不继承旧 ID。双方修改同一单元产生 content 冲突，修改后删除产生 deletion 冲突，父级／阅读顺序和资产分别产生 structure／order／asset 冲突。每项冲突保留 base、current、candidate 与相关锚点，必须逐项显式选择 current 或 candidate，不能按默认优先级发布。source-base 可以合法保留已在 current 本地删除的节点；显式恢复同一逻辑节点时撤销对应 tombstone，退役 ID 不得改用于不同逻辑内容。父章节缺失会形成 structure 冲突，不会把子单元静默改挂到其他章节。
-- `src/main/document/merge.ts` 提供真实工程候选创建、冲突解决和发布。发布后的 current 是合并树，source-base 只含新来源树；后续轮次因此仍能识别保留下来的本地修正。候选携带 revisionId、changeset、累积 tombstones 和两棵树所需资产；未解决冲突或 baseRevision 已变化时拒绝发布，最终仍由 `commitRevision` 复核 current 并原子推进。`commitRevision` 也接受可选的调用方 revisionId，用于让候选与其 changeset 在创建时绑定同一身份；未提供时仍自动生成。简略 changeset 输入会在提交时生成实际差异，显式 changeset 必须与基线、revisionId 和候选树一致。提交失败后，只有内容、来源、基线和元数据完全一致的同一候选可以按原 revisionId 重试，已有不可变内容不会被覆盖。
-
-工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
-
-新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish`、`coreArxivImport`、`coreArxivResume`、`coreArxivPdfFallback` 与 PDF 导入命令族（见下文 Phase 3）与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。`coreCommit`（baseRevision 非空时）与 `coreMergePublish` 都在推进 current 前执行核验继承：按旧侧车、实际 changeset 与 PDF 来源谱系生成新 revision 的 `verification.json`，无旧核验记录时为空操作（SPEC-pdf-import §11）。界面导入链路尚未接入这些命令（arXiv 与 PDF 命令面已可用，界面接管见下文）。
-
-### Phase 2 arXiv 导入契约层
-
-`src/main/arxiv/` 按 [arxiv-import 规格](../docs/spec/SPEC-arxiv-import.md) 实现首次导入流水线：严格引用解析与固定版本（`reference.ts`／`version.ts`）、受控幂等 GET（`transport.ts`，host 允许清单、重定向≤5、双预算、有界重试、取消即时生效）、不可变来源快照（`snapshot.ts`，同字节复用、异字节新建）、LaTeXML 到 document-core 的确定性转换（`convert.ts`），以及组合入口 `import.ts`（`importArxivPaper`／`resumeArxivImport`／`prepareArxivPdfFallback`）。恢复进度持久化在 `.paper30min/imports/initial.json`；快照存在不代表正文可读，只有完整 current 可离线阅读。
-
-arXiv 命令经生产 IPC 使用真实 `arxivFetch` transport，携带 `operationId`，`coreArxivCancel` 可随时取消进行中的导入/恢复（取消保留现场，恢复只补做未完成阶段）。`baseUrl` 是规格定义的受控端点基址注入点，生产省略即 `https://arxiv.org`；回环基址仅在主进程测试环境（`PAPER30MIN_TEST_WINDOW`）下生效，生产 transport 拒绝一切回环/私网目标（含重定向），起始 `http://arxiv.org` 在访问网络前规范化为 HTTPS。`coreArxivPdfFallback` 只在调用方（用户确认）发起时生成 `PdfFallbackRequest` 交接数据，全程不请求 PDF、不调用云解析、不改变工程；首次导入 `baseRevision=null`，更新场景必须携带调用方读取时的 current revision（stale base 拒绝），身份取自 current 的 arXiv 来源快照。PDF 实际获取与云解析属 pdf-import（Phase 3），本 phase 不实现。
-
-检查点加固（vx0.5 审查修复）：版本守卫 fail-closed——最终 URL 与元数据至少一项明确等于固定 `vN` 才放行；resolve 阶段复用统一 transport 诊断分类（404/403/429/TLS/停滞/取消不互相冒充）；快照复用比较 abs/HTML 与全部已接受资产的完整摘要集合，任一资产变化即新建快照；获取警告随快照持久化、转换器版本与转换警告随 revision 元数据持久化，重开/恢复可继续呈现，受管诊断损坏时恢复明确失败而非静默清空；current 推进中断后恢复沿用已持久化的候选 revisionId（`completePublishedRevision` 核验磁盘字节与元数据深度相等后只推进指针，arXiv 元数据校验在原子替换前执行，校验失败 current 保持为空）；残留候选探测与清理在 project-core 串行临界区内执行，仅 ENOENT 视为不存在，绝不删除已发布内容；表格跨度在 schema 校验前受安全整数与网格规模上限约束，超限 raw 降级；equation group 逐条转换且组 alias 持久化到锚定单元（成员无自身 ID 时同样生效）、子图独立成块且父图 alias 持久化、无 caption 图片/表格有合法锚定单元、citation 解析到书目规范单元并随三方合并 ID 重映射；PDF 不作为图片资产下载，SVG 原件保留快照并计入总预算但不进入 revision 资产映射；不接受的响应（重定向/错误/声明超预算）立即断开正文，不 draining 无界字节；进度记录写入失败返回结构化诊断，不穿透 IPC。
-
-```powershell
-npx playwright test -g 'arxiv-import'
-```
-
-受控 fixtures 契约测试覆盖引用／版本／transport／快照／转换／首次导入与故障注入（`tests/arxiv-*.spec.ts`）；真实 Electron 回归（`tests/arxiv-import-electron.spec.ts`）经生产 preload、IPC、Node 工程进程与真实 undici transport 覆盖无 PDF 工程创建、断网重开完整阅读、失败恢复、快照后转换失败与离线重转换、中途取消与恢复、局部图片 warning 与核心缺失的不同结果、显式 PDF 回退确认前后零 PDF 请求（含更新场景 baseRevision 交接），以及整体搬迁。渲染进程远端加载由请求监听断言为零。同版重取的快照原语（同字节复用、异字节新建、资产变化新建）已有契约测试；新版本检查、同版重取与更新候选的显式动作编排尚未实现（规格 §8，见 beads `paper-30min-1rb`）；真实 arXiv 来源验证在发布前单独执行并记录。
-
-```powershell
-npx playwright test -g 'project-core|document-core'
-```
-
-契约测试覆盖创建中断、来源与 revision 不可变、首导入和更新故障、基线竞争、进程内并发、外部修改、非法路径、目录链接及工程整体搬迁。真实 Electron 回归（`tests/project-core-electron.spec.ts`）经生产 preload、IPC 和 Node 工程进程覆盖无 PDF 工程创建、首次导入与更新发布、current 推进、离线重开、基线冲突与并发提交、外部篡改与缺失 revision 故障现场、整体搬迁、`formatVersion: 1` 明确分流及合并候选发布。
-
-### Phase 3 PDF 导入契约层
-
-`src/main/parsing/` 与 `src/main/pdf/` 按 [pdf-import 规格](../docs/spec/SPEC-pdf-import.md) 实现 PDF 云端解析到同一规范文档树：PDF 快照与来源谱系（`pdf/snapshot.ts`）、百度任务提交／恢复与费用安全（`parsing/baidu-task.ts`）、响应去敏与本地化（`parsing/parse-snapshot.ts`）、确定性转换与首次发布（`parsing/parse-convert.ts`）、重解析三方合并编排（`parsing/pdf-import.ts`）、核验记录／继承（`pdf/verification.ts`）与原页区域裁切（`pdf/page-crop.ts`）。
-
-无云端资产的 image／chart／display_formula 视觉块可引用从原 PDF 生成的候选裁剪图（SPEC §6.7）：仅无旋转、CropBox 与 MediaBox 重合、未预处理且宽高比校验通过的页面产出区域裁剪；区域不可校准时只声明页级来源并保留 warning。裁剪图经 PDFium 渲染为内容寻址 PNG，执行单请求 16M 像素与 revision 资产预算，随候选 revision 发布，不回写原始 PDF 或解析快照；云端资产存在时优先云端字节。公式块的裁剪引用是可选区域证据，LaTeX／文本仍是权威。
-
-PDF 命令族经同一 `project:command` 通道在 Node utility process 执行：
-
-- 无配置命令：`corePdfSnapshot`（本地 PDF 来源快照，同字节复用）、`corePdfTasks`（任务状态）、`corePdfStop`（停止本机等待，不取消远端）、`corePdfReconvert`（离线重新转换候选）、`corePdfPublishCandidate`（按批次重建同一确定性候选并应用显式冲突选择后发布，发布前复核 baseRevision）、`corePdfVerify`／`corePdfReadVerification`（核验建立与读取）。
-- 云端命令：`corePdfImport`／`corePdfResume`／`corePdfReparse`／`corePdfResumeReparse`。本机解析配置（Token、端点、代理）由主进程从加密设置读取后注入 worker，renderer 命令不携带凭据；每个新云端任务的上传确认经 `pdf:uploadConfirm` 事件送到 renderer 显式确认对话框（按独立随机 `confirmationId` 排队，不覆盖并发请求），应答须同时匹配 `operationId` 与 `confirmationId` 且 `confirmed === true` 才发起 POST；renderer 重载或窗口关闭时未决确认按拒绝落定，退出时等待全部操作落定后再关闭工程进程。`operationId` 标识进行中操作，`corePdfStop` 按批次停止；提交结果不明时恢复必须人工关联任务号，绝不自动重传。
-- arXiv PDF 回退组合：`coreArxivPdfFallbackImport` 接收 `coreArxivPdfFallback` 产出的固定版本交接，主进程重新核验交接与工程谱系（首次导入比对导入记录固定版本；更新场景比对 current 来源与 baseRevision）后，经 `pdf/fallback-import.ts` 下载固定 vN PDF 形成不可变快照并接入首次导入／重解析候选链路；同谱系既有快照直接复用，拒绝上传后重试不重复下载。工程与 `paper.id` 不变；下载失败不创建云端任务。受控端点 `baseUrl` 门控与 `coreArxivImport` 相同。
-- 候选结果只含可序列化的树、changeset 与冲突摘要，资产字节留在工程进程；诊断只含 code 与 messageKey，不含 Token、签名 URL 或原始错误正文。
-
-```powershell
-npx playwright test -g 'pdf-import'
-```
-
-受控百度服务契约测试覆盖快照、任务、去敏、转换、合并、核验与命令面（`tests/pdf-*.spec.ts`）；真实 Electron 回归（`tests/pdf-import-electron.spec.ts`）经生产 preload、IPC、Node 工程进程与真实 undici 传输覆盖显式确认上传与断网重开、拒绝确认零 POST、受理后停止与重开恢复、重解析提交不明的人工关联恢复、同 PDF 重解析候选发布。真实百度验收须用户明确授权并单独记录。
+- 新核经 `core*` 命令与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统；主进程负责系统选择器和外部打开。
+- 界面创建/打开链路仍是 `project-service.ts` 的 `formatVersion: 1` 过渡形态（PDF 复制入工程、EmbedPDF 只读 Viewer、Markdown CodeMirror 编辑与自动保存、外部变化冲突提示）；新核界面接管由全文阅读器等后续 phase 承接。两种格式互不读取。
+- arXiv／PDF 导入命令面已可用：受控 transport 的 `baseUrl` 注入点仅测试门控生效，生产拒绝回环/私网；PDF 云端命令的凭据由主进程注入，上传确认经 `pdf:uploadConfirm` 由 renderer 显式应答；提交结果不明必须人工关联任务号，不自动重传。
+- 通用文档合并不依赖来源模块；核验继承等来源侧车逻辑由 PDF 侧调用方经 commit 钩子注入（见工程契约）。
+- 无云端资产的视觉块可引用原页裁剪图（PDFium 内容寻址 PNG，随候选 revision 发布，不回写快照）；公式块裁剪是可选区域证据，LaTeX／文本仍是权威。
+- 契约测试使用受控 fixtures／受控百度服务，不访问真实云端；真实 Electron 回归经生产 preload、IPC、Node 工程进程与真实 undici 传输。真实 arXiv／百度／模型验收须用户明确授权并单独记录（见下文与 CONSTRAINTS W2）。
 
 ## PDF 阅读与旧引用退役
 
 当前版本已移除 PDF 原生批注写回、旧引用字典、`paper://cite/` 与 `#annotation=` 链接，以及按解析块展开引用的 Agent 工具。阅读器保留 PDF 渲染、缩放、滚动与阅读位置恢复；工程 PDF 只读，不提供批注创建入口。
 
-## 百度解析
-
-在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置；凭据只从主进程注入 PDF 云端命令，renderer 命令不携带 Token。
-
-旧解析批次路径（`parsing-service`／`baidu-candidate`／「论文解析」面板、`text/<batchId>/paper.md` 可编辑 Markdown 权威与 `mapping.json` 块映射）已随 Phase 3 检查点退役：PDF 解析统一走 `corePdf*` 命令链，解析结果直接进入规范文档树（见上文「PDF 云端解析」）。旧工程中的历史批次文件保留原位，不再提供读取、恢复或删除入口；旧格式工程按 legacy-projects 规格明确拒绝。上传确认对话框保留，供 PDF 云端命令显式确认使用。
+旧解析批次路径（`parsing-service`／`baidu-candidate`／「论文解析」面板、`text/<batchId>/paper.md` 可编辑 Markdown 权威与 `mapping.json` 块映射）已随 Phase 3 检查点退役：PDF 解析统一走 `corePdf*` 命令链，解析结果直接进入规范文档树。旧工程中的历史批次文件保留原位，不再提供读取、恢复或删除入口；旧格式工程按 legacy-projects 规格明确拒绝。上传确认对话框保留，供 PDF 云端命令显式确认使用。
 
 旧逐页审阅、`complete_review_page` 工具与日常 Agent 的审阅门禁已于 v2.0.0 Phase 0 退役：不再提供「开始审阅」「继续审阅」入口，普通会话直接发送即可，Agent 读取正文并按需用 `read_pdf` 对照原页。历史审阅会话作为普通会话记录保留。
 
-接口沿用 [百度官方异步任务服务](https://ai.baidu.com/ai-doc/AISTUDIO/Mml7n69e7)：向 `/api/v2/ocr/jobs` 提交 multipart PDF，收到 `data.jobId` 后查询 `data.state`，完成后下载 `data.resultUrl.jsonUrl`。实际 JSONL 按返回顺序包含 `result.layoutParsingResults`（`prunedResult`、`markdown.text/images`）及 `result.dataInfo`；块含 `block_id`、`block_label`、`block_content`、`block_bbox`、`group_id` 等。图片实际支持签名 HTTPS 地址和 Base64，不假设 Gemini 格式。
+## 百度解析配置
 
-本机上传上限为 50 MiB、1 至 1000 页；请求超时 120 秒，单轮查询最长 30 分钟，超时可恢复原任务。原始 JSONL 上限 256 MiB、单张图片 32 MiB、图片合计 256 MiB，PNG 像素上限 1600 万。超预算保留可恢复现场，不截断后报成功。配额及服务端实际模型版本由百度账户和服务决定，请求模型名不等于服务端版本证据。
+在「解析模型」设置中保存百度任务地址、`PaddleOCR-VL-1.6` 与 Token。Token 独立加密保存在本机 `parsing-settings.json`，代理复用 Agent 的代理设置；凭据只从主进程注入 PDF 云端命令，renderer 命令不携带 Token。
 
-停止会保留云端任务号；提交回执未到时显示等待回执，应用退出可能留下「提交结果不明」。此时需从百度控制台取得任务号并关联，不能自动重传，避免重复调用。OCR 位置是块区域信息；页面旋转、裁切、预处理或区域无效时明确降为页级。当前不能检测同尺寸页面的语义换位，公式和表格质量仍需对照原页核对。
+接口沿用 [百度官方异步任务服务](https://ai.baidu.com/ai-doc/AISTUDIO/Mml7n69e7)：向 `/api/v2/ocr/jobs` 提交 multipart PDF，收到 `data.jobId` 后查询 `data.state`，完成后下载 `data.resultUrl.jsonUrl`。上传/响应/资产预算见 CONSTRAINTS B7–B10；任务状态机、去敏与恢复契约见 [SPEC-pdf-import](../docs/spec/SPEC-pdf-import.md) 与工程契约。配额及服务端实际模型版本由百度账户和服务决定，请求模型名不等于服务端版本证据。OCR 位置是块区域信息；页面旋转、裁切、预处理或区域无效时明确降为页级，同尺寸页面的语义换位无法自动检出，公式和表格质量仍需对照原页核对。
 
-真实百度验收须由用户明确授权、使用其凭据并单独记录实际任务号、模型、PDF 摘要与费用相关界面（SPEC-pdf-import Commands）；默认回归使用受控百度服务与本地 fixtures，不访问真实云端。
+真实百度验收须由用户明确授权、使用其凭据并单独记录实际任务号、模型、PDF 摘要与费用相关界面；默认回归使用受控百度服务与本地 fixtures，不访问真实云端。
 
 ## Agent 对话与模型
 
@@ -163,26 +112,19 @@ npx playwright test -g 'pdf-import'
 
 普通对话即可根据用户请求读取、编辑成果、运行脚本与搜索网页，无需切换模式。思考过程和工具调用使用统一的可展开卡片；网络搜索密钥在「Agent 网络搜索」设置页独立配置。Pi 原生 read、write、edit、bash 已接入，工具卡片显示参数、过程、输出、失败、实际改动及新文件入口，历史重开仍保留工具调用与结果。read 当前支持 2 MiB 内 UTF-8 工程文本。
 
-`read_pdf` 将工程内 PDF 的指定整页渲染为实际 PNG，不接受区域坐标或预期哈希参数，每次读取当前文件，无需打开 PDF 标签或等待解析，也不改变阅读位置。除图像外，只返回路径、文档身份（工程论文为登记 ID，其他工程内 PDF 为路径）、文件版本、页码、总页数、顶层 `width` / `height`（PDF 点单位）、实际缩放和来源信息。不提取文本层、不执行 OCR，也不负责块内短句定位。正文阅读使用工程解析稿；模型需要指出原文位置时使用真实文件路径与页码，不猜链接或坐标。模型设置中的「支持视觉输入」须与服务实际能力一致；未启用时明确报错，不提供文本降级。每次调用独立释放 PDFium 与图像，不保留跨调用图像缓存，图像保留在 Pi 工具结果中。
+`read_pdf` 将工程内 PDF 的指定整页渲染为实际 PNG，不接受区域坐标或预期哈希参数，每次读取当前文件，无需打开 PDF 标签或等待解析，也不改变阅读位置。除图像外只返回路径、文档身份、文件版本、页码、总页数、尺寸（PDF 点单位）、实际缩放和来源信息；不提取文本层、不执行 OCR。正文阅读使用工程解析稿；模型指出原文位置时使用真实文件路径与页码，不猜链接或坐标。「支持视觉输入」须与服务实际能力一致；未启用时明确报错，不提供文本降级。每次调用独立释放 PDFium 与图像，不保留跨调用图像缓存。
 
-在讨论中用 `@记忆卡片` 指定值得保留的原文或讨论，Agent 将其整理为 `memories/` 下的普通 Markdown，保留必要解释、适用条件、疑问与真实来源。卡片使用现有编辑和文件能力，来源使用真实路径与页码，不自动生成或安排复习。深入理解通过普通追问完成。新版提示词位于 `app/skills/`，可在「设置 → 产品 Skill」修改，覆盖保存在本机配置目录；调用时会话记录实际提示词和版本。旧根目录 `skills/` 仅供旧版使用。
-
-真实记忆卡片验证复用本机加密配置，关闭 trace，在隔离工程中运行：
-
-```powershell
-$env:PAPER30MIN_REAL_MODEL='1'
-$env:PAPER30MIN_REAL_PROFILE='C:\local\paper30min-profile'
-npx playwright test -g 'STE-99 真实模型' --trace=off
-Remove-Item Env:PAPER30MIN_REAL_MODEL, Env:PAPER30MIN_REAL_PROFILE
-```
-
-Agent 读取实际工程内正文和指定文档；需要核对公式或图表时使用 `read_pdf` 查看完整原页。当前版本不提供旧 `resolve_reference`、`create_annotation` 或 PDF 原生批注写回。完整契约见 [工程格式](../docs/project-format.md)。
+在讨论中用 `@记忆卡片` 指定值得保留的原文或讨论，Agent 将其整理为 `memories/` 下的普通 Markdown，保留必要解释、适用条件、疑问与真实来源。卡片使用现有编辑和文件能力，不自动生成或安排复习。新版提示词位于 `app/skills/`，可在「设置 → 产品 Skill」修改，覆盖保存在本机配置目录；调用时会话记录实际提示词和版本。旧根目录 `skills/` 仅供旧版使用。
 
 Windows 的 bash 工具实际执行 PowerShell。使用本机可用的 PowerShell，默认超时 120 秒，工具参数可指定其他期限。输出截断与非零退出码沿用 Pi；子进程置于 Windows Job Object 中，Shell 退出或被取消时清理整棵进程树。只传递运行所需的系统环境变量，不继承模型密钥、代理凭据或 Orca/Codex 会话变量；已知模型密钥在输出、工具结果和持久会话前脱敏。
 
 Shell 是用户授权的受信任主机执行，**没有文件权限沙箱**。工程服务的只读保护强制应用于 write/edit 和界面保存；Shell 规则通过任务授权及模型指令约束，不能保证恶意脚本无法按绝对路径越界或覆盖保护文件，也不能保证拦截脚本自行上传内容。模型正常读取与发送工程上下文属于配置模型的授权；工程外访问、系统修改、上传和发布须符合用户明确任务。该取舍已在 STE-81 实施中经用户确认，Windows Job Object 仅解决进程生命周期。
 
-真实模型测试须单独启用，当前测试会只读旧 Windows Paper30Min 保存的模型配置，并使用临时工程和隔离配置目录；运行前确认允许使用该服务及其费用。此模式关闭 trace，凭据不写入测试产物：
+Viewer 的 WASM 使用本地资源，界面字体使用系统字体，不加载默认远端字体。
+
+## 真实模型验证
+
+真实模型测试须单独启用、使用本机凭据并确认允许该服务及其费用；关闭 trace，凭据不写入测试产物，临时工程与隔离配置由测试清理：
 
 ```powershell
 $env:PAPER30MIN_REAL_MODEL='1'
@@ -190,10 +132,9 @@ npx playwright test -g '用本机旧配置运行真实 Pi'
 Remove-Item Env:PAPER30MIN_REAL_MODEL
 ```
 
-`read_pdf` 的真实视觉测试支持通过 `PAPER30MIN_REAL_PROFILE` 指定包含 Electron 加密配置 `agent-settings.json` 及其配套 `Local State` 的本机目录，复制到隔离测试目录并重新启动后使用，不修改原配置。也可通过 `PAPER30MIN_REAL_CONFIG` 指定本机 JSON 文件（字段为 `baseUrl`、`model`、`apiKey`），同时指定时优先使用 JSON。用 `PAPER30MIN_REAL_SCAN` 指定扫描 PDF，并设置 `PAPER30MIN_REAL_MODEL=1` 后运行 `npx playwright test -g 'read_pdf 真实视觉模型'`。该测试使用 high 思考强度与视觉输入，产物不包含密钥。明文凭据文件应放在仓库外，完成后删除；临时工程与隔离配置仍由测试清理。只有显式指定 `PAPER30MIN_REAL_SAVE_PROFILE` 时才把 Electron 加密后的配置及配套 `Local State` 复制到该目录。
-
-Viewer 的 WASM 使用本地资源，界面字体使用系统字体，不加载默认远端字体。工程 PDF 只读，不写回原生批注；Agent 可通过 `read_pdf` 查看完整页面。
+- `PAPER30MIN_REAL_PROFILE`：指定包含 Electron 加密配置 `agent-settings.json` 及配套 `Local State` 的本机目录，复制到隔离测试目录后使用，不修改原配置。记忆卡片验证用 `-g 'STE-99 真实模型' --trace=off`。
+- `PAPER30MIN_REAL_CONFIG`：指定本机 JSON 文件（`baseUrl`、`model`、`apiKey`），与 PROFILE 同时指定时优先。明文凭据文件应放在仓库外，完成后删除。
+- `PAPER30MIN_REAL_SCAN` + `-g 'read_pdf 真实视觉模型'`：真实视觉验证，使用 high 思考强度与视觉输入。
+- `PAPER30MIN_REAL_SAVE_PROFILE`：显式指定时才把加密配置复制到该目录。
 
 真实模型验证仅覆盖实际使用的供应商、模型与场景，不代表所有协议或图文、工具能力都已验证；公式文字仍需对照原页核验。当前检查不覆盖安装包、v1 升级或持续内存表现；触控板的实际手感需在设备上体验。旧客户端测试不构成新版验证证据，远端验证以对应提交的 `Electron CI` 实际结果为准。
-
-Agent 读取论文时使用普通 `read` 读取实际工程内正文，需要核对原页时使用 `read_pdf`；当前版本不提供按解析稿位置展开旧引用或 PDF 原生批注的工具。

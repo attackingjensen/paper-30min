@@ -18,7 +18,7 @@ import {
   readRevisionDocument,
 } from "../src/main/project-core";
 import { snapshotLocalPdf } from "../src/main/pdf/snapshot";
-import { createVerification, readVerificationRecords } from "../src/main/pdf/verification";
+import { createVerification, readVerificationRecords, verificationInheritCommitHooks } from "../src/main/pdf/verification";
 import type { BaiduPdfParseConfig } from "../src/main/parsing/baidu-task";
 import {
   importPdfToCurrent,
@@ -628,7 +628,14 @@ test("pdf-import 新 PDF 更新：形成候选不覆盖 current，内容改变�
   let candidate = reparse.candidate;
   for (const conflict of candidate.conflicts)
     candidate = resolveDocumentMergeCandidateConflict(candidate, conflict.id, "candidate");
-  const published = await publishDocumentMergeCandidate(candidate);
+  // 继承钩子由 PDF 侧调用方注入（wp4）：通用发布本身不含核验语义。
+  const published = await publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
+    root,
+    baseRevision: candidate.baseRevision,
+    revisionId: candidate.revisionId,
+    sourceSnapshotId: candidate.sourceSnapshotId,
+    document: candidate.document,
+  }));
   expect(await currentRevisionId()).toBe(published.revisionId);
   const inherited = await readVerificationRecords(root, published.revisionId);
   expect(inherited).toHaveLength(1);
@@ -685,7 +692,13 @@ test("pdf-import 新 PDF 更新：内容未变节点保留历史来源核验，�
   let candidate = reparse.candidate;
   for (const conflict of candidate.conflicts)
     candidate = resolveDocumentMergeCandidateConflict(candidate, conflict.id, "candidate");
-  const published = await publishDocumentMergeCandidate(candidate);
+  const published = await publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
+    root,
+    baseRevision: candidate.baseRevision,
+    revisionId: candidate.revisionId,
+    sourceSnapshotId: candidate.sourceSnapshotId,
+    document: candidate.document,
+  }));
   const inherited = await readVerificationRecords(root, published.revisionId);
   expect(inherited).toHaveLength(2);
   const bySentence = new Map(inherited.map((record) => [

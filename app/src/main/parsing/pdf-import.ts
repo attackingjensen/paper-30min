@@ -34,6 +34,7 @@ import {
   publishDocumentMergeCandidate,
   resolveDocumentMergeCandidateConflict,
 } from "../document/merge.js";
+import { verificationInheritCommitHooks } from "../pdf/verification.js";
 
 /** 端到端 PDF 导入结果：published 表示 current 已原子推进，正文可离线阅读。 */
 export type PdfImportResult =
@@ -530,5 +531,11 @@ export async function publishParseCandidate(input: {
   for (const resolution of input.resolutions ?? []) {
     resolved = resolveDocumentMergeCandidateConflict(resolved, resolution.conflictId, resolution.choice);
   }
-  return publishDocumentMergeCandidate(resolved);
+  return publishDocumentMergeCandidate(resolved, verificationInheritCommitHooks({
+    root: resolved.root,
+    baseRevision: resolved.baseRevision,
+    revisionId: resolved.revisionId,
+    sourceSnapshotId: resolved.sourceSnapshotId,
+    document: resolved.document,
+  }));
 }
