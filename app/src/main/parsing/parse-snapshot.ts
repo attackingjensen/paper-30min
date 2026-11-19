@@ -670,9 +670,12 @@ async function localizeBlockResources(
   const visit = async (node: DefaultTreeAdapterMap["node"]): Promise<void> => {
     if ("tagName" in node) {
       const element = node;
-      // 非表格正文最终作为纯文本落树，raw-text／可执行元素无法证明安全，整体拒绝。
-      // 表格块的消毒由 parse-table 结构化路径负责（script 移除、属性剥离），不在此拒绝。
+      // 非表格正文最终作为纯文本落树：raw-text／可执行元素无法证明安全，整体拒绝。
       if (!isTable && UNSAFE_BLOCK_TAGS[element.tagName])
+        fatal("parse-resource-url-rejected", "fetch");
+      // 表格的 script/style/属性消毒由 parse-table 结构化路径负责；但 template 内容
+      // 在 parse5 的 content 子树，结构化与消毒都不进入，签名资源会原样留在快照——拒绝。
+      if (isTable && element.tagName === "template")
         fatal("parse-resource-url-rejected", "fetch");
       const urlAttribute = element.tagName === "img" ? "src"
         : element.tagName === "image" ? "href"
@@ -708,6 +711,9 @@ async function localizeBlockResources(
     }
     if ("childNodes" in node)
       for (const child of node.childNodes) await visit(child);
+    // parse5 将 template 内容挂在 content 子树：同样遍历，避免资源绕过本地化。
+    if ("content" in node && node.content)
+      await visit(node.content as DefaultTreeAdapterMap["node"]);
   };
   await visit(fragment);
   if (!touched) return working;

