@@ -26,6 +26,7 @@ import {
   parseVerificationSidecar,
   type PdfSourceEvidenceRecord,
   type VerificationActor,
+  type VerificationActorInput,
   type VerificationCoverageEntry,
   type VerificationNodeType,
   type VerificationRecord,
@@ -36,9 +37,6 @@ const EVIDENCE_BUDGET = 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 
-export type VerificationActorInput =
-  | { kind: "user"; confirmed: boolean }
-  | { kind: "agent"; sessionId: string; taskId: string; evidenceIds: string[] };
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");

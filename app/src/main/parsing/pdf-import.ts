@@ -29,6 +29,10 @@ import {
   type PdfConvertHooks,
 } from "./parse-convert.js";
 import type { DocumentMergeCandidate } from "../document/merge.js";
+import {
+  publishDocumentMergeCandidate,
+  resolveDocumentMergeCandidateConflict,
+} from "../document/merge.js";
 
 /** 端到端 PDF 导入结果：published 表示 current 已原子推进，正文可离线阅读。 */
 export type PdfImportResult =
@@ -367,6 +371,15 @@ export async function resumePdfImport(input: {
   });
 }
 
+/** 候选身份按批次与本次基线确定性派生：同一基线重转换沿用同一候选，
+ * 不复用首次导入的 revisionId（changeset 禁止 baseRevision 与 revisionId 相同）。 */
+function reconvertIdentity(parseBatchId: string, baseRevision: string): string {
+  const identity = createHash("sha256")
+    .update(`reconvert:${parseBatchId}:${baseRevision}`)
+    .digest("hex");
+  return `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(12, 15)}-8${identity.slice(15, 18)}-${identity.slice(18, 30)}`;
+}
+
 /** 离线重新转换（SPEC §8.4）：复用已发布解析快照形成三方合并候选，
  * 不访问云端、不产生新任务；快照缺失时明确拒绝，不自动重新上传。 */
 export async function reconvertParseCandidate(input: {
@@ -381,13 +394,7 @@ export async function reconvertParseCandidate(input: {
   if (!task) throw new Error("PDF 云端任务不存在。");
   const snapshot = await findBatchParseSnapshot(opened.root, task);
   if (!snapshot) throw new Error("解析快照缺失，不能离线重新转换；不自动重新上传。");
-  // 候选身份按批次与本次基线确定性派生：同一基线重转换沿用同一候选，
-  // 不复用首次导入的 revisionId（changeset 禁止 baseRevision 与 revisionId 相同）。
-  const identity = createHash("sha256")
-    .update(`reconvert:${task.parseBatchId}:${input.baseRevision}`)
-    .digest("hex");
-  const revisionId =
-    `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(12, 15)}-8${identity.slice(15, 18)}-${identity.slice(18, 30)}`;
+  const revisionId = reconvertIdentity(task.parseBatchId, input.baseRevision);
   const { candidate } = await createParseMergeCandidate({
     root: opened.root,
     task,
@@ -449,4 +456,38 @@ export async function resumePdfReparse(input: {
       return continueToCandidate(opened.root, resumed.task, task.baseRevision, { response: resumed.response }, options);
     return continueToCandidate(opened.root, resumed.task, task.baseRevision, { snapshot: resumed.snapshot }, options);
   });
+}
+
+/** 发布重解析／离线重转换候选（SPEC §8）：按批次重建同一确定性候选，
+ * 应用显式冲突选择后发布；发布前复核 baseRevision 与任务记录一致，current 已变化时拒绝。 */
+export async function publishParseCandidate(input: {
+  root: string;
+  parseBatchId: string;
+  baseRevision: string;
+  resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>;
+  signal?: AbortSignal;
+}): Promise<ProjectRevisionRecord> {
+  const opened = await openProject(input.root);
+  const tasks = await listBaiduPdfParseTasks(input.root);
+  const task = tasks.find((entry) => entry.parseBatchId === input.parseBatchId);
+  if (!task) throw new Error("PDF 云端任务不存在。");
+  if (task.baseRevision !== undefined && task.baseRevision !== input.baseRevision)
+    throw new Error(`baseRevision 与任务记录不一致：候选基线为 ${task.baseRevision}，请求为 ${input.baseRevision}。`);
+  const snapshot = await findBatchParseSnapshot(opened.root, task);
+  if (!snapshot) throw new Error("解析快照缺失，不能发布候选；不自动重新上传。");
+  const { candidate } = await createParseMergeCandidate({
+    root: opened.root,
+    task,
+    snapshot,
+    baseRevision: input.baseRevision,
+    revisionId: task.baseRevision === undefined
+      ? reconvertIdentity(task.parseBatchId, input.baseRevision)
+      : task.candidateRevisionId ?? reconvertIdentity(task.parseBatchId, input.baseRevision),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  let resolved = candidate;
+  for (const resolution of input.resolutions ?? []) {
+    resolved = resolveDocumentMergeCandidateConflict(resolved, resolution.conflictId, resolution.choice);
+  }
+  return publishDocumentMergeCandidate(resolved);
 }

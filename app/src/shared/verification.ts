@@ -87,6 +87,11 @@ export type VerificationRecord = Type.Static<typeof VerificationRecordSchema>;
 type VerificationSidecar = Type.Static<typeof VerificationSidecarSchema>;
 export type PdfSourceEvidenceRecord = Type.Static<typeof PdfSourceEvidenceSchema>;
 
+/** 核验命令输入（SPEC-pdf-import §9）：user 必须显式 confirmed，agent 必须携带来源证据。 */
+export type VerificationActorInput =
+  | { kind: "user"; confirmed: boolean }
+  | { kind: "agent"; sessionId: string; taskId: string; evidenceIds: string[] };
+
 const sidecarSchema = Schema.Compile(VerificationSidecarSchema);
 const evidenceSchema = Schema.Compile(PdfSourceEvidenceSchema);
 

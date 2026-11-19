@@ -1,8 +1,15 @@
-import type { BaiduPdfParseOptions, ParsingCommand } from "./parsing.js";
+import type {
+  BaiduPdfParseOptions,
+  BaiduUploadConfirmationRequest,
+  ParsingCommand,
+  PdfParseTaskRecord,
+} from "./parsing.js";
 import type { ArxivReference, ImportDiagnostic, PdfFallbackRequest } from "./arxiv.js";
 
 import type { ChatAttachment } from "./chat-input.js";
 import type { DocumentTree } from "./document/tree.js";
+import type { DocumentMergeResult } from "./document/merge.js";
+import type { VerificationActorInput } from "./verification.js";
 
 export interface DocumentRecord {
   id: string;
@@ -154,6 +161,68 @@ export type CoreCommand =
         choice: "current" | "candidate";
       }>;
     }
+  | { type: "corePdfSnapshot"; root: string; source: string }
+  | { type: "corePdfTasks"; root: string }
+  | { type: "corePdfStop"; root: string; parseBatchId: string }
+  | {
+      type: "corePdfReconvert";
+      root: string;
+      parseBatchId: string;
+      baseRevision: string;
+    }
+  | {
+      type: "corePdfPublishCandidate";
+      root: string;
+      parseBatchId: string;
+      /** 发布前复核的基线；重解析任务必须等于任务记录的 baseRevision。 */
+      baseRevision: string;
+      resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>;
+    }
+  | {
+      type: "corePdfImport";
+      root: string;
+      sourceSnapshotId: string;
+      /** 调用方生成的操作身份：corePdfStop 与上传确认据此定位进行中的导入。 */
+      operationId: string;
+    }
+  | {
+      type: "corePdfResume";
+      root: string;
+      parseBatchId: string;
+      operationId: string;
+      jobId?: string;
+    }
+  | {
+      type: "corePdfReparse";
+      root: string;
+      sourceSnapshotId: string;
+      baseRevision: string;
+      operationId: string;
+    }
+  | {
+      type: "corePdfResumeReparse";
+      root: string;
+      parseBatchId: string;
+      operationId: string;
+      jobId?: string;
+    }
+  | {
+      type: "corePdfVerify";
+      root: string;
+      expectedRevisionId: string;
+      anchor: unknown;
+      actor: VerificationActorInput;
+    }
+  | { type: "corePdfReadVerification"; root: string; revisionId: string }
+  | {
+      type: "corePdfEvidence";
+      root: string;
+      pdfSnapshotId: string;
+      pages: number[];
+      sessionId: string;
+      taskId: string;
+      contentSha256: string;
+    }
   | {
       type: "coreArxivImport";
       parent: string;
@@ -190,6 +259,70 @@ export type ArxivImportCommandResult =
 export type ArxivPdfFallbackCommandResult =
   | { ok: true; request: PdfFallbackRequest }
   | { ok: false; diagnostic: ImportDiagnostic };
+
+/** 主进程注入的本机解析配置：Token 与代理只存在于进程内存，不经 renderer。 */
+export interface PdfImportMachineConfig {
+  endpoint: string;
+  model: "PaddleOCR-VL-1.6";
+  apiKey: string;
+  proxy?: "direct" | "environment" | "custom";
+  proxyUrl?: string;
+}
+
+/** worker 命令包装：与 agent／parsing 先例一致，config 由主进程附加。 */
+export type PdfImportWorkerCommand = {
+  type: "pdfImport";
+  command: Extract<
+    CoreCommand,
+    | { type: "corePdfImport" }
+    | { type: "corePdfResume" }
+    | { type: "corePdfReparse" }
+    | { type: "corePdfResumeReparse" }
+  >;
+  config: PdfImportMachineConfig;
+};
+
+/** 经生产 IPC 的候选摘要：树、changeset 与冲突可序列化；资产字节留在工程进程。 */
+export type PdfMergeCandidateSummary = DocumentMergeResult & {
+  root: string;
+  sourceSnapshotId: string;
+};
+
+/** PDF 首次导入／恢复经生产 IPC 的结果；诊断只含 code 与 messageKey，不含凭据或原始响应。 */
+export type PdfImportCommandResult =
+  | { outcome: "cancelled" }
+  | { outcome: "incomplete"; task: PdfParseTaskRecord; diagnostic: ImportDiagnostic }
+  | { outcome: "stopped"; task: PdfParseTaskRecord }
+  | {
+      outcome: "published";
+      task: PdfParseTaskRecord;
+      revision: ProjectRevisionRecord;
+      warnings: ImportDiagnostic[];
+    };
+
+/** 重解析／更新／离线重转换经生产 IPC 的候选结果；不携带资产字节。 */
+export type PdfReparseCommandResult =
+  | { outcome: "cancelled" }
+  | { outcome: "incomplete"; task: PdfParseTaskRecord; diagnostic: ImportDiagnostic }
+  | { outcome: "stopped"; task: PdfParseTaskRecord }
+  | {
+      outcome: "candidate";
+      task: PdfParseTaskRecord;
+      candidate: PdfMergeCandidateSummary;
+      warnings: ImportDiagnostic[];
+    };
+
+/** 上传确认请求：worker → 主进程 → renderer 显式确认 → 原路返回。 */
+export interface PdfUploadConfirmation {
+  operationId: string;
+  request: BaiduUploadConfirmationRequest;
+}
+
+/** 上传确认应答：renderer 显式确认或拒绝；worker 收到前不发起上传。 */
+export interface PdfUploadConfirmationReply {
+  operationId: string;
+  confirmed: boolean;
+}
 
 interface FileEntry {
   path: string;
@@ -294,6 +427,10 @@ export interface Desktop {
   watchProject(root: string, listener: (error?: string) => void): () => void;
   openLink(url: string): Promise<void>;
   openFile(root: string, path: string): Promise<void>;
+  /** 订阅 worker 发起的上传确认请求；返回取消订阅函数。 */
+  watchPdfUploadConfirm(listener: (confirmation: PdfUploadConfirmation) => void): () => void;
+  /** renderer 显式确认或拒绝上传；未应答前 worker 不发起 POST。 */
+  replyPdfUploadConfirm(reply: PdfUploadConfirmationReply): Promise<void>;
 }
 
 export type AgentApi =
