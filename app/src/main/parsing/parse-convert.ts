@@ -405,7 +405,7 @@ function groupBlocks(page: ConvertedPage): BlockGroup[] {
   return groups;
 }
 
-const IMAGE_REFERENCE = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+const IMAGE_REFERENCE = /!\[([^\]]*)\]\(([^)\s]+)\)|<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'>]+))[^>]*>/gi;
 const VISUAL_LABELS = new Set(["image", "chart"]);
 const FURNITURE_LABELS = new Set(["header", "footer", "number"]);
 
@@ -505,8 +505,11 @@ function figureFromReference(
   const aliases = group.aliases;
   fulfillTitle(context);
   const builder = context.builder;
-  const reference = context.page.images[vendorPath];
-  const fact = context.page.assets.find((asset) => asset.vendorPath === vendorPath);
+  const fact = context.page.assets.find(
+    (asset) => asset.vendorPath === vendorPath || asset.path === vendorPath,
+  );
+  const reference = context.page.images[vendorPath] ??
+    (fact ? context.page.images[fact.vendorPath] : undefined);
   let asset: AssetReference = null;
   if (reference !== undefined && reference !== MISSING_ASSET_PLACEHOLDER && fact) {
     context.referenced.add(fact.path);
@@ -548,12 +551,14 @@ function convertTextGroup(
   for (const match of content.matchAll(IMAGE_REFERENCE)) {
     const before = content.slice(cursor, match.index);
     if (before.trim()) addParagraph(context, before, group.aliases, kind);
-    const vendorPath = match[2];
-    if (context.page.images[vendorPath] === undefined) {
+    const vendorPath = match[2] ?? match[3] ?? match[4] ?? match[5];
+    const known = context.page.images[vendorPath] !== undefined ||
+      Object.values(context.page.images).includes(vendorPath);
+    if (!known) {
       warn(context.builder, "pdf-convert-image-unresolved", group.aliases[0]);
       addParagraph(context, match[0], group.aliases, kind);
     } else {
-      figureFromReference(vendorPath, match[1], group, context, null);
+      figureFromReference(vendorPath, match[1] ?? "", group, context, null);
     }
     cursor = match.index + match[0].length;
   }
@@ -590,7 +595,13 @@ function convertVisualGroup(
     const before = content.slice(cursor, match.index);
     if (before.trim()) addParagraph(context, before, group.aliases);
     // 图注必须紧随首个 figure 落树，先于后续文本单元。
-    const block = figureFromReference(match[2], match[1], group, context, first ? null : caption);
+    const block = figureFromReference(
+      match[2] ?? match[3] ?? match[4] ?? match[5],
+      match[1] ?? "",
+      group,
+      context,
+      first ? null : caption,
+    );
     first ??= block;
     cursor = match.index + match[0].length;
   }
