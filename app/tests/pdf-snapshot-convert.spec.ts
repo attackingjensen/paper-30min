@@ -12,6 +12,7 @@ import {
 import type { AddressInfo } from "node:net";
 import { PNG } from "pngjs";
 import {
+  commitRevision,
   createProject,
   listSourceSnapshots,
   openProject,
@@ -34,8 +35,10 @@ import {
 } from "../src/main/parsing/parse-convert";
 import {
   importPdfToCurrent,
+  reconvertParseCandidate,
   resumePdfImport,
 } from "../src/main/parsing/pdf-import";
+import { publishDocumentMergeCandidate } from "../src/main/document/merge";
 import { projectSentenceText } from "../src/shared/document/anchor";
 import type { DocumentTree } from "../src/shared/document/tree";
 import type {
@@ -1103,4 +1106,130 @@ test("pdf-import 相同快照离线重新转换内容结构确定，无网络无
   expect(fingerprint(second.tree)).toEqual(fingerprint(first.tree));
   expect(second.warnings).toEqual(first.warnings);
   expect(fixture.counts.downloads).toBe(1);
+});
+
+test("pdf-import 离线重新转换：current 已存在时形成无内容变化候选，发布不重排节点", async () => {
+  const first = await importFixture(() => twoPages());
+  expect(first.result.outcome).toBe("published");
+  if (first.result.outcome !== "published") throw new Error("import did not publish");
+  const snapshots = await parseSnapshots();
+  expect(snapshots).toHaveLength(1);
+
+  const candidate = await reconvertParseCandidate({
+    root,
+    parseBatchId: first.result.task.parseBatchId,
+    baseRevision: first.result.revision.revisionId,
+  });
+  expect(candidate.conflicts).toHaveLength(0);
+  expect(candidate.changeset.changes.every((entry) => entry.status === "retained")).toBe(true);
+
+  const published = await publishDocumentMergeCandidate(candidate);
+  expect(await currentRevisionId()).toBe(published.revisionId);
+  const publishedDoc = await publishedTree(published);
+  expect(publishedDoc).toEqual(await publishedTree(first.result.revision));
+  const metadata = (await readRevision(root, published.revisionId)).pdfParse as Record<string, unknown>;
+  expect(metadata.converterVersion).toBe(PDF_CONVERTER_VERSION);
+  expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
+});
+
+test("pdf-import 离线重新转换：内容不变时保留本地修正，source-base 不被本地修正污染", async () => {
+  const first = await importFixture(() => twoPages());
+  expect(first.result.outcome).toBe("published");
+  if (first.result.outcome !== "published") throw new Error("import did not publish");
+  const tree = await publishedTree(first.result.revision);
+  const paragraph = Object.values(tree.units).find((unit) =>
+    unit.kind === "paragraph" && normalized(unitText(tree, unit.id)) === "Second page text");
+  if (!paragraph) throw new Error("fixture paragraph not found");
+  const sentenceId = paragraph.sentenceIds[0];
+
+  const local = structuredClone(tree);
+  local.sentences[sentenceId].content = [{ kind: "text", text: "Second page text local fix" }];
+  const localRevision = await commitRevision({
+    root,
+    baseRevision: first.result.revision.revisionId,
+    sourceSnapshotId: first.result.revision.sourceSnapshotId,
+    files: {
+      "document.json": Buffer.from(JSON.stringify(local)),
+      "source-base.json": Buffer.from(JSON.stringify(tree)),
+      "tombstones.json": Buffer.from("[]"),
+      "changeset.json": Buffer.from(JSON.stringify({ baseRevision: first.result.revision.revisionId })),
+    },
+  });
+
+  const candidate = await reconvertParseCandidate({
+    root,
+    parseBatchId: first.result.task.parseBatchId,
+    baseRevision: localRevision.revisionId,
+  });
+  expect(candidate.conflicts).toHaveLength(0);
+  const published = await publishDocumentMergeCandidate(candidate);
+  const publishedDoc = await publishedTree(published);
+  expect(projectSentenceText(publishedDoc, sentenceId)).toBe("Second page text local fix");
+  const sourceBase = await readRevisionDocument(root, published.revisionId, "source-base");
+  expect(projectSentenceText(sourceBase, sentenceId)).toBe("Second page text");
+  expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
+});
+
+test("pdf-import 离线重新转换：baseRevision 已变化时拒绝形成候选，current 不受影响", async () => {
+  const first = await importFixture(() => twoPages());
+  expect(first.result.outcome).toBe("published");
+  if (first.result.outcome !== "published") throw new Error("import did not publish");
+  const tree = await publishedTree(first.result.revision);
+  const localRevision = await commitRevision({
+    root,
+    baseRevision: first.result.revision.revisionId,
+    sourceSnapshotId: first.result.revision.sourceSnapshotId,
+    files: {
+      "document.json": Buffer.from(JSON.stringify(tree)),
+      "source-base.json": Buffer.from(JSON.stringify(tree)),
+      "tombstones.json": Buffer.from("[]"),
+      "changeset.json": Buffer.from(JSON.stringify({ baseRevision: first.result.revision.revisionId })),
+    },
+  });
+  await expect(reconvertParseCandidate({
+    root,
+    parseBatchId: first.result.task.parseBatchId,
+    baseRevision: first.result.revision.revisionId,
+  })).rejects.toThrow(/baseRevision/);
+  expect(await currentRevisionId()).toBe(localRevision.revisionId);
+  expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
+});
+
+test("pdf-import 离线重新转换：解析快照缺失时明确拒绝，不访问云端", async () => {
+  const first = await importFixture(() => twoPages());
+  expect(first.result.outcome).toBe("published");
+  if (first.result.outcome !== "published") throw new Error("import did not publish");
+  const snapshots = await parseSnapshots();
+  await fs.rm(path.join(root, snapshots[0].path), { recursive: true, force: true });
+  await expect(reconvertParseCandidate({
+    root,
+    parseBatchId: first.result.task.parseBatchId,
+    baseRevision: first.result.revision.revisionId,
+  })).rejects.toThrow();
+  expect(await currentRevisionId()).toBe(first.result.revision.revisionId);
+  expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
+});
+
+test("pdf-import 离线重新转换：候选保留 revision 资产，发布后离线可读", async () => {
+  const image = pngBytes();
+  const first = await importFixture(() => jsonl([
+    row([
+      vendorPage([block(0, "Before ![Figure A](imgs/fig.png) after.")], {
+        images: { "imgs/fig.png": image.toString("base64") },
+      }),
+      vendorPage([block(0, "Second page text")]),
+    ]),
+  ]));
+  expect(first.result.outcome).toBe("published");
+  if (first.result.outcome !== "published") throw new Error("import did not publish");
+
+  const candidate = await reconvertParseCandidate({
+    root,
+    parseBatchId: first.result.task.parseBatchId,
+    baseRevision: first.result.revision.revisionId,
+  });
+  const published = await publishDocumentMergeCandidate(candidate);
+  const asset = await readRevisionAsset(root, published.revisionId, `assets/${sha256(image)}.png`);
+  expect(Buffer.from(asset.bytes).equals(image)).toBe(true);
+  expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });

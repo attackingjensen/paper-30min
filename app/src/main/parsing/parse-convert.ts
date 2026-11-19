@@ -24,6 +24,7 @@ import {
   readRevision,
   type ProjectCommitHooks,
 } from "../project-core.js";
+import { createDocumentMergeCandidate, type DocumentMergeCandidate } from "../document/merge.js";
 import { MISSING_ASSET_PLACEHOLDER } from "./parse-snapshot.js";
 
 /** 转换器持久版本：算法变化必须递增（SPEC-pdf-import §6.10 确定性契约）。 */
@@ -1332,19 +1333,6 @@ export async function publishParseDocument(
   if (task.parseSourceSnapshotId !== snapshot.sourceSnapshotId)
     throw new Error("任务未关联该解析快照，不能发布文档。");
   try {
-    const resultFile = snapshot.files.find((file) => file.path === "result.jsonl");
-    if (
-      snapshot.kind !== "pdf-parse" ||
-      snapshot.parentSourceSnapshotId !== task.parentSourceSnapshotId ||
-      snapshot.parseBatchId !== task.parseBatchId ||
-      snapshot.provider !== task.provider ||
-      snapshot.model !== task.model ||
-      snapshot.jobId !== task.jobId ||
-      snapshot.responseSha256 !== task.responseSha256 ||
-      snapshot.sanitizedSha256 !== task.sanitizedSha256 ||
-      resultFile?.sha256 !== snapshot.sanitizedSha256
-    )
-      fatal("pdf-convert-snapshot-invalid");
     const opened = await openProject(input.root);
     const current = opened.manifest.paper.currentRevision;
     if (current !== null) {
@@ -1388,27 +1376,11 @@ export async function publishParseDocument(
     } else {
       revisionId = randomUUID();
     }
-    const readFile = async (relative: string): Promise<Buffer> => {
-      const record = snapshot.files.find((file) => file.path === relative);
-      if (!record) fatal("pdf-convert-snapshot-invalid");
-      const bytes = await fs.readFile(path.join(input.root, snapshot.path, relative));
-      if (bytes.byteLength !== record.size || hash(bytes) !== record.sha256)
-        fatal("pdf-convert-snapshot-digest");
-      return bytes;
-    };
-    const resultBytes = await readFile("result.jsonl");
-    const factsBytes = await readFile("facts.json");
-    let facts: PdfParseFactsFile;
-    try {
-      facts = JSON.parse(factsBytes.toString("utf8")) as PdfParseFactsFile;
-    } catch {
-      fatal("pdf-convert-snapshot-invalid");
-    }
-    input.signal?.throwIfAborted();
-    const converted = convertParseResult({
+    const converted = await convertSnapshotTree({
+      root: input.root,
+      task,
+      snapshot,
       paperId: opened.manifest.paper.id,
-      resultBytes,
-      facts,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (!converted.ok) return converted;
@@ -1438,7 +1410,10 @@ export async function publishParseDocument(
     };
     for (const block of converted.tree.blocks) {
       if (block.kind === "figure" && block.asset)
-        files[block.asset.path] = { bytes: await readFile(block.asset.path), mime: block.asset.mime };
+        files[block.asset.path] = {
+          bytes: await readSnapshotFile(input.root, snapshot, block.asset.path),
+          mime: block.asset.mime,
+        };
     }
     try {
       await input.hooks?.onConvertPoint?.("before-publish");
@@ -1486,4 +1461,106 @@ export async function publishParseDocument(
       };
     throw error;
   }
+}
+
+/** 校验解析快照谱系与摘要后读取受管内容并确定性转换（SPEC §6）。
+ * 不读写任务记录、不访问网络；首次发布与重转换候选共用同一转换口径。 */
+async function convertSnapshotTree(input: {
+  root: string;
+  task: PdfParseTaskRecord;
+  snapshot: PdfParseSourceSnapshotRecord;
+  paperId: string;
+  signal?: AbortSignal;
+}): Promise<ConvertParseResult> {
+  const { task, snapshot } = input;
+  const resultFile = snapshot.files.find((file) => file.path === "result.jsonl");
+  if (
+    snapshot.kind !== "pdf-parse" ||
+    snapshot.parentSourceSnapshotId !== task.parentSourceSnapshotId ||
+    snapshot.parseBatchId !== task.parseBatchId ||
+    snapshot.provider !== task.provider ||
+    snapshot.model !== task.model ||
+    snapshot.jobId !== task.jobId ||
+    snapshot.responseSha256 !== task.responseSha256 ||
+    snapshot.sanitizedSha256 !== task.sanitizedSha256 ||
+    resultFile?.sha256 !== snapshot.sanitizedSha256
+  )
+    fatal("pdf-convert-snapshot-invalid");
+  const resultBytes = await readSnapshotFile(input.root, snapshot, "result.jsonl");
+  const factsBytes = await readSnapshotFile(input.root, snapshot, "facts.json");
+  let facts: PdfParseFactsFile;
+  try {
+    facts = JSON.parse(factsBytes.toString("utf8")) as PdfParseFactsFile;
+  } catch {
+    fatal("pdf-convert-snapshot-invalid");
+  }
+  input.signal?.throwIfAborted();
+  return convertParseResult({
+    paperId: input.paperId,
+    resultBytes,
+    facts,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+}
+
+/** 按登记摘要读取受管快照文件；缺失或摘要不符立即拒绝，不采用另一份字节。 */
+async function readSnapshotFile(
+  root: string,
+  snapshot: PdfParseSourceSnapshotRecord,
+  relative: string,
+): Promise<Buffer> {
+  const record = snapshot.files.find((file) => file.path === relative);
+  if (!record) fatal("pdf-convert-snapshot-invalid");
+  const bytes = await fs.readFile(path.join(root, snapshot.path, relative));
+  if (bytes.byteLength !== record.size || hash(bytes) !== record.sha256)
+    fatal("pdf-convert-snapshot-digest");
+  return bytes;
+}
+
+/** 重解析／离线重新转换候选（SPEC §8.3–§8.4）：解析快照重新转换后与旧
+ * source-base、current 做三方合并；本地修正与冲突由 document-core 决定，不由转换器覆盖。
+ * 不访问云端、不写任务记录；发布前 baseRevision 复核由合并发布负责。 */
+export async function createParseMergeCandidate(input: {
+  root: string;
+  task: PdfParseTaskRecord;
+  snapshot: PdfParseSourceSnapshotRecord;
+  baseRevision: string;
+  signal?: AbortSignal;
+}): Promise<{ candidate: DocumentMergeCandidate; warnings: ImportDiagnostic[] }> {
+  const opened = await openProject(input.root);
+  const current = opened.manifest.paper.currentRevision;
+  if (current === null)
+    throw new Error("首次正文尚未发布，不能形成重解析合并候选。");
+  if (current !== input.baseRevision)
+    throw new Error(`baseRevision 已变化：候选基线为 ${input.baseRevision}，current 为 ${current}。`);
+  let converted: ConvertParseResult;
+  try {
+    converted = await convertSnapshotTree({
+      root: opened.root,
+      task: input.task,
+      snapshot: input.snapshot,
+      paperId: opened.manifest.paper.id,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+  } catch (error) {
+    if (error instanceof ConvertFatalError)
+      throw new Error(MESSAGE_KEYS[error.code] ?? error.code);
+    throw error;
+  }
+  if (!converted.ok) throw new Error(converted.diagnostic.messageKey);
+  const candidate = await createDocumentMergeCandidate({
+    root: opened.root,
+    baseRevision: input.baseRevision,
+    sourceSnapshotId: input.snapshot.sourceSnapshotId,
+    candidate: converted.tree,
+  });
+  return {
+    candidate: {
+      ...candidate,
+      metadata: {
+        pdfParse: { converterVersion: PDF_CONVERTER_VERSION, warnings: converted.warnings },
+      },
+    },
+    warnings: converted.warnings,
+  };
 }

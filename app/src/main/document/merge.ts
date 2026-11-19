@@ -25,6 +25,8 @@ export interface DocumentMergeCandidate extends DocumentMergeResult {
   root: string;
   sourceSnapshotId: string;
   assets: Record<string, ManagedAsset>;
+  /** 来源模块附加的 revision 元数据（如 pdfParse 转换器版本与警告），随发布写入。 */
+  metadata?: Record<string, unknown>;
 }
 
 function json(value: unknown) {
@@ -111,6 +113,7 @@ export function resolveDocumentMergeCandidateConflict(
     root: candidate.root,
     sourceSnapshotId: candidate.sourceSnapshotId,
     assets: candidate.assets,
+    ...(candidate.metadata === undefined ? {} : { metadata: candidate.metadata }),
   };
 }
 
@@ -147,6 +150,6 @@ export async function publishDocumentMergeCandidate(candidate: DocumentMergeCand
       "changeset.json": json(candidate.changeset),
       ...assets,
     },
-    metadata: { normalizationVersion: 1, operation: "source-merge" },
+    metadata: { normalizationVersion: 1, operation: "source-merge", ...candidate.metadata },
   });
 }

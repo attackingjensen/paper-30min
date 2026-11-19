@@ -21,7 +21,8 @@ import {
   type TaskTiming,
 } from "./baidu-task.js";
 import { publishParseSnapshot } from "./parse-snapshot.js";
-import { publishParseDocument, type PdfConvertHooks } from "./parse-convert.js";
+import { createParseMergeCandidate, publishParseDocument, type PdfConvertHooks } from "./parse-convert.js";
+import type { DocumentMergeCandidate } from "../document/merge.js";
 
 /** 端到端 PDF 导入结果：published 表示 current 已原子推进，正文可离线阅读。 */
 export type PdfImportResult =
@@ -221,4 +222,28 @@ export async function resumePdfImport(input: {
       ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
     });
   });
+}
+
+/** 离线重新转换（SPEC §8.4）：复用已发布解析快照形成三方合并候选，
+ * 不访问云端、不产生新任务；快照缺失时明确拒绝，不自动重新上传。 */
+export async function reconvertParseCandidate(input: {
+  root: string;
+  parseBatchId: string;
+  baseRevision: string;
+  signal?: AbortSignal;
+}): Promise<DocumentMergeCandidate> {
+  const opened = await openProject(input.root);
+  const tasks = await listBaiduPdfParseTasks(input.root);
+  const task = tasks.find((entry) => entry.parseBatchId === input.parseBatchId);
+  if (!task) throw new Error("PDF 云端任务不存在。");
+  const snapshot = await findBatchParseSnapshot(opened.root, task);
+  if (!snapshot) throw new Error("解析快照缺失，不能离线重新转换；不自动重新上传。");
+  const { candidate } = await createParseMergeCandidate({
+    root: opened.root,
+    task,
+    snapshot,
+    baseRevision: input.baseRevision,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  return candidate;
 }
