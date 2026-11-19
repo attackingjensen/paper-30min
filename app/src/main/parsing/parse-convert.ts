@@ -81,7 +81,7 @@ interface PublishParseDocumentInput {
   hooks?: PdfConvertHooks;
 }
 
-type PublishParseDocumentResult =
+export type PublishParseDocumentResult =
   | {
       ok: true;
       revision: ProjectRevisionRecord;

@@ -13,7 +13,7 @@ import { recordReadPdfEvidence } from "./pdf/verification.js";
 /** v2 工程（formatVersion 2）的只读 PDF 适配：权威在 project-core 来源快照，
  * 按实际文件摘要匹配已发布 PDF 快照并读取受管字节；不经过旧工作台的 v1 清单假设。
  * v1 工程仍走 ProjectService.readPdf 原路径。 */
-async function readPdfSource(root: string, relative: string, projects: ProjectService): Promise<PdfSource> {
+async function readPdfSource(root: string, relative: string, projects: ProjectService): Promise<PdfSource & { managed?: boolean }> {
   if (relative.includes("\\") || path.posix.isAbsolute(relative))
     throw new Error("需要工程内相对路径。");
   const manifestPath = path.join(root, "paper30min.json");
@@ -47,7 +47,7 @@ async function readPdfSource(root: string, relative: string, projects: ProjectSe
   for (const snapshot of await listSourceSnapshots(root)) {
     if (snapshot.kind !== "pdf" || snapshot.sha256 !== sha256) continue;
     const managed = await fs.readFile(path.join(root, snapshot.path, "paper.pdf"));
-    return { bytes: new Uint8Array(managed), sha256 };
+    return { bytes: new Uint8Array(managed), sha256, managed: true };
   }
   return { bytes: new Uint8Array(bytes), sha256 };
 }
@@ -169,7 +169,7 @@ export function createPdfTools(
           );
           check();
           // 证据与实际提供的页面字节同调用签发：摘要取本次渲染的真实 PNG。
-          const evidence = session
+          const evidence = session && source.managed
             ? await recordReadPdfEvidence({
                 root,
                 pdfSha256: source.sha256,

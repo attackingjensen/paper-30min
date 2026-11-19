@@ -1537,3 +1537,49 @@ test("pdf-import 离线重转换重建同一裁剪资产：候选发布后离线
   expect(Buffer.from(asset.bytes).equals(Buffer.from(firstBytes.bytes))).toBe(true);
   expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });
+
+test("pdf-import 无 markdown 页的块内联资源：发布→转换→current 全链路可用", async () => {
+  const image = pngBytes(3, 3);
+  const base64 = image.toString("base64");
+  const fixture = await importFixture(() => jsonl([
+    row([
+      vendorPage([block(0, `<p>内联<img src="data:image/png;base64,${base64}"></p>`)]),
+      vendorPage([block(0, "Second page text")]),
+    ]),
+  ]));
+  expect(fixture.result.outcome).toBe("published");
+  if (fixture.result.outcome !== "published") throw new Error("import did not publish");
+  const tree = await publishedTree(fixture.result.revision);
+  const texts = Object.values(tree.units).flatMap((unit) =>
+    unit.sentenceIds.flatMap((id) =>
+      tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : "")),
+    ),
+  );
+  expect(texts.join(" ")).toContain("内联");
+  expect(fixture.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
+});
+
+test("pdf-import 首次导入转换期父 PDF 被删除：任务落 failed 与诊断，不永久 converting", async () => {
+  // 快照发布后、转换前删除父 PDF（与重解析 pdf-reparse 同形状）：
+  // loadParentPdf 的 readFile 抛 ENOENT，任务必须落 failed＋稳定诊断而非永久 converting。
+  const fixture = await importFixture(() => twoPages(), {
+    convertHooks: {
+      commitHooks: {
+        onCommitPoint: async (point) => {
+          if (point !== "source-content") return;
+          const pdfSnapshots = (await listSourceSnapshots(root)).filter((entry) => entry.kind === "pdf");
+          await fs.rm(path.join(root, pdfSnapshots[0].path, "paper.pdf"));
+        },
+      },
+    },
+  });
+  expect(fixture.result.outcome).toBe("incomplete");
+  if (fixture.result.outcome !== "incomplete") throw new Error("expected incomplete");
+  expect(fixture.result.task.phase).toBe("failed");
+  expect(fixture.result.task.diagnostic).toMatchObject({
+    code: "pdf-convert-failed",
+    severity: "fatal",
+    stage: "convert",
+  });
+  expect(await currentRevisionId()).toBeNull();
+});

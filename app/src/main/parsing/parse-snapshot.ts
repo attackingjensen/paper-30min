@@ -582,22 +582,98 @@ async function localizeValue(
   return storeAsset(Buffer.from(value, "base64"), store, context, vendorPath, pageNumber);
 }
 
-/** HTML 型正文的资源本地化：已知 manifest 资源精确替换；签名 URL 经受控下载提取；
- * data URI 提取为内容寻址资产；其余资源写占位 + warning。无法证明安全时拒绝发布。 */
+/** 不可证明安全的元素：raw-text／可执行内容整体拒绝发布（SPEC §4.5），
+ * 不做属性级消毒——script/style 正文与 template 内容无法保证不含签名资源。 */
+const UNSAFE_BLOCK_TAGS: Record<string, true> = {
+  script: true, style: true, noscript: true, iframe: true, object: true,
+  embed: true, template: true, link: true, meta: true, base: true,
+};
+/** 资源元素识别：仅 img/image 触发 HTML 本地化路径；其余正文逐字保留。 */
+const RESOURCE_ELEMENT = /<\s*(?:img|image)\b/i;
+/** markdown 图片引用：正文可能不含 HTML 但含 ![alt](url) 资源。 */
+const MARKDOWN_IMAGE = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+
+/** 单个资源值的本地化裁决（HTML 属性与 markdown 引用共用）：
+ * 已知 manifest 精确替换；批准 host 受控下载；data URI 提取；
+ * 非允许 host 占位 + warning；危险 scheme 拒绝发布。 */
+async function localizeResourceValue(
+  input: PublishParseSnapshotInput,
+  value: string,
+  alias: string,
+  locator: BlockResourceLocator,
+  store: AssetStore,
+  context: SanitizeContext,
+): Promise<string> {
+  for (const [vendorPath, source] of locator.page.sources) {
+    if (source === value) {
+      const known = locator.page.images[vendorPath];
+      if (known !== undefined) return known;
+    }
+  }
+  if (/^https?:\/\//i.test(value)) {
+    let approved = true;
+    try {
+      resultResource(value, input.task.endpoint);
+    } catch {
+      approved = false;
+    }
+    if (!approved)
+      return missingResource(store, context, alias, locator.pageNumber).reference;
+    const localized = await localizeValue(input, value, store, context, alias, locator.pageNumber);
+    if (localized.fact) {
+      locator.page.images[alias] = localized.reference;
+      locator.page.facts.push(localized.fact);
+    }
+    return localized.reference;
+  }
+  if (/^data:image\/(?:png|jpeg|jpg);base64,/i.test(value)) {
+    const localized = await localizeValue(input, value, store, context, alias, locator.pageNumber);
+    if (localized.fact) {
+      locator.page.images[alias] = localized.reference;
+      locator.page.facts.push(localized.fact);
+    }
+    return localized.reference;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.includes("://"))
+    fatal("parse-resource-url-rejected", "fetch");
+  return missingResource(store, context, alias, locator.pageNumber).reference;
+}
+
+/** HTML 型正文的资源本地化：只在正文确含资源元素或 markdown 图片时启用。
+ * 非资源正文逐字保留（不重序列化，避免吞字/转义）；启用时定点替换资源值，
+ * 仅表格块允许整块重序列化（表格转换本就消毒重建）。无法证明安全时拒绝发布。 */
 async function localizeBlockResources(
   input: PublishParseSnapshotInput,
   content: string,
   locator: BlockResourceLocator,
   store: AssetStore,
   context: SanitizeContext,
+  isTable: boolean,
 ): Promise<string> {
-  if (!content.includes("<")) return content;
-  const fragment = parseFragment(content);
-  let touched = false;
+  const hasResourceElement = RESOURCE_ELEMENT.test(content);
+  const markdownImages = [...content.matchAll(MARKDOWN_IMAGE)];
+  if (!hasResourceElement && markdownImages.length === 0) return content;
   let ordinal = 0;
+  const nextAlias = () => `block-${locator.blockId}/resource-${++ordinal}`;
+  // markdown 图片引用：定点字符串替换，不触碰其余正文。
+  let working = content;
+  for (const match of markdownImages) {
+    const value = match[1];
+    if (!/^(?:https?:|data:image\/)/i.test(value)) continue;
+    const reference = await localizeResourceValue(input, value, nextAlias(), locator, store, context);
+    working = working.replace(match[0], match[0].replace(value, reference));
+  }
+  if (!hasResourceElement) return working;
+  const fragment = parseFragment(working);
+  let touched = false;
+  const replacements: Array<{ from: string; to: string }> = [];
   const visit = async (node: DefaultTreeAdapterMap["node"]): Promise<void> => {
     if ("tagName" in node) {
       const element = node;
+      // 非表格正文最终作为纯文本落树，raw-text／可执行元素无法证明安全，整体拒绝。
+      // 表格块的消毒由 parse-table 结构化路径负责（script 移除、属性剥离），不在此拒绝。
+      if (!isTable && UNSAFE_BLOCK_TAGS[element.tagName])
+        fatal("parse-resource-url-rejected", "fetch");
       const urlAttribute = element.tagName === "img" ? "src"
         : element.tagName === "image" ? "href"
         : undefined;
@@ -605,83 +681,44 @@ async function localizeBlockResources(
         const attribute = element.attrs.find((entry) => entry.name === urlAttribute);
         const value = attribute?.value;
         if (attribute && value !== undefined && value !== "") {
-          ordinal += 1;
-          const alias = `block-${locator.blockId}/resource-${ordinal}`;
-          let reference: string;
-          let known: string | undefined;
-          for (const [vendorPath, source] of locator.page.sources) {
-            if (source === value) {
-              known = locator.page.images[vendorPath];
-              break;
-            }
-          }
-          if (known !== undefined) {
-            // 已知 manifest 资源：精确替换为同一本地引用，不重复下载。
-            reference = known;
-          } else if (/^https?:\/\//i.test(value)) {
-            let approved = true;
-            try {
-              resultResource(value, input.task.endpoint);
-            } catch {
-              approved = false;
-            }
-            if (!approved) {
-              // 非允许 host／含凭据或 fragment：不发起访问，写占位 + warning。
-              reference = missingResource(store, context, alias, locator.pageNumber).reference;
-            } else {
-              const localized = await localizeValue(
-                input, value, store, context, alias, locator.pageNumber,
-              );
-              reference = localized.reference;
-              if (localized.fact) {
-                locator.page.images[alias] = localized.reference;
-                locator.page.facts.push(localized.fact);
-              }
-            }
-          } else if (/^data:image\/(?:png|jpeg|jpg);base64,/i.test(value)) {
-            const localized = await localizeValue(
-              input, value, store, context, alias, locator.pageNumber,
-            );
-            reference = localized.reference;
-            if (localized.fact) {
-              locator.page.images[alias] = localized.reference;
-              locator.page.facts.push(localized.fact);
-            }
-          } else if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.includes("://")) {
-            // 危险或未知 scheme：不能保证安全，拒绝发布而不是原样落盘。
-            fatal("parse-resource-url-rejected", "fetch");
-          } else {
-            reference = missingResource(store, context, alias, locator.pageNumber).reference;
-          }
+          const reference = await localizeResourceValue(input, value, nextAlias(), locator, store, context);
+          replacements.push({ from: value, to: reference });
           attribute.value = reference;
           touched = true;
         }
-      }
-      // 资源元素的属性可能携带签名参数或凭据：除已本地化的 URL 属性外全部移除。
-      // 表格 colspan/rowspan 是可证明安全的正整数结构事实，逐字保留；其余属性移除。
-      const kept = element.attrs.filter((entry) => {
-        if (
-          urlAttribute !== undefined && entry.name === urlAttribute &&
-          entry.value !== undefined &&
-          (entry.value.startsWith("assets/") || entry.value === MISSING_ASSET_PLACEHOLDER)
-        )
-          return true;
-        return (
+        // 资源元素除已本地化的 URL 属性外全部移除（可能携带签名参数或凭据）。
+        const kept = element.attrs.filter((entry) =>
+          entry.name === urlAttribute &&
+          (entry.value.startsWith("assets/") || entry.value === MISSING_ASSET_PLACEHOLDER));
+        if (kept.length !== element.attrs.length) {
+          element.attrs = kept;
+          touched = true;
+        }
+      } else if (isTable) {
+        // 表格块：非资源元素属性移除，colspan/rowspan 正整数结构事实保留。
+        const kept = element.attrs.filter((entry) =>
           (element.tagName === "td" || element.tagName === "th") &&
           (entry.name === "colspan" || entry.name === "rowspan") &&
-          /^[0-9]+$/.test(entry.value.trim())
-        );
-      });
-      if (kept.length !== element.attrs.length) {
-        element.attrs = kept;
-        touched = true;
+          /^[0-9]+$/.test(entry.value.trim()));
+        if (kept.length !== element.attrs.length) {
+          element.attrs = kept;
+          touched = true;
+        }
       }
     }
     if ("childNodes" in node)
       for (const child of node.childNodes) await visit(child);
   };
   await visit(fragment);
-  if (!touched) return content;
+  if (!touched) return working;
+  if (!isTable) {
+    // 非表格正文最终作为纯文本进入文档树：只允许资源值的定点替换，
+    // 不接受整块重序列化（会吞字/转义）。按「原值→本地引用」逐个替换原文。
+    let output = working;
+    for (const { from, to } of replacements)
+      output = output.split(from).join(to);
+    return output;
+  }
   return serialize(fragment);
 }
 
@@ -736,6 +773,7 @@ async function localizeRows(
           { page: localizedPage, pageNumber: page.pageNumber, blockId: block.id },
           store,
           context,
+          block.label === "table",
         );
         contents.push(content);
         sanitizedBlocks.push({
@@ -754,7 +792,11 @@ async function localizeRows(
           model_settings: page.settings,
           parsing_res_list: sanitizedBlocks,
         },
-        ...(page.images === null ? {} : { markdown: { images: localizedPage.images } }),
+        // 块内联资源（alias 引用）也必须持久化到 markdown.images，
+        // 否则转换侧 facts↔manifest 交叉核验必然失败（快照可发布但不可转换）。
+        ...(page.images === null && Object.keys(localizedPage.images).length === 0
+          ? {}
+          : { markdown: { images: localizedPage.images } }),
       });
       const blockFacts: PdfParseBlockFact[] = page.blocks.map((block) => ({
         blockId: block.id,

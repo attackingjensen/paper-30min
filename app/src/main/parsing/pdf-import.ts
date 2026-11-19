@@ -27,6 +27,7 @@ import {
   publishParseDocument,
   type ParseMergeConversion,
   type PdfConvertHooks,
+  type PublishParseDocumentResult,
 } from "./parse-convert.js";
 import type { DocumentMergeCandidate } from "../document/merge.js";
 import {
@@ -239,17 +240,34 @@ async function continueToCurrent(
   task.phase = "converting";
   delete task.diagnostic;
   await saveTask(root, task);
-  const published = await publishParseDocument({
-    root,
-    task,
-    snapshot,
-    signal: options.signal,
-    onCandidateBuilt: async ({ revisionId }) => {
-      task.candidateRevisionId = revisionId;
-      await saveTask(root, task);
-    },
-    hooks: options.convertHooks ?? {},
-  });
+  let published: PublishParseDocumentResult;
+  try {
+    published = await publishParseDocument({
+      root,
+      task,
+      snapshot,
+      signal: options.signal,
+      onCandidateBuilt: async ({ revisionId }) => {
+        task.candidateRevisionId = revisionId;
+        await saveTask(root, task);
+      },
+      hooks: options.convertHooks ?? {},
+    });
+  } catch (error) {
+    if (options.signal.aborted) return stopTask(root, task);
+    // 非中止失败落为 failed＋稳定诊断（与重解析同口径）：任务不再永久 converting，
+    // 不阻塞新任务；已发布解析快照保留，修复后可离线重新转换。
+    const diagnostic: ImportDiagnostic = {
+      code: "pdf-convert-failed",
+      severity: "fatal",
+      stage: "convert",
+      messageKey: "pdf.convert.failed",
+    };
+    task.phase = "failed";
+    task.diagnostic = diagnostic;
+    await saveTask(root, task);
+    return { outcome: "incomplete", task, diagnostic };
+  }
   if (!published.ok) {
     if (published.diagnostic.code === "pdf-convert-stopped") return stopTask(root, task);
     task.diagnostic = published.diagnostic;
