@@ -18,6 +18,8 @@ OpenViking 接收完整会话并整理过程记录，仓库不再维护逐轮审
 
 2026-10-09 知识重组：`STRATEGY.md`（末版 366fb74）、`docs/current.md`（末版 49fbec0）与 `docs/solutions/` 已移出工作区，历史文档中指向它们的路径随之失效；仍有效的决策转写为 [adr/](adr/)，两条经验迁入 OpenViking 个人资源（「Windows 签名发布的证据分层」与「PDF 来源定位与实际选区分开建模」）。
 
+2026-11-19 文档治理：`docs/legacy-retirement-inventory.md`（Phase 0 amw.1 只读退役盘点，基线 f3164fe）已随退役完成移出工作区，末版见 [Git 历史 9c2312b](https://github.com/attackingjensen/paper-30min/blob/9c2312b/docs/legacy-retirement-inventory.md)；退役边界以 `spec/SPEC-legacy-projects.md` 与对应 ADR 为准。同批精简了 `CONCEPTS.md`（只留活术语）、`app/README.md`（去检查点流水账）与 `docs/project-format.md`（去重指向 spec）。
+
 当前 v1.4.0 解析试点的质量证据见 [百度 49 页复核](research/2026-10-06-aistudio-full-audit.md) 和 [Docling 49 页对照](research/2026-10-06-docling-full-audit.md)，仅限报告中的配置与样本。
 
 v1.4.0 的实施范围与当时的后续需求计划留存在 Linear 历史票据中；当前任务不沿用该执行入口，改用 beads，配置见 [agents/issue-tracker.md](agents/issue-tracker.md)。

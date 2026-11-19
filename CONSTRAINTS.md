@@ -53,7 +53,22 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 | B9 | 单解析资产 `<= 32 MiB`、单解析快照资产合计 `<= 256 MiB`、单 PNG `<= 16,000,000` 像素 | 同时限制压缩字节与解码后像素，避免图像内存放大 | `npx playwright test -g "pdf-snapshot-parse|pdf-page-crop"` |
 | B10 | 单轮远端查询等待 `<= 30 分钟`，之后必须保留原任务供恢复 | 避免无限等待和重复计费；超时不能冒充远端失败 | `npx playwright test -g "pdf-import-task"` |
 
-B7–B10 自 s08.6 起由新 document-core 链路回归承担：上传预算与任务状态机由 `pdf-import-task` 承担，受管 JSONL／去敏／资产预算由 `pdf-snapshot-parse` 承担，原页裁切像素预算由 `pdf-page-crop` 承担；旧 `parsing` 套件已随旧解析路径退役删除（W3）。B1 的核验侧车与来源读取证据预算自 s08.5 起由 `pdf-verification` 回归承担。s08.7 起，重解析／更新的候选合并、`baseRevision` 复核、恢复不重传与核验继承由 `pdf-reparse` 回归承担（受控百度服务，不访问真实云端）；离线重新转换由 `pdf-snapshot-convert` 的离线重新转换用例承担。s08.8 起，PDF core* 命令面（快照、任务状态、停止、离线重转换、候选发布、核验与证据）由 `pdf-core-commands` 契约回归承担；生产 preload／IPC／utility process 的导入、显式上传确认、停止恢复与重解析候选由 `pdf-import-electron` 真实 Electron 回归承担（受控百度服务，不访问真实云端）。s08.9 起，原页区域裁切的几何校准（旋转／CropBox／宽高比／bbox）、像素与资产预算、确定性字节与公式块可选裁剪资产由 `pdf-page-crop` 回归承担；首次发布／离线重转换／重解析全链路的裁剪资产进入候选 revision 且不回写快照由 `pdf-snapshot-convert` 与 `pdf-reparse` 的裁剪用例承担。7uo 加固起：来源读取证据一次性消费（重放拒绝、失败不消费）由 `pdf-verification` 承担；错 operationId 应答不消费确认表由 `pdf-import-electron` 承担；回退交接不携带 URL、下载目标主进程重建由 `pdf-snapshot`／`arxiv-import`／`arxiv-import-electron` 承担；转换失败诊断 errorDetail 由 `pdf-snapshot-convert` 承担。Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；未实现或未运行的项目不得记为已验证。translation、pdf-comparison 等尚未实现的 spec 不提前虚报为当前强制项，接入实现时必须同步收录其预算。
+预算与链路的回归承担划分如下（旧 `parsing` 套件已随旧解析路径退役删除，见 W3；云端链路使用受控百度服务，不访问真实云端）：
+
+| 范围 | 承担套件 |
+|---|---|
+| B1 核验侧车与来源读取证据预算；证据一次性消费（重放拒绝、失败不消费） | `pdf-verification` |
+| B7 上传预算与任务状态机 | `pdf-import-task`、`pdf-snapshot` |
+| B8 受管 JSONL／去敏预算 | `pdf-snapshot-parse` |
+| B9 解析资产与原页裁切像素预算；裁切几何校准（旋转／CropBox／宽高比／bbox）与确定性字节 | `pdf-snapshot-parse`、`pdf-page-crop` |
+| B10 查询等待与超时恢复 | `pdf-import-task` |
+| 重解析／更新候选合并、`baseRevision` 复核、恢复不重传、核验继承 | `pdf-reparse` |
+| 离线重新转换；全链路裁剪资产进入候选 revision 且不回写快照；转换失败诊断 errorDetail | `pdf-snapshot-convert`（裁剪用例与 `pdf-reparse` 共同承担） |
+| PDF core* 命令面（快照、任务状态、停止、离线重转换、候选发布、核验与证据） | `pdf-core-commands` |
+| 生产 preload／IPC／utility process：导入、显式上传确认（含错 operationId 不消费确认表）、停止恢复、重解析候选 | `pdf-import-electron`（真实 Electron） |
+| 回退交接不携带 URL、下载目标主进程重建 | `pdf-snapshot`、`arxiv-import`、`arxiv-import-electron` |
+
+Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；未实现或未运行的项目不得记为已验证。translation、pdf-comparison 等尚未实现的 spec 不提前虚报为当前强制项，接入实现时必须同步收录其预算。
 
 ## Measured, not yet enforced
 
@@ -61,11 +76,11 @@ B7–B10 自 s08.6 起由新 document-core 链路回归承担：上传预算与�
 |---|---|---:|---|---|
 | M1 | 默认全量回归环境跳过数 | `3` | 不得增长 | 防止用环境条件静默扩大未测范围；`npm test`，既有 3 项登记为 W2（真实百度门控用例已随旧路径退役删除） |
 | M2 | OSV low + moderate finding | `2`（LOW `1`、MODERATE `1`） | 不得增长 | 当前为 katex LOW 与 minimatch MODERATE；不强迫在本约束任务中做 major 升级，但需观察积累；`npm run check:dependencies` |
-| M3 | knip 临时源码豁免 | `0` | 不得增长 | W1 已随 s08.6 旧解析退役移除；`npm run test:dead-code` 并 review `knip.jsonc` |
+| M3 | knip 临时源码豁免 | `0` | 不得增长 | 历史豁免已全部移除，新增豁免须 review；`npm run test:dead-code` 并 review `knip.jsonc` |
 
 整数计数不设容差，因为新增一次跳过、漏洞或豁免都是可审查的离散事件。比例型指标若以后引入，ratchet 容差为 **0.5 个百分点**，用于吸收无关文件的轻微比例波动，而不是允许真实回退。
 
-当前补充基线：`489 passed / 3 skipped (10.6m)`（s08.6 检查点，HEAD be02cc0）、架构 `108 modules / 0 violations`。耗时只记录今日成本，不设硬秒数；机器与 runner 负载不同，耗时本身不自动阻断。
+补充基线为测量参考，不是阻断阈值：全量回归 `489 passed / 3 skipped (10.6m)`（s08.6 检查点，HEAD be02cc0），架构 `108 modules / 0 violations`（wp4 起 109）。耗时只记录当日成本；机器与 runner 负载不同，耗时本身不自动阻断。
 
 ## Exceptions
 
