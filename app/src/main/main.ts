@@ -16,17 +16,15 @@ import type {
   AgentCommand,
   ChatSession,
   Command,
+  PdfImportWorkerCommand,
+  PdfUploadConfirmationReply,
   Project,
   ProjectAsset,
 } from "../shared/contracts.js";
 import { defaultAgentSettings } from "../shared/contracts.js";
 import { AgentSettingsStore, type ModelConfig } from "./agent-settings.js";
-import {
-  ParsingSettingsStore,
-  type ParsingConfig,
-} from "./parsing-settings.js";
+import { ParsingSettingsStore } from "./parsing-settings.js";
 import type { ParsingCommand } from "../shared/parsing.js";
-import { defaultParsingSettings } from "../shared/parsing.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 protocol.registerSchemesAsPrivileged([
@@ -49,11 +47,7 @@ function request(
   command:
     | Command
     | { type: "agent"; command: AgentCommand; config: ModelConfig }
-    | {
-        type: "parsing";
-        command: ParsingCommand;
-        config: ParsingConfig & { proxy?: string; proxyUrl?: string };
-      }
+    | PdfImportWorkerCommand
     | null,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -111,6 +105,21 @@ async function start() {
     [path.join(app.getPath("userData"), "preferences.json")],
     { serviceName: "Paper30Min Project" },
   );
+  /** 未决上传确认：confirmationId → 请求。renderer 重载／窗口关闭时按拒绝应答
+   * 全部未决项，避免 worker 等待确认永久挂起。 */
+  const pendingUploadConfirms = new Map<string, { operationId: string }>();
+  const rejectUploadConfirm = (confirmationId: string) => {
+    const entry = pendingUploadConfirms.get(confirmationId);
+    if (!entry) return;
+    pendingUploadConfirms.delete(confirmationId);
+    worker.postMessage({
+      pdfUploadConfirmReply: {
+        operationId: entry.operationId,
+        confirmationId,
+        confirmed: false,
+      },
+    });
+  };
   const ready = new Promise<void>((resolve, reject) => {
     const deadline = setTimeout(
       () => reject(new Error("工程进程启动超时。")),
@@ -138,17 +147,17 @@ async function start() {
         window.webContents.send("agent:changed", message.agentState);
       return;
     }
-    if (message.trash) {
-      try {
-        await shell.trashItem(message.trash.file);
-        worker.postMessage({ id: message.trash.id, trashResult: true });
-      } catch (error) {
-        worker.postMessage({
-          id: message.trash.id,
-          trashResult: true,
-          error: (error as Error).message,
-        });
-      }
+    if (message.pdfUploadConfirm) {
+      const confirmation = message.pdfUploadConfirm as {
+        operationId: string;
+        confirmationId: string;
+      };
+      pendingUploadConfirms.set(confirmation.confirmationId, {
+        operationId: confirmation.operationId,
+      });
+      if (window && !window.isDestroyed())
+        window.webContents.send("pdf:uploadConfirm", message.pdfUploadConfirm);
+      else rejectUploadConfirm(confirmation.confirmationId);
       return;
     }
     const p = pending.get(message.id);
@@ -228,10 +237,45 @@ async function start() {
       throw new Error("仅支持打开 HTTP/HTTPS 链接。");
     await shell.openExternal(url);
   });
-  ipcMain.handle("project:command", (event, command: Command) => {
+  const pdfCloudTypes: Partial<Record<Command["type"], true>> = {
+    corePdfImport: true,
+    corePdfResume: true,
+    corePdfReparse: true,
+    corePdfResumeReparse: true,
+    coreArxivPdfFallbackImport: true,
+  };
+  ipcMain.handle("project:command", async (event, command: Command) => {
     trusted(event);
+    if (pdfCloudTypes[command.type]) {
+      // 本机配置与代理只从主进程设置读取；renderer 命令不携带 Token。
+      await parsingSettingsWrite;
+      const config = await parsingSettings.read();
+      const { proxy, proxyUrl } = await agentSettings.read();
+      return request({
+        type: "pdfImport",
+        command: command as PdfImportWorkerCommand["command"],
+        config: {
+          endpoint: config.endpoint,
+          model: "PaddleOCR-VL-1.6",
+          apiKey: config.apiKey,
+          // custom 代理必须携带 proxyUrl；其余模式不携带（可辨识联合）。
+          ...(proxy === "custom" ? { proxy, proxyUrl } : { proxy }),
+        },
+      });
+    }
     return request(command);
   });
+  ipcMain.handle(
+    "pdf:uploadConfirmReply",
+    (event, reply: PdfUploadConfirmationReply) => {
+      trusted(event);
+      // 应答须匹配未决确认；未知 confirmationId（重复／迟到应答）直接忽略。
+      if (pendingUploadConfirms.has(reply.confirmationId)) {
+        pendingUploadConfirms.delete(reply.confirmationId);
+        worker.postMessage({ pdfUploadConfirmReply: reply });
+      }
+    },
+  );
   ipcMain.handle("parsing:command", async (event, command: ParsingCommand) => {
     trusted(event);
     if (command.type === "saveSettings") {
@@ -245,26 +289,9 @@ async function start() {
       parsingSettingsWrite = result.catch(() => undefined);
       return result;
     }
-    if (
-      command.type === "stop" ||
-      command.type === "status" ||
-      command.type === "delete" ||
-      command.type === "verify"
-    )
-      return request({
-        type: "parsing",
-        command,
-        config: { ...defaultParsingSettings, apiKey: "" },
-      });
     await parsingSettingsWrite;
     if (command.type === "settings") return parsingSettings.publicSettings();
-    const config = await parsingSettings.read();
-    const { proxy, proxyUrl } = await agentSettings.read();
-    return request({
-      type: "parsing",
-      command,
-      config: { ...config, proxy, proxyUrl },
-    });
+    throw new Error("无效解析命令。");
   });
   ipcMain.handle("agent:command", async (event, command: AgentCommand) => {
     trusted(event);
@@ -367,9 +394,17 @@ async function start() {
       });
       if (choice === 1) event.preventDefault();
     });
+    // renderer 重载或窗口关闭都会丢失未应答的确认对话框：按拒绝应答，操作不挂起。
+    window.webContents.on("did-start-navigation", (_event, _url, _inPlace, isMainFrame) => {
+      if (!isMainFrame) return;
+      for (const confirmationId of [...pendingUploadConfirms.keys()])
+        rejectUploadConfirm(confirmationId);
+    });
     window.on("closed", () => {
       ++watchGeneration;
       stopWatching();
+      for (const confirmationId of [...pendingUploadConfirms.keys()])
+        rejectUploadConfirm(confirmationId);
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());

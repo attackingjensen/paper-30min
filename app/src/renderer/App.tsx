@@ -26,6 +26,7 @@ import {
 import type {
   Command,
   CreateInput,
+  PdfUploadConfirmation,
   Preferences,
   Project,
   DocumentTab,
@@ -38,7 +39,7 @@ import { AgentPanel } from "./AgentPanel";
 import type { ChatAttachment } from "../shared/chat-input";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { ProductSkillsForm } from "./ProductSkillsForm";
-import { ParsingPanel, ParsingSettingsForm } from "./ParsingPanel";
+import { ParsingSettingsForm } from "./ParsingSettingsForm";
 import {
   useMarkdownDocuments,
   isMarkdown,
@@ -106,6 +107,27 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
+  const [uploadConfirms, setUploadConfirms] = useState<PdfUploadConfirmation[]>([]);
+  useEffect(() =>
+    desktop.watchPdfUploadConfirm((confirmation) =>
+      // 按 confirmationId 排队，不覆盖并发请求；重复投递去重。
+      setUploadConfirms((queue) =>
+        queue.some((entry) => entry.confirmationId === confirmation.confirmationId)
+          ? queue
+          : [...queue, confirmation],
+      )),
+  []);
+  const uploadConfirm = uploadConfirms[0] ?? null;
+  const replyUpload = (confirmed: boolean) => {
+    if (!uploadConfirm) return;
+    const { operationId, confirmationId } = uploadConfirm;
+    setUploadConfirms((queue) =>
+      queue.filter((entry) => entry.confirmationId !== confirmationId),
+    );
+    void desktop
+      .replyPdfUploadConfirm({ operationId, confirmationId, confirmed })
+      .catch((e) => setError((e as Error).message));
+  };
   const [content, setContent] = useState<string | null>(null);
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
@@ -249,7 +271,7 @@ export function App() {
     };
     positions.current[p.root] = p.reading.pdf;
     const restored = p.reading.tabs.filter(
-      (t) => !["map", "explanations", "translations", "materials"].includes(t.key) &&
+      (t) => !["map", "explanations", "translations", "materials", "parsing"].includes(t.key) &&
         (!t.path || p.files.some((f) => f.path === t.path && !f.directory)),
     );
     setTabs(restored.length ? restored : [tab]);
@@ -362,15 +384,6 @@ export function App() {
   }
   function contentView() {
     if (!current) return <div className="empty">尚未打开文档</div>;
-    if (current.key === "parsing")
-      return (
-        <ParsingPanel
-          key={root}
-          project={project!}
-          onOpen={openPath}
-          onSettings={() => setSettings("parsing")}
-        />
-      );
     if (current.path && isMarkdown(current.path)) {
       const draft = documents.drafts.get(current.path);
       return draft ? (
@@ -720,10 +733,6 @@ export function App() {
                       path: project.manifest.paper.path,
                       title: project.manifest.paper.path.split("/").at(-1)!,
                     })}
-                    {nav("论文解析", <FileText />, {
-                      key: "parsing",
-                      title: "论文解析",
-                    })}
                     {nav("笔记", <FileText />, { key: "notes", title: "笔记" })}
                   </>
                 ) : (
@@ -1024,6 +1033,36 @@ export function App() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {uploadConfirm && (
+        <div className="modal-backdrop">
+          <div
+            className="modal pdf-upload-confirm"
+            role="dialog"
+            aria-label="确认上传 PDF 到云端解析"
+          >
+            <h2>确认上传 PDF</h2>
+            <p>
+              将「{uploadConfirm.request.originalName}」（{uploadConfirm.request.pageCount} 页）
+              上传到 {uploadConfirm.request.provider} 的 {uploadConfirm.request.model} 解析服务，
+              可能产生费用。提交后本机停止不会取消云端任务。
+            </p>
+            <dl>
+              <dt>服务地址</dt>
+              <dd>{uploadConfirm.request.endpoint}</dd>
+              <dt>PDF SHA-256</dt>
+              <dd className="pdf-upload-hash">{uploadConfirm.request.pdfSha256}</dd>
+            </dl>
+            <div className="modal-footer">
+              <button type="button" onClick={() => replyUpload(false)}>
+                取消
+              </button>
+              <button className="primary" type="button" onClick={() => replyUpload(true)}>
+                确认上传并解析
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>

@@ -452,6 +452,7 @@ export class AgentService {
         this.projects,
         selected.vision === true,
         () => c.state.busy && !c.state.stopping && !this.closing,
+        { sessionId: c.state.id },
       ),
       ...createProjectTools(
         c.state.root,

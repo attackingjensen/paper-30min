@@ -42,12 +42,12 @@ export class ArxivFetchError extends Error {
 export function fetchDiagnostic(
   error: unknown,
   url: string,
-  kind: "abs" | "html",
+  kind: "abs" | "html" | "pdf",
   stage: ImportDiagnostic["stage"] = "fetch",
 ): ImportDiagnostic {
   if (error instanceof ArxivFetchError) {
-    const prefix = kind === "abs" ? "arxiv-abs" : "arxiv-html";
-    const keyBase = kind === "abs" ? "arxiv.abs" : "arxiv.html";
+    const prefix = kind === "abs" ? "arxiv-abs" : kind === "html" ? "arxiv-html" : "arxiv-pdf";
+    const keyBase = kind === "abs" ? "arxiv.abs" : kind === "html" ? "arxiv.html" : "arxiv.pdf";
     switch (error.code) {
       case "arxiv-fetch-cancelled":
         return { code: error.code, severity: "fatal", stage, messageKey: "arxiv.fetch.cancelled", sourceUrl: url };
@@ -69,7 +69,9 @@ export function fetchDiagnostic(
         return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.network`, sourceUrl: url };
     }
   }
-  return { code: `${kind === "abs" ? "arxiv-abs" : "arxiv-html"}-fetch-failed`, severity: "fatal", stage, messageKey: kind === "abs" ? "arxiv.abs.network" : "arxiv.html.network", sourceUrl: url };
+  const prefix = kind === "abs" ? "arxiv-abs" : kind === "html" ? "arxiv-html" : "arxiv-pdf";
+  const keyBase = kind === "abs" ? "arxiv.abs" : kind === "html" ? "arxiv.html" : "arxiv.pdf";
+  return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.network`, sourceUrl: url };
 }
 
 export interface ArxivFetchOptions {

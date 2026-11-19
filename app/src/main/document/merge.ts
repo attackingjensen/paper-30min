@@ -17,6 +17,7 @@ import {
   type DocumentMergeResult,
 } from "../../shared/document/merge.js";
 import type { DocumentTree } from "../../shared/document/tree.js";
+import { inheritVerificationSidecar } from "../pdf/verification.js";
 
 type ManagedAsset = { bytes: Uint8Array; mime?: string };
 
@@ -24,6 +25,8 @@ export interface DocumentMergeCandidate extends DocumentMergeResult {
   root: string;
   sourceSnapshotId: string;
   assets: Record<string, ManagedAsset>;
+  /** 来源模块附加的 revision 元数据（如 pdfParse 转换器版本与警告），随发布写入。 */
+  metadata?: Record<string, unknown>;
 }
 
 function json(value: unknown) {
@@ -34,7 +37,8 @@ function assetPaths(trees: DocumentTree[]) {
   const paths = new Set<string>();
   for (const tree of trees) {
     for (const block of tree.blocks) {
-      if (block.kind === "figure" && block.asset) paths.add(block.asset.path);
+      if ((block.kind === "figure" || block.kind === "formula") && block.asset)
+        paths.add(block.asset.path);
     }
   }
   return [...paths].sort();
@@ -44,6 +48,7 @@ async function loadCandidateAssets(
   result: DocumentMergeResult,
   root: string,
   sourceSnapshotId: string,
+  derivedAssets: Record<string, ManagedAsset>,
 ) {
   const [revision, snapshot] = await Promise.all([
     readRevision(root, result.baseRevision),
@@ -51,6 +56,12 @@ async function loadCandidateAssets(
   ]);
   const selected: Array<{ relative: string; record: { path: string; size: number }; snapshot: boolean }> = [];
   for (const relative of assetPaths([result.base, result.current, result.sourceBase])) {
+    const derived = derivedAssets[relative];
+    if (derived) {
+      // 派生裁剪资产不在快照或基线 revision 中：由来源模块随候选提供。
+      selected.push({ relative, record: { path: relative, size: derived.bytes.byteLength }, snapshot: false });
+      continue;
+    }
     const snapshotRecord = snapshot.files.find((file) => file.path === relative);
     const revisionRecord = revision.files.find((file) => file.path === relative);
     if (snapshotRecord) selected.push({ relative, record: snapshotRecord, snapshot: true });
@@ -61,6 +72,11 @@ async function loadCandidateAssets(
 
   const assets: Record<string, ManagedAsset> = {};
   for (const entry of selected) {
+    const derived = derivedAssets[entry.relative];
+    if (derived) {
+      assets[entry.relative] = derived;
+      continue;
+    }
     assets[entry.relative] = entry.snapshot
       ? await readSourceSnapshotAsset(root, sourceSnapshotId, entry.relative)
       : await readRevisionAsset(root, result.baseRevision, entry.relative);
@@ -73,6 +89,10 @@ export async function createDocumentMergeCandidate(input: {
   baseRevision: string;
   sourceSnapshotId: string;
   candidate: DocumentTree;
+  /** 调用方固定的候选身份（恢复沿用）；缺省新分配。 */
+  revisionId?: string;
+  /** 来源模块派生资产（如原页裁剪图）：不在快照或基线 revision 中，随候选发布。 */
+  derivedAssets?: Record<string, ManagedAsset>;
 }): Promise<DocumentMergeCandidate> {
   const opened = await openProject(input.root);
   if (opened.manifest.paper.currentRevision !== input.baseRevision)
@@ -88,10 +108,10 @@ export async function createDocumentMergeCandidate(input: {
     current,
     candidate: input.candidate,
     baseRevision: input.baseRevision,
-    revisionId: randomUUID(),
+    revisionId: input.revisionId ?? randomUUID(),
     previousTombstones,
   });
-  const assets = await loadCandidateAssets(result, root, input.sourceSnapshotId);
+  const assets = await loadCandidateAssets(result, root, input.sourceSnapshotId, input.derivedAssets ?? {});
   return {
     ...result,
     root,
@@ -110,6 +130,7 @@ export function resolveDocumentMergeCandidateConflict(
     root: candidate.root,
     sourceSnapshotId: candidate.sourceSnapshotId,
     assets: candidate.assets,
+    ...(candidate.metadata === undefined ? {} : { metadata: candidate.metadata }),
   };
 }
 
@@ -137,6 +158,19 @@ export async function publishDocumentMergeCandidate(candidate: DocumentMergeCand
       "changeset.json": json(candidate.changeset),
       ...assets,
     },
-    metadata: { normalizationVersion: 1, operation: "source-merge" },
+    metadata: { normalizationVersion: 1, operation: "source-merge", ...candidate.metadata },
+  }, {
+    // 核验继承在 commit 校验通过后、current 替换前执行（SPEC-pdf-import §11）：
+    // 提交失败不产生孤儿侧车；无旧核验记录时为空操作。
+    onCommitPoint: async (point) => {
+      if (point !== "before-current-replace") return;
+      await inheritVerificationSidecar({
+        root: candidate.root,
+        baseRevision: candidate.baseRevision,
+        revisionId: candidate.revisionId,
+        sourceSnapshotId: candidate.sourceSnapshotId,
+        document: candidate.document,
+      });
+    },
   });
 }

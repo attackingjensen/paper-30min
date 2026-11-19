@@ -11,10 +11,7 @@ test("旋转页按阅读器的未旋转坐标返回尺寸和图像", async () =>
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-rotated-"),
   );
-  const service = new ProjectService(
-    path.join(directory, "config.json"),
-    async () => {},
-  );
+  const service = new ProjectService(path.join(directory, "config.json"));
   try {
     // A black rectangle at (20, 30) in top-left coordinates, with page rotation metadata.
     const stream = "0 g 20 140 80 30 re f";
@@ -80,10 +77,7 @@ test("旋转页按阅读器的未旋转坐标返回尺寸和图像", async () =>
 
 test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析稿", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-pdf-"));
-  const service = new ProjectService(
-    path.join(directory, "config.json"),
-    async () => {},
-  );
+  const service = new ProjectService(path.join(directory, "config.json"));
   try {
     const project = (await service.dispatch({
       type: "create",
@@ -140,10 +134,7 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     expect(enlargedInfo).toMatchObject({ width: 612, height: 792, scale: 2048 / 792 });
     const repeated = await run(args);
     expect(JSON.parse((repeated.content[0] as any).text)).toEqual(enlargedInfo);
-    const reopened = new ProjectService(
-      path.join(directory, "config2.json"),
-      async () => {},
-    );
+    const reopened = new ProjectService(path.join(directory, "config2.json"));
     try {
       const again = await createPdfTools(
         root,
@@ -199,10 +190,7 @@ test("公式页和扫描页均只返回实际图像与定位信息，取消不�
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-scan-"),
   );
-  const service = new ProjectService(
-    path.join(directory, "config.json"),
-    async () => {},
-  );
+  const service = new ProjectService(path.join(directory, "config.json"));
   try {
     const { root } = (await service.dispatch({
       type: "create",

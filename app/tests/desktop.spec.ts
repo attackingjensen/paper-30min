@@ -10,8 +10,6 @@ import path from "node:path";
 import os from "node:os";
 import { createServer } from "node:http";
 import { connect } from "node:net";
-import { PNG } from "pngjs";
-import type { ParsingRun, ParsingMapping } from "../src/shared/parsing";
 import type { AgentSettings, ChatSession } from "../src/shared/contracts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -168,20 +166,6 @@ test.beforeEach(async () => {
   errors = [];
   sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-desktop-"));
   await fs.mkdir(path.join(sandbox, "projects"));
-  if (process.env.PAPER30MIN_REAL_PARSING_CONFIG) {
-    await fs.mkdir(path.join(sandbox, "profile"));
-    await fs.copyFile(
-      process.env.PAPER30MIN_REAL_PARSING_CONFIG,
-      path.join(sandbox, "profile/parsing-settings.json"),
-    );
-    await fs.copyFile(
-      path.join(
-        path.dirname(process.env.PAPER30MIN_REAL_PARSING_CONFIG),
-        "Local State",
-      ),
-      path.join(sandbox, "profile/Local State"),
-    );
-  }
   await launch();
 });
 test.afterEach(async () => {
@@ -194,369 +178,34 @@ test.afterEach(async () => {
   }
 });
 
-test("百度候选在停止、重开、下载恢复后保留图片，搬迁后离线可读", async () => {
-  test.setTimeout(120_000);
-  let submits = 0;
-  let downloads = 0;
-  let done = false;
-  const rows = (
+test("解析设置加密保存 Token，损坏配置可清除恢复", async () => {
+  const endpoint = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "解析模型", exact: true }).click();
+  await page.getByLabel("百度任务地址", { exact: true }).fill(endpoint);
+  await page
+    .getByLabel("百度 Token", { exact: true })
+    .fill("desktop-parsing-secret");
+  await page.getByRole("button", { name: "保存解析配置" }).click();
+  await expect(page.getByRole("status")).toContainText("解析配置已保存");
+  await page.screenshot({ path: "test-results/parsing-settings.png" });
+  await page.setViewportSize({ width: 650, height: 850 });
+  await page.screenshot({ path: "test-results/parsing-settings-narrow.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  expect(
     await fs.readFile(
-      "tests/fixtures/aistudio/1512.03385.jsonl",
+      path.join(sandbox, "profile/parsing-settings.json"),
       "utf8",
-    )
-  )
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  const png = new PNG({ width: 20, height: 20 });
-  png.data.fill(180);
-  rows[0].result.layoutParsingResults[0].markdown = {
-    text: "![服务图片](imgs/figure.png)",
-    images: { "imgs/figure.png": PNG.sync.write(png).toString("base64") },
-  };
-  const raw = rows.map((row) => JSON.stringify(row)).join("\n");
-  const server = createServer(async (request, response) => {
-    if (request.method === "POST") {
-      submits++;
-      for await (const _chunk of request) {
-        /* Consume the real upload. */
-      }
-      response.end(JSON.stringify({ data: { jobId: "desktop-1" } }));
-    } else if (request.url === "/jobs/desktop-1")
-      response.end(
-        JSON.stringify({
-          data: done
-            ? { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } }
-            : { state: "running" },
-        }),
-      );
-    else {
-      downloads++;
-      if (downloads === 1) {
-        response.writeHead(503);
-        response.end();
-      } else response.end(raw);
-    }
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const endpoint = `http://127.0.0.1:${(server.address() as any).port}/jobs`;
-  try {
-    await page.getByRole("button", { name: "设置", exact: true }).click();
-    await page.getByRole("button", { name: "解析模型", exact: true }).click();
-    await page.getByLabel("百度任务地址", { exact: true }).fill(endpoint);
-    await page
-      .getByLabel("百度 Token", { exact: true })
-      .fill("desktop-parsing-secret");
-    await page.getByRole("button", { name: "保存解析配置" }).click();
-    await expect(page.getByRole("status")).toContainText("解析配置已保存");
-    await page.screenshot({ path: "test-results/parsing-settings.png" });
-    await page.setViewportSize({ width: 650, height: 850 });
-    await page.screenshot({ path: "test-results/parsing-settings-narrow.png", animations: "disabled" });
-    await page.setViewportSize({ width: 1440, height: 960 });
-    expect(
-      await fs.readFile(
-        path.join(sandbox, "profile/parsing-settings.json"),
-        "utf8",
-      ),
-    ).not.toContain("desktop-parsing-secret");
-    await page.getByRole("button", { name: "返回工程" }).click();
-    await create(
-      path.resolve(
-        "tests/fixtures/corpus/1512.03385.pdf",
-      ),
-      path.join(sandbox, "projects"),
-    );
-    const root = path.join(sandbox, "projects/研究工程");
-    await page.getByRole("navigation", { name: "阅读导航" }).getByRole("button", { name: "论文解析", exact: true }).click();
-    await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
-    await page.screenshot({ path: "test-results/parsing-empty.png" });
-    await page.getByRole("button", { name: "解析 PDF", exact: true }).click();
-    await page.getByRole("button", { name: "上传并解析", exact: true }).click();
-    await expect(page.getByRole("status")).toContainText("云端处理中");
-    await expect(page.getByRole("button", { name: "删除解析", exact: true })).toBeDisabled();
-    const activeRuns = await page.evaluate(root => window.desktop.parsing<ParsingRun[]>({ type: "status", root }), root);
-    await expect(page.evaluate(({ root, batchId }) => window.desktop.parsing({ type: "delete", root, batchId }),
-      { root, batchId: activeRuns[0].batchId })).rejects.toThrow("先停止");
-    await page.getByRole("button", { name: "停止解析" }).click();
-    await expect(page.getByRole("status")).toContainText("已停止");
-    await desktop.close();
-    await launch();
-    await page.getByRole("button", { name: /研究工程/ }).click();
-    await expect(page.getByRole("status")).toContainText("已停止");
-    done = true;
-    await page.getByRole("button", { name: "恢复解析" }).click();
-    await expect(page.getByRole("status")).toContainText("处理失败");
-    await page.getByRole("button", { name: "恢复解析" }).click();
-    await expect.poll(async () => (await page.evaluate(root => window.desktop.parsing<ParsingRun[]>({ type: "status", root }), root))[0],
-      { timeout: 45_000 }).toMatchObject({ phase: "candidate" });
-    await expect(page.getByRole("status")).toContainText("解析完成");
-    await expect(page.getByText("desktop-1", { exact: true })).not.toBeVisible();
-    await page.getByText("任务详情", { exact: true }).click();
-    await expect(page.getByText("desktop-1", { exact: true })).toBeVisible();
-    await page.getByText("任务详情", { exact: true }).click();
-    await page.screenshot({ path: "test-results/parsing-ready.png" });
-    await page.getByRole("button", { name: "收起 Agent", exact: true }).click();
-    await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
-    await page.setViewportSize({ width: 650, height: 850 });
-    await page.screenshot({ path: "test-results/parsing-ready-narrow.png", animations: "disabled" });
-    await page.setViewportSize({ width: 1440, height: 960 });
-    await page.getByRole("button", { name: "展开左侧栏", exact: true }).click();
-    await page.getByRole("button", { name: "展开 Agent", exact: true }).click();
-    expect(submits).toBe(1);
-    const [run] = await page.evaluate(
-      async (root) =>
-        window.desktop.parsing<ParsingRun[]>({ type: "status", root }),
-      root,
-    );
-    const mapping = JSON.parse(
-      await fs.readFile(
-        path.join(root, ".paper30min/parsing", run.batchId, "mapping.json"),
-        "utf8",
-      ),
-    ) as ParsingMapping;
-    const imagePath = path.join(root, "text", run.batchId, mapping.images[0].path);
-    const originalImage = await fs.readFile(imagePath);
-    await fs.writeFile(imagePath, "damaged");
-    await page.getByRole("button", { name: "查看正文" }).click();
-    await expect(page.getByRole("alert")).toContainText("候选图片缺失或已变化");
-    await page.waitForTimeout(1800);
-    await expect(page.getByRole("alert")).toContainText("候选图片缺失或已变化");
-    await fs.writeFile(imagePath, originalImage);
-    await fs.writeFile(path.join(sandbox, "profile/parsing-settings.json"), "damaged");
-    await page.getByRole("button", { name: "查看正文" }).click();
-    await expect(page.getByRole("group", { name: "Markdown 视图" })).toBeVisible();
-    await expect(page.locator(".markdown-preview img").first()).toBeVisible();
-    await page.screenshot({ path: "test-results/ste82-candidate-desktop.png" });
-    await page.getByRole("button", { name: "收起 Agent", exact: true }).click();
-    await page.getByRole("button", { name: "收起左侧栏", exact: true }).click();
-    await page.setViewportSize({ width: 650, height: 850 });
-    await page.screenshot({ path: "test-results/ste82-candidate-narrow.png", animations: "disabled" });
-    await page.setViewportSize({ width: 1440, height: 960 });
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    const relocated = path.join(sandbox, "搬迁工程");
-    await desktop.close();
-    await fs.cp(root, relocated, { recursive: true });
-    await fs.rm(root, { recursive: true });
-    await launch();
-    await choose(relocated);
-    await page
-      .getByRole("button", { name: "打开工程文件夹", exact: true })
-      .click();
-    await expect(page.locator(".markdown-preview")).toContainText("Deep Residual Learning for Image Recognition");
-    await expect
-      .poll(() =>
-        page
-          .locator(".markdown-preview img")
-          .evaluateAll((images) =>
-            images.every(
-              (image) => (image as HTMLImageElement).naturalWidth > 0,
-            ),
-          ),
-      )
-      .toBe(true);
-    expect(
-      await fs.readFile(path.join(relocated, run.candidate!), "utf8"),
-    ).not.toContain(endpoint);
-    const pdfBeforeDelete = await fs.readFile(path.join(relocated, "text/paper.pdf"));
-    await page.getByRole("navigation", { name: "阅读导航" }).getByRole("button", { name: "论文解析", exact: true }).click();
-    await page.getByRole("button", { name: "删除解析", exact: true }).click();
-    const deleteDialog = page.getByRole("dialog", { name: "删除解析记录" });
-    await deleteDialog.getByRole("button", { name: "取消", exact: true }).click();
-    await expect(page.getByRole("button", { name: "查看正文", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "删除解析", exact: true }).click();
-    await page.screenshot({ path: "test-results/parsing-delete.png" });
-    await deleteDialog.getByRole("button", { name: "确认删除", exact: true }).click();
-    await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
-    await expect(fs.stat(path.join(relocated, "text", run.batchId))).rejects.toThrow();
-    await expect(fs.stat(path.join(relocated, ".paper30min/parsing", run.batchId))).rejects.toThrow();
-    expect(await fs.readFile(path.join(relocated, "text/paper.pdf"))).toEqual(pdfBeforeDelete);
-    await desktop.close();
-    await launch();
-    await choose(relocated);
-    await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
-    await page.getByRole("navigation", { name: "阅读导航" }).getByRole("button", { name: "论文解析", exact: true }).click();
-    await expect(page.getByText("还没有解析正文", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "设置", exact: true }).click();
-    await page.getByRole("button", { name: "解析模型", exact: true }).click();
-    await expect(page.getByRole("status")).toContainText("解析配置无法读取");
-    await page.getByRole("button", { name: "清除百度 Token", exact: true }).click();
-    await page.getByRole("button", { name: "保存解析配置", exact: true }).click();
-    await expect(page.getByRole("status")).toContainText("解析配置已保存");
-  } finally {
-    if (server.listening)
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
-});
-
-test("真实百度服务生成可回查候选并记录格式与耗时", async () => {
-  test.skip(
-    !process.env.PAPER30MIN_REAL_PARSING_TOKEN &&
-      !process.env.PAPER30MIN_REAL_PARSING_CONFIG &&
-      !process.env.PAPER30MIN_REAL_PARSING_PROJECT,
-    "需要本机百度配置或已有真实候选。",
-  );
-  test.setTimeout(300_000);
-  if (process.env.PAPER30MIN_REAL_PARSING_TOKEN)
-    await page.evaluate(async (token) => {
-      const settings = await window.desktop.parsing<any>({ type: "settings" });
-      return window.desktop.parsing<any>({
-        type: "saveSettings",
-        settings,
-        apiKey: token,
-      });
-    }, process.env.PAPER30MIN_REAL_PARSING_TOKEN!);
-  if (
-    process.env.PAPER30MIN_REAL_PARSING_CONFIG ||
-    process.env.PAPER30MIN_REAL_PARSING_TOKEN
-  ) {
-    const config = await page.evaluate(() =>
-      window.desktop.parsing<any>({ type: "settings" }),
-    );
-    expect(config.hasKey).toBe(true);
-    expect(config.keyError, "本机加密配置需能在此隔离配置目录解密").toBeFalsy();
-  }
-  let root = process.env.PAPER30MIN_REAL_PARSING_PROJECT;
-  if (root) {
-    await choose(root);
-    await page
-      .getByRole("button", { name: "打开工程文件夹", exact: true })
-      .click();
-  } else {
-    await create(
-      path.resolve(
-        process.env.PAPER30MIN_REAL_PARSING_SOURCE ??
-          "tests/fixtures/corpus/1512.03385.pdf",
-      ),
-      path.join(sandbox, "projects"),
-    );
-    root = path.join(sandbox, "projects/研究工程");
-  }
-  const output = path.resolve(
-    process.env.PAPER30MIN_REAL_PARSING_OUTPUT ?? "tmp/ste82-real",
-  );
-  await fs.mkdir(output, { recursive: true });
-  try {
-    await page.getByRole("button", { name: "论文解析", exact: true }).click();
-    const started = Date.now();
-    if (process.env.PAPER30MIN_REAL_PARSING_PROJECT) {
-      const existing = await page.evaluate(
-        async (root) =>
-          window.desktop.parsing<ParsingRun[]>({ type: "status", root }),
-        root,
-      );
-      if (existing[0].phase !== "candidate")
-        await page
-          .getByRole("button", { name: "恢复解析", exact: true })
-          .click();
-    } else {
-      await page.getByRole("button", { name: "解析 PDF", exact: true }).click();
-      await page
-        .getByRole("button", { name: "上传并解析", exact: true })
-        .click();
-      await expect
-        .poll(async () => {
-          const alert = page.locator(".parsing-panel [role=alert]");
-          if (await alert.count()) return alert.innerText();
-          const runs = await page.evaluate(
-            async (root) =>
-              window.desktop.parsing<ParsingRun[]>({ type: "status", root }),
-            root,
-          );
-          return runs.length ? "started" : "";
-        })
-        .toBe("started");
-    }
-    let run: ParsingRun | undefined;
-    await expect
-      .poll(
-        async () => {
-          [run] = await page.evaluate(
-            async (root) =>
-              window.desktop.parsing<ParsingRun[]>({ type: "status", root }),
-            root,
-          );
-          if (run && ["failed", "unknown", "remote-failed"].includes(run.phase))
-            throw new Error(run.error ?? run.phase);
-          return run?.phase;
-        },
-        { timeout: 240_000, intervals: [1500] },
-      )
-      .toBe("candidate");
-    const mapping = JSON.parse(
-      await fs.readFile(
-        run!.candidate!.startsWith("text/candidates/")
-          ? path.join(root, path.dirname(run!.candidate!), "mapping.json")
-          : path.join(root, ".paper30min/parsing", run!.batchId, "mapping.json"),
-        "utf8",
-      ),
-    ) as ParsingMapping;
-    await page.getByRole("button", { name: "查看正文" }).click();
-    await expect(page.locator(".markdown-preview")).toContainText("解析候选");
-    await expect
-      .poll(() =>
-        page
-          .locator(".markdown-preview img")
-          .evaluateAll(
-            (images) =>
-              images.length > 0 &&
-              images.every(
-                (image) => (image as HTMLImageElement).naturalWidth > 0,
-              ),
-          ),
-      )
-      .toBe(true);
-    await fs.writeFile(
-      path.join(output, "evidence.json"),
-      JSON.stringify(
-        {
-          date: new Date().toISOString(),
-          batchId: run!.batchId,
-          documentSha256: run!.document.sha256,
-          elapsedMs: run!.elapsedMs,
-          verificationMs: Date.now() - started,
-          reused: !!process.env.PAPER30MIN_REAL_PARSING_PROJECT,
-          modelRequested: run!.model,
-          pages: run!.pageCount,
-          blocks: mapping.blocks.length,
-          pageOnlyBlocks: mapping.blocks.filter(
-            (block) => block.limitation.includes("仅页级定位"),
-          ).length,
-          regionBlocks: mapping.blocks.filter(
-            (block) => block.limitation.includes("OCR 块区域"),
-          ).length,
-          images: mapping.images.length,
-          vendorImages: mapping.images.filter((image) => image.vendorPath)
-            .length,
-          labels: [...new Set(mapping.blocks.map((block) => block.label))],
-        },
-        null,
-        2,
-      ),
-    );
-    await page.screenshot({
-      path: path.join(output, "ste82-real-candidate.png"),
-    });
-  } finally {
-    await desktop.close();
-    await fs.cp(root, path.join(output, `project-${Date.now()}`), {
-      recursive: true,
-      errorOnExist: true,
-      force: false,
-    });
-    if (
-      process.env.PAPER30MIN_REAL_PARSING_CONFIG ||
-      process.env.PAPER30MIN_REAL_PARSING_TOKEN
-    ) {
-      await fs.copyFile(
-        path.join(sandbox, "profile/parsing-settings.json"),
-        path.join(output, "parsing-settings.json"),
-      );
-      await fs.copyFile(
-        path.join(sandbox, "profile/Local State"),
-        path.join(output, "Local State"),
-      );
-    }
-  }
+    ),
+  ).not.toContain("desktop-parsing-secret");
+  await fs.writeFile(path.join(sandbox, "profile/parsing-settings.json"), "damaged");
+  await page.getByRole("button", { name: "返回工程", exact: true }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "解析模型", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("解析配置无法读取");
+  await page.getByRole("button", { name: "清除百度 Token", exact: true }).click();
+  await page.getByRole("button", { name: "保存解析配置" }).click();
+  await expect(page.getByRole("status")).toContainText("解析配置已保存");
 });
 
 test("窗口关闭保护保留草稿，测试清理自动放弃临时编辑", async () => {

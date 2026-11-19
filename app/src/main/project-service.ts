@@ -188,10 +188,7 @@ export class ProjectService {
   private creation = new Map<string, AbortController>();
   private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(
-    private configFile: string,
-    private trashFile: (file: string) => Promise<void>,
-  ) {}
+  constructor(private configFile: string) {}
 
   async close() {
     for (const controller of this.creation.values()) controller.abort();
@@ -288,117 +285,6 @@ export class ProjectService {
       const relative = this.agentPath(root, absolute);
       await this.writablePath(root, relative);
       return this.saveText(root, relative, text, version, signal);
-    });
-  }
-
-  readParsingFile(root: string, batchId: string, relative: string): Promise<Buffer> {
-    return this.serialize(async () => {
-      const file = await this.resolve(root, await this.parsingPath(root, batchId, relative));
-      if ((await fs.stat(file)).size > 256 * 1024 * 1024) throw new Error("解析文件超过 256 MiB。");
-      const bytes = await fs.readFile(file);
-      if (bytes.length > 256 * 1024 * 1024) throw new Error("解析文件超过 256 MiB。");
-      return bytes;
-    });
-  }
-
-  parsingBatches(root: string): Promise<string[]> {
-    return this.serialize(async () => {
-      await this.manifest(root);
-      const batches = new Set<string>();
-      for (const directory of [".paper30min/parsing", "text/candidates"]) {
-        let entries;
-        try { entries = await fs.readdir(await this.resolve(root, directory), { withFileTypes: true }); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-          throw error;
-        }
-        for (const entry of entries) {
-          if (!entry.isDirectory() || !/^[a-f0-9]{32}$/.test(entry.name)) continue;
-          try { await this.resolve(root, `${directory}/${entry.name}/run.json`); }
-          catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-            throw error;
-          }
-          if (batches.has(entry.name)) throw new Error("解析批次记录重复，请保留现场检查。");
-          batches.add(entry.name);
-        }
-      }
-      return [...batches];
-    });
-  }
-
-  deleteParsingBatch(root: string, batchId: string): Promise<void> {
-    return this.serialize(async () => {
-      const manifest = await this.manifest(root);
-      const runPath = await this.parsingPath(root, batchId, "run.json");
-      await this.resolve(root, runPath);
-      const directories = runPath.startsWith("text/candidates/")
-        ? [`text/candidates/${batchId}`]
-        : [`text/${batchId}`, `.paper30min/parsing/${batchId}`];
-      const targets: string[] = [];
-      for (const directory of directories) {
-        if (manifest.paper.path.toLowerCase().startsWith(directory.toLowerCase() + "/"))
-          throw new Error("解析目录内有已登记的工程论文，不能删除。");
-        try { targets.push(await this.resolve(root, directory)); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      }
-      // Keep the task record until its visible output has been recycled. A failed
-      // second move can be retried without losing the remaining task identity.
-      for (const target of targets) await this.trashFile(target);
-    });
-  }
-
-  private async parsingPath(root: string, batchId: string, relative: string) {
-    if (!/^[a-f0-9]{32}$/.test(batchId)) throw new Error("解析批次 ID 无效。");
-    relativePath(relative);
-    if (relative.split("/").some((part) => part.startsWith(".")) || /\.pdf$/i.test(relative))
-      throw new Error("解析产物路径无效。");
-    // Existing batches keep their original paths, including unfinished runs.
-    try {
-      await this.resolve(root, `text/candidates/${batchId}/run.json`);
-      return `text/candidates/${batchId}/${relative}`;
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    if (relative === "candidate.md") return `text/${batchId}/paper.md`;
-    if (relative.startsWith("images/")) return `text/${batchId}/${relative}`;
-    return `.paper30min/parsing/${batchId}/${relative}`;
-  }
-
-  writeParsingFile(root: string, batchId: string, relative: string, bytes: Uint8Array, signal?: AbortSignal): Promise<string> {
-    return this.serialize(async () => {
-      signal?.throwIfAborted();
-      const target = await this.parsingPath(root, batchId, relative);
-      await this.manifest(root);
-      let parent = await fs.realpath(root);
-      for (const part of target.split("/").slice(0, -1)) {
-        parent = path.join(parent, part);
-        try { await fs.mkdir(parent); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-        if ((await fs.lstat(parent)).isSymbolicLink()) throw new Error("解析目录不能是链接。");
-      }
-      const destination = path.join(root, target);
-      try {
-        await this.resolve(root, target);
-        if (relative !== "run.json") {
-          const previous = await fs.readFile(destination);
-          if (!previous.equals(Buffer.from(bytes))) throw new Error("已有候选产物已变化，不能覆盖；请保留现场并检查。");
-          return target;
-        }
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      const temporary = path.join(parent, `.paper30min-${randomUUID()}.tmp`);
-      try {
-        const handle = await fs.open(temporary, "wx");
-        try { await handle.writeFile(bytes); await handle.sync(); }
-        finally { await handle.close(); }
-        signal?.throwIfAborted();
-        if (relative === "run.json") await fs.rename(temporary, destination);
-        else {
-          try { await fs.link(temporary, destination); }
-          catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST" || !(await fs.readFile(await this.resolve(root, target))).equals(Buffer.from(bytes))) throw error;
-          }
-        }
-      } finally { await fs.rm(temporary, { force: true }); }
-      return target;
     });
   }
 

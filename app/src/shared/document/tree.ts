@@ -137,6 +137,8 @@ const BlockNodeSchema = Type.Union([
     kind: Type.Literal("formula"),
     source: SourceRepresentationSchema,
     text: Type.String(),
+    /** 可选原页裁剪资产（SPEC-pdf-import §6.7）：LaTeX/文本仍是权威，图像只是区域证据。 */
+    asset: Type.Optional(AssetReferenceSchema),
   }, { additionalProperties: false }),
   Type.Object({
     ...blockFields,
@@ -382,10 +384,10 @@ function validateNonTextBlocks(tree: DocumentTree) {
         invalid(`raw block ${block.id} 超过 2 MiB 预算。`);
       validateMarkup(block.html, rawHtmlTags, `raw block ${block.id}`);
     }
-    if (block.kind === "figure" && block.asset) {
+    if ((block.kind === "figure" || block.kind === "formula") && block.asset) {
       const match = /^assets\/([a-f0-9]{64})\.[a-z0-9]+$/.exec(block.asset.path);
       if (!match || match[1] !== block.asset.sha256)
-        invalid(`图片块 ${block.id} 的资产路径与 SHA-256 不一致。`);
+        invalid(`${block.kind === "figure" ? "图片" : "公式"}块 ${block.id} 的资产路径与 SHA-256 不一致。`);
     }
   }
 }
@@ -422,7 +424,7 @@ export function validateDocumentAssets(
   assetHashes: Readonly<Record<string, string>>,
 ) {
   for (const block of tree.blocks) {
-    if (block.kind !== "figure" || !block.asset) continue;
+    if ((block.kind !== "figure" && block.kind !== "formula") || !block.asset) continue;
     if (assetHashes[block.asset.path] !== block.asset.sha256)
       invalid(`图片块 ${block.id} 引用的资产未登记或摘要不一致：${block.asset.path}。`);
   }

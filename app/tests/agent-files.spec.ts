@@ -9,10 +9,7 @@ test("公共工程写入保护基线、取消与所有权", async () => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "paper30min-tool-files-"),
   );
-  const service = new ProjectService(
-    path.join(directory, "config.json"),
-    async () => {},
-  );
+  const service = new ProjectService(path.join(directory, "config.json"));
   try {
     const project = (await service.dispatch({
       type: "create",

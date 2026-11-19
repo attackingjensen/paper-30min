@@ -69,12 +69,12 @@ function unitSnapshot(tree: DocumentTree, unitId: string) {
       return {
         content: sentenceContent(tree, sentenceId),
         sourceAliases: sentence.sourceAliases,
-        atoms: Object.values(tree.atoms)
-          .filter((atom) => atom.unitId === unitId)
-          .sort((a, b) => a.id.localeCompare(b.id))
-          .map(atomContent),
       };
-    }),
+    }).sort((a, b) => canonical(a).localeCompare(canonical(b))),
+    atoms: Object.values(tree.atoms)
+      .filter((atom) => atom.unitId === unitId)
+      .sort((a, b) => canonical(atomContent(a)).localeCompare(canonical(atomContent(b))))
+      .map(atomContent),
   };
 }
 
@@ -248,6 +248,9 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
   const candidate = parseDocumentTree(structuredClone(value));
   const mapping = new Map<string, string>();
   const usedBaseIds = new Set<string>();
+  // 句子 anchor 资格：只有 ID 同一或 alias 唯一匹配产生的对齐可作位置延续的边界
+  // 证据；内容分组／文本投影配对不升级为 anchor，避免保留句配对自举串 ID。
+  const structuralSentencePairs = new Set<string>();
   const kinds: NodeKind[] = ["section", "unit", "sentence", "atom", "block"];
   for (const kind of kinds) {
     const baseIds = new Set(nodes(base, kind).map((node) => node.id));
@@ -255,12 +258,22 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
       if (!baseIds.has(node.id) || usedBaseIds.has(node.id)) continue;
       mapping.set(node.id, node.id);
       usedBaseIds.add(node.id);
+      if (kind === "sentence") structuralSentencePairs.add(node.id);
     }
   }
 
   let progressed = true;
   while (progressed) {
     progressed = false;
+    // 反向映射（base ID → candidate ID）：避免每个父节点全量扫描 mapping。
+    const reverse = new Map<string, string>();
+    for (const [candidateId, baseId] of mapping) reverse.set(baseId, candidateId);
+    // 句子边界证据快照：只含结构性对齐（ID 同一／alias 唯一匹配）；内容分组／
+    // 文本投影配对不升级为 anchor，防止「保留句配对→自举 anchor→被删句按位置
+    // 串 ID」跨轮自举。
+    const sentenceAnchorsAtStart = new Map(
+      [...mapping].filter(([candidateId]) => structuralSentencePairs.has(candidateId)),
+    );
     for (const kind of kinds) {
       const baseNodes = nodes(base, kind).filter((node) => !usedBaseIds.has(node.id));
       const candidateNodes = nodes(candidate, kind).filter((node) => !mapping.has(node.id));
@@ -281,7 +294,8 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
           const reverseMatches = candidateNodes.filter((other) =>
             (other.sourceAliases ?? []).some((alias) =>
               (matches[0].sourceAliases ?? []).includes(alias)));
-          if (reverseMatches.length === 1) tryMap(matches[0], candidateNode);
+          if (reverseMatches.length === 1 && tryMap(matches[0], candidateNode) && kind === "sentence")
+            structuralSentencePairs.add(candidateNode.id);
         }
       }
 
@@ -326,8 +340,156 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
         if (baseContextKnown && candidateContextKnown) tryMap(group.base[0], group.candidate[0]);
       }
 
+      // 已对齐 unit 内的句子延续稳定 ID（SPEC-pdf-import §8.3）：确定性重转换会为
+      // 句子重新分配 UUID，延续使来源修正成为 changed 而非删除＋新增。边界证据只认
+      // 句子处理开始前已存在的对齐（ID 同一或 alias 唯一匹配）；本轮文本配对与内容
+      // 分组产生的对齐不升级为 anchor，避免「保留句配对→自举 anchor→被删句按位置
+      // 串 ID」。无 anchor 时仅整 unit 单句对单句延续；拼接／划分／无证据的等长重排
+      // 不延续，交由 tombstone 规则处理。
+      if (kind === "sentence") {
+        const anchored = (baseId: string, candidateId: string) =>
+          sentenceAnchorsAtStart.get(candidateId) === baseId;
+        const sentenceProjection = (tree: DocumentTree, sentenceId: string) =>
+          tree.sentences[sentenceId].content
+            .map((part) => part.kind === "text" ? part.text : tree.atoms[part.atomId].text)
+            .join("");
+        const boundaryKept = (
+          baseOrder: string[],
+          candidateOrder: string[],
+          baseStart: number,
+          baseEnd: number,
+          candidateStart: number,
+          candidateEnd: number,
+        ) => {
+          const leftOk = baseStart === 0
+            ? candidateStart === 0
+            : candidateStart > 0 && anchored(baseOrder[baseStart - 1], candidateOrder[candidateStart - 1]);
+          const rightOk = baseEnd === baseOrder.length
+            ? candidateEnd === candidateOrder.length
+            : candidateEnd < candidateOrder.length && anchored(baseOrder[baseEnd], candidateOrder[candidateEnd]);
+          return leftOk && rightOk;
+        };
+        // 边界重组检测：候选句投影等于多个 base 句投影拼接（合并），或多个候选句
+        // 投影拼接等于一个 base 句投影（拆分）。出现即说明该段不是 1:1 延续。
+        const boundaryRestructured = (baseIds: string[], candidateIds: string[]) => {
+          const baseTexts = baseIds.map((id) => sentenceProjection(base, id));
+          const candidateTexts = candidateIds.map((id) => sentenceProjection(candidate, id));
+          for (const text of candidateTexts) {
+            for (let start = 0; start < baseTexts.length; start++) {
+              let joined = "";
+              for (let end = start; end < baseTexts.length; end++) {
+                joined += baseTexts[end];
+                if (joined === text && end > start) return true;
+                if (joined.length > text.length) break;
+              }
+            }
+          }
+          for (const text of baseTexts) {
+            for (let start = 0; start < candidateTexts.length; start++) {
+              let joined = "";
+              for (let end = start; end < candidateTexts.length; end++) {
+                joined += candidateTexts[end];
+                if (joined === text && end > start) return true;
+                if (joined.length > text.length) break;
+              }
+            }
+          }
+          return false;
+        };
+        for (const unit of nodes(base, "unit")) {
+          const candidateUnitId = reverse.get(unit.id);
+          if (!candidateUnitId) continue;
+          const baseOrder = orderedIds(base, "sentence", unit.id);
+          const candidateOrder = orderedIds(candidate, "sentence", candidateUnitId);
+          if (!baseOrder.length || !candidateOrder.length) continue;
+          const pair = (baseId: string, candidateId: string) => {
+            if (usedBaseIds.has(baseId) || mapping.has(candidateId)) return;
+            tryMap(base.sentences[baseId], candidate.sentences[candidateId]);
+          };
+          // anchor 只认句子处理开始前已对齐的句子（见 sentenceAnchorsAtStart）。
+          const anchoredAtStart = (baseId: string, candidateId: string) =>
+            sentenceAnchorsAtStart.get(candidateId) === baseId;
+          // 先按文本证据配对：候选句投影恰等于唯一 base 句投影且对应唯一才延续。
+          // 这一步不依赖数量相等，删除＋插入同数量时保留句延续、被删句 tombstone。
+          const baseByProjection = new Map<string, string[]>();
+          for (const baseId of baseOrder) {
+            if (usedBaseIds.has(baseId)) continue;
+            const key = sentenceProjection(base, baseId);
+            const group = baseByProjection.get(key) ?? [];
+            group.push(baseId);
+            baseByProjection.set(key, group);
+          }
+          const matchesByBase = new Map<string, number>();
+          const candidateMatches: Array<{ baseId: string; candidateId: string }> = [];
+          for (const candidateId of candidateOrder) {
+            if (mapping.has(candidateId)) continue;
+            const group = baseByProjection.get(sentenceProjection(candidate, candidateId));
+            if (!group || group.length !== 1) continue;
+            const baseId = group[0];
+            matchesByBase.set(baseId, (matchesByBase.get(baseId) ?? 0) + 1);
+            candidateMatches.push({ baseId, candidateId });
+          }
+          for (const { baseId, candidateId } of candidateMatches)
+            if (matchesByBase.get(baseId) === 1) pair(baseId, candidateId);
+          // 位置延续只认结构性 anchor（ID 同一／alias 唯一）作边界证据：相邻 anchor
+          // 之间数量一致的段按位置 1:1，段内不得出现拼接／划分。无 anchor 时仅整 unit
+          // 单句对单句延续（数量本身即 1:1 证据）；多句等长重排不延续，交由 tombstone。
+          const hasAnchor = baseOrder.some((baseId, index) => anchoredAtStart(baseId, candidateOrder[index]));
+          if (!hasAnchor) {
+            if (
+              baseOrder.length === 1 && candidateOrder.length === 1 &&
+              !usedBaseIds.has(baseOrder[0]) && !mapping.has(candidateOrder[0]) &&
+              !boundaryRestructured(baseOrder, candidateOrder)
+            )
+              pair(baseOrder[0], candidateOrder[0]);
+            continue;
+          }
+          let baseStart = 0;
+          let candidateStart = 0;
+          while (baseStart < baseOrder.length || candidateStart < candidateOrder.length) {
+            if (
+              baseStart < baseOrder.length && candidateStart < candidateOrder.length &&
+              anchoredAtStart(baseOrder[baseStart], candidateOrder[candidateStart])
+            ) {
+              baseStart += 1;
+              candidateStart += 1;
+              continue;
+            }
+            let baseEnd = baseStart;
+            while (baseEnd < baseOrder.length &&
+              !(candidateStart < candidateOrder.length && anchoredAtStart(baseOrder[baseEnd], candidateOrder[candidateStart])))
+              baseEnd += 1;
+            let candidateEnd = candidateStart;
+            while (candidateEnd < candidateOrder.length &&
+              !(baseEnd < baseOrder.length && anchoredAtStart(baseOrder[baseEnd], candidateOrder[candidateEnd])))
+              candidateEnd += 1;
+            const baseCount = baseEnd - baseStart;
+            const candidateCount = candidateEnd - candidateStart;
+            if (
+              baseCount > 0 && baseCount === candidateCount &&
+              boundaryKept(baseOrder, candidateOrder, baseStart, baseEnd, candidateStart, candidateEnd) &&
+              !boundaryRestructured(
+                baseOrder.slice(baseStart, baseEnd),
+                candidateOrder.slice(candidateStart, candidateEnd),
+              )
+            ) {
+              for (let offset = 0; offset < baseCount; offset++)
+                pair(baseOrder[baseStart + offset], candidateOrder[candidateStart + offset]);
+            }
+            // 无边界保持证据的段不延续；推进到下一段，避免死循环。
+            if (baseEnd === baseStart && candidateEnd === candidateStart) {
+              baseStart += 1;
+              candidateStart += 1;
+            } else {
+              baseStart = baseEnd;
+              candidateStart = candidateEnd;
+            }
+          }
+        }
+      }
+
       for (const baseParent of nodes(base, kind === "section" ? "section" : kind === "unit" || kind === "block" ? "section" : "unit")) {
-        const candidateParentId = [...mapping.entries()].find(([, baseId]) => baseId === baseParent.id)?.[0];
+        const candidateParentId = reverse.get(baseParent.id);
         if (!candidateParentId) continue;
         const baseOrder = orderedIds(base, kind, baseParent.id);
         const candidateOrder = orderedIds(candidate, kind, candidateParentId);

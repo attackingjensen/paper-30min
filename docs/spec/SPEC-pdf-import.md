@@ -318,7 +318,8 @@ export type VerificationValidity =
 | 上传 PDF | 50 MiB |
 | PDF 页数 | 1–1000 页 |
 | 任务状态响应 | 1 MiB |
-| 受管 JSONL 下载 | 256 MiB |
+| 受管 JSONL 下载与重建 | 256 MiB |
+| facts.json | 64 MiB |
 | 单页解析块 | 10,000 |
 | 单个解析资产 | 32 MiB |
 | 单解析快照资产合计 | 256 MiB |

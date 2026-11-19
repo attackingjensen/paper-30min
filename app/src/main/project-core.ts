@@ -849,6 +849,12 @@ async function serialized<T>(root: string, operation: () => Promise<T>): Promise
   }
 }
 
+/** 工程级写锁：与 commitRevision 等提交路径共用同一 per-root 串行队列。
+ * 侧车等受管旁路写入必须经此与 current 推进互斥；root 需为规范路径。 */
+export function withProjectWriteLock<T>(root: string, operation: () => Promise<T>): Promise<T> {
+  return serialized(root, operation);
+}
+
 async function writableParent(parent: string) {
   try {
     if (!path.isAbsolute(parent) || !(await fs.stat(parent)).isDirectory()) throw new Error();

@@ -52,7 +52,7 @@ const TombstoneSchema = Type.Object({
 const TombstonesSchema = Type.Array(TombstoneSchema);
 
 export type DocumentChangeset = Type.Static<typeof DocumentChangesetSchema>;
-type NodeType = DocumentChangeset["changes"][number]["nodeType"];
+export type NodeType = DocumentChangeset["changes"][number]["nodeType"];
 type ChangeStatus = DocumentChangeset["changes"][number]["status"];
 export type Tombstone = Type.Static<typeof TombstoneSchema>;
 type DocumentNode = { id: string } & Record<string, unknown>;
@@ -254,6 +254,26 @@ function nodeExcerpt(tree: DocumentTree, nodeType: NodeType, nodeId: string) {
 
 function excerpt(text: string) {
   return Array.from(text).slice(0, 500).join("");
+}
+
+/** 节点内容指纹（与 changeset changed 判定同一口径）：排除结构引用，只含内容字段。 */
+export function documentNodeContentFingerprint(
+  tree: DocumentTree,
+  nodeType: NodeType,
+  nodeId: string,
+): string {
+  const node = nodes(tree, nodeType).find((candidate) => candidate.id === nodeId)
+    ?? invalid(`节点不存在：${nodeType}/${nodeId}。`);
+  return contentFingerprint(node, nodeType);
+}
+
+/** 节点可读文本摘录（上限 500 码点），供核验 quote 与 tombstone 共用口径。 */
+export function documentNodeExcerpt(
+  tree: DocumentTree,
+  nodeType: NodeType,
+  nodeId: string,
+): string {
+  return excerpt(nodeExcerpt(tree, nodeType, nodeId));
 }
 
 export function appendRemovedTombstones(
