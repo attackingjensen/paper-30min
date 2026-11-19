@@ -12,12 +12,14 @@ import {
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type {
   ArxivImportCommandResult,
   ArxivPdfFallbackCommandResult,
   ArxivPdfFallbackImportCommandResult,
+  PdfSourceSnapshotRecord,
   ProjectCoreSnapshot,
 } from "../src/shared/contracts";
 import type { DocumentTree } from "../src/shared/document/tree";
@@ -394,8 +396,57 @@ test("arxiv-pdf-fallback 真实 Electron 拒绝上传确认：零 POST，PDF 快
   const after = await open(failed.root);
   expect(after.manifest.paper.currentRevision).toBeNull();
   // PDF 快照已发布（下载与上传是不同阶段），可离线重试而不重复下载。
+  const pdfBytes = await fs.readFile(SAMPLE);
+  const expectedSha256 = createHash("sha256").update(pdfBytes).digest("hex");
   const sources = await fs.readdir(path.join(failed.root, "sources"));
   expect(sources.length).toBeGreaterThan(0);
+  const snapshots = await Promise.all(sources.map(async (sourceSnapshotId) =>
+    JSON.parse(
+      await fs.readFile(
+        path.join(failed.root, "sources", sourceSnapshotId, "snapshot.json"),
+        "utf8",
+      ),
+    ) as PdfSourceSnapshotRecord
+  ));
+  const pdfSnapshots = snapshots.filter((snapshot) => snapshot.kind === "pdf");
+  expect(pdfSnapshots).toHaveLength(1);
+  const [pdfSnapshot] = pdfSnapshots;
+  const { sourceSnapshotId } = pdfSnapshot;
+  expect(sources).toContain(sourceSnapshotId);
+  const snapshotPath = path.join(failed.root, pdfSnapshot.path);
+  expect(pdfSnapshot).toMatchObject({
+    sourceSnapshotId,
+    path: `sources/${sourceSnapshotId}`,
+    kind: "pdf",
+    sha256: expectedSha256,
+    arxiv: { baseId: ID, version: 1 },
+  });
+  expect(pdfSnapshot.files).toEqual([{
+    path: "paper.pdf",
+    sha256: expectedSha256,
+    size: pdfBytes.length,
+    mime: "application/pdf",
+  }]);
+  expect((await fs.readFile(path.join(snapshotPath, "paper.pdf"))).equals(pdfBytes)).toBe(true);
+  expect(requests.filter((url) => url === PDF_PATH)).toHaveLength(1);
+
+  const requestsBeforeRetry = requests.length;
+  await stopServers();
+  const retry = invoke<ArxivPdfFallbackImportCommandResult>({
+    type: "coreArxivPdfFallbackImport",
+    root: failed.root,
+    request: handoff.request,
+    operationId: nextOperation(),
+    baseUrl,
+  });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "取消" }).click();
+  const retryResult = await retry;
+  expect(retryResult.outcome).toBe("cancelled");
+  expect(requests).toHaveLength(requestsBeforeRetry);
+  expect(requests.filter((url) => url === PDF_PATH)).toHaveLength(1);
+  expect(posts).toBe(0);
+  expect((await open(failed.root)).manifest.paper.currentRevision).toBeNull();
 });
 
 async function listFiles(root: string): Promise<string[]> {

@@ -588,6 +588,10 @@ const UNSAFE_BLOCK_TAGS: Record<string, true> = {
   script: true, style: true, noscript: true, iframe: true, object: true,
   embed: true, template: true, link: true, meta: true, base: true,
 };
+const UNSAFE_BLOCK_PATTERN = new RegExp(
+  `<\\s*(?:${Object.keys(UNSAFE_BLOCK_TAGS).join("|")})(?=\\s|/?>)`,
+  "i",
+);
 /** 资源元素识别：仅 img/image 触发 HTML 本地化路径；其余正文逐字保留。 */
 const RESOURCE_ELEMENT = /<\s*(?:img|image)\b/i;
 /** markdown 图片引用：正文可能不含 HTML 但含 ![alt](url) 资源。 */
@@ -650,6 +654,8 @@ async function localizeBlockResources(
   context: SanitizeContext,
   isTable: boolean,
 ): Promise<string> {
+  if (!isTable && UNSAFE_BLOCK_PATTERN.test(content))
+    fatal("parse-resource-url-rejected", "fetch");
   const hasResourceElement = RESOURCE_ELEMENT.test(content);
   const markdownImages = [...content.matchAll(MARKDOWN_IMAGE)];
   if (!hasResourceElement && markdownImages.length === 0) return content;

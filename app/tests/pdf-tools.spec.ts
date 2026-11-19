@@ -65,6 +65,7 @@ test("旋转页按阅读器的未旋转坐标返回尺寸和图像", async () =>
     const image = PNG.sync.read(
       Buffer.from((result.content[1] as any).data, "base64"),
     );
+    expect(image).toMatchObject({ width: 450, height: 300 });
     let ink = 0;
     for (let i = 0; i < image.data.length; i += 4)
       if (image.data[i] < 128) ink++;
