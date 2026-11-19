@@ -84,15 +84,30 @@ const flag = (rule, f, text) => {
 const isTest = (f) => /\.(test|spec)\.|_test\.|test_/.test(f);
 const isConstraints = (f) => /CONSTRAINTS\.md$/.test(f);
 
+// 登记要素验证（CONSTRAINTS 失败与例外策略）：例外行须有非空 owner 与未来且 ≤90 天的
+// 到期日（| ID | Rule | Path | Reason | Owner | Expires |）。要素缺失、过期或超期仍拦截。
+const exceptionRegistered = (text) => {
+  const cells = text.split("|").map((cell) => cell.trim());
+  if (cells.length < 7) return false;
+  const owner = cells[5];
+  const expires = cells[6];
+  if (!owner || !/^\d{4}-\d{2}-\d{2}$/.test(expires)) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  const days = (Date.parse(expires) - Date.parse(today)) / 86_400_000;
+  return expires > today && days <= 90;
+};
+
 const SUPPRESSIONS = /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|biome-ignore|# *noqa|# *type: *ignore|istanbul ignore|nosemgrep|gitleaks:allow|Stryker disable/;
 const STUBS = /throw new (Error|NotImplemented).*[Nn]ot implemented|catch\s*\(\w*\)\s*\{\s*\}|catch\s*\{\s*\}|\bTODO\b|\bpass\s*# *stub/;
 const SKIPS = /\.(skip|todo)\b|\bxit\(|\bxdescribe\(|@pytest\.mark\.skip|t\.Skip\(/;
 
 for (const { file, text } of added) {
-  // CONSTRAINTS.md names the patterns as documentation. Only its exception rows are line-checked;
-  // the file's initial, reviewed creation is the bootstrap and later exception additions still flag.
+  // CONSTRAINTS.md names the patterns as documentation. Only its exception rows are line-checked:
+  // the file's initial, reviewed creation is the bootstrap; later additions pass only when the
+  // registration elements validate (owner + future expiry within 90 days), otherwise they flag.
   if (isConstraints(file)) {
-    if (!addedFiles.has(file) && /^\| *(W|E)\d+ *\|/.test(text)) flag("new-exception", file, text);
+    if (!addedFiles.has(file) && /^\| *(W|E)\d+ *\|/.test(text) && !exceptionRegistered(text))
+      flag("new-exception", file, text);
     continue;
   }
   if (!addedFiles.has(file) && file === ".constraintsignore"

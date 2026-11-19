@@ -1,11 +1,41 @@
 #!/usr/bin/env node
 // Exit 0: below threshold; 1: blocking findings; 2: unusable report or invocation.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const [tool, file, ...extra] = process.argv.slice(2);
 if (!["semgrep", "axe", "osv", "depcruise"].includes(tool) || !file || extra.length) {
   console.error("quality-gate: usage: node quality-gate.mjs <semgrep|axe|osv|depcruise> <report.json>");
   process.exit(2);
+}
+
+// CONSTRAINTS Exceptions 表的 OSV 执行镜像：只按公告+包+版本精确匹配，
+// 过期例外自动失效；配置损坏按检查不可用处理（exit 2），不静默放行。
+// PAPER30MIN_OSV_EXCEPTIONS 仅供门禁测试指向 fixture 配置。
+function loadOsvExceptions() {
+  const override = process.env.PAPER30MIN_OSV_EXCEPTIONS;
+  const path = override ?? fileURLToPath(new URL("./osv-exceptions.json", import.meta.url));
+  if (!existsSync(path)) {
+    if (override) throw new Error("PAPER30MIN_OSV_EXCEPTIONS points to a missing file");
+    return [];
+  }
+  let value;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error("osv exceptions config unreadable");
+  }
+  if (!Array.isArray(value)) throw new Error("osv exceptions config must be an array");
+  for (const entry of value) {
+    if (!entry || typeof entry.id !== "string" || typeof entry.advisory !== "string"
+        || typeof entry.package !== "string" || typeof entry.version !== "string"
+        || typeof entry.owner !== "string" || typeof entry.reason !== "string"
+        || typeof entry.expires !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(entry.expires)
+        || Number.isNaN(Date.parse(entry.expires))) {
+      throw new Error("osv exceptions config entry invalid");
+    }
+  }
+  return value;
 }
 
 try {
@@ -53,11 +83,30 @@ try {
     levels = vulnerabilities.map(({ vulnerability }) => vulnerability?.database_specific?.severity);
     allowed = ["LOW", "MODERATE", "HIGH", "CRITICAL"];
     blocking = ["HIGH", "CRITICAL"];
+    const exceptions = loadOsvExceptions();
+    const today = new Date().toISOString().slice(0, 10);
+    for (const entry of exceptions)
+      if (entry.expires <= today)
+        console.error(`osv: exception ${entry.id} expired on ${entry.expires}; its findings block again`);
+    const active = exceptions.filter(entry => entry.expires > today);
+    const isExcepted = ({ vulnerability, entry }) => active.some(exception =>
+      exception.advisory === vulnerability.id
+      && exception.package === entry.package.name
+      && exception.version === (entry.package.version ?? "unknown"));
+    const isBlocking = ({ vulnerability }) =>
+      blocking.includes(vulnerability?.database_specific?.severity);
     blockingFindings = vulnerabilities
-      .filter(({ vulnerability }) => blocking.includes(vulnerability?.database_specific?.severity))
+      .filter(finding => isBlocking(finding) && !isExcepted(finding))
       .map(({ vulnerability, entry, source }) =>
         `${entry.package.name}@${entry.package.version ?? "unknown"} ${vulnerability.id} (${source})`);
+    const excepted = vulnerabilities.filter(finding => isBlocking(finding) && isExcepted(finding));
     completionDetail = `osv: ${packages.length} packages scanned`;
+    if (excepted.length) {
+      completionDetail += `\nosv: ${excepted.length} excepted: ` + excepted
+        .map(({ vulnerability, entry }) =>
+          `${entry.package.name}@${entry.package.version ?? "unknown"} ${vulnerability.id}`)
+        .join("; ");
+    }
   } else {
     const summary = report?.summary;
     const extensions = summary?.environment?.extensionsFound;
@@ -82,7 +131,9 @@ try {
   if (levels.some(level => !allowed.includes(level))) {
     throw new Error("Unknown severity");
   }
-  const count = levels.filter(level => blocking.includes(level)).length;
+  const count = tool === "osv"
+    ? blockingFindings.length
+    : levels.filter(level => blocking.includes(level)).length;
   console.log(`${tool}: ${levels.length} findings, ${count} blocking`);
   if (completionDetail) console.log(completionDetail);
   for (const finding of blockingFindings) console.error(`  ${finding}`);

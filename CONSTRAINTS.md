@@ -1,6 +1,6 @@
 # Constraints
 
-Last reviewed: 2026-11-17 by @attackingjensen
+Last reviewed: 2026-11-19 by @attackingjensen
 
 本文件是 Paper30Min 质量线的唯一权威来源。除特别注明外，命令均在 `app/` 中运行。脚本只是可复现封装；修改本文件必须进入 code review，不得为了让当前变更通过而降低标准。
 
@@ -21,6 +21,7 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 - 测量型指标回退先警告；连续 **3 次**回退必须转为阻断或经 review 重设基线。选择 3 次是为了过滤单次环境波动，同时防止“下次再处理”无限延续。
 - 扫描器不可启动、报告不完整、未知严重度或解析器不受支持均视为检查不可用并阻断，不能按零 finding 通过。
 - 例外必须有 owner 和到期日，默认 **90 天**，足以安排修复又能避免永久豁免；到期前必须修复、移除或重新评审，不得静默续期。
+- 例外登记执行：新增 W/E 行由 floor-guard 验证登记要素（非空 owner、未来且不超过 90 天的到期日），要素缺失仍阻断；OSV 例外另由 `app/scripts/osv-exceptions.json` 按公告／包／版本精确匹配执行，被豁免 finding 在扫描输出中保持可见，过期例外自动恢复阻断。
 
 ## Enforced with numbers
 
