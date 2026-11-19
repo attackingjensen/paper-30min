@@ -9,6 +9,7 @@ import {
   openProject,
   publishSourceSnapshot,
   readRevision,
+  readRevisionDocument,
   readSourceSnapshot,
 } from "../src/main/project-core";
 import { testDocumentTree, testRevisionFiles } from "./fixtures/document-tree";
@@ -301,7 +302,7 @@ test("project-core 读取端拒绝超过预算的受管 JSON", async () => {
     .rejects.toThrow(/1 MiB|预算/);
 });
 
-test("project-core 同一 revisionId 在候选提交失败后可重试且内容不被覆盖", async () => {
+test("project-core 同一 revisionId 的残留候选拒绝不同正文或元数据后仍可原样重试", async () => {
   const created = await createProject({ parent: sandbox, name: "候选重试" });
   const source = await publishSourceSnapshot({
     root: created.root,
@@ -323,8 +324,37 @@ test("project-core 同一 revisionId 在候选提交失败后可重试且内容�
   })).rejects.toThrow("injected retry failure");
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 
+  const candidate = await readRevision(created.root, revisionId);
+  const documentFile = path.join(created.root, candidate.path, "document.json");
+  const metadataFile = path.join(
+    created.root,
+    ".paper30min",
+    "revisions",
+    revisionId,
+    "revision.json",
+  );
+  const originalDocument = await fs.readFile(documentFile);
+  const originalMetadata = await fs.readFile(metadataFile);
+
+  await expect(commitRevision({
+    ...input,
+    files: testRevisionFiles(created.manifest.paper.id, "篡改候选"),
+  })).rejects.toThrow(/受管内容摘要不符|完整性校验失败/);
+  await expect(commitRevision({
+    ...input,
+    metadata: { origin: "tampered" },
+  })).rejects.toThrow(/相同 revisionId|残留候选|拒绝覆盖/);
+  expect(await fs.readFile(documentFile)).toEqual(originalDocument);
+  expect(await fs.readFile(metadataFile)).toEqual(originalMetadata);
+  expect(await readRevision(created.root, revisionId)).toEqual(candidate);
+  expect(Object.values((await readRevisionDocument(created.root, revisionId, "document")).sections)
+    .map((section) => section.title)).toEqual(["可重试候选"]);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
+
   await expect(commitRevision(input)).resolves.toMatchObject({ revisionId });
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(revisionId);
+  expect(Object.values((await readRevisionDocument(created.root, revisionId, "document")).sections)
+    .map((section) => section.title)).toEqual(["可重试候选"]);
 });
 
 test("project-core completePublishedRevision 核验完整候选后只推进 current", async () => {

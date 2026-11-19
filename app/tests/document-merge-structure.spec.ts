@@ -147,7 +147,11 @@ test("document-core 对齐使用一致 source alias，并在来源更新时保�
 
   expect(result.conflicts).toEqual([]);
   expect(result.document.units[candidateUnitId]).toBeUndefined();
+  expect(projectSentenceText(result.document, selectionIds.sentence))
+    .toBe("Dr. 3.14 source edit");
   expect(projectSentenceText(result.document, selectionIds.thirdSentence)).toBe("local edit");
+  expect(projectSentenceText(result.sourceBase, selectionIds.sentence))
+    .toBe("Dr. 3.14 source edit");
   expect(projectSentenceText(result.sourceBase, selectionIds.thirdSentence)).toBe("Next unit.");
   expect(result.sourceBase.units[candidateUnitId]).toBeUndefined();
 });

@@ -110,7 +110,7 @@ test("document-core 提交生成绑定 revision 的真实 changeset，重开可�
   });
 });
 
-test("document-core 显式 changeset 与 revision 或候选树不一致时拒绝发布", async () => {
+test("document-core 显式 changeset 的 revisionId 不一致时拒绝发布", async () => {
   const { created, source } = await createdProject();
   const paperId = created.manifest.paper.id;
 
@@ -128,6 +128,35 @@ test("document-core 显式 changeset 与 revision 或候选树不一致时拒绝
       })),
     },
   })).rejects.toThrow(/changeset|revisionId|变化/);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
+});
+
+test("document-core revisionId 与 baseRevision 匹配但 changeset 内容不符时拒绝发布", async () => {
+  const { created, source } = await createdProject();
+  const paperId = created.manifest.paper.id;
+  const revisionId = randomUUID();
+
+  await expect(commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    revisionId,
+    files: {
+      ...testRevisionFiles(paperId, "错误变化集"),
+      "changeset.json": Buffer.from(JSON.stringify({
+        changesetFormatVersion: 1,
+        baseRevision: null,
+        revisionId,
+        changes: [
+          { nodeType: "section", nodeId: testDocumentIds.section, status: "retained" },
+          { nodeType: "unit", nodeId: testDocumentIds.unit, status: "added" },
+          { nodeType: "sentence", nodeId: testDocumentIds.sentence, status: "added" },
+          { nodeType: "atom", nodeId: testDocumentIds.atom, status: "added" },
+          { nodeType: "block", nodeId: testDocumentIds.block, status: "added" },
+        ],
+      })),
+    },
+  })).rejects.toThrow("changeset 与 baseRevision、revisionId 或候选文档树不一致，拒绝发布。");
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 

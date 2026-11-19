@@ -95,14 +95,15 @@ test("document-core quote 被篡改或偏移越界时拒绝解析", () => {
   }])).toThrow(/偏移|边界/);
 });
 
-test("document-core 跨单元范围缺句或顺序错误时拒绝，不用首尾点猜测中间内容", () => {
+test("document-core 跨单元范围缺句时拒绝，不用首尾点猜测中间内容", () => {
   const tree = testSelectionTree(randomUUID());
+  const firstLength = 4 + 1 + " in 论文 remains one sentence.".length;
   expect(() => createRangeAnchor(tree, [
     {
       unitId: selectionIds.unit,
       sentenceId: selectionIds.sentence,
       start: 0,
-      end: 5,
+      end: firstLength,
     },
     {
       unitId: selectionIds.secondUnit,
@@ -110,7 +111,43 @@ test("document-core 跨单元范围缺句或顺序错误时拒绝，不用首尾
       start: 0,
       end: 4,
     },
-  ])).toThrow(/连续|顺序|范围/);
+  ])).toThrow(/跨句或跨单元选区不连续/);
+});
+
+test("document-core ranges 逆序时拒绝", () => {
+  const tree = testSelectionTree(randomUUID());
+  expect(() => createRangeAnchor(tree, [
+    {
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.secondSentence,
+      start: 0,
+      end: 6,
+    },
+    {
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.sentence,
+      start: 0,
+      end: 5,
+    },
+  ])).toThrow(/多个选区必须按原文顺序排列/);
+});
+
+test("document-core 同一句出现多个范围时拒绝", () => {
+  const tree = testSelectionTree(randomUUID());
+  expect(() => createRangeAnchor(tree, [
+    {
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.sentence,
+      start: 0,
+      end: 2,
+    },
+    {
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.sentence,
+      start: 4,
+      end: 6,
+    },
+  ])).toThrow(/多个选区必须按原文顺序排列，且每句至多一个范围/);
 });
 
 test("document-core 锚点校验父子关系，不按重复 quote 自动重锚", () => {
