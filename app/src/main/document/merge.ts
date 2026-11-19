@@ -37,7 +37,8 @@ function assetPaths(trees: DocumentTree[]) {
   const paths = new Set<string>();
   for (const tree of trees) {
     for (const block of tree.blocks) {
-      if (block.kind === "figure" && block.asset) paths.add(block.asset.path);
+      if ((block.kind === "figure" || block.kind === "formula") && block.asset)
+        paths.add(block.asset.path);
     }
   }
   return [...paths].sort();
