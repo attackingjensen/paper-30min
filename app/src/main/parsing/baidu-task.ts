@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { renameManaged } from "../managed-rename.js";
 import { fetch, FormData, type Dispatcher } from "undici";
 import {
   parseImportDiagnostic,
@@ -308,7 +309,7 @@ export async function saveTask(root: string, task: PdfParseTaskRecord) {
     } finally {
       await handle.close();
     }
-    await fs.rename(temporary, destination);
+    await renameManaged(temporary, destination);
   } finally {
     await fs.rm(temporary, { force: true });
   }

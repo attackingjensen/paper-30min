@@ -4,6 +4,7 @@ import { createReadStream, createWriteStream, constants } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { renameManaged } from "./managed-rename.js";
 import type {
   Command,
   CoreCommand,
@@ -123,7 +124,7 @@ async function atomicJson(file: string, value: unknown, signal?: AbortSignal) {
       await handle.sync();
     } finally { await handle.close(); }
     signal?.throwIfAborted();
-    await fs.rename(temporary, file);
+    await renameManaged(temporary, file);
   } finally {
     await fs.rm(temporary, { force: true });
   }
@@ -575,7 +576,7 @@ export class ProjectService {
       // Recheck the path after staging; ordinary external edits are detected before replacement.
       if (current) await this.resolve(root, relative);
       signal?.throwIfAborted();
-      if (current) await fs.rename(temporary, file);
+      if (current) await renameManaged(temporary, file);
       else {
         try {
           await fs.link(temporary, file);

@@ -2,6 +2,7 @@ import { safeStorage } from "electron";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { renameManaged } from "./managed-rename.js";
 import {
   defaultParsingSettings,
   type ParsingSettings,
@@ -98,7 +99,7 @@ export class ParsingSettingsStore {
         ),
         { flag: "wx" },
       );
-      await fs.rename(temporary, this.file);
+      await renameManaged(temporary, this.file);
     } finally {
       await fs.rm(temporary, { force: true });
     }

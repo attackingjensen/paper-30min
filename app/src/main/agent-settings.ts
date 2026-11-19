@@ -2,6 +2,7 @@ import { safeStorage } from "electron";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { renameManaged } from "./managed-rename.js";
 import {
   defaultAgentSettings,
   thinkingLevels,
@@ -307,7 +308,7 @@ export class AgentSettingsStore {
       await fs.writeFile(temporary, JSON.stringify(value, null, 2), {
         flag: "wx",
       });
-      await fs.rename(temporary, this.file);
+      await renameManaged(temporary, this.file);
     } finally {
       await fs.rm(temporary, { force: true });
     }
