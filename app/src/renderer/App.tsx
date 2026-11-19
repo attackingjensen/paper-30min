@@ -107,16 +107,25 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
-  const [uploadConfirm, setUploadConfirm] = useState<PdfUploadConfirmation | null>(null);
+  const [uploadConfirms, setUploadConfirms] = useState<PdfUploadConfirmation[]>([]);
   useEffect(() =>
-    desktop.watchPdfUploadConfirm((confirmation) => setUploadConfirm(confirmation)),
+    desktop.watchPdfUploadConfirm((confirmation) =>
+      // 按 confirmationId 排队，不覆盖并发请求；重复投递去重。
+      setUploadConfirms((queue) =>
+        queue.some((entry) => entry.confirmationId === confirmation.confirmationId)
+          ? queue
+          : [...queue, confirmation],
+      )),
   []);
+  const uploadConfirm = uploadConfirms[0] ?? null;
   const replyUpload = (confirmed: boolean) => {
     if (!uploadConfirm) return;
-    const operationId = uploadConfirm.operationId;
-    setUploadConfirm(null);
+    const { operationId, confirmationId } = uploadConfirm;
+    setUploadConfirms((queue) =>
+      queue.filter((entry) => entry.confirmationId !== confirmationId),
+    );
     void desktop
-      .replyPdfUploadConfirm({ operationId, confirmed })
+      .replyPdfUploadConfirm({ operationId, confirmationId, confirmed })
       .catch((e) => setError((e as Error).message));
   };
   const [content, setContent] = useState<string | null>(null);

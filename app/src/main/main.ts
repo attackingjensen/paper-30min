@@ -105,6 +105,21 @@ async function start() {
     [path.join(app.getPath("userData"), "preferences.json")],
     { serviceName: "Paper30Min Project" },
   );
+  /** 未决上传确认：confirmationId → 请求。renderer 重载／窗口关闭时按拒绝应答
+   * 全部未决项，避免 worker 等待确认永久挂起。 */
+  const pendingUploadConfirms = new Map<string, { operationId: string }>();
+  const rejectUploadConfirm = (confirmationId: string) => {
+    const entry = pendingUploadConfirms.get(confirmationId);
+    if (!entry) return;
+    pendingUploadConfirms.delete(confirmationId);
+    worker.postMessage({
+      pdfUploadConfirmReply: {
+        operationId: entry.operationId,
+        confirmationId,
+        confirmed: false,
+      },
+    });
+  };
   const ready = new Promise<void>((resolve, reject) => {
     const deadline = setTimeout(
       () => reject(new Error("工程进程启动超时。")),
@@ -133,9 +148,16 @@ async function start() {
       return;
     }
     if (message.pdfUploadConfirm) {
+      const confirmation = message.pdfUploadConfirm as {
+        operationId: string;
+        confirmationId: string;
+      };
+      pendingUploadConfirms.set(confirmation.confirmationId, {
+        operationId: confirmation.operationId,
+      });
       if (window && !window.isDestroyed())
         window.webContents.send("pdf:uploadConfirm", message.pdfUploadConfirm);
-      else worker.postMessage({ pdfUploadConfirmReply: { operationId: message.pdfUploadConfirm.operationId, confirmed: false } });
+      else rejectUploadConfirm(confirmation.confirmationId);
       return;
     }
     const p = pending.get(message.id);
@@ -220,6 +242,7 @@ async function start() {
     corePdfResume: true,
     corePdfReparse: true,
     corePdfResumeReparse: true,
+    coreArxivPdfFallbackImport: true,
   };
   ipcMain.handle("project:command", async (event, command: Command) => {
     trusted(event);
@@ -235,8 +258,8 @@ async function start() {
           endpoint: config.endpoint,
           model: "PaddleOCR-VL-1.6",
           apiKey: config.apiKey,
-          proxy,
-          proxyUrl,
+          // custom 代理必须携带 proxyUrl；其余模式不携带（可辨识联合）。
+          ...(proxy === "custom" ? { proxy, proxyUrl } : { proxy }),
         },
       });
     }
@@ -246,7 +269,11 @@ async function start() {
     "pdf:uploadConfirmReply",
     (event, reply: PdfUploadConfirmationReply) => {
       trusted(event);
-      worker.postMessage({ pdfUploadConfirmReply: reply });
+      // 应答须匹配未决确认；未知 confirmationId（重复／迟到应答）直接忽略。
+      if (pendingUploadConfirms.has(reply.confirmationId)) {
+        pendingUploadConfirms.delete(reply.confirmationId);
+        worker.postMessage({ pdfUploadConfirmReply: reply });
+      }
     },
   );
   ipcMain.handle("parsing:command", async (event, command: ParsingCommand) => {
@@ -367,9 +394,17 @@ async function start() {
       });
       if (choice === 1) event.preventDefault();
     });
+    // renderer 重载或窗口关闭都会丢失未应答的确认对话框：按拒绝应答，操作不挂起。
+    window.webContents.on("did-start-navigation", (_event, _url, _inPlace, isMainFrame) => {
+      if (!isMainFrame) return;
+      for (const confirmationId of [...pendingUploadConfirms.keys()])
+        rejectUploadConfirm(confirmationId);
+    });
     window.on("closed", () => {
       ++watchGeneration;
       stopWatching();
+      for (const confirmationId of [...pendingUploadConfirms.keys()])
+        rejectUploadConfirm(confirmationId);
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());

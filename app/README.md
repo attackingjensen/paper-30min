@@ -122,8 +122,9 @@ npx playwright test -g 'project-core|document-core'
 
 PDF 命令族经同一 `project:command` 通道在 Node utility process 执行：
 
-- 无配置命令：`corePdfSnapshot`（本地 PDF 来源快照，同字节复用）、`corePdfTasks`（任务状态）、`corePdfStop`（停止本机等待，不取消远端）、`corePdfReconvert`（离线重新转换候选）、`corePdfPublishCandidate`（按批次重建同一确定性候选并应用显式冲突选择后发布，发布前复核 baseRevision）、`corePdfVerify`／`corePdfReadVerification`（核验建立与读取）、`corePdfEvidence`（Agent 来源读取证据登记）。
-- 云端命令：`corePdfImport`／`corePdfResume`／`corePdfReparse`／`corePdfResumeReparse`。本机解析配置（Token、端点、代理）由主进程从加密设置读取后注入 worker，renderer 命令不携带凭据；每个新云端任务的上传确认经 `pdf:uploadConfirm` 事件送到 renderer 显式确认对话框，应答前不发起 POST。`operationId` 标识进行中操作，`corePdfStop` 按批次停止；提交结果不明时恢复必须人工关联任务号，绝不自动重传。
+- 无配置命令：`corePdfSnapshot`（本地 PDF 来源快照，同字节复用）、`corePdfTasks`（任务状态）、`corePdfStop`（停止本机等待，不取消远端）、`corePdfReconvert`（离线重新转换候选）、`corePdfPublishCandidate`（按批次重建同一确定性候选并应用显式冲突选择后发布，发布前复核 baseRevision）、`corePdfVerify`／`corePdfReadVerification`（核验建立与读取）。
+- 云端命令：`corePdfImport`／`corePdfResume`／`corePdfReparse`／`corePdfResumeReparse`。本机解析配置（Token、端点、代理）由主进程从加密设置读取后注入 worker，renderer 命令不携带凭据；每个新云端任务的上传确认经 `pdf:uploadConfirm` 事件送到 renderer 显式确认对话框（按独立随机 `confirmationId` 排队，不覆盖并发请求），应答须同时匹配 `operationId` 与 `confirmationId` 且 `confirmed === true` 才发起 POST；renderer 重载或窗口关闭时未决确认按拒绝落定，退出时等待全部操作落定后再关闭工程进程。`operationId` 标识进行中操作，`corePdfStop` 按批次停止；提交结果不明时恢复必须人工关联任务号，绝不自动重传。
+- arXiv PDF 回退组合：`coreArxivPdfFallbackImport` 接收 `coreArxivPdfFallback` 产出的固定版本交接，主进程重新核验交接与工程谱系（首次导入比对导入记录固定版本；更新场景比对 current 来源与 baseRevision）后，经 `pdf/fallback-import.ts` 下载固定 vN PDF 形成不可变快照并接入首次导入／重解析候选链路；同谱系既有快照直接复用，拒绝上传后重试不重复下载。工程与 `paper.id` 不变；下载失败不创建云端任务。受控端点 `baseUrl` 门控与 `coreArxivImport` 相同。
 - 候选结果只含可序列化的树、changeset 与冲突摘要，资产字节留在工程进程；诊断只含 code 与 messageKey，不含 Token、签名 URL 或原始错误正文。
 
 ```powershell

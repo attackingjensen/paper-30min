@@ -182,7 +182,7 @@ export type CoreCommand =
       type: "corePdfImport";
       root: string;
       sourceSnapshotId: string;
-      /** 调用方生成的操作身份：corePdfStop 与上传确认据此定位进行中的导入。 */
+      /** 调用方生成的操作身份：上传确认据此定位；停止通过 root 与 parseBatchId 定位。 */
       operationId: string;
     }
   | {
@@ -215,15 +215,6 @@ export type CoreCommand =
     }
   | { type: "corePdfReadVerification"; root: string; revisionId: string }
   | {
-      type: "corePdfEvidence";
-      root: string;
-      pdfSnapshotId: string;
-      pages: number[];
-      sessionId: string;
-      taskId: string;
-      contentSha256: string;
-    }
-  | {
       type: "coreArxivImport";
       parent: string;
       name: string;
@@ -243,6 +234,16 @@ export type CoreCommand =
       baseUrl?: string;
       /** 更新场景必须携带调用方读取时的 current；首次导入省略或 null。 */
       baseRevision?: string | null;
+    }
+  | {
+      type: "coreArxivPdfFallbackImport";
+      root: string;
+      /** prepareArxivPdfFallback 产出的固定版本交接；主进程重新核验 baseRevision。 */
+      request: PdfFallbackRequest;
+      /** 调用方生成的操作身份：上传确认与取消据此定位。 */
+      operationId: string;
+      /** 受控端点基址（同 coreArxivImport）：生产省略即 https://arxiv.org。 */
+      baseUrl?: string;
     };
 
 /** arXiv 组合入口经生产 IPC 的结果（SPEC-arxiv-import §6–7）。 */
@@ -260,14 +261,16 @@ export type ArxivPdfFallbackCommandResult =
   | { ok: true; request: PdfFallbackRequest }
   | { ok: false; diagnostic: ImportDiagnostic };
 
-/** 主进程注入的本机解析配置：Token 与代理只存在于进程内存，不经 renderer。 */
-export interface PdfImportMachineConfig {
+/** 主进程注入的本机解析配置：Token 与代理只存在于进程内存，不经 renderer。
+ * custom 代理必须携带 proxyUrl；direct／environment 不接受 proxyUrl。 */
+export type PdfImportMachineConfig = {
   endpoint: string;
   model: "PaddleOCR-VL-1.6";
   apiKey: string;
-  proxy?: "direct" | "environment" | "custom";
-  proxyUrl?: string;
-}
+} & (
+  | { proxy?: "direct" | "environment"; proxyUrl?: never }
+  | { proxy: "custom"; proxyUrl: string }
+);
 
 /** worker 命令包装：与 agent／parsing 先例一致，config 由主进程附加。 */
 export type PdfImportWorkerCommand = {
@@ -278,6 +281,7 @@ export type PdfImportWorkerCommand = {
     | { type: "corePdfResume" }
     | { type: "corePdfReparse" }
     | { type: "corePdfResumeReparse" }
+    | { type: "coreArxivPdfFallbackImport" }
   >;
   config: PdfImportMachineConfig;
 };
@@ -312,15 +316,25 @@ export type PdfReparseCommandResult =
       warnings: ImportDiagnostic[];
     };
 
-/** 上传确认请求：worker → 主进程 → renderer 显式确认 → 原路返回。 */
+/** arXiv PDF 回退组合交接经生产 IPC 的结果；下载失败发生在云端任务创建前。 */
+export type ArxivPdfFallbackImportCommandResult =
+  | { outcome: "snapshot-failed"; diagnostic: ImportDiagnostic }
+  | PdfImportCommandResult
+  | PdfReparseCommandResult;
+
+/** 上传确认请求：worker → 主进程 → renderer 显式确认 → 原路返回。
+ * confirmationId 为每次确认往返的独立随机身份；应答须同时匹配 operationId 与
+ * confirmationId，旧确认的迟到应答不得命中同 ID 的新操作。 */
 export interface PdfUploadConfirmation {
   operationId: string;
+  confirmationId: string;
   request: BaiduUploadConfirmationRequest;
 }
 
-/** 上传确认应答：renderer 显式确认或拒绝；worker 收到前不发起上传。 */
+/** 上传确认应答：renderer 显式确认或拒绝；只有 confirmed === true 才发起上传。 */
 export interface PdfUploadConfirmationReply {
   operationId: string;
+  confirmationId: string;
   confirmed: boolean;
 }
 
