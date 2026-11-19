@@ -272,6 +272,7 @@ async function recordPdfSourceEvidence(input: {
     sessionId: input.sessionId,
     taskId: input.taskId,
     contentSha256: input.contentSha256,
+    consumeNonce: sha256(randomUUID()),
     createdAt: new Date().toISOString(),
   };
   const directory = await managedDirectory(root, ".paper30min/pdf-evidence", true);
@@ -359,6 +360,7 @@ export async function createVerification(input: {
       if (required.size === 0)
         throw new Error("核验范围没有页级来源事实，Agent 不能建立核验。");
       const covered = new Set<number>();
+      const loaded: { evidence: PdfSourceEvidenceRecord; file: string }[] = [];
       for (const evidenceId of evidenceIds) {
         const evidence = await loadEvidence(
           root,
@@ -370,11 +372,22 @@ export async function createVerification(input: {
           throw new Error("来源读取证据与核验任务的 session/task 不一致。");
         if (evidence.pdfSnapshotId !== lineage.pdfSnapshotId)
           throw new Error("来源读取证据不属于当前 PDF 快照。");
+        // 一次性：已消费的证据不得重放建立新核验（renderer 可读 evidenceId）。
+        if (evidence.consumedAt !== undefined)
+          throw new Error(`来源读取证据已消费，不能重复用于核验：${evidenceId}。`);
         for (const page of evidence.pages) covered.add(page);
+        loaded.push({
+          evidence,
+          file: path.join(root, ".paper30min", "pdf-evidence", `${evidenceId}.json`),
+        });
       }
       const missing = [...required].filter((page) => !covered.has(page)).sort((a, b) => a - b);
       if (missing.length > 0)
         throw new Error(`来源读取证据未覆盖请求范围：缺少页 ${missing.join("、")}。`);
+      // 校验全部通过后才烧掉 nonce：任何失败都不消费证据，可修正后重试。
+      const consumedAt = new Date().toISOString();
+      for (const { evidence, file } of loaded)
+        await atomicWriteJson(file, { ...evidence, consumedAt }, EVIDENCE_BUDGET, "来源读取证据");
       actor = { kind: "agent", sessionId, taskId, evidenceIds };
     }
     const record: VerificationRecord = {

@@ -129,6 +129,7 @@ async function continueToCandidate(
       severity: "fatal",
       stage: "convert",
       messageKey: "pdf.convert.failed",
+      errorDetail: convertErrorDetail(error),
     };
     task.phase = "failed";
     task.diagnostic = diagnostic;
@@ -210,6 +211,16 @@ async function stopTask(root: string, task: PdfParseTaskRecord): Promise<PdfImpo
   return { outcome: "stopped", task };
 }
 
+/** 转换失败诊断附底层原文（截断 500 字、去敏签名参数与凭据形态），
+ * 稳定 code/messageKey 仍是分类权威；errorDetail 只供定位。 */
+function convertErrorDetail(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return text
+    .replace(/([?&](?:token|signature|sig|access_token|apikey|api_key|authorization)=)[^&\s"']+/gi, "$1<redacted>")
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1<redacted>")
+    .slice(0, 500);
+}
+
 /** 下载完成后继续：去敏发布解析快照 → 转换 → 首次发布 current。
  * 致命失败保留任务现场与诊断；本机停止不冒充远端失败。 */
 async function continueToCurrent(
@@ -262,6 +273,7 @@ async function continueToCurrent(
       severity: "fatal",
       stage: "convert",
       messageKey: "pdf.convert.failed",
+      errorDetail: convertErrorDetail(error),
     };
     task.phase = "failed";
     task.diagnostic = diagnostic;

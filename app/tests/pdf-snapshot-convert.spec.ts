@@ -1615,5 +1615,10 @@ test("pdf-import 首次导入转换期父 PDF 被删除：任务落 failed 与�
     severity: "fatal",
     stage: "convert",
   });
+  // 底层原文随诊断落盘供定位（此处为清单校验失败原文），稳定 code 仍是分类权威。
+  expect(fixture.result.task.diagnostic?.errorDetail).toMatch(/受管内容文件清单/);
+  // 持久化读回（任务诊断白名单须接受 errorDetail）：重开不丢诊断原文。
+  const persisted = await readTaskRecord(fixture.result.task.parseBatchId);
+  expect(persisted.diagnostic?.errorDetail).toMatch(/受管内容文件清单/);
   expect(await currentRevisionId()).toBeNull();
 });

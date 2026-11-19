@@ -207,11 +207,12 @@ test("arxiv-import 显式 PDF 回退：确认前无 PDF 请求，交接固定版
     kind: "arxiv-pdf",
     baseId: "2401.01234",
     version: 1,
-    absUrl: ABS_URL,
-    pdfUrl: `${BASE}/pdf/2401.01234v1`,
     reasonCode: failed.diagnostic.code,
     baseRevision: null,
   });
+  // 交接不再携带 URL：下载目标由主进程按固定版本重建。
+  expect(handoff.request).not.toHaveProperty("absUrl");
+  expect(handoff.request).not.toHaveProperty("pdfUrl");
   expect(calls.length).toBe(callsBefore);
   const after = await openProject(failed.root);
   expect(after.manifest.paper.currentRevision).toBeNull();

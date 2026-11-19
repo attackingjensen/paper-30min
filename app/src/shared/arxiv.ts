@@ -7,12 +7,12 @@ export interface ArxivReference {
   canonicalId: string;
 }
 
+/** 回退交接只携带身份事实（baseId/version/baseRevision）；下载 URL 由主进程
+ * 按固定版本与受控 baseUrl 重建，renderer 传来的任何 URL 都不被信任。 */
 export interface PdfFallbackRequest {
   kind: "arxiv-pdf";
   baseId: string;
   version: number;
-  absUrl: string;
-  pdfUrl: string;
   reasonCode: string;
   baseRevision: string | null;
 }
@@ -24,6 +24,8 @@ export interface ImportDiagnostic {
   messageKey: string;
   sourceAlias?: string;
   sourceUrl?: string;
+  /** 底层失败原文（截断去敏后），供诊断定位；稳定 code/messageKey 仍是分类权威。 */
+  errorDetail?: string;
 }
 
 const DIAGNOSTIC_STAGES = ["resolve", "fetch", "snapshot", "convert", "validate", "publish"] as const;
@@ -48,6 +50,7 @@ export function parseImportDiagnostic(value: unknown): ImportDiagnostic {
     messageKey: record.messageKey,
     ...(typeof record.sourceAlias === "string" ? { sourceAlias: record.sourceAlias } : {}),
     ...(typeof record.sourceUrl === "string" ? { sourceUrl: record.sourceUrl } : {}),
+    ...(typeof record.errorDetail === "string" ? { errorDetail: record.errorDetail } : {}),
   };
 }
 
