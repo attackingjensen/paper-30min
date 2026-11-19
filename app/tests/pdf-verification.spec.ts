@@ -34,6 +34,7 @@ import {
   readVerificationRecords,
   recordReadPdfEvidence,
   resolveVerificationCoverage,
+  verificationInheritCommitHooks,
 } from "../src/main/pdf/verification";
 import { createPdfTools } from "../src/main/pdf-tools";
 import { ProjectService } from "../src/main/project-service";
@@ -864,7 +865,13 @@ test("pdf-verification 继承接线：merge 发布修改已核验正文后标为
     sourceSnapshotId: pdf.sourceSnapshotId,
     candidate: changedTree(base),
   });
-  const second = await publishDocumentMergeCandidate(candidate);
+  const second = await publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
+    root,
+    baseRevision: first.revisionId,
+    revisionId: candidate.revisionId,
+    sourceSnapshotId: pdf.sourceSnapshotId,
+    document: candidate.document,
+  }));
   const inherited = await readVerificationRecords(root, second.revisionId);
   expect(inherited).toHaveLength(1);
   expect(entryOf(inherited[0], selectionIds.sentence).validity).toBe("modified-unreviewed");
@@ -917,7 +924,13 @@ test("pdf-verification 继承接线：拆分删除进入 tombstone 与 removed�
     sourceSnapshotId: pdf.sourceSnapshotId,
     candidate: split,
   });
-  const second = await publishDocumentMergeCandidate(candidate);
+  const second = await publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
+    root,
+    baseRevision: first.revisionId,
+    revisionId: candidate.revisionId,
+    sourceSnapshotId: pdf.sourceSnapshotId,
+    document: candidate.document,
+  }));
   const inherited = await readVerificationRecords(root, second.revisionId);
   for (const entry of inherited[0].coverage) expect(entry.validity).toBe("removed");
   const tombstones = await readRevisionTombstones(root, second.revisionId);
@@ -1235,7 +1248,16 @@ test("pdf-verification 继承：merge 发布失败不留下孤儿侧车", async 
     movedTree(base),
     base,
   );
+  const hooks = verificationInheritCommitHooks({
+    root,
+    baseRevision: first.revisionId,
+    revisionId: candidate.revisionId,
+    sourceSnapshotId: pdf.sourceSnapshotId,
+    document: candidate.document,
+  });
+  const publishWithInherit = () => publishDocumentMergeCandidate(candidate, hooks);
   await expect(publishDocumentMergeCandidate(candidate)).rejects.toThrow(/baseRevision/);
+  await expect(publishWithInherit()).rejects.toThrow(/baseRevision/);
   expect(await readVerificationRecords(root, candidate.revisionId)).toEqual([]);
   const orphanDir = path.join(root, ".paper30min", "revisions", candidate.revisionId);
   const entries = await fs.readdir(orphanDir).catch((error: NodeJS.ErrnoException) => {

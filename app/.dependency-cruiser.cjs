@@ -63,6 +63,13 @@ module.exports = {
       from: { path: "^src/main/(?!preload\\.cts$)" },
       to: { path: "^src/main/preload\\.cts$" },
     },
+    {
+      // 通用文档合并不得理解来源语义：核验继承等侧车逻辑由调用方注入 commit 钩子（wp4）。
+      name: "document-cannot-import-source-modules",
+      severity: "error",
+      from: { path: "^src/main/document/" },
+      to: { path: "^src/main/(pdf|parsing|arxiv)/" },
+    },
   ],
   options: {
     doNotFollow: { path: "node_modules" },

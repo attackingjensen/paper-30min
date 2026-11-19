@@ -9,6 +9,7 @@ import {
   readSourceSnapshot,
   readSourceSnapshotAsset,
   validateRevisionAssetBudget,
+  type ProjectCommitHooks,
 } from "../project-core.js";
 import {
   assertDocumentMergePublishable,
@@ -17,7 +18,6 @@ import {
   type DocumentMergeResult,
 } from "../../shared/document/merge.js";
 import type { DocumentTree } from "../../shared/document/tree.js";
-import { inheritVerificationSidecar } from "../pdf/verification.js";
 
 type ManagedAsset = { bytes: Uint8Array; mime?: string };
 
@@ -134,7 +134,12 @@ export function resolveDocumentMergeCandidateConflict(
   };
 }
 
-export async function publishDocumentMergeCandidate(candidate: DocumentMergeCandidate) {
+/** 发布来源合并候选：通用文档合并不理解来源语义；核验继承等来源侧车逻辑
+ * 由调用方经 commit 钩子注入（before-current-replace，串行临界区内执行）。 */
+export async function publishDocumentMergeCandidate(
+  candidate: DocumentMergeCandidate,
+  hooks: ProjectCommitHooks = {},
+) {
   const opened = await openProject(candidate.root);
   const currentRevision = opened.manifest.paper.currentRevision;
   if (!currentRevision) throw new Error("首次正文尚未提交，不能发布来源合并候选。");
@@ -159,18 +164,5 @@ export async function publishDocumentMergeCandidate(candidate: DocumentMergeCand
       ...assets,
     },
     metadata: { normalizationVersion: 1, operation: "source-merge", ...candidate.metadata },
-  }, {
-    // 核验继承在 commit 校验通过后、current 替换前执行（SPEC-pdf-import §11）：
-    // 提交失败不产生孤儿侧车；无旧核验记录时为空操作。
-    onCommitPoint: async (point) => {
-      if (point !== "before-current-replace") return;
-      await inheritVerificationSidecar({
-        root: candidate.root,
-        baseRevision: candidate.baseRevision,
-        revisionId: candidate.revisionId,
-        sourceSnapshotId: candidate.sourceSnapshotId,
-        document: candidate.document,
-      });
-    },
-  });
+  }, hooks);
 }

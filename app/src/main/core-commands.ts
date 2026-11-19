@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CoreCommand } from "../shared/contracts.js";
-import { parseDocumentTree, type DocumentTree } from "../shared/document/tree.js";
+import { parseDocumentTree } from "../shared/document/tree.js";
 import {
   commitRevision,
   createProject,
@@ -17,8 +17,8 @@ import {
 } from "./document/merge.js";
 import {
   createVerification,
-  inheritVerificationSidecar,
   readVerificationRecords,
+  verificationInheritCommitHooks,
 } from "./pdf/verification.js";
 import { snapshotLocalPdf } from "./pdf/snapshot.js";
 import { importArxivPdfFallback } from "./pdf/fallback-import.js";
@@ -123,14 +123,21 @@ export async function dispatchCoreCommand(
       });
     case "coreCommit": {
       const revisionId = command.revisionId ?? randomUUID();
-      let document: DocumentTree | undefined;
+      let hooks = {};
       if (command.baseRevision !== null) {
         const content = command.files["document.json"];
         const bytes = content instanceof Uint8Array ? content : content?.bytes;
         if (!bytes) throw new Error("coreCommit 缺少 document.json，不能发布新 current。");
-        document = parseDocumentTree(
+        const document = parseDocumentTree(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
         );
+        hooks = verificationInheritCommitHooks({
+          root: command.root,
+          baseRevision: command.baseRevision,
+          revisionId,
+          sourceSnapshotId: command.sourceSnapshotId,
+          document,
+        });
       }
       return commitRevision({
         root: command.root,
@@ -139,20 +146,7 @@ export async function dispatchCoreCommand(
         revisionId,
         files: command.files,
         metadata: command.metadata,
-      }, {
-        // 核验继承在 commit 校验通过后、current 替换前执行（SPEC-pdf-import §11）：
-        // 提交失败不产生孤儿侧车；无旧核验记录时为空操作。
-        onCommitPoint: async (point) => {
-          if (point !== "before-current-replace" || command.baseRevision === null || !document) return;
-          await inheritVerificationSidecar({
-            root: command.root,
-            baseRevision: command.baseRevision,
-            revisionId,
-            sourceSnapshotId: command.sourceSnapshotId,
-            document,
-          });
-        },
-      });
+      }, hooks);
     }
     case "coreReadSource":
       return readSourceSnapshot(command.root, command.sourceSnapshotId);
@@ -256,7 +250,13 @@ async function mergePublish(
       resolution.choice,
     );
   }
-  return publishDocumentMergeCandidate(candidate);
+  return publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
+    root: candidate.root,
+    baseRevision: candidate.baseRevision,
+    revisionId: candidate.revisionId,
+    sourceSnapshotId: candidate.sourceSnapshotId,
+    document: candidate.document,
+  }));
 }
 
 /** 候选摘要：剥离资产字节，只保留可经 IPC 序列化的树、changeset 与冲突。 */
