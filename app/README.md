@@ -93,7 +93,7 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 工程 JSON 元数据读写预算为 1 MiB。受管写入按工程根目录在进程内串行执行，current 替换前复核清单字节、基线、旧／新 revision 和来源摘要；文件系统不提供面向任意外部写入的原子 compare-and-swap，跨平台目录项同步也不等同于断电持久化保证，因此这里不承诺任意跨进程竞态或断电场景下的完整事务。project-core 不按字段名猜测或清洗凭据；arXiv／PDF 来源模块必须在调用发布 API 前完成 Authorization、Cookie、签名 URL 和其他来源秘密的语义脱敏。
 
-新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish`、`coreArxivImport`、`coreArxivResume` 与 `coreArxivPdfFallback` 与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。`coreCommit`（baseRevision 非空时）与 `coreMergePublish` 都在推进 current 前执行核验继承：按旧侧车、实际 changeset 与 PDF 来源谱系生成新 revision 的 `verification.json`，无旧核验记录时为空操作（SPEC-pdf-import §11）。界面导入链路尚未接入这些命令（arXiv 命令面已可用，界面接管见下文）。
+新核经 `src/main/core-commands.ts` 接入生产 IPC：`coreCreate`、`coreOpen`、`corePublishSource`、`coreCommit`、`coreReadSource`、`coreReadRevision`、`coreReadDocument`、`coreMergePublish`、`coreArxivImport`、`coreArxivResume`、`coreArxivPdfFallback` 与 PDF 导入命令族（见下文 Phase 3）与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行；旧 `ProjectService` 的类型契约不再接受新核命令。`coreMergePublish` 在进程内创建合并候选、应用显式逐项冲突解决后发布，未解决冲突或基线变化拒绝发布，拒绝消息列出冲突 ID 与类型供调用方构造 resolutions。`coreCommit` 是低层容器协议：tombstones 随新 current 累积与 removed 覆盖由 document-core 合并命令层保证，直接调用方须自行维护退役语义。`coreCommit`（baseRevision 非空时）与 `coreMergePublish` 都在推进 current 前执行核验继承：按旧侧车、实际 changeset 与 PDF 来源谱系生成新 revision 的 `verification.json`，无旧核验记录时为空操作（SPEC-pdf-import §11）。界面导入链路尚未接入这些命令（arXiv 与 PDF 命令面已可用，界面接管见下文）。
 
 ### Phase 2 arXiv 导入契约层
 
@@ -114,6 +114,22 @@ npx playwright test -g 'project-core|document-core'
 ```
 
 契约测试覆盖创建中断、来源与 revision 不可变、首导入和更新故障、基线竞争、进程内并发、外部修改、非法路径、目录链接及工程整体搬迁。真实 Electron 回归（`tests/project-core-electron.spec.ts`）经生产 preload、IPC 和 Node 工程进程覆盖无 PDF 工程创建、首次导入与更新发布、current 推进、离线重开、基线冲突与并发提交、外部篡改与缺失 revision 故障现场、整体搬迁、`formatVersion: 1` 明确分流及合并候选发布。
+
+### Phase 3 PDF 导入契约层
+
+`src/main/parsing/` 与 `src/main/pdf/` 按 [pdf-import 规格](../docs/spec/SPEC-pdf-import.md) 实现 PDF 云端解析到同一规范文档树：PDF 快照与来源谱系（`pdf/snapshot.ts`）、百度任务提交／恢复与费用安全（`parsing/baidu-task.ts`）、响应去敏与本地化（`parsing/parse-snapshot.ts`）、确定性转换与首次发布（`parsing/parse-convert.ts`）、重解析三方合并编排（`parsing/pdf-import.ts`）与核验记录／继承（`pdf/verification.ts`）。
+
+PDF 命令族经同一 `project:command` 通道在 Node utility process 执行：
+
+- 无配置命令：`corePdfSnapshot`（本地 PDF 来源快照，同字节复用）、`corePdfTasks`（任务状态）、`corePdfStop`（停止本机等待，不取消远端）、`corePdfReconvert`（离线重新转换候选）、`corePdfPublishCandidate`（按批次重建同一确定性候选并应用显式冲突选择后发布，发布前复核 baseRevision）、`corePdfVerify`／`corePdfReadVerification`（核验建立与读取）、`corePdfEvidence`（Agent 来源读取证据登记）。
+- 云端命令：`corePdfImport`／`corePdfResume`／`corePdfReparse`／`corePdfResumeReparse`。本机解析配置（Token、端点、代理）由主进程从加密设置读取后注入 worker，renderer 命令不携带凭据；每个新云端任务的上传确认经 `pdf:uploadConfirm` 事件送到 renderer 显式确认对话框，应答前不发起 POST。`operationId` 标识进行中操作，`corePdfStop` 按批次停止；提交结果不明时恢复必须人工关联任务号，绝不自动重传。
+- 候选结果只含可序列化的树、changeset 与冲突摘要，资产字节留在工程进程；诊断只含 code 与 messageKey，不含 Token、签名 URL 或原始错误正文。
+
+```powershell
+npx playwright test -g 'pdf-import'
+```
+
+受控百度服务契约测试覆盖快照、任务、去敏、转换、合并、核验与命令面（`tests/pdf-*.spec.ts`）；真实 Electron 回归（`tests/pdf-import-electron.spec.ts`）经生产 preload、IPC、Node 工程进程与真实 undici 传输覆盖显式确认上传与断网重开、拒绝确认零 POST、受理后停止与重开恢复、重解析提交不明的人工关联恢复、同 PDF 重解析候选发布。真实百度验收须用户明确授权并单独记录。
 
 ## PDF 阅读与旧引用退役
 

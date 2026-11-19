@@ -26,6 +26,7 @@ import {
 import type {
   Command,
   CreateInput,
+  PdfUploadConfirmation,
   Preferences,
   Project,
   DocumentTab,
@@ -106,6 +107,18 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
+  const [uploadConfirm, setUploadConfirm] = useState<PdfUploadConfirmation | null>(null);
+  useEffect(() =>
+    desktop.watchPdfUploadConfirm((confirmation) => setUploadConfirm(confirmation)),
+  []);
+  const replyUpload = (confirmed: boolean) => {
+    if (!uploadConfirm) return;
+    const operationId = uploadConfirm.operationId;
+    setUploadConfirm(null);
+    void desktop
+      .replyPdfUploadConfirm({ operationId, confirmed })
+      .catch((e) => setError((e as Error).message));
+  };
   const [content, setContent] = useState<string | null>(null);
   const current = tabs.find((t) => t.key === active);
   const root = project?.root;
@@ -1024,6 +1037,36 @@ export function App() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {uploadConfirm && (
+        <div className="modal-backdrop">
+          <div
+            className="modal pdf-upload-confirm"
+            role="dialog"
+            aria-label="确认上传 PDF 到云端解析"
+          >
+            <h2>确认上传 PDF</h2>
+            <p>
+              将「{uploadConfirm.request.originalName}」（{uploadConfirm.request.pageCount} 页）
+              上传到 {uploadConfirm.request.provider} 的 {uploadConfirm.request.model} 解析服务，
+              可能产生费用。提交后本机停止不会取消云端任务。
+            </p>
+            <dl>
+              <dt>服务地址</dt>
+              <dd>{uploadConfirm.request.endpoint}</dd>
+              <dt>PDF SHA-256</dt>
+              <dd className="pdf-upload-hash">{uploadConfirm.request.pdfSha256}</dd>
+            </dl>
+            <div className="modal-footer">
+              <button type="button" onClick={() => replyUpload(false)}>
+                取消
+              </button>
+              <button className="primary" type="button" onClick={() => replyUpload(true)}>
+                确认上传并解析
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>

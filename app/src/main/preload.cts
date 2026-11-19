@@ -4,6 +4,8 @@ import type {
   ChatSession,
   Command,
   Desktop,
+  PdfUploadConfirmation,
+  PdfUploadConfirmationReply,
 } from "../shared/contracts.js";
 import type { ParsingCommand } from "../shared/parsing.js";
 
@@ -40,5 +42,15 @@ const desktop: Desktop = {
   openLink: (url) => ipcRenderer.invoke("project:openLink", url),
   choose: (kind) => ipcRenderer.invoke("project:choose", kind),
   openFile: (root, path) => ipcRenderer.invoke("project:openFile", root, path),
+  watchPdfUploadConfirm: (listener) => {
+    const changed = (
+      _event: Electron.IpcRendererEvent,
+      confirmation: PdfUploadConfirmation,
+    ) => listener(confirmation);
+    ipcRenderer.on("pdf:uploadConfirm", changed);
+    return () => ipcRenderer.removeListener("pdf:uploadConfirm", changed);
+  },
+  replyPdfUploadConfirm: (reply: PdfUploadConfirmationReply) =>
+    ipcRenderer.invoke("pdf:uploadConfirmReply", reply) as Promise<void>,
 };
 contextBridge.exposeInMainWorld("desktop", desktop);

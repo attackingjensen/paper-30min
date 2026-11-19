@@ -762,6 +762,22 @@ body:has(.notice) .settings-workspace {
   gap: 8px;
   margin-top: 24px;
 }
+.pdf-upload-confirm dl {
+  font-size: 12px;
+  line-height: 1.8;
+  margin: 12px 0;
+}
+.pdf-upload-confirm dt {
+  color: #777;
+  margin-top: 8px;
+}
+.pdf-upload-confirm dd {
+  margin: 2px 0 0;
+}
+.pdf-upload-hash {
+  font-family: monospace;
+  word-break: break-all;
+}
 .form-error {
   color: #9c413a;
 }

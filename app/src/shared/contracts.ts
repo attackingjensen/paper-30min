@@ -283,7 +283,7 @@ export type PdfImportWorkerCommand = {
 };
 
 /** 经生产 IPC 的候选摘要：树、changeset 与冲突可序列化；资产字节留在工程进程。 */
-export type PdfMergeCandidateSummary = DocumentMergeResult & {
+type PdfMergeCandidateSummary = DocumentMergeResult & {
   root: string;
   sourceSnapshotId: string;
 };

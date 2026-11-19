@@ -16,6 +16,8 @@ import type {
   AgentCommand,
   ChatSession,
   Command,
+  PdfImportWorkerCommand,
+  PdfUploadConfirmationReply,
   Project,
   ProjectAsset,
 } from "../shared/contracts.js";
@@ -54,6 +56,7 @@ function request(
         command: ParsingCommand;
         config: ParsingConfig & { proxy?: string; proxyUrl?: string };
       }
+    | PdfImportWorkerCommand
     | null,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -151,6 +154,12 @@ async function start() {
       }
       return;
     }
+    if (message.pdfUploadConfirm) {
+      if (window && !window.isDestroyed())
+        window.webContents.send("pdf:uploadConfirm", message.pdfUploadConfirm);
+      else worker.postMessage({ pdfUploadConfirmReply: { operationId: message.pdfUploadConfirm.operationId, confirmed: false } });
+      return;
+    }
     const p = pending.get(message.id);
     pending.delete(message.id);
     if (message.error) p?.reject(new Error(message.error));
@@ -228,10 +237,40 @@ async function start() {
       throw new Error("仅支持打开 HTTP/HTTPS 链接。");
     await shell.openExternal(url);
   });
-  ipcMain.handle("project:command", (event, command: Command) => {
+  const pdfCloudTypes: Partial<Record<Command["type"], true>> = {
+    corePdfImport: true,
+    corePdfResume: true,
+    corePdfReparse: true,
+    corePdfResumeReparse: true,
+  };
+  ipcMain.handle("project:command", async (event, command: Command) => {
     trusted(event);
+    if (pdfCloudTypes[command.type]) {
+      // 本机配置与代理只从主进程设置读取；renderer 命令不携带 Token。
+      await parsingSettingsWrite;
+      const config = await parsingSettings.read();
+      const { proxy, proxyUrl } = await agentSettings.read();
+      return request({
+        type: "pdfImport",
+        command: command as PdfImportWorkerCommand["command"],
+        config: {
+          endpoint: config.endpoint,
+          model: "PaddleOCR-VL-1.6",
+          apiKey: config.apiKey,
+          proxy,
+          proxyUrl,
+        },
+      });
+    }
     return request(command);
   });
+  ipcMain.handle(
+    "pdf:uploadConfirmReply",
+    (event, reply: PdfUploadConfirmationReply) => {
+      trusted(event);
+      worker.postMessage({ pdfUploadConfirmReply: reply });
+    },
+  );
   ipcMain.handle("parsing:command", async (event, command: ParsingCommand) => {
     trusted(event);
     if (command.type === "saveSettings") {
