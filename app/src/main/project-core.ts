@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { constants, createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { renameManaged } from "./managed-rename.js";
 import type {
   ArxivImportProgress,
   ManagedFileContent,
@@ -553,7 +554,7 @@ async function atomicJson(
       await handle.close();
     }
     await beforeReplace?.();
-    await fs.rename(temporary, file);
+    await renameManaged(temporary, file);
   } finally {
     await fs.rm(temporary, { force: true });
   }
@@ -1034,7 +1035,7 @@ export async function publishSourceSnapshot(
     const sources = await ensureManagedDirectory(root, "sources");
     const target = path.join(sources, sourceSnapshotId);
     await assertMissing(target);
-    await fs.rename(staged, target);
+    await renameManaged(staged, target);
     const latest = await readManifest(root);
     if (
       latest.manifest.id !== manifest.id ||
@@ -1108,7 +1109,7 @@ export async function commitRevision(
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     } else {
-      await fs.rename(staged, target);
+      await renameManaged(staged, target);
       await verifyDirectory(target, files);
     }
     await hooks.onCommitPoint?.("revision-content", { revisionId });

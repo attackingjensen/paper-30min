@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { renameManaged } from "../managed-rename.js";
 import {
   listSourceSnapshots,
   openProject,
@@ -97,7 +98,7 @@ async function atomicWriteJson(
     } finally {
       await handle.close();
     }
-    await fs.rename(temporary, destination);
+    await renameManaged(temporary, destination);
   } finally {
     await fs.rm(temporary, { force: true });
   }

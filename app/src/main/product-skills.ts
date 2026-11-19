@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
+import { renameManaged } from "./managed-rename.js";
 import { productSkillCatalog, type ProductSkill } from "../shared/product-skills.js";
 
 const bundled = fileURLToPath(new URL("../../skills/", import.meta.url));
@@ -45,7 +46,7 @@ export class ProductSkills {
         finally { await handle.close(); }
         if ((await this.read(id)).version !== version)
           throw new Error("Skill 已变化，本次未覆盖原内容。");
-        await fs.rename(temporary, file);
+        await renameManaged(temporary, file);
       } finally { await fs.rm(temporary, { force: true }); }
       return this.read(id);
     });
