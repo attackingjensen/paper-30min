@@ -9,6 +9,7 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
+import { expectAppReady } from "./electron-launch";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -48,7 +49,7 @@ async function launch() {
     if (!url.startsWith("paper30min://") && !url.startsWith("data:") && !url.startsWith("blob:"))
       remoteRequests.push(url);
   });
-  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible();
+  await expectAppReady(page);
 }
 
 test.beforeEach(async () => {
@@ -302,5 +303,13 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
     }
   }
   await page.waitForTimeout(1200);
-  expect(await scrollTop()).toBe(0);
+  const finalTop = await scrollTop();
+  if (finalTop !== 0) {
+    const trace = await page.evaluate(() =>
+      (window as unknown as { __readerScrollTrace?: unknown }).__readerScrollTrace);
+    await test.info().attach("scroll-trace", {
+      body: Buffer.from(JSON.stringify(trace ?? null)), contentType: "application/json",
+    });
+  }
+  expect(finalTop).toBe(0);
 });

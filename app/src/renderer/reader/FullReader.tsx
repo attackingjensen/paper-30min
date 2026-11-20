@@ -458,6 +458,15 @@ export function FullReader({
   // 无法归属的滚动（真实滚轮/拖动滚动条）一律让恢复让位（SPEC-reader §5.6）。
   const programmaticScrollPending = useRef(0);
   const programmaticScrollTop = useRef<number | null>(null);
+  const scrollTrace = useRef<{ t: number; top: number; pending: number; user: boolean; src: string }[]>([]);
+  const lastProgrammaticSource = useRef("");
+  const scrollTraceRecord = (container: HTMLElement, src: string) => {
+    scrollTrace.current.push({
+      t: Date.now(), top: container.scrollTop,
+      pending: programmaticScrollPending.current, user: userScrolled.current, src,
+    });
+    (window as unknown as { __readerScrollTrace?: unknown }).__readerScrollTrace = scrollTrace.current;
+  };
   const savedRef = useRef(savedPosition);
   savedRef.current = savedPosition;
   const onPositionRef = useRef(onPosition);
@@ -647,6 +656,7 @@ export function FullReader({
       programmaticScrollTop.current = null;
     };
     const onScroll = () => {
+      scrollTraceRecord(container, programmaticScrollPending.current > 0 ? `prog:${lastProgrammaticSource.current}` : "unattributed");
       // 程序化滚动（恢复/resize/定位）按待消费计数与目标位置归属；
       // 其余滚动事件视为用户意图，进行中的恢复立即让位。
       if (
@@ -672,12 +682,16 @@ export function FullReader({
         markUserScroll();
     };
     container.addEventListener("scroll", onScroll, { passive: true });
-    container.addEventListener("wheel", markUserScroll, { passive: true });
+    const onWheel = (event: WheelEvent) => {
+      scrollTraceRecord(container, `wheel:${event.deltaY}`);
+      markUserScroll();
+    };
+    container.addEventListener("wheel", onWheel, { passive: true });
     container.addEventListener("touchmove", markUserScroll, { passive: true });
     window.addEventListener("keydown", onKey);
     return () => {
       container.removeEventListener("scroll", onScroll);
-      container.removeEventListener("wheel", markUserScroll);
+      container.removeEventListener("wheel", onWheel);
       container.removeEventListener("touchmove", markUserScroll);
       window.removeEventListener("keydown", onKey);
       clearTimeout(timer);
@@ -740,6 +754,7 @@ export function FullReader({
       );
       if (Math.abs(container.scrollTop - top) <= 1) return;
       programmaticScrollPending.current++;
+      lastProgrammaticSource.current = "align";
       programmaticScrollTop.current = top;
       container.scrollTo({ top, behavior: "instant" });
     };
@@ -795,6 +810,7 @@ export function FullReader({
         );
         programmaticScrollPending.current++;
         programmaticScrollTop.current = top;
+        lastProgrammaticSource.current = "resize";
         container.scrollTo({ top, behavior: "instant" });
       }, 150);
     };
@@ -853,6 +869,7 @@ export function FullReader({
     programmaticScrollPending.current++;
     programmaticScrollTop.current = top;
     container.scrollTo({ top, behavior: "instant" });
+    lastProgrammaticSource.current = "locate";
     target.classList.add("reader-jump-target");
     target.setAttribute("tabindex", "-1");
     target.focus({ preventScroll: true });

@@ -8,6 +8,7 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
+import { expectAppReady } from "./electron-launch";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -189,7 +190,7 @@ async function launch() {
     const url = request.url();
     if (/^https?:/i.test(url)) remotePageRequests.push(url);
   });
-  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible();
+  await expectAppReady(page);
 }
 
 async function closeDesktopForCleanup() {
@@ -827,7 +828,7 @@ test("pdf-import 真实 Electron 确认期间重载 renderer：操作被拒绝�
   const { run } = startImport(root, snapshot.sourceSnapshotId);
   await expect(confirmDialog()).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible();
+  await expectAppReady(page);
   const result = await run;
   expect(result.outcome).toBe("cancelled");
   expect(counts.posts).toBe(0);
