@@ -121,6 +121,54 @@ export async function resolveArxivVersion(
   };
 }
 
+/** 版本状态查询（SPEC §8.1）：只读已获取的 abs 提交历史，比较固定版本与最新版。
+ * 不下载 HTML、不生成候选；页面身份不符或历史缺失如实失败。撤稿按事实报告。 */
+export type ArxivVersionStatus =
+  | { ok: true; latest: ArxivReference; upToDate: boolean; withdrawn: boolean }
+  | { ok: false; diagnostic: ImportDiagnostic };
+
+export function arxivVersionStatus(html: string, pinned: ArxivReference, absUrl: string): ArxivVersionStatus {
+  if (pinned.version === null)
+    return fail("arxiv-version-unpinned", "arxiv.version.unpinned", absUrl);
+  const identity = citationIdentity(html);
+  const titleBaseId = absTitleBaseId(html);
+  const pageBaseId = identity?.baseId ?? titleBaseId;
+  if (pageBaseId !== null && pageBaseId !== pinned.baseId)
+    return fail("arxiv-identity-mismatch", "arxiv.identity.mismatch", absUrl);
+  const history = submissionHistory(html, pinned.baseId);
+  if (history.length === 0)
+    return fail("arxiv-version-unresolved", "arxiv.version.unresolved", absUrl);
+  if (!history.some((entry) => entry.version === pinned.version))
+    return fail("arxiv-version-missing", "arxiv.version.missing", absUrl);
+  const latest = history.reduce((best, entry) => (entry.version > best.version ? entry : best));
+  return {
+    ok: true,
+    latest: {
+      baseId: pinned.baseId,
+      version: latest.version,
+      canonicalId: `${pinned.baseId}v${latest.version}`,
+    },
+    upToDate: latest.version === pinned.version,
+    withdrawn: latest.withdrawn,
+  };
+}
+
+/** 显式目标版本的存在与撤稿核验（SPEC §8.2）：更新候选获取前只读该版本 abs；
+ * 撤稿版本拒绝生成候选，不自动采用上一版。 */
+export function assertArxivVersionAvailable(html: string, pinned: ArxivReference, absUrl: string): ArxivVersionGuard {
+  if (pinned.version === null)
+    return fail("arxiv-version-unpinned", "arxiv.version.unpinned", absUrl);
+  const identity = citationIdentity(html);
+  const titleBaseId = absTitleBaseId(html);
+  const pageBaseId = identity?.baseId ?? titleBaseId;
+  if (pageBaseId !== null && pageBaseId !== pinned.baseId)
+    return fail("arxiv-identity-mismatch", "arxiv.identity.mismatch", absUrl);
+  const entry = submissionHistory(html, pinned.baseId).find((candidate) => candidate.version === pinned.version);
+  if (!entry) return fail("arxiv-version-missing", "arxiv.version.missing", absUrl);
+  if (entry.withdrawn) return fail("arxiv-version-withdrawn", "arxiv.version.withdrawn", absUrl);
+  return { ok: true };
+}
+
 /**
  * 版本守卫（SPEC §1.5–1.6）：HTML 最终 URL 与元数据必须与固定版本完全一致，
  * 版本混杂即失败，不得拼接不同版本的正文和资产；不同 base ID 是另一来源。

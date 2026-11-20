@@ -38,12 +38,22 @@ import {
 import type { DocumentMergeCandidate } from "./document/merge.js";
 import type {
   ArxivPdfFallbackImportCommandResult,
+  ArxivUpdateCandidateCommandResult,
+  ArxivUpdateCheckCommandResult,
+  ArxivUpdatePublishCommandResult,
   PdfImportCommandResult,
   PdfReparseCommandResult,
 } from "../shared/contracts.js";
 import type { BaiduUploadConfirmationRequest } from "../shared/parsing.js";
-import { readDiagnosticArray } from "../shared/arxiv.js";
+import { readDiagnosticArray, type ImportDiagnostic } from "../shared/arxiv.js";
 import { importArxivPaper, prepareArxivPdfFallback, resumeArxivImport } from "./arxiv/import.js";
+import {
+  checkArxivUpdate,
+  fetchArxivUpdateCandidate,
+  publishArxivUpdateCandidate,
+  refetchArxivSnapshot,
+  reconvertArxivCandidate,
+} from "./arxiv/update.js";
 import { arxivFetch } from "./arxiv/transport.js";
 import type { ArxivFetchOptions, ArxivFetchResponse, ArxivTransport } from "./arxiv/fetch.js";
 
@@ -82,6 +92,11 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   coreArxivPdfFallback: true,
   coreArxivPdfFallbackImport: true,
   coreArxivCancel: true,
+  coreArxivCheckUpdate: true,
+  coreArxivUpdateCandidate: true,
+  coreArxivRefetch: true,
+  coreArxivReconvert: true,
+  coreArxivPublishCandidate: true,
   corePdfSnapshot: true,
   corePdfTasks: true,
   corePdfStop: true,
@@ -221,6 +236,27 @@ export async function dispatchCoreCommand(
       controller?.abort();
       return Promise.resolve({ cancelled: controller !== undefined });
     }
+    case "coreArxivCheckUpdate":
+    case "coreArxivUpdateCandidate":
+    case "coreArxivRefetch":
+      return arxivUpdateNetworkCommand(command);
+    case "coreArxivReconvert":
+      return arxivCandidateCommand(
+        reconvertArxivCandidate({
+          root: command.root,
+          sourceSnapshotId: command.sourceSnapshotId,
+          baseRevision: command.baseRevision,
+        }),
+      );
+    case "coreArxivPublishCandidate": {
+      const published: ArxivUpdatePublishCommandResult = await publishArxivUpdateCandidate({
+        root: command.root,
+        sourceSnapshotId: command.sourceSnapshotId,
+        baseRevision: command.baseRevision,
+        ...(command.resolutions === undefined ? {} : { resolutions: command.resolutions }),
+      });
+      return published;
+    }
     case "coreArxivPdfFallback":
       return openProject(command.root).then((opened) =>
         prepareArxivPdfFallback(opened, command.reason, command.baseUrl, command.baseRevision),
@@ -263,6 +299,54 @@ async function mergePublish(
 function candidateSummary(candidate: DocumentMergeCandidate) {
   const { assets: _assets, metadata: _metadata, ...summary } = candidate;
   return summary;
+}
+
+/** §8 网络动作（检查新版／更新候选／同版重取）：与首次导入共用 operationId
+ * 取消注册与受控 transport 门控；coreArxivCancel 可取消进行中的动作。 */
+async function arxivUpdateNetworkCommand(
+  command: Extract<CoreCommand, { type: "coreArxivCheckUpdate" | "coreArxivUpdateCandidate" | "coreArxivRefetch" }>,
+): Promise<ArxivUpdateCheckCommandResult | ArxivUpdateCandidateCommandResult> {
+  if (arxivOperations.has(command.operationId))
+    throw new Error(`arXiv 操作已在进行中：${command.operationId}`);
+  const controller = new AbortController();
+  arxivOperations.set(command.operationId, controller);
+  const network = {
+    transport: arxivTransportFor(command.baseUrl, controller.signal),
+    signal: controller.signal,
+    ...(command.baseUrl === undefined ? {} : { baseUrl: command.baseUrl }),
+    ...(fixtureGate(command.baseUrl) ? { allowFixtureLoopback: true } : {}),
+  };
+  const run = command.type === "coreArxivCheckUpdate"
+    ? checkArxivUpdate({ root: command.root, ...network })
+    : arxivCandidateCommand(command.type === "coreArxivUpdateCandidate"
+        ? fetchArxivUpdateCandidate({
+            root: command.root,
+            reference: command.reference,
+            baseRevision: command.baseRevision,
+            ...network,
+          })
+        : refetchArxivSnapshot({ root: command.root, baseRevision: command.baseRevision, ...network }));
+  try {
+    return await run;
+  } finally {
+    if (arxivOperations.get(command.operationId) === controller)
+      arxivOperations.delete(command.operationId);
+  }
+}
+
+/** 候选结果经 IPC：剥离资产字节，保留树、changeset、冲突与警告。 */
+async function arxivCandidateCommand(
+  run: Promise<
+    | { ok: true; candidate: DocumentMergeCandidate; warnings: ImportDiagnostic[] }
+    | { ok: true; outcome: "reused"; sourceSnapshotId: string; warnings: ImportDiagnostic[] }
+    | { ok: false; diagnostic: ImportDiagnostic }
+  >,
+): Promise<ArxivUpdateCandidateCommandResult> {
+  const result = await run;
+  if (!result.ok) return result;
+  if ("outcome" in result)
+    return { ok: true, outcome: "reused", sourceSnapshotId: result.sourceSnapshotId, warnings: result.warnings };
+  return { ok: true, outcome: "candidate", candidate: candidateSummary(result.candidate), warnings: result.warnings };
 }
 
 async function pdfReconvert(
