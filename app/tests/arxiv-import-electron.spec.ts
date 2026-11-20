@@ -170,6 +170,22 @@ function treeTexts(tree: DocumentTree): string[] {
   );
 }
 
+/** 按阅读块顺序投影正文：阅读顺序的权威比较口径（单元表遍历顺序不是阅读顺序）。 */
+function orderedTreeTexts(tree: DocumentTree): string[] {
+  const unitText = (unitId: string) =>
+    tree.units[unitId].sentenceIds
+      .map((id) => tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : "")).join(""))
+      .join("");
+  return tree.blocks.flatMap((block) => {
+    if (block.kind === "unit") return [unitText(block.unitId)];
+    if (block.kind === "figure") return block.captionUnitId ? [unitText(block.captionUnitId)] : [];
+    if (block.kind === "table")
+      return [...(block.captionUnitId ? [block.captionUnitId] : []), ...block.rows.flat().map((cell) => cell.unitId)].map(unitText);
+    if (block.kind === "formula") return [block.text];
+    return [block.text];
+  });
+}
+
 test("arxiv-import 真实 Electron 裸 ID 创建无 PDF 工程，断网重开后完整阅读", async () => {
   const result = await importPaper("离线阅读", ID);
   expect(result.ok).toBe(true);
@@ -529,6 +545,8 @@ test("arxiv-import 真实 Electron 同版重取相同字节复用，离线重转
   expect(offline.ok, JSON.stringify(offline)).toBe(true);
   if (!offline.ok || offline.outcome !== "candidate") return;
   expect(offline.candidate.conflicts).toEqual([]);
+  // 同一快照与转换器：changeset 全部 retained（含阅读顺序），不得有内容变化。
+  expect(offline.candidate.changeset.changes.every((entry) => entry.status === "retained")).toBe(true);
   expect(requests.length).toBe(requestsBefore);
   expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 
@@ -540,7 +558,9 @@ test("arxiv-import 真实 Electron 同版重取相同字节复用，离线重转
   expect((await open(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
   const before = await readDocument(imported.root, imported.revision.revisionId);
   const after = await readDocument(imported.root, published.revision.revisionId);
-  expect([...treeTexts(after)].sort()).toEqual([...treeTexts(before)].sort());
+  // 发布即预览：完整文档树一致，有序阅读投影一致（不排序比较）。
+  expect(after).toEqual(offline.candidate.document);
+  expect(orderedTreeTexts(after)).toEqual(orderedTreeTexts(before));
   expect(requests.length).toBe(requestsBefore);
 });
 
@@ -560,8 +580,7 @@ test("arxiv-import 真实 Electron 同版异字节新快照候选，撤稿新版
   // 重取确实再次请求了 HTML（不是复用旧响应）。
   expect(requests.slice(requestsBeforeRefetch)).toContain(HTML_PATH);
   expect(refetched.candidate.sourceSnapshotId).not.toBe(imported.revision.sourceSnapshotId);
-  expect(refetched.candidate.changeset.changes.some((entry) =>
-    entry.status === "changed" || entry.status === "added" || entry.status === "removed")).toBe(false);
+  expect(refetched.candidate.changeset.changes.every((entry) => entry.status === "retained")).toBe(true);
   expect(await fs.readdir(path.join(imported.root, "sources"))).toHaveLength(2);
   expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 

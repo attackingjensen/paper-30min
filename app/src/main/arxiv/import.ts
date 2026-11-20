@@ -427,8 +427,13 @@ export async function prepareArxivPdfFallback(
       return { ok: false, diagnostic: fatal("arxiv-fallback-base-mismatch", "arxiv.fallback.baseMismatch", "resolve") };
     const revision = await readRevision(latest.root, current);
     // PDF 回退后的 current 来源是 pdf-parse：沿谱系回溯 arXiv 事实（7uo 移交项 4），
-    // 使回退工程仍可参与更新交接；本地 PDF 无谱系时如实拒绝。
-    const lineage = await arxivLineageReference(latest.root, revision.sourceSnapshotId);
+    // 使回退工程仍可参与更新交接；本地 PDF 无谱系或谱系损坏时如实拒绝。
+    let lineage: Awaited<ReturnType<typeof arxivLineageReference>>;
+    try {
+      lineage = await arxivLineageReference(latest.root, revision.sourceSnapshotId);
+    } catch {
+      lineage = null;
+    }
     if (lineage === null || lineage.version === null)
       return { ok: false, diagnostic: fatal("arxiv-fallback-source-invalid", "arxiv.fallback.sourceInvalid", "resolve") };
     reference = lineage;

@@ -177,7 +177,7 @@ test("arxiv-import 转换失败：有效快照保留不误报可读，修复后�
     probeCalls.push(url);
     throw new Error(`离线恢复不得访问网络：${url}`);
   };
-  const recovered = await resumeArxivImport({ root: failed.root, baseUrl: BASE, converter: upgraded });
+  const recovered = await resumeArxivImport({ root: failed.root, transport: forbidden, baseUrl: BASE, converter: upgraded });
   expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
   expect(probeCalls).toHaveLength(0);
   expect(calls.length).toBe(callsBefore);

@@ -5,13 +5,14 @@
 import { createHash } from "node:crypto";
 import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
 import type { ProjectRevisionRecord } from "../../shared/contracts.js";
-import { openProject, readRevision } from "../project-core.js";
+import { openProject, readRevision, readSourceSnapshot } from "../project-core.js";
 import {
   createDocumentMergeCandidate,
   publishDocumentMergeCandidate,
   resolveDocumentMergeCandidateConflict,
   type DocumentMergeCandidate,
 } from "../document/merge.js";
+import { loadUpdateCandidate, storeUpdateCandidate } from "../document/candidate-store.js";
 import { verificationInheritCommitHooks } from "../pdf/verification.js";
 import { convertArxivSnapshotTree } from "./convert.js";
 import { fetchDiagnostic, type ArxivTransport } from "./fetch.js";
@@ -33,7 +34,7 @@ function fatal(
   };
 }
 
-/** current 的 arXiv 谱系（含 PDF 回退回溯）；无 current 或无谱系时返回诊断。 */
+/** current 的 arXiv 谱系（含 PDF 回退回溯）；无 current、无谱系或谱系损坏时返回诊断。 */
 async function currentReference(root: string): Promise<
   | { ok: true; reference: ArxivReference & { version: number }; currentRevision: string }
   | { ok: false; diagnostic: ImportDiagnostic }
@@ -43,7 +44,12 @@ async function currentReference(root: string): Promise<
   if (current === null)
     return fatal("arxiv-update-current-missing", "arxiv.update.currentMissing", "resolve");
   const revision = await readRevision(opened.root, current);
-  const reference = await arxivLineageReference(opened.root, revision.sourceSnapshotId);
+  let reference: ArxivReference | null;
+  try {
+    reference = await arxivLineageReference(opened.root, revision.sourceSnapshotId);
+  } catch {
+    reference = null;
+  }
   if (reference === null || reference.version === null)
     return fatal("arxiv-update-source-invalid", "arxiv.update.sourceInvalid", "resolve");
   return { ok: true, reference: { ...reference, version: reference.version }, currentRevision: current };
@@ -113,36 +119,68 @@ export type ArxivUpdateCandidateResult =
   | { ok: true; outcome: "candidate"; candidate: DocumentMergeCandidate; warnings: ImportDiagnostic[] }
   | { ok: false; diagnostic: ImportDiagnostic };
 
+/** 候选构建入口的统一守卫：基线必须等于 current，选定快照必须属于同一
+ * arXiv base ID（renderer 输入不可信，不能借 reconvert/publish 并入其他来源）。 */
+async function assertCandidateBaseline(input: {
+  root: string;
+  sourceSnapshotId: string;
+  baseRevision: string;
+}): Promise<{ ok: true } | { ok: false; diagnostic: ImportDiagnostic }> {
+  const lineage = await currentReference(input.root);
+  if (!lineage.ok) return lineage;
+  if (input.baseRevision !== lineage.currentRevision)
+    return fatal(
+      "arxiv-update-base-mismatch",
+      `arxiv.update.baseMismatch:候选基线为 ${input.baseRevision}，current 为 ${lineage.currentRevision}。`,
+      "resolve",
+    );
+  let snapshot;
+  try {
+    snapshot = await readSourceSnapshot(input.root, input.sourceSnapshotId);
+  } catch {
+    return fatal("arxiv-update-snapshot-missing", "arxiv.update.snapshotMissing", "resolve");
+  }
+  if (snapshot.kind !== "arxiv" || snapshot.baseId !== lineage.reference.baseId)
+    return fatal("arxiv-update-identity-mismatch", "arxiv.update.identityMismatch", "resolve");
+  return { ok: true };
+}
+
 /** 快照 → 三方合并候选（SPEC §8.2/§8.4/§8.5 共用尾段）：离线转换后交由
- * document-core 与旧 source-base、current 合并；不发布、不推进 current。 */
+ * document-core 与旧 source-base、current 合并；候选整体落盘后才返回——
+ * 发布重载同一份字节，不重新转换（新增节点 UUID 不可重放）。不推进 current。 */
 async function mergeCandidateFromSnapshot(input: {
   root: string;
   sourceSnapshotId: string;
   baseRevision: string;
-  revisionId?: string;
+  /** 获取阶段警告（外部资产未抓取等），随候选持久化供发布结果回显。 */
+  fetchWarnings?: ImportDiagnostic[];
 }): Promise<ArxivUpdateCandidateResult> {
+  const guard = await assertCandidateBaseline(input);
+  if (!guard.ok) return guard;
   const converted = await convertArxivSnapshotTree({ root: input.root, sourceSnapshotId: input.sourceSnapshotId });
   if (!converted.ok) return converted;
+  const warnings = [...(input.fetchWarnings ?? []), ...converted.warnings];
   try {
-    const candidate = await createDocumentMergeCandidate({
+    const merged = await createDocumentMergeCandidate({
       root: input.root,
       baseRevision: input.baseRevision,
       sourceSnapshotId: input.sourceSnapshotId,
       candidate: converted.tree,
       derivedAssets: converted.assetBytes,
-      ...(input.revisionId === undefined ? {} : { revisionId: input.revisionId }),
+      revisionId: candidateIdentity(`arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}`),
     });
-    return {
-      ok: true,
-      outcome: "candidate",
-      candidate: {
-        ...candidate,
-        metadata: {
-          arxiv: { converterVersion: converted.converterVersion, warnings: converted.warnings },
-        },
+    const candidate: DocumentMergeCandidate = {
+      ...merged,
+      metadata: {
+        arxiv: { converterVersion: converted.converterVersion, warnings },
       },
-      warnings: converted.warnings,
     };
+    const stored = await storeUpdateCandidate(candidate);
+    const storedMeta = stored.metadata?.arxiv;
+    const storedWarnings = storedMeta !== null && typeof storedMeta === "object" && "warnings" in storedMeta && Array.isArray(storedMeta.warnings)
+      ? storedMeta.warnings as ImportDiagnostic[]
+      : warnings;
+    return { ok: true, outcome: "candidate", candidate: stored, warnings: storedWarnings };
   } catch (error) {
     return fatal(
       "arxiv-update-merge-failed",
@@ -153,7 +191,8 @@ async function mergeCandidateFromSnapshot(input: {
 }
 
 /** 获取新版候选（SPEC §8.2）：用户显式选择后调用。目标必须同一 base ID、
- * 已固定且非撤稿版本；快照获取与转换后走三方合并，确认发布前 current 不变。 */
+ * 严格高于当前固定版本且非撤稿；同版刷新走 refetch，历史版本不借更新降级。
+ * 快照获取与转换后走三方合并，确认发布前 current 不变。 */
 export async function fetchArxivUpdateCandidate(
   input: UpdateNetworkInput & { root: string; baseRevision: string; reference: ArxivReference },
 ): Promise<ArxivUpdateCandidateResult> {
@@ -164,6 +203,8 @@ export async function fetchArxivUpdateCandidate(
     return fatal("arxiv-version-unpinned", "arxiv.version.unpinned", "resolve");
   if (target.baseId !== lineage.reference.baseId)
     return fatal("arxiv-update-identity-mismatch", "arxiv.update.identityMismatch", "resolve");
+  if (target.version <= lineage.reference.version)
+    return fatal("arxiv-update-version-not-newer", "arxiv.update.versionNotNewer", "resolve");
   if (input.baseRevision !== lineage.currentRevision)
     return fatal(
       "arxiv-update-base-mismatch",
@@ -186,13 +227,12 @@ export async function fetchArxivUpdateCandidate(
     ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
   });
   if (!snapshot.ok) return snapshot;
-  const merged = await mergeCandidateFromSnapshot({
+  return mergeCandidateFromSnapshot({
     root: input.root,
     sourceSnapshotId: snapshot.snapshot.sourceSnapshotId,
     baseRevision: input.baseRevision,
+    fetchWarnings: snapshot.warnings,
   });
-  if (!merged.ok) return merged;
-  return { ...merged, warnings: [...snapshot.warnings, ...merged.warnings] };
 }
 
 export type ArxivRefetchResult =
@@ -230,18 +270,12 @@ export async function refetchArxivSnapshot(
   if (!snapshot.ok) return snapshot;
   if (snapshot.reused)
     return { ok: true, outcome: "reused", sourceSnapshotId: snapshot.snapshot.sourceSnapshotId, warnings: snapshot.warnings };
-  const merged = await mergeCandidateFromSnapshot({
+  return mergeCandidateFromSnapshot({
     root: input.root,
     sourceSnapshotId: snapshot.snapshot.sourceSnapshotId,
     baseRevision: input.baseRevision,
+    fetchWarnings: snapshot.warnings,
   });
-  if (!merged.ok) return merged;
-  return {
-    ok: true,
-    outcome: "candidate",
-    candidate: merged.candidate,
-    warnings: [...snapshot.warnings, ...merged.warnings],
-  };
 }
 
 /** 重新转换既有快照（SPEC §8.5）：纯离线，无 transport 参数——不访问网络。
@@ -251,19 +285,10 @@ export async function reconvertArxivCandidate(input: {
   sourceSnapshotId: string;
   baseRevision: string;
 }): Promise<ArxivUpdateCandidateResult> {
-  const lineage = await currentReference(input.root);
-  if (!lineage.ok) return lineage;
-  if (input.baseRevision !== lineage.currentRevision)
-    return fatal(
-      "arxiv-update-base-mismatch",
-      `arxiv.update.baseMismatch:候选基线为 ${input.baseRevision}，current 为 ${lineage.currentRevision}。`,
-      "resolve",
-    );
   return mergeCandidateFromSnapshot({
     root: input.root,
     sourceSnapshotId: input.sourceSnapshotId,
     baseRevision: input.baseRevision,
-    revisionId: candidateIdentity(`arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}`),
   });
 }
 
@@ -271,22 +296,35 @@ export type ArxivUpdatePublishResult =
   | { ok: true; revision: ProjectRevisionRecord; warnings: ImportDiagnostic[] }
   | { ok: false; diagnostic: ImportDiagnostic };
 
-/** 确认发布更新候选（SPEC §8.7）：按快照与基线确定性重建候选，应用显式冲突
- * 选择后发布；发布前复核 baseRevision，current 已变化或未解决冲突时拒绝。 */
+/** 确认发布更新候选（SPEC §8.7）：重载构建时落盘的同一候选（不重新转换——
+ * 新增节点 UUID 不可重放，发布内容必须与用户确认的预览一致），应用显式冲突
+ * 选择后发布；发布前复核 baseRevision 与来源身份，current 已变化或未解决冲突时拒绝。 */
 export async function publishArxivUpdateCandidate(input: {
   root: string;
   sourceSnapshotId: string;
   baseRevision: string;
   resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>;
 }): Promise<ArxivUpdatePublishResult> {
-  const rebuilt = await mergeCandidateFromSnapshot({
-    root: input.root,
-    sourceSnapshotId: input.sourceSnapshotId,
-    baseRevision: input.baseRevision,
-    revisionId: candidateIdentity(`arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}`),
-  });
-  if (!rebuilt.ok) return rebuilt;
-  let candidate = rebuilt.candidate;
+  const guard = await assertCandidateBaseline(input);
+  if (!guard.ok) return guard;
+  const revisionId = candidateIdentity(`arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}`);
+  let candidate: DocumentMergeCandidate;
+  let warnings: ImportDiagnostic[];
+  try {
+    candidate = await loadUpdateCandidate({ root: input.root, revisionId });
+    const meta = candidate.metadata?.arxiv;
+    warnings = meta !== null && typeof meta === "object" && "warnings" in meta && Array.isArray(meta.warnings)
+      ? meta.warnings as ImportDiagnostic[]
+      : [];
+  } catch (error) {
+    return fatal(
+      "arxiv-update-candidate-missing",
+      `arxiv.update.candidateMissing:${error instanceof Error ? error.message : String(error)}`,
+      "resolve",
+    );
+  }
+  if (candidate.sourceSnapshotId !== input.sourceSnapshotId || candidate.baseRevision !== input.baseRevision)
+    return fatal("arxiv-update-candidate-mismatch", "arxiv.update.candidateMismatch", "resolve");
   try {
     for (const resolution of input.resolutions ?? [])
       candidate = resolveDocumentMergeCandidateConflict(candidate, resolution.conflictId, resolution.choice);
@@ -297,7 +335,7 @@ export async function publishArxivUpdateCandidate(input: {
       sourceSnapshotId: candidate.sourceSnapshotId,
       document: candidate.document,
     }));
-    return { ok: true, revision, warnings: rebuilt.warnings };
+    return { ok: true, revision, warnings };
   } catch (error) {
     return fatal(
       "arxiv-update-publish-failed",

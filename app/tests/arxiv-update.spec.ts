@@ -13,6 +13,7 @@ import {
   readRevision,
   readRevisionDocument,
 } from "../src/main/project-core";
+import type { ImportDiagnostic } from "../src/shared/arxiv";
 import { importArxivPaper } from "../src/main/arxiv/import";
 import {
   checkArxivUpdate,
@@ -138,6 +139,22 @@ function sentenceTexts(tree: Awaited<ReturnType<typeof readRevisionDocument>>): 
       tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : ""))));
 }
 
+/** 按阅读块顺序投影正文（块内按句子顺序）：阅读顺序的权威比较口径。 */
+function orderedTexts(tree: Awaited<ReturnType<typeof readRevisionDocument>>): string[] {
+  const unitText = (unitId: string) =>
+    tree.units[unitId].sentenceIds
+      .map((id) => tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : "")).join(""))
+      .join("");
+  return tree.blocks.flatMap((block) => {
+    if (block.kind === "unit") return [unitText(block.unitId)];
+    if (block.kind === "figure") return block.captionUnitId ? [unitText(block.captionUnitId)] : [];
+    if (block.kind === "table")
+      return [...(block.captionUnitId ? [block.captionUnitId] : []), ...block.rows.flat().map((cell) => cell.unitId)].map(unitText);
+    if (block.kind === "formula") return [block.text];
+    return [block.text];
+  });
+}
+
 test("arxiv-import 更新检查只读 abs：报告新版本，不下载 HTML、不生成候选或推进 current", async () => {
   const imported = await importedProject("检查新版");
   const routes = fullRoutes();
@@ -254,6 +271,12 @@ test("arxiv-import 更新候选：三方合并保留本地修正，确认发布�
   expect(published.ok, JSON.stringify(published)).toBe(true);
   if (!published.ok) return;
   expect(published.revision.baseRevision).toBe(ahead.revisionId);
+  // 发布内容与用户确认的预览是同一候选：revisionId 与完整文档树逐字节一致。
+  expect(published.revision.revisionId).toBe(fresh.candidate.revisionId);
+  expect(await readRevisionDocument(imported.root, published.revision.revisionId, "document"))
+    .toEqual(fresh.candidate.document);
+  expect(await readRevisionDocument(imported.root, published.revision.revisionId, "source-base"))
+    .toEqual(fresh.candidate.sourceBase);
   expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
   const finalTexts = sentenceTexts(await readRevisionDocument(imported.root, published.revision.revisionId, "document")).join(" ");
   expect(finalTexts).toContain("local note");
@@ -332,9 +355,9 @@ test("arxiv-import 同版重取：字节不同新建快照与候选，规范正�
   expect(refetched.candidate.sourceSnapshotId).not.toBe(imported.revision.sourceSnapshotId);
   expect(refetched.candidate.baseRevision).toBe(imported.revision.revisionId);
   expect(refetched.candidate.conflicts).toEqual([]);
-  // 规范正文相同：changeset 不得把派生内容标为 changed/stale。
-  expect(refetched.candidate.changeset.changes.some((entry) =>
-    entry.status === "changed" || entry.status === "added" || entry.status === "removed")).toBe(false);
+  // 规范正文相同：changeset 全部 retained——不得把派生内容标为 changed/stale，
+  // 也不得发生阅读顺序变化（moved 同样是内容事实变化）。
+  expect(refetched.candidate.changeset.changes.every((entry) => entry.status === "retained")).toBe(true);
   // 新快照不可变落盘，旧快照保留，current 未被覆盖。
   const snapshots = await listSourceSnapshots(imported.root);
   expect(snapshots).toHaveLength(2);
@@ -349,10 +372,12 @@ test("arxiv-import 同版重取：字节不同新建快照与候选，规范正�
   });
   expect(published.ok).toBe(true);
   if (!published.ok) return;
+  // 发布即预览：同一候选身份，完整文档树与有序阅读投影逐字节一致。
+  expect(published.revision.revisionId).toBe(refetched.candidate.revisionId);
   const before = await readRevisionDocument(imported.root, imported.revision.revisionId, "document");
   const after = await readRevisionDocument(imported.root, published.revision.revisionId, "document");
-  // 规范正文集合一致（块遍历顺序可因 UUID 排序不同，内容不得变化）。
-  expect([...sentenceTexts(after)].sort()).toEqual([...sentenceTexts(before)].sort());
+  expect(after).toEqual(refetched.candidate.document);
+  expect(orderedTexts(after)).toEqual(orderedTexts(before));
 });
 
 test("arxiv-import 离线重新转换：不触网、不伪造 source-base，确认前 current 不变", async () => {
@@ -370,9 +395,8 @@ test("arxiv-import 离线重新转换：不触网、不伪造 source-base，确�
   // 重新转换的 source-base 来自快照原始内容，不得混入本地修正。
   expect(sentenceTexts(reconverted.candidate.sourceBase).join(" ")).not.toContain("offline keep");
   expect(sentenceTexts(reconverted.candidate.document).join(" ")).toContain("offline keep");
-  // 同一快照与算法版本：规范内容不变，changeset 无内容变化。
-  expect(reconverted.candidate.changeset.changes.some((entry) =>
-    entry.status === "changed" || entry.status === "added" || entry.status === "removed")).toBe(false);
+  // 同一快照与算法版本：规范内容不变，changeset 全部 retained（含阅读顺序）。
+  expect(reconverted.candidate.changeset.changes.every((entry) => entry.status === "retained")).toBe(true);
   expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(edited.revisionId);
   expect(await listSourceSnapshots(imported.root)).toHaveLength(1);
 
@@ -385,6 +409,8 @@ test("arxiv-import 离线重新转换：不触网、不伪造 source-base，确�
   expect(again.ok).toBe(true);
   if (!again.ok) return;
   expect(again.candidate.revisionId).toBe(reconverted.candidate.revisionId);
+  // 重复构建返回存储的同一候选内容（新增节点 UUID 不重放，存储是权威）。
+  expect(again.candidate.document).toEqual(reconverted.candidate.document);
 
   const published = await publishArxivUpdateCandidate({
     root: imported.root,
@@ -394,6 +420,8 @@ test("arxiv-import 离线重新转换：不触网、不伪造 source-base，确�
   expect(published.ok).toBe(true);
   if (!published.ok) return;
   expect(published.revision.revisionId).toBe(reconverted.candidate.revisionId);
+  expect(await readRevisionDocument(imported.root, published.revision.revisionId, "document"))
+    .toEqual(reconverted.candidate.document);
   expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
 });
 
@@ -536,4 +564,214 @@ test("arxiv-import 首次导入未完成时拒绝更新动作，不绕过恢复�
   });
   expect(candidate.ok).toBe(false);
   expect(probe.calls).toHaveLength(0);
+});
+
+test("arxiv-import 更新候选要求严格更高版本：同版与更旧版本网络前拒绝", async () => {
+  const imported = await importedProject("版本守卫");
+  const probe = forbiddenTransport();
+  // 同版（v1）与未固定版本都在网络前拒绝；更旧版本不可能低于 v1，同版即边界。
+  for (const reference of [
+    { baseId: ID, version: 1, canonicalId: `${ID}v1` },
+    { baseId: ID, version: null, canonicalId: ID },
+  ]) {
+    const rejected = await fetchArxivUpdateCandidate({
+      root: imported.root,
+      baseRevision: imported.revision.revisionId,
+      reference,
+      transport: probe.transport,
+      baseUrl: BASE,
+    });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok)
+      expect(["arxiv-update-version-not-newer", "arxiv-version-unpinned"]).toContain(rejected.diagnostic.code);
+  }
+  expect(probe.calls).toHaveLength(0);
+  expect(await listSourceSnapshots(imported.root)).toHaveLength(1);
+  expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+});
+
+test("arxiv-import 异 base 快照不能借 reconvert/publish 并入当前论文", async () => {
+  const imported = await importedProject("异base快照");
+  // 工程中合法存在另一 base ID 的 arXiv 快照（例如历史误导入）：renderer 直接
+  // 指定它做重转换/发布必须被身份守卫拒绝，不绕过 fetch 的来源检查。
+  const { publishSourceSnapshot } = await import("../src/main/project-core");
+  const foreign = await publishSourceSnapshot({
+    root: imported.root,
+    files: { "document.html": Buffer.from(latexmlDocument()), "abs.html": Buffer.from(absHtml({ id: "2401.99999", versions: [1] })) },
+    metadata: { kind: "arxiv", baseId: "2401.99999", version: 1, canonicalId: "2401.99999v1", htmlUrl: `${BASE}/html/2401.99999v1`, assets: {} },
+  });
+  const reconverted = await reconvertArxivCandidate({
+    root: imported.root,
+    sourceSnapshotId: foreign.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(reconverted.ok).toBe(false);
+  if (!reconverted.ok) expect(reconverted.diagnostic.code).toBe("arxiv-update-identity-mismatch");
+  const published = await publishArxivUpdateCandidate({
+    root: imported.root,
+    sourceSnapshotId: foreign.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(published.ok).toBe(false);
+  if (!published.ok) expect(published.diagnostic.code).toBe("arxiv-update-identity-mismatch");
+  expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+});
+
+test("arxiv-import 新增节点候选：发布树与预览一致，current 推进中断后同身份恢复", async () => {
+  const imported = await importedProject("新增节点");
+  const routes = fullRoutes();
+  // v2 新增整节：这些节点无法对齐到 base，转换器为其分配新 UUID。
+  const extraSection = '<section id="S4" class="ltx_section"><h2 class="ltx_title ltx_title_section">New Results</h2>' +
+    '<div id="S4.p1" class="ltx_para"><p class="ltx_p">A newly added finding appears here.</p></div></section>';
+  routes[htmlUrl(2)] = {
+    bytes: Buffer.from(latexmlV2().replace('<section id="A1"', `${extraSection}<section id="A1"`)),
+    mime: "text/html",
+  };
+  routes[absUrl(2)] = { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" };
+  const { transport } = controlledTransport(routes);
+  const candidate = await fetchArxivUpdateCandidate({
+    root: imported.root,
+    baseRevision: imported.revision.revisionId,
+    reference: { baseId: ID, version: 2, canonicalId: `${ID}v2` },
+    transport,
+    baseUrl: BASE,
+  });
+  expect(candidate.ok, JSON.stringify(candidate)).toBe(true);
+  if (!candidate.ok) return;
+  expect(sentenceTexts(candidate.candidate.document).join(" ")).toContain("A newly added finding appears here.");
+  // 新增节点确实带新 UUID（不对齐 base）。
+  const baseTree = await readRevisionDocument(imported.root, imported.revision.revisionId, "source-base");
+  const newUnit = Object.values(candidate.candidate.sourceBase.units).find((unit) =>
+    unit.sentenceIds.some((id) =>
+      candidate.candidate.sourceBase.sentences[id].content.some((part) =>
+        part.kind === "text" && part.text.includes("A newly added finding"))))!;
+  expect(baseTree.units[newUnit.id]).toBeUndefined();
+
+  // current 推进前中断：revision 内容已落盘，current 未动。
+  const { publishDocumentMergeCandidate } = await import("../src/main/document/merge");
+  const { loadUpdateCandidate } = await import("../src/main/document/candidate-store");
+  const stored = await loadUpdateCandidate({ root: imported.root, revisionId: candidate.candidate.revisionId });
+  await expect(publishDocumentMergeCandidate(stored, {
+    onCommitPoint(point) {
+      if (point === "before-current-replace") throw new Error("injected current failure");
+    },
+  })).rejects.toThrow(/injected current failure/);
+  expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+
+  // 同身份重试：重载同一存储候选，字节一致，幂等完成发布；发布树即预览树。
+  const published = await publishArxivUpdateCandidate({
+    root: imported.root,
+    sourceSnapshotId: candidate.candidate.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(published.ok, JSON.stringify(published)).toBe(true);
+  if (!published.ok) return;
+  expect(published.revision.revisionId).toBe(candidate.candidate.revisionId);
+  expect(await readRevisionDocument(imported.root, published.revision.revisionId, "document"))
+    .toEqual(candidate.candidate.document);
+  expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
+  // 中断与重试不产生额外 revision：目录仍只有首次导入与本次发布两份。
+  expect((await fs.readdir(path.join(imported.root, "paper", "revisions"))).sort())
+    .toEqual([imported.revision.revisionId, published.revision.revisionId].sort());
+});
+
+test("arxiv-import PDF 谱系形状守卫：父级非 PDF、父级缺失与本地 PDF 均拒绝", async () => {
+  const { createProject, publishSourceSnapshot, commitRevision } = await import("../src/main/project-core");
+  const { testDocumentTree } = await import("./fixtures/document-tree");
+  const { prepareArxivPdfFallback } = await import("../src/main/arxiv/import");
+  const reason: ImportDiagnostic = { code: "arxiv-update-requested", severity: "fatal", stage: "resolve", messageKey: "arxiv.update.requested" };
+
+  async function projectWithParseSnapshot(name: string, parentId: string) {
+    const created = await createProject({ parent: sandbox, name });
+    const parse = await publishSourceSnapshot({
+      root: created.root,
+      files: { "result.jsonl": Buffer.from("{}\n") },
+      metadata: {
+        kind: "pdf-parse",
+        parentSourceSnapshotId: parentId,
+        parseBatchId: randomUUID(),
+      },
+    });
+    const tree = testDocumentTree(created.manifest.paper.id, "谱系正文");
+    const revision = await commitRevision({
+      root: created.root,
+      baseRevision: null,
+      sourceSnapshotId: parse.sourceSnapshotId,
+      files: {
+        "document.json": Buffer.from(JSON.stringify(tree)),
+        "source-base.json": Buffer.from(JSON.stringify(tree)),
+        "tombstones.json": Buffer.from("[]"),
+        "changeset.json": Buffer.from(JSON.stringify({ baseRevision: null })),
+      },
+    });
+    return { root: created.root, revisionId: revision.revisionId, parseId: parse.sourceSnapshotId };
+  }
+
+  // 损坏链 pdf-parse → arxiv HTML 快照：契约形状是 pdf-parse → pdf，拒绝。
+  const wrongKind = await createProject({ parent: sandbox, name: "错误父级" });
+  const arxivParent = await publishSourceSnapshot({
+    root: wrongKind.root,
+    files: { "document.html": Buffer.from("<html>arxiv</html>") },
+    metadata: { kind: "arxiv", baseId: ID, version: 1, canonicalId: `${ID}v1` },
+  });
+  const wrongParse = await publishSourceSnapshot({
+    root: wrongKind.root,
+    files: { "result.jsonl": Buffer.from("{}\n") },
+    metadata: { kind: "pdf-parse", parentSourceSnapshotId: arxivParent.sourceSnapshotId, parseBatchId: randomUUID() },
+  });
+  const wrongTree = testDocumentTree(wrongKind.manifest.paper.id, "错误父级");
+  const wrongRevision = await commitRevision({
+    root: wrongKind.root,
+    baseRevision: null,
+    sourceSnapshotId: wrongParse.sourceSnapshotId,
+    files: {
+      "document.json": Buffer.from(JSON.stringify(wrongTree)),
+      "source-base.json": Buffer.from(JSON.stringify(wrongTree)),
+      "tombstones.json": Buffer.from("[]"),
+      "changeset.json": Buffer.from(JSON.stringify({ baseRevision: null })),
+    },
+  });
+  const wrongHandoff = await prepareArxivPdfFallback(await openProject(wrongKind.root), reason, BASE, wrongRevision.revisionId);
+  expect(wrongHandoff.ok).toBe(false);
+  if (!wrongHandoff.ok) expect(wrongHandoff.diagnostic.code).toBe("arxiv-fallback-source-invalid");
+  const wrongCheck = await checkArxivUpdate({ root: wrongKind.root, transport: forbiddenTransport().transport, baseUrl: BASE });
+  expect(wrongCheck.ok).toBe(false);
+  if (!wrongCheck.ok) expect(wrongCheck.diagnostic.code).toBe("arxiv-update-source-invalid");
+
+  // 父快照缺失：结构化诊断，不穿透原始异常。
+  const missing = await projectWithParseSnapshot("缺失父级", randomUUID());
+  const missingHandoff = await prepareArxivPdfFallback(await openProject(missing.root), reason, BASE, missing.revisionId);
+  expect(missingHandoff.ok).toBe(false);
+  if (!missingHandoff.ok) expect(missingHandoff.diagnostic.code).toBe("arxiv-fallback-source-invalid");
+  const missingCheck = await checkArxivUpdate({ root: missing.root, transport: forbiddenTransport().transport, baseUrl: BASE });
+  expect(missingCheck.ok).toBe(false);
+  if (!missingCheck.ok) expect(missingCheck.diagnostic.code).toBe("arxiv-update-source-invalid");
+
+  // 父级是本地 PDF（无 arXiv 事实）：无谱系，拒绝。
+  const local = await createProject({ parent: sandbox, name: "本地父级" });
+  const localParent = await publishSourceSnapshot({
+    root: local.root,
+    files: { "paper.pdf": Buffer.from("%PDF-1.7 local") },
+    metadata: { kind: "pdf", sha256: "2".repeat(64), pageCount: 1, originalName: "local.pdf" },
+  });
+  const localParse = await publishSourceSnapshot({
+    root: local.root,
+    files: { "result.jsonl": Buffer.from("{}\n") },
+    metadata: { kind: "pdf-parse", parentSourceSnapshotId: localParent.sourceSnapshotId, parseBatchId: randomUUID() },
+  });
+  const localTree = testDocumentTree(local.manifest.paper.id, "本地父级");
+  const localRevision = await commitRevision({
+    root: local.root,
+    baseRevision: null,
+    sourceSnapshotId: localParse.sourceSnapshotId,
+    files: {
+      "document.json": Buffer.from(JSON.stringify(localTree)),
+      "source-base.json": Buffer.from(JSON.stringify(localTree)),
+      "tombstones.json": Buffer.from("[]"),
+      "changeset.json": Buffer.from(JSON.stringify({ baseRevision: null })),
+    },
+  });
+  const localHandoff = await prepareArxivPdfFallback(await openProject(local.root), reason, BASE, localRevision.revisionId);
+  expect(localHandoff.ok).toBe(false);
+  if (!localHandoff.ok) expect(localHandoff.diagnostic.code).toBe("arxiv-fallback-source-invalid");
 });

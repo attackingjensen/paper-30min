@@ -43,8 +43,14 @@ async function assertHandoffMatchesProject(root: string, request: PdfFallbackReq
   }
   if (current === null || current !== request.baseRevision) mismatch(root);
   const revision = await readRevision(opened.root, current);
-  // 谱系回溯与 prepareArxivPdfFallback 同一谓词：pdf-parse → pdf → arXiv 事实。
-  const lineage = await arxivLineageReference(opened.root, revision.sourceSnapshotId);
+  // 谱系回溯与 prepareArxivPdfFallback 同一谓词：pdf-parse → pdf → arXiv 事实；
+  // 谱系损坏（父快照缺失等）与谱系不符同样拒绝，不穿透原始异常。
+  let lineage: Awaited<ReturnType<typeof arxivLineageReference>>;
+  try {
+    lineage = await arxivLineageReference(opened.root, revision.sourceSnapshotId);
+  } catch {
+    mismatch(root);
+  }
   if (
     lineage === null ||
     lineage.baseId !== request.baseId ||

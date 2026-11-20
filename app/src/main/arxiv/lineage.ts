@@ -36,7 +36,9 @@ function arxivReferenceOf(snapshot: SourceSnapshotRecord): ArxivReference | null
 }
 
 /** 从来源快照回溯 arXiv 身份：arxiv 快照即自身；pdf 快照读谱系事实；
- * pdf-parse 沿父级回溯一跳；本地 PDF 或无谱系来源返回 null，不猜测身份。 */
+ * pdf-parse 只沿父级 PDF 快照回溯一跳（契约形状 pdf-parse → pdf → arXiv 事实）。
+ * 本地 PDF、无谱系或父级类型不符返回 null，不猜测身份；快照缺失/损坏由
+ * readSourceSnapshot 抛错，调用方转换为结构化诊断。 */
 export async function arxivLineageReference(
   root: string,
   sourceSnapshotId: string,
@@ -45,7 +47,9 @@ export async function arxivLineageReference(
   if (snapshot.kind === "pdf-parse") {
     const parentId = snapshot.parentSourceSnapshotId;
     if (typeof parentId !== "string" || !UUID.test(parentId)) return null;
-    return arxivReferenceOf(await readSourceSnapshot(root, parentId));
+    const parent = await readSourceSnapshot(root, parentId);
+    if (parent.kind !== "pdf") return null;
+    return arxivReferenceOf(parent);
   }
   return arxivReferenceOf(snapshot);
 }

@@ -82,7 +82,7 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 - 新核经 `core*` 命令与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统；主进程负责系统选择器和外部打开。
 - 界面创建/打开链路仍是 `project-service.ts` 的 `formatVersion: 1` 过渡形态（PDF 复制入工程、EmbedPDF 只读 Viewer、Markdown CodeMirror 编辑与自动保存、外部变化冲突提示）；新核界面接管由全文阅读器等后续 phase 承接。两种格式互不读取。
 - arXiv／PDF 导入命令面已可用：受控 transport 的 `baseUrl` 注入点仅测试门控生效，生产拒绝回环/私网；PDF 云端命令的凭据由主进程注入，上传确认经 `pdf:uploadConfirm` 由 renderer 显式应答；提交结果不明必须人工关联任务号，不自动重传。
-- arXiv 更新编排（SPEC §8）命令面已可用：`coreArxivCheckUpdate` 只读 abs 报告版本状态；`coreArxivUpdateCandidate`／`coreArxivRefetch`／`coreArxivReconvert` 形成三方合并候选（离线重转换无网络参数）；`coreArxivPublishCandidate` 复核 baseRevision 并应用显式冲突选择后发布。PDF 回退后的工程按 pdf-parse→pdf→arXiv 谱系回溯参与检查与更新；候选确认前 current 不变，不做后台自动更新。
+- arXiv 更新编排（SPEC §8）命令面已可用：`coreArxivCheckUpdate` 只读 abs 报告版本状态；`coreArxivUpdateCandidate`（要求严格更高版本）／`coreArxivRefetch`／`coreArxivReconvert` 形成三方合并候选（离线重转换无网络参数）；候选构建时整体落盘，`coreArxivPublishCandidate` 重载同一存储字节、复核 baseRevision 与来源身份并应用显式冲突选择后发布。PDF 回退后的工程按 pdf-parse→pdf→arXiv 谱系回溯参与检查与更新；候选确认前 current 不变，不做后台自动更新。
 - 通用文档合并不依赖来源模块；核验继承等来源侧车逻辑由 PDF 侧调用方经 commit 钩子注入（见工程契约）。
 - 无云端资产的视觉块可引用原页裁剪图（PDFium 内容寻址 PNG，随候选 revision 发布，不回写快照）；公式块裁剪是可选区域证据，LaTeX／文本仍是权威。
 - 契约测试使用受控 fixtures／受控百度服务，不访问真实云端；真实 Electron 回归经生产 preload、IPC、Node 工程进程与真实 undici 传输。真实 arXiv／百度／模型验收须用户明确授权并单独记录（见下文与 CONSTRAINTS W2）。

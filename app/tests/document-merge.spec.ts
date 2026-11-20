@@ -294,6 +294,13 @@ test("document-core 来源重排 unit 内句子对三方合并可见：无本地
   const unitChange = result.changeset.changes.find((entry) =>
     entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit);
   expect(unitChange?.status).toBe("moved");
+  // 换位的句子本身也记录 moved（阅读位置是结构事实），不得仍是 retained。
+  for (const sentenceId of base.units[selectionIds.secondUnit].sentenceIds) {
+    expect(result.changeset.changes.find((entry) =>
+      entry.nodeType === "sentence" && entry.nodeId === sentenceId)?.status).toBe("moved");
+  }
+  expect(result.changeset.changes.some((entry) =>
+    entry.status === "added" || entry.status === "removed")).toBe(false);
 });
 
 test("document-core 本地重排与来源重排方向不同时生成 unit 冲突，显式解决前不可发布", () => {
@@ -320,6 +327,40 @@ test("document-core 本地重排与来源重排方向不同时生成 unit 冲突
   const resolved = resolveDocumentMergeConflict(unresolved, unresolved.conflicts[0].id, "candidate");
   expect(resolved.document.units[selectionIds.secondUnit].sentenceIds).toEqual([c, b, a]);
   expect(() => assertDocumentMergePublishable(resolved, resolved.baseRevision)).not.toThrow();
+});
+
+test("document-core 重转换重发句子 UUID 且重排：对齐延续 ID，顺序变化可见且无删除新增", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Alpha first.", "Beta second.", "Gamma third."]);
+  const [a, b, c] = base.units[selectionIds.secondUnit].sentenceIds;
+  const current = structuredClone(base);
+  // 真实重转换形状：句子全部重发 UUID，且来源把阅读顺序改为 c,a,b。
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const fresh = ["Gamma third.", "Alpha first.", "Beta second."].map(() => randomUUID());
+  for (const oldId of [a, b, c]) delete candidate.sentences[oldId];
+  ["Gamma third.", "Alpha first.", "Beta second."].forEach((text, index) => {
+    candidate.sentences[fresh[index]] = {
+      id: fresh[index],
+      unitId: selectionIds.secondUnit,
+      content: [{ kind: "text", text }],
+    };
+  });
+  candidate.units[selectionIds.secondUnit].sentenceIds = fresh;
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  // 文本证据延续稳定 ID：无 added/removed，阅读顺序采用来源新顺序。
+  expect(result.changeset.changes.some((entry) =>
+    entry.nodeType === "sentence" && (entry.status === "added" || entry.status === "removed"))).toBe(false);
+  expect(result.document.units[selectionIds.secondUnit].sentenceIds).toEqual([c, a, b]);
+  expect(projectSentenceText(result.document, c)).toBe("Gamma third.");
+  expect(projectSentenceText(result.document, a)).toBe("Alpha first.");
+  const unitChange = result.changeset.changes.find((entry) =>
+    entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit);
+  expect(unitChange?.status).toBe("moved");
 });
 
 test("document-core 重解析对齐 unit 后本地句子修正与来源修正产生 content 冲突", () => {

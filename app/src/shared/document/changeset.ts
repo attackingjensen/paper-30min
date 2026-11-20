@@ -141,7 +141,12 @@ function contentFingerprint(node: DocumentNode, nodeType: NodeType) {
   ));
 }
 
-function structureFingerprint(node: DocumentNode, nodeType: NodeType, blockIndex: number) {
+function structureFingerprint(
+  node: DocumentNode,
+  nodeType: NodeType,
+  blockIndex: number,
+  sentenceIndex: number,
+) {
   if (nodeType === "section") return canonical({
     parentSectionId: node.parentSectionId,
     childSectionIds: node.childSectionIds,
@@ -151,8 +156,18 @@ function structureFingerprint(node: DocumentNode, nodeType: NodeType, blockIndex
     sectionId: node.sectionId,
     sentenceIds: node.sentenceIds,
   });
-  if (nodeType === "sentence" || nodeType === "atom") return canonical({ unitId: node.unitId });
+  // 句子在父 unit 内的阅读位置属于结构事实：仅重排也应记录 moved（SPEC §9）。
+  if (nodeType === "sentence") return canonical({ unitId: node.unitId, index: sentenceIndex });
+  if (nodeType === "atom") return canonical({ unitId: node.unitId });
   return canonical({ sectionId: node.sectionId, index: blockIndex });
+}
+
+function sentenceIndexes(tree: DocumentTree | null): Map<string, number> {
+  const indexes = new Map<string, number>();
+  if (!tree) return indexes;
+  for (const unit of Object.values(tree.units))
+    unit.sentenceIds.forEach((sentenceId, index) => indexes.set(sentenceId, index));
+  return indexes;
 }
 
 function sameMembers(base: unknown, current: unknown) {
@@ -177,13 +192,15 @@ function changeStatus(
   current: DocumentNode | undefined,
   baseBlockIndex: number,
   currentBlockIndex: number,
+  baseSentenceIndex: number,
+  currentSentenceIndex: number,
 ): ChangeStatus {
   if (!base && current) return "added";
   if (base && !current) return "removed";
   if (!base || !current) throw new Error("变化节点必须至少出现在一棵树中。");
   if (contentFingerprint(base, nodeType) !== contentFingerprint(current, nodeType)) return "changed";
-  if (structureFingerprint(base, nodeType, baseBlockIndex) !==
-    structureFingerprint(current, nodeType, currentBlockIndex))
+  if (structureFingerprint(base, nodeType, baseBlockIndex, baseSentenceIndex) !==
+    structureFingerprint(current, nodeType, currentBlockIndex, currentSentenceIndex))
     return membershipChanged(base, current, nodeType) ? "changed" : "moved";
   return "retained";
 }
@@ -201,6 +218,8 @@ export function createDocumentChangeset(input: {
   const changes: DocumentChangeset["changes"] = [];
   const baseBlockIndexes = new Map(input.base?.blocks.map((block, index) => [block.id, index]));
   const currentBlockIndexes = new Map(input.current.blocks.map((block, index) => [block.id, index]));
+  const baseSentenceIndexes = sentenceIndexes(input.base);
+  const currentSentenceIndexes = sentenceIndexes(input.current);
   for (const nodeType of nodeTypes) {
     const baseNodes = new Map(input.base ? nodes(input.base, nodeType).map((node) => [node.id, node]) : []);
     const currentNodes = new Map(nodes(input.current, nodeType).map((node) => [node.id, node]));
@@ -215,6 +234,8 @@ export function createDocumentChangeset(input: {
           currentNodes.get(nodeId),
           baseBlockIndexes.get(nodeId) ?? -1,
           currentBlockIndexes.get(nodeId) ?? -1,
+          baseSentenceIndexes.get(nodeId) ?? -1,
+          currentSentenceIndexes.get(nodeId) ?? -1,
         ),
       });
     }
