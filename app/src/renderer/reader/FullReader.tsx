@@ -453,15 +453,6 @@ export function FullReader({
   // 程序化滚动归属：记录 scrollTo 之后浏览器实际落点（含钳制），
   // scroll 事件落在该位置即程序化；其余一律用户意图，恢复让位（§5.6）。
   const expectedScrollTop = useRef<number | null>(null);
-  const scrollTrace = useRef<{ t: number; top: number; expected: number | null; user: boolean; src: string }[]>([]);
-  const scrollTraceRecord = (container: HTMLElement, src: string) => {
-    scrollTrace.current.push({
-      t: Date.now(), top: container.scrollTop,
-      expected: expectedScrollTop.current, user: userScrolled.current, src,
-    });
-    if (scrollTrace.current.length > 500) scrollTrace.current.splice(0, scrollTrace.current.length - 500);
-    (window as unknown as { __readerScrollTrace?: unknown }).__readerScrollTrace = scrollTrace.current;
-  };
   const programmaticScrollTo = (container: HTMLElement, top: number) => {
     if (Math.abs(container.scrollTop - top) <= 1) return;
     container.scrollTo({ top, behavior: "instant" });
@@ -657,7 +648,6 @@ export function FullReader({
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onScroll = () => {
       const expected = expectedScrollTop.current;
-      scrollTraceRecord(container, expected !== null && Math.abs(container.scrollTop - expected) <= 2 ? "prog" : "unattributed");
       // 落在程序化实际落点即恢复/resize/定位自身滚动；其余视为用户意图。
       if (expected !== null && Math.abs(container.scrollTop - expected) <= 2) {
         expectedScrollTop.current = null;
@@ -675,10 +665,7 @@ export function FullReader({
         cancelRestore();
     };
     container.addEventListener("scroll", onScroll, { passive: true });
-    const onWheel = (event: WheelEvent) => {
-      scrollTraceRecord(container, `wheel:${event.deltaY}`);
-      cancelRestore();
-    };
+    const onWheel = () => cancelRestore();
     container.addEventListener("wheel", onWheel, { passive: true });
     container.addEventListener("touchmove", cancelRestore, { passive: true });
     window.addEventListener("keydown", onKey);

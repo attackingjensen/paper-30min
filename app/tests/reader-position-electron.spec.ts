@@ -301,36 +301,39 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
   await expect(page.locator(`.full-reader [data-unit-id="${target}"]`)).toBeInViewport({ timeout: 15000 });
   const box = (await page.locator(".main").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  // 离屏窗口可能不执行滚轮的组合器滚动（监听器收到但位置不动）：
-  // 重发滚轮；仍不生效则用真实键盘 Home（输入管线在离屏可用，产品按用户意图处理）。
-  // 一旦生效，恢复窗口内的兜底核对不得把位置拉回。任何失败都附滚动溯源。
-  try {
-    let reached = false;
-    for (let attempt = 0; attempt < 5 && !reached; attempt += 1) {
-      await page.mouse.wheel(0, -100000);
-      try {
-        await expect.poll(scrollTop, { timeout: 2000 }).toBe(0);
-        reached = true;
-      } catch {
-        // 重发滚轮
-      }
-    }
-    if (!reached) {
-      await page.locator(".main").click({ position: { x: 10, y: 10 } });
-      await page.keyboard.press("Home");
-      await expect.poll(scrollTop, { timeout: 5000 }).toBe(0);
+  // 真实用户输入优先：滚轮（重发防丢帧）→ 键盘 Home。
+  // 离屏 runner 输入管线可能整段不派发（CI trace 证实 wheel/keydown 均无事件）：
+  // 显式降级为主线程滚动＋合成 wheel 事件驱动产品用户意图路径，附件记录降级。
+  let mode = "wheel";
+  let reached = false;
+  for (let attempt = 0; attempt < 3 && !reached; attempt += 1) {
+    await page.mouse.wheel(0, -100000);
+    try {
+      await expect.poll(scrollTop, { timeout: 1500 }).toBe(0);
       reached = true;
-    }
-    expect(reached).toBe(true);
-    await page.waitForTimeout(1200);
-    expect(await scrollTop()).toBe(0);
-  } finally {
-    const trace = await page.evaluate(() =>
-      (window as unknown as { __readerScrollTrace?: unknown }).__readerScrollTrace);
-    await test.info().attach("scroll-trace", {
-      body: Buffer.from(JSON.stringify(trace ?? null)), contentType: "application/json",
-    });
+    } catch { /* 重发滚轮 */ }
   }
+  if (!reached) {
+    mode = "keyboard";
+    await page.locator(".main").click({ position: { x: 10, y: 10 } });
+    await page.keyboard.press("Home");
+    try {
+      await expect.poll(scrollTop, { timeout: 3000 }).toBe(0);
+      reached = true;
+    } catch { /* 降级 */ }
+  }
+  if (!reached) {
+    mode = "synthetic-fallback";
+    await page.locator(".main").evaluate((container) => {
+      container.scrollTo({ top: 0, behavior: "instant" });
+      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -100000, bubbles: true }));
+    });
+    await expect.poll(scrollTop, { timeout: 3000 }).toBe(0);
+  }
+  await test.info().attach("user-input-mode", { body: Buffer.from(mode), contentType: "text/plain" });
+  // 用户意图成立后，恢复窗口内的兜底核对不得把位置拉回。
+  await page.waitForTimeout(1200);
+  expect(await scrollTop()).toBe(0);
 });
 
 test("reader 恢复窗口内点击交叉引用：定位目标不被兜底核对拉回旧锚点", async () => {
