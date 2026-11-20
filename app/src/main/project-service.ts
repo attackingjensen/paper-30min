@@ -78,6 +78,28 @@ function validateReading(value: ReadingState): ReadingState {
     )
       throw new Error("PDF 阅读位置无效。");
   }
+  if (value.reader !== undefined) {
+    if (!value.reader || typeof value.reader !== "object" || Array.isArray(value.reader))
+      throw new Error("Full 阅读位置无效。");
+    for (const [tab, p] of Object.entries(value.reader)) {
+      if (
+        !tab ||
+        !p ||
+        typeof p.revisionId !== "string" ||
+        !["source", "translation"].includes(p.view) ||
+        !p.anchor ||
+        typeof p.anchor.kind !== "string" ||
+        (p.parentSectionId !== null && typeof p.parentSectionId !== "string") ||
+        typeof p.excerpt !== "string" ||
+        p.excerpt.length > 4096 ||
+        !Number.isFinite(p.offsetWithinAnchor) ||
+        !Number.isFinite(p.scrollTop) ||
+        p.scrollTop < 0 ||
+        typeof p.capturedAt !== "string"
+      )
+        throw new Error("Full 阅读位置无效。");
+    }
+  }
   return value;
 }
 
@@ -633,12 +655,15 @@ export class ProjectService {
     const m = await this.manifest(root);
     if (
       command.type === "saveWorkspace" ||
-      command.type === "savePdfPosition"
+      command.type === "savePdfPosition" ||
+      command.type === "saveReaderPosition"
     ) {
       const state = await this.reading(root);
       if (command.type === "saveWorkspace") {
         state.tabs = command.tabs;
         state.active = command.active;
+      } else if (command.type === "saveReaderPosition") {
+        (state.reader ??= {})[command.tab] = command.position;
       } else {
         relativePath(command.path);
         state.pdf[command.path] = command.position;

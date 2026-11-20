@@ -38,6 +38,7 @@ import { PdfReader } from "./PdfReader";
 import { MarkdownDocument } from "./MarkdownDocument";
 import { AgentPanel } from "./AgentPanel";
 import type { ChatAttachment } from "../shared/chat-input";
+import type { ReadingPosition } from "../shared/reader/position";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { ProductSkillsForm } from "./ProductSkillsForm";
 import { ParsingSettingsForm } from "./ParsingSettingsForm";
@@ -144,6 +145,9 @@ export function App() {
   const agentViews = useRef<Record<string, { active: string; text: string; attachments?: ChatAttachment[] }>>(
     {},
   );
+  // Full 阅读器逻辑位置：按工程 root 隔离（tab key 固定为 paper），
+  // reader 捕获后经 saveReaderPosition 持久化；重开工程按锚点恢复。
+  const readerPositions = useRef<Record<string, ReadingPosition>>({});
   useEffect(() => {
     if (root)
       void desktop
@@ -165,6 +169,12 @@ export function App() {
       })
       .catch((e) => setError((e as Error).message));
   }
+  const saveReaderPosition = useCallback((projectRoot: string, position: ReadingPosition) => {
+    readerPositions.current[projectRoot] = position;
+    void desktop
+      .invoke({ type: "saveReaderPosition", root: projectRoot, tab: "paper", position })
+      .catch((e) => setError((e as Error).message));
+  }, []);
 
   const run = useCallback(
     async <T,>(operation: () => Promise<T>): Promise<T | undefined> => {
@@ -281,6 +291,8 @@ export function App() {
       ? { key: paperPath, path: paperPath, title: paperPath.split("/").at(-1)! }
       : { key: "paper", title: "原始论文" };
     positions.current[p.root] = p.reading.pdf;
+    const savedReader = p.reading.reader?.paper;
+    if (savedReader) readerPositions.current[p.root] = savedReader;
     const restored = p.reading.tabs.filter(
       (t) => !["map", "explanations", "translations", "materials", "parsing"].includes(t.key) &&
         (!t.path || p.files.some((f) => f.path === t.path && !f.directory)),
@@ -401,6 +413,8 @@ export function App() {
           key={root}
           root={root}
           epoch={projectEpoch.current}
+          savedPosition={readerPositions.current[root] ?? null}
+          onPosition={(position) => saveReaderPosition(root, position)}
           onAsk={(text) => {
             setRight(true);
             setAskDraft({ id: ++askDraftId.current, text });

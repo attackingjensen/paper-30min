@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import type { ProjectCoreSnapshot } from "../../shared/contracts";
+import type { ProjectCoreSnapshot, ProjectRevisionContext } from "../../shared/contracts";
 import "./reader.css";
 import type { DocumentTree } from "../../shared/document/tree";
 import { createRangeAnchor } from "../../shared/document/anchor";
@@ -18,6 +18,11 @@ import {
   type ReaderUnitContent,
 } from "../../shared/reader/projection";
 import { buildSelectionIndex, mapDomSelection, type SelectionIndex } from "../../shared/reader/selection";
+import {
+  resolveReadingPosition,
+  type ReadingPosition,
+  type ReadingPositionAnchor,
+} from "../../shared/reader/position";
 
 const desktop = window.desktop;
 /** raw block 白名单（与 document-core rawHtmlTags 一致）：渲染层独立消毒，
@@ -59,6 +64,34 @@ interface ReaderState {
   projection: ReaderProjection;
   index: SelectionIndex;
   facts: ReaderSourceFacts;
+  context: ProjectRevisionContext;
+}
+
+/** 位置通知：changed/removed 的显式提示与 removed 摘录（不参与相似匹配）。 */
+interface PositionNotice {
+  text: string;
+  excerpt: string | null;
+}
+
+const positionAnchorSelector = (anchor: ReadingPositionAnchor): string => {
+  switch (anchor.kind) {
+    case "section": return `[data-section-id="${anchor.sectionId}"]`;
+    case "unit": return `[data-unit-id="${anchor.unitId}"]`;
+    case "sentence": return `[data-sentence-id="${anchor.sentenceId}"]`;
+    case "atom": return `[data-atom-id="${anchor.atomId}"]`;
+    case "block": return `[data-block-id="${anchor.blockId}"]`;
+  }
+};
+
+/** 捕获时锚点所属父 section：removed 回退规则的唯一依据。 */
+function parentSectionOf(tree: DocumentTree, anchor: ReadingPositionAnchor): string | null {
+  switch (anchor.kind) {
+    case "section": return tree.sections[anchor.sectionId]?.parentSectionId ?? null;
+    case "unit": return tree.units[anchor.unitId]?.sectionId ?? null;
+    case "sentence": return tree.units[tree.sentences[anchor.sentenceId]?.unitId ?? ""]?.sectionId ?? null;
+    case "atom": return tree.units[tree.atoms[anchor.atomId]?.unitId ?? ""]?.sectionId ?? null;
+    case "block": return tree.blocks.find((block) => block.id === anchor.blockId)?.sectionId ?? null;
+  }
 }
 
 function sourceFacts(snapshot: Record<string, unknown>): ReaderSourceFacts {
@@ -360,18 +393,35 @@ export function FullReader({
   root,
   epoch = 0,
   onAsk,
+  savedPosition = null,
+  onPosition,
 }: {
   root: string;
   epoch?: number;
   /** 解释/提问进入右侧持续对话；reader 不创建问答卡、不直接发送模型请求。 */
   onAsk?: (draft: string) => void;
+  /** workspace 持久化的本窗格位置（挂载时快照）；恢复以锚点为权威。 */
+  savedPosition?: ReadingPosition | null;
+  /** 位置捕获回调：workspace 决定持久化时机；reader 不直接写文件。 */
+  onPosition?: (position: ReadingPosition) => void;
 }) {
   const [state, setState] = useState<ReaderState | null>(null);
   const [status, setStatus] = useState<"loading" | "empty" | "ready" | "error">("loading");
   const [message, setMessage] = useState("");
   const [toolbar, setToolbar] = useState<SelectionToolbarState | null>(null);
+  const [notice, setNotice] = useState<PositionNotice | null>(null);
   const requestRef = useRef(0);
   const articleRef = useRef<HTMLElement | null>(null);
+  // 恢复请求代际：用户滚动即失效，迟到布局结果不得覆盖新位置。
+  const restoreEpoch = useRef(0);
+  // 用户真实滚动意图（wheel/触摸/键盘）：程序化恢复滚动不算。
+  const userScrolled = useRef(false);
+  const savedRef = useRef(savedPosition);
+  savedRef.current = savedPosition;
+  const onPositionRef = useRef(onPosition);
+  onPositionRef.current = onPosition;
+  const stateRef = useRef<ReaderState | null>(null);
+  stateRef.current = state;
 
   useEffect(() => {
     const request = ++requestRef.current;
@@ -396,7 +446,7 @@ export function FullReader({
         return;
       }
       const revision = core.currentRevision;
-      const [treeValue, snapshot] = await Promise.all([
+      const [treeValue, snapshot, context] = await Promise.all([
         desktop.invoke<unknown>({
           type: "coreReadDocument",
           root,
@@ -407,6 +457,11 @@ export function FullReader({
           type: "coreReadSource",
           root,
           sourceSnapshotId: revision.sourceSnapshotId,
+        }),
+        desktop.invoke<ProjectRevisionContext>({
+          type: "coreReadRevisionContext",
+          root,
+          revisionId: revision.revisionId,
         }),
       ]);
       if (disposed || request !== requestRef.current) return;
@@ -420,6 +475,7 @@ export function FullReader({
         projection,
         index: buildSelectionIndex(projection),
         facts: sourceFacts(snapshot),
+        context,
       });
       setToolbar(null);
       setStatus("ready");
@@ -483,6 +539,198 @@ export function FullReader({
     };
   }, [status, refreshSelection]);
 
+  // 位置捕获（SPEC-reader §5.1）：视口最上方可见锚点＋锚内相对偏移；
+  // scrollTop 只作辅助。用户滚动使进行中的恢复失效（§5.6）。
+  const capturePosition = useCallback((): ReadingPosition | null => {
+    const article = articleRef.current;
+    const current = stateRef.current;
+    const container = article?.parentElement;
+    if (!article || !current || !container) return null;
+    const containerTop = container.getBoundingClientRect().top;
+    const candidates = article.querySelectorAll<HTMLElement>(
+      "[data-block-id], [data-section-id]",
+    );
+    let chosen: HTMLElement | null = null;
+    let anchor: ReadingPositionAnchor | null = null;
+    for (const element of candidates) {
+      const rect = element.getBoundingClientRect();
+      if (rect.height === 0 || rect.bottom <= containerTop + 1) continue;
+      const unitId = element.getAttribute("data-unit-id");
+      const sectionId = element.getAttribute("data-section-id");
+      const blockId = element.getAttribute("data-block-id");
+      if (unitId && current.tree.units[unitId]) anchor = { kind: "unit", unitId };
+      else if (sectionId && current.tree.sections[sectionId]) anchor = { kind: "section", sectionId };
+      else if (blockId && current.tree.blocks.some((block) => block.id === blockId))
+        anchor = { kind: "block", blockId };
+      else continue;
+      chosen = element;
+      break;
+    }
+    if (!chosen || !anchor) return null;
+    const excerpt = (chosen.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+    return {
+      revisionId: current.revisionId,
+      view: "source",
+      anchor,
+      parentSectionId: parentSectionOf(current.tree, anchor),
+      excerpt,
+      offsetWithinAnchor: containerTop - chosen.getBoundingClientRect().top,
+      scrollTop: container.scrollTop,
+      capturedAt: new Date().toISOString(),
+    };
+  }, []);
+
+  useEffect(() => {
+    if (status !== "ready") return;
+    const container = articleRef.current?.parentElement;
+    if (!container) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const markUserScroll = () => {
+      userScrolled.current = true;
+      restoreEpoch.current++;
+    };
+    const onScroll = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const position = capturePosition();
+        if (position) onPositionRef.current?.(position);
+      }, 200);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key))
+        markUserScroll();
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    container.addEventListener("wheel", markUserScroll, { passive: true });
+    container.addEventListener("touchmove", markUserScroll, { passive: true });
+    window.addEventListener("keydown", onKey);
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      container.removeEventListener("wheel", markUserScroll);
+      container.removeEventListener("touchmove", markUserScroll);
+      window.removeEventListener("keydown", onKey);
+      clearTimeout(timer);
+      // 仅在仍对应当前 revision 时落盘：revision 切换的清理不得把
+      // 旧 DOM 的视口位置写成新 revision 的捕获（卸载/切 tab 仍会捕获）。
+      const position = capturePosition();
+      if (position && position.revisionId === stateRef.current?.revisionId)
+        onPositionRef.current?.(position);
+    };
+  }, [status, capturePosition]);
+
+  // 恢复（SPEC-reader §5.2–5.5）：先按锚点定位已挂载目标，等字体/图片/公式
+  // 布局稳定后恢复锚内相对偏移；removed 按父 section 显式回退并展示摘录。
+  useEffect(() => {
+    if (status !== "ready" || !state) return;
+    const saved = savedRef.current;
+    const container = articleRef.current?.parentElement;
+    const article = articleRef.current;
+    if (!saved || !container || !article) return;
+    const epochAtStart = ++restoreEpoch.current;
+    userScrolled.current = false;
+    // 恢复窗口内禁用浏览器滚动锚定：KaTeX 字体度量等上方高度漂移
+    // 会静默平移 scrollTop 且不触发 scroll 事件，与锚点恢复互相打架。
+    const previousOverflowAnchor = container.style.overflowAnchor;
+    container.style.overflowAnchor = "none";
+    const resolution = resolveReadingPosition(saved, {
+      tree: state.tree,
+      projection: state.projection,
+      changeset: state.context.changeset,
+      tombstones: state.context.tombstones,
+    });
+    const target = resolution.status === "removed" ? resolution.fallback : resolution.anchor;
+    setNotice(
+      resolution.status === "restored"
+        ? null
+        : {
+            text: resolution.notice,
+            excerpt: resolution.status === "removed"
+              ? resolution.tombstone?.excerpt || resolution.excerpt || null
+              : null,
+          },
+    );
+    const offset = resolution.status === "removed" ? 0 : resolution.offsetWithinAnchor;
+    let disposed = false;
+    let resizeObserver: ResizeObserver | null = null;
+    let mutationObserver: MutationObserver | null = null;
+    const timers: number[] = [];
+    let interval: number | null = null;
+    const align = () => {
+      if (disposed || epochAtStart !== restoreEpoch.current || userScrolled.current) return;
+      const element = target
+        ? article.querySelector<HTMLElement>(positionAnchorSelector(target))
+        : null;
+      if (target && !element) return;
+      const top = element
+        ? container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - offset
+        : 0;
+      container.scrollTo({ top: Math.max(0, top), behavior: "instant" });
+    };
+    (async () => {
+      try {
+        await document.fonts.ready;
+      } catch {
+        // 字体接口不可用时仍按当前布局恢复。
+      }
+      if (disposed || epochAtStart !== restoreEpoch.current) return;
+      align();
+      // 图片/公式懒加载与 KaTeX 字体度量都会改变高度：尺寸与子树变化
+      // 都按同一锚点重对齐；用户滚动即整体失效。
+      resizeObserver = new ResizeObserver(align);
+      resizeObserver.observe(article);
+      mutationObserver = new MutationObserver(align);
+      mutationObserver.observe(article, { childList: true, subtree: true, characterData: true });
+      timers.push(window.setTimeout(() => {
+        resizeObserver?.disconnect();
+        resizeObserver = null;
+        mutationObserver?.disconnect();
+        mutationObserver = null;
+      }, 2000));
+      // 兜底核对：字体度量/懒加载可能在 observer 静默期后仍改变上方高度；
+      // 周期性按同一锚点核对，仍受代际与用户滚动约束。
+      interval = window.setInterval(align, 400);
+      timers.push(window.setTimeout(() => {
+        if (interval !== null) window.clearInterval(interval);
+        interval = null;
+      }, 8000));
+    })();
+    return () => {
+      disposed = true;
+      for (const timer of timers) window.clearTimeout(timer);
+      if (interval !== null) window.clearInterval(interval);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      container.style.overflowAnchor = previousOverflowAnchor;
+    };
+  }, [status, state]);
+
+  // resize/布局变化：以当前锚点为中心重定位，不追求旧绝对像素（§5.3）。
+  useEffect(() => {
+    if (status !== "ready") return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onResize = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const position = capturePosition();
+        const container = articleRef.current?.parentElement;
+        const article = articleRef.current;
+        if (!position || !container || !article) return;
+        const element = article.querySelector<HTMLElement>(positionAnchorSelector(position.anchor));
+        if (!element) return;
+        container.scrollTop = Math.max(
+          0,
+          container.scrollTop + element.getBoundingClientRect().top -
+            container.getBoundingClientRect().top - position.offsetWithinAnchor,
+        );
+      }, 150);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      clearTimeout(timer);
+    };
+  }, [status, capturePosition]);
+
   function ask(mode: "解释" | "提问") {
     if (!toolbar || !onAsk) return;
     const header = mode === "解释" ? "请解释以下原文选区：" : "关于以下原文选区，我想提问：";
@@ -524,6 +772,13 @@ export function FullReader({
         )}
         {facts.canonicalId && <p className="reader-source muted">arXiv {facts.canonicalId}</p>}
       </header>
+      {notice && (
+        <div className="reader-position-notice" role="status">
+          <p>{notice.text}</p>
+          {notice.excerpt && <blockquote className="reader-position-excerpt">{notice.excerpt}</blockquote>}
+          <button type="button" onClick={() => setNotice(null)}>知道了</button>
+        </div>
+      )}
       {projection.items.map((item, index) => {
         switch (item.kind) {
           case "section": {

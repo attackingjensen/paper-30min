@@ -124,6 +124,31 @@ span.reader-warning { display: inline-block; margin: 0 0 0 6px; }
 }
 .reader-selection-toolbar button:hover { background: #e8e8ee; }
 .reader-selection-degraded { font-size: 12px; color: #8a6d1a; }
+.reader-position-notice {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid #e3d9b8;
+  border-radius: 6px;
+  background: #fdf8ec;
+  font-size: 13px;
+  color: #6b5b1e;
+}
+.reader-position-notice p { margin: 0 0 6px; }
+.reader-position-excerpt {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-left: 3px solid #d8c98f;
+  color: #6f6f76;
+  white-space: pre-wrap;
+}
+.reader-position-notice button {
+  border: 1px solid #d9d3e0;
+  background: #ffffff;
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
 @media (prefers-reduced-motion: reduce) {
   .reader-jump-target { transition: none; }
 }

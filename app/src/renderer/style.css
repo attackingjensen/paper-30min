@@ -452,6 +452,9 @@ button.primary:hover {
   border: 1px solid #e8e8ed;
   border-radius: var(--radius);
 }
+/* Full 阅读器自管锚点恢复：浏览器滚动锚定会在字体/公式度量漂移时
+   静默平移 scrollTop 且不触发 scroll 事件，与恢复竞争，必须关闭。 */
+.main:has(.full-reader) { overflow-anchor: none; }
 .toolbar {
   position: sticky;
   top: 0;

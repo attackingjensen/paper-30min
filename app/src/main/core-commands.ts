@@ -7,6 +7,7 @@ import {
   openProject,
   publishSourceSnapshot,
   readRevision,
+  readRevisionContext,
   readRevisionDocument,
   readSourceSnapshot,
 } from "./project-core.js";
@@ -85,6 +86,7 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   coreCommit: true,
   coreReadSource: true,
   coreReadRevision: true,
+  coreReadRevisionContext: true,
   coreReadDocument: true,
   coreMergePublish: true,
   coreArxivImport: true,
@@ -167,6 +169,8 @@ export async function dispatchCoreCommand(
       return readSourceSnapshot(command.root, command.sourceSnapshotId);
     case "coreReadRevision":
       return readRevision(command.root, command.revisionId);
+    case "coreReadRevisionContext":
+      return readRevisionContext(command.root, command.revisionId);
     case "coreReadDocument":
       return readRevisionDocument(command.root, command.revisionId, command.tree);
     case "coreMergePublish":
