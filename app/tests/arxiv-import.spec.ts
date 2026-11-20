@@ -583,3 +583,80 @@ test("arxiv-import 进度写入持续失败时返回结构化诊断，不穿透�
   expect(manifest.paper.currentRevision).toBeNull();
   expect(await fs.readdir(path.join(failed.root, "sources"))).toHaveLength(1);
 });
+
+test("arxiv-import PDF 回退谱系：current 为 pdf-parse 时更新交接按谱系回溯 arXiv 事实", async () => {
+  const { commitRevision, publishSourceSnapshot } = await import("../src/main/project-core");
+  const { testDocumentTree } = await import("./fixtures/document-tree");
+  const { randomUUID } = await import("node:crypto");
+  const created = await createProject({ parent: sandbox, name: "PDF谱系" });
+  // 真实谱系形状：pdf（携带 arXiv 事实）→ pdf-parse（parentSourceSnapshotId）→ current revision。
+  const pdfSnapshot = await publishSourceSnapshot({
+    root: created.root,
+    files: { "paper.pdf": Buffer.from("%PDF-1.7 fixture") },
+    metadata: {
+      kind: "pdf",
+      sha256: "0".repeat(64),
+      pageCount: 1,
+      originalName: "2401.01234v1.pdf",
+      arxiv: { baseId: "2401.01234", version: 1, pdfUrl: "https://arxiv.org/pdf/2401.01234v1" },
+    },
+  });
+  const parseSnapshot = await publishSourceSnapshot({
+    root: created.root,
+    files: { "result.jsonl": Buffer.from("{}\n") },
+    metadata: { kind: "pdf-parse", parentSourceSnapshotId: pdfSnapshot.sourceSnapshotId, parseBatchId: randomUUID() },
+  });
+  const tree = testDocumentTree(created.manifest.paper.id, "PDF 正文");
+  const revision = await commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: parseSnapshot.sourceSnapshotId,
+    files: {
+      "document.json": Buffer.from(JSON.stringify(tree)),
+      "source-base.json": Buffer.from(JSON.stringify(tree)),
+      "tombstones.json": Buffer.from("[]"),
+      "changeset.json": Buffer.from(JSON.stringify({ baseRevision: null })),
+    },
+  });
+  const opened = await openProject(created.root);
+  const reason: ImportDiagnostic = {
+    code: "arxiv-html-fetch-failed", severity: "fatal", stage: "fetch", messageKey: "arxiv.html.notFound",
+  };
+  const handoff = await prepareArxivPdfFallback(opened, reason, BASE, revision.revisionId);
+  expect(handoff.ok).toBe(true);
+  if (!handoff.ok) return;
+  expect(handoff.request).toMatchObject({
+    kind: "arxiv-pdf",
+    baseId: "2401.01234",
+    version: 1,
+    baseRevision: revision.revisionId,
+  });
+
+  // 本地 PDF（无 arXiv 谱系）不能冒充 arXiv 更新现场。
+  const localPdf = await publishSourceSnapshot({
+    root: created.root,
+    files: { "paper.pdf": Buffer.from("%PDF-1.7 local") },
+    metadata: { kind: "pdf", sha256: "1".repeat(64), pageCount: 1, originalName: "local.pdf" },
+  });
+  const localParse = await publishSourceSnapshot({
+    root: created.root,
+    files: { "result.jsonl": Buffer.from("{}\n") },
+    metadata: { kind: "pdf-parse", parentSourceSnapshotId: localPdf.sourceSnapshotId, parseBatchId: randomUUID() },
+  });
+  const localRevision = await commitRevision({
+    root: created.root,
+    baseRevision: revision.revisionId,
+    sourceSnapshotId: localParse.sourceSnapshotId,
+    files: {
+      "document.json": Buffer.from(JSON.stringify(tree)),
+      "source-base.json": Buffer.from(JSON.stringify(tree)),
+      "tombstones.json": Buffer.from("[]"),
+      "changeset.json": Buffer.from(JSON.stringify({ baseRevision: revision.revisionId })),
+    },
+  });
+  const local = await prepareArxivPdfFallback(
+    await openProject(created.root), reason, BASE, localRevision.revisionId,
+  );
+  expect(local.ok).toBe(false);
+  if (!local.ok) expect(local.diagnostic.code).toBe("arxiv-fallback-source-invalid");
+});

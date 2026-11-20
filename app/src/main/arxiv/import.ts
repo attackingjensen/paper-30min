@@ -20,6 +20,7 @@ import { convertArxivSnapshot, type ArxivConvertPoint } from "./convert.js";
 import type { ArxivTransport } from "./fetch.js";
 import { parseArxivReference } from "./reference.js";
 import { fetchArxivSnapshot } from "./snapshot.js";
+import { arxivLineageReference } from "./lineage.js";
 import { resolveArxivVersion } from "./version.js";
 
 const ABS_BUDGET_BYTES = 8 * 1024 * 1024;
@@ -420,14 +421,12 @@ export async function prepareArxivPdfFallback(
     if (baseRevision !== current)
       return { ok: false, diagnostic: fatal("arxiv-fallback-base-mismatch", "arxiv.fallback.baseMismatch", "resolve") };
     const revision = await readRevision(latest.root, current);
-    const snapshot = await readSourceSnapshot(latest.root, revision.sourceSnapshotId);
-    if (snapshot.kind !== "arxiv" || typeof snapshot.baseId !== "string" || typeof snapshot.version !== "number")
+    // PDF 回退后的 current 来源是 pdf-parse：沿谱系回溯 arXiv 事实（7uo 移交项 4），
+    // 使回退工程仍可参与更新交接；本地 PDF 无谱系时如实拒绝。
+    const lineage = await arxivLineageReference(latest.root, revision.sourceSnapshotId);
+    if (lineage === null || lineage.version === null)
       return { ok: false, diagnostic: fatal("arxiv-fallback-source-invalid", "arxiv.fallback.sourceInvalid", "resolve") };
-    reference = {
-      baseId: snapshot.baseId,
-      version: snapshot.version,
-      canonicalId: typeof snapshot.canonicalId === "string" ? snapshot.canonicalId : `${snapshot.baseId}v${snapshot.version}`,
-    };
+    reference = lineage;
     handoffBase = current;
   }
   return {
