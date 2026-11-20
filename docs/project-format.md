@@ -4,7 +4,7 @@
 
 ## 文件组织
 
-两种格式并存、互不读取：新核遇到 `formatVersion: 1` 明确拒绝并提示旧格式处理流程；旧界面服务对 `formatVersion: 2` 清单报格式不支持。不提供自动迁移、只读兼容或双写。
+两种格式并存：新核遇到 `formatVersion: 1` 明确拒绝并提示旧格式处理流程；界面服务对 `formatVersion: 2` 清单经 `coreOpen` 投影为工作台视图（Full 阅读器入口），正文权威仍是 project-core 的 current revision，不提供自动迁移或双写。
 
 ### formatVersion 2（新核容器，导入命令链使用）
 
@@ -32,7 +32,7 @@
   notes/ memories/ tmp/ .pi/sessions/
 ```
 
-界面创建/打开链路仍产出此格式；新核界面接管由全文阅读器等后续 phase 承接。旧 `materials`、`map`、`explanations`、`translations` 字段读取时忽略、不再写入，既有清单按原样保留。旧解析批次产物（`text/<batchId>/paper.md`、`.paper30min/parsing/<batchId>/run.json`／`mapping.json`、`text/candidates/`）已随旧解析路径退役：文件保留原位，不再提供读取、恢复或删除入口。
+界面创建链路仍产出此格式；打开 v2 工程时论文 tab 为虚拟 Full 阅读入口（无文件路径），正文只从 current revision 的 `document.json` 投影渲染，资产经 `paper30min://project` 协议按受管登记读取。旧 `materials`、`map`、`explanations`、`translations` 字段读取时忽略、不再写入，既有清单按原样保留。旧解析批次产物（`text/<batchId>/paper.md`、`.paper30min/parsing/<batchId>/run.json`／`mapping.json`、`text/candidates/`）已随旧解析路径退役：文件保留原位，不再提供读取、恢复或删除入口。
 
 允许增加普通文件和目录，文件树直接从磁盘读取，不要求逐个登记。内部隐藏目录、隐藏临时文件与 `node_modules` 不展示。应用持续监听当前工程，文件树自动更新；也可手动刷新，窗口重新获得焦点时刷新。
 

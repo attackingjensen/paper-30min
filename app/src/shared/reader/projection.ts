@@ -10,15 +10,13 @@ type AssetReference = Extract<
   { kind: "figure" }
 >["asset"];
 
-/** 投影后的 atom：在树原子之上补充可点击性与降级警告。 */
-export type ReaderAtom = Atom & {
-  /** 仅 link atom：通过协议校验的 href；危险协议为 null（渲染为纯文本）。 */
-  href?: string | null;
-  /** 未解析引用／危险链接等降级说明；渲染层必须可见。 */
-  warning?: string;
-};
+/** 投影后的 atom：在树原子之上补充可点击性与降级警告。
+ * link 的 href 经协议校验：危险协议为 null（渲染为纯文本）。 */
+export type ReaderAtom =
+  | (Omit<Extract<Atom, { kind: "link" }>, "href"> & { href: string | null; warning?: string })
+  | (Exclude<Atom, { kind: "link" }> & { warning?: string });
 
-export type ReaderInlinePart =
+type ReaderInlinePart =
   | { kind: "text"; text: string; start: number; end: number }
   | { kind: "atom"; atom: ReaderAtom; start: number; end: number };
 
@@ -28,9 +26,9 @@ export interface ReaderSentence {
   parts: ReaderInlinePart[];
 }
 
-export interface ReaderUnit {
+export interface ReaderUnitContent {
   unitId: string;
-  kind: DocumentTree["units"][string]["kind"];
+  unitKind: DocumentTree["units"][string]["kind"];
   sentences: ReaderSentence[];
 }
 
@@ -41,7 +39,7 @@ interface ReaderItemBase {
 
 export type ReaderItem =
   | (ReaderItemBase & { kind: "section"; sectionId: string; title: string; depth: number })
-  | (ReaderItemBase & ReaderUnit & { kind: "unit" })
+  | (ReaderItemBase & ReaderUnitContent & { kind: "unit" })
   | (ReaderItemBase & {
       kind: "formula";
       source: { format: "latex" | "mathml" | "text"; value: string };
@@ -52,15 +50,15 @@ export type ReaderItem =
       kind: "figure";
       asset: AssetReference;
       captionUnitId: string | null;
-      caption: ReaderUnit | null;
+      caption: ReaderUnitContent | null;
       warning?: string;
     })
   | (ReaderItemBase & {
       kind: "table";
       captionUnitId: string | null;
-      caption: ReaderUnit | null;
+      caption: ReaderUnitContent | null;
       rows: Array<Array<{ unitId: string; rowSpan: number; columnSpan: number }>>;
-      cells: Record<string, ReaderUnit>;
+      cells: Record<string, ReaderUnitContent>;
     })
   | (ReaderItemBase & {
       kind: "raw";
@@ -101,12 +99,12 @@ function projectAtom(atom: Atom): ReaderAtom {
   return atom;
 }
 
-function projectUnit(tree: DocumentTree, unitId: string): ReaderUnit {
+function projectUnit(tree: DocumentTree, unitId: string): ReaderUnitContent {
   const unit = tree.units[unitId];
   if (!unit) throw new Error(`阅读投影单元不存在：${unitId}。`);
   return {
     unitId,
-    kind: unit.kind,
+    unitKind: unit.kind,
     sentences: unit.sentenceIds.map((sentenceId) => {
       const sentence = tree.sentences[sentenceId];
       if (!sentence) throw new Error(`阅读投影句子不存在：${sentenceId}。`);
@@ -180,7 +178,7 @@ export function buildReaderProjection(tree: DocumentTree): ReaderProjection {
         });
         break;
       case "table": {
-        const cells: Record<string, ReaderUnit> = {};
+        const cells: Record<string, ReaderUnitContent> = {};
         for (const cell of block.rows.flat())
           cells[cell.unitId] = projectUnit(tree, cell.unitId);
         items.push({

@@ -32,6 +32,7 @@ import type {
   DocumentTab,
   PdfPosition,
 } from "../shared/contracts";
+import { FullReader } from "./reader/FullReader";
 import { usePanelLayout } from "./usePanelLayout";
 import { PdfReader } from "./PdfReader";
 import { MarkdownDocument } from "./MarkdownDocument";
@@ -98,6 +99,8 @@ export function App() {
   const [settings, setSettingsState] = useState<string | null>(null);
   const skillDirty = useRef(false);
   const navigationRequest = useRef(0);
+  // Full 阅读器按工程刷新代际重读 current；revision 切换以代际为边界。
+  const projectEpoch = useRef(0);
   async function setSettings(value: string | null) {
     if (settings === "skills" && value !== settings && skillDirty.current && !window.confirm("放弃尚未保存的提示词编辑并离开？")) return;
     const request = ++navigationRequest.current;
@@ -221,7 +224,10 @@ export function App() {
       void desktop
         .invoke<Project>({ type: "refresh", root })
         .then((p) => {
-          if (!disposed) setProject((old) => (old?.root === root ? p : old));
+          if (!disposed) {
+            projectEpoch.current++;
+            setProject((old) => (old?.root === root ? p : old));
+          }
         })
         .catch((e) => {
           if (!disposed) setError(e.message);
@@ -235,9 +241,11 @@ export function App() {
 
   const refresh = useCallback(() => {
     if (root)
-      void run(async () =>
-        setProject(await desktop.invoke<Project>({ type: "refresh", root })),
-      );
+      void run(async () => {
+        const next = await desktop.invoke<Project>({ type: "refresh", root });
+        projectEpoch.current++;
+        setProject(next);
+      });
   }, [root, run]);
   useEffect(() => {
     const onFocus = () => {
@@ -264,11 +272,11 @@ export function App() {
   }
   function enter(p: Project) {
     setProject(p);
-    const tab = {
-      key: p.manifest.paper.path,
-      path: p.manifest.paper.path,
-      title: p.manifest.paper.path.split("/").at(-1)!,
-    };
+    // v2 工程论文是虚拟 Full 阅读入口（无文件路径）；v1 保持原文件 tab。
+    const paperPath = p.manifest.paper.path;
+    const tab = paperPath
+      ? { key: paperPath, path: paperPath, title: paperPath.split("/").at(-1)! }
+      : { key: "paper", title: "原始论文" };
     positions.current[p.root] = p.reading.pdf;
     const restored = p.reading.tabs.filter(
       (t) => !["map", "explanations", "translations", "materials", "parsing"].includes(t.key) &&
@@ -384,6 +392,8 @@ export function App() {
   }
   function contentView() {
     if (!current) return <div className="empty">尚未打开文档</div>;
+    if (!current.path && current.key === "paper" && root)
+      return <FullReader key={root} root={root} epoch={projectEpoch.current} />;
     if (current.path && isMarkdown(current.path)) {
       const draft = documents.drafts.get(current.path);
       return draft ? (
@@ -728,11 +738,13 @@ export function App() {
               >
                 {navigation === "reading" ? (
                   <>
-                    {nav("原始论文", <FileText />, {
-                      key: project.manifest.paper.path,
-                      path: project.manifest.paper.path,
-                      title: project.manifest.paper.path.split("/").at(-1)!,
-                    })}
+                    {nav("原始论文", <FileText />, project.manifest.paper.path
+                      ? {
+                          key: project.manifest.paper.path,
+                          path: project.manifest.paper.path,
+                          title: project.manifest.paper.path.split("/").at(-1)!,
+                        }
+                      : { key: "paper", title: "原始论文" })}
                     {nav("笔记", <FileText />, { key: "notes", title: "笔记" })}
                   </>
                 ) : (
