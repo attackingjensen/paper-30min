@@ -119,8 +119,6 @@ export interface PdfFallbackRequest {
   kind: "arxiv-pdf";
   baseId: string;
   version: number;
-  absUrl: string;
-  pdfUrl: string;
   reasonCode: string;
   baseRevision: string | null;
 }
@@ -245,7 +243,7 @@ export interface ImportDiagnostic {
 
 1. HTML 确定不存在、最终获取失败或核心结构不可读时，界面可以显示“改用此版本 PDF 解析”动作，同时展示真实原因；403、429 或网络失败不得被描述成“论文没有 HTML”。
 2. 在用户点击并确认前，不请求 PDF URL、不调用云端解析、不创建 PDF 费用，也不把回退当作自动重试的一部分。
-3. 确认后仅生成 `PdfFallbackRequest`，携带固定 base ID、`vN`、abs／pdf URL、原因和 `baseRevision`。实际 PDF 获取、快照和云解析由 pdf-import 定义。
+3. 确认后仅生成 `PdfFallbackRequest`，携带固定 base ID、`vN`、原因和 `baseRevision`；不携带 URL，下载目标由主进程按固定版本与受控基址重建。实际 PDF 获取、快照和云解析由 pdf-import 定义。
 4. 回退继续同一工程与 `paper.id`：首次导入时 `baseRevision` 为空，更新时必须是用户当前读取的 revision。
 5. PDF 解析完成后仍须通过 document-core 候选／合并与 project-core 发布协议；原 HTML 快照和失败诊断保留，旧 current 不因开始回退而改变。
 6. HTML 仅有局部 warning 且达到可读门槛时，正常发布 HTML。用户仍可另行发起 PDF 候选，但系统不得因 warning 自动替换来源。
@@ -254,15 +252,16 @@ export interface ImportDiagnostic {
 ### 8. 新版本检查与同版刷新
 
 1. **检查新版本**是用户主动动作，只获取 abs 元数据并比较固定版本，不自动下载 HTML／PDF、生成候选或推进 current。结果区分已有新版、已经最新、目标撤稿和无法检查。
-2. 发现新版后，用户再显式选择“获取候选”。系统取得新版快照并转换，交由 document-core 与旧 `source-base`、current 执行三方合并；确认和冲突解决后才发布。
+2. 发现新版后，用户再显式选择“获取候选”。目标版本必须严格高于当前固定版本（同版刷新走重取，历史版本不借更新降级）；系统取得新版快照并转换，交由 document-core 与旧 `source-base`、current 执行三方合并；确认和冲突解决后才发布。
 3. 检查更新时，即使同一版本的远端 HTML 字节已经变化，也只报告论文版本状态，不把同版 HTML 变化冒充新论文版本。
 4. **同版 HTML 重取**是独立显式动作，固定当前 `vN` 重新获取 HTML 和资产：
    - 字节与已验证快照相同则复用，不制造重复快照或 revision。
    - 字节不同则建立新快照和候选，记录获取差异；不得原地替换旧快照。
 5. **重新转换既有快照**不访问网络，使用选定快照与当前转换器生成候选。转换器升级不是 arXiv 新版本，也不能伪造旧 `source-base`。
 6. 同版重取或重新转换即使只改变来源字节／元数据而规范正文相同，也只能形成无正文内容变化的候选；changeset 不得把全部派生内容标为 stale。
-7. 所有候选发布都携带 `baseRevision` 并重新核对 current。冲突时保留候选，旧 current 不被覆盖。
+7. 所有候选发布都携带 `baseRevision` 并重新核对 current。候选身份按快照、基线与转换器版本确定性派生；候选在构建时整体落盘（树、冲突、解决状态与资产），发布按用户确认的候选身份重载同一份存储字节，不重新转换——发布内容必须与用户确认的预览一致，提交中断后按同一候选身份恢复。转换器升级后重转换形成新候选，不静默复用旧版本存储。冲突时保留候选，旧 current 不被覆盖。
 8. 不做启动时检查、定时后台更新、自动追最新版或自动采用候选。
+9. current 来源为 PDF 回退产物（pdf-parse 快照）时，检查与更新沿 `parentSourceSnapshotId` 回溯 pdf 快照携带的 arXiv 事实（baseId／固定版本）；回退工程因此仍可参与新版本检查与更新候选。本地 PDF 无 arXiv 谱系时如实拒绝，不猜测身份。
 
 ### 9. 离线重开与重新处理
 

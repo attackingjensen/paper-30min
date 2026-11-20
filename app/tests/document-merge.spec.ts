@@ -270,6 +270,99 @@ test("document-core 重解析对齐 unit 后句子延续稳定 ID：来源修正
     entry.nodeType === "sentence" && entry.status === "added")).toBe(false);
 });
 
+/** 句子重排的候选：unit 经 alias 对齐，句子沿用同一 ID 但顺序颠倒。 */
+function reorderedSecondUnit(base: DocumentTree): DocumentTree {
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const order = base.units[selectionIds.secondUnit].sentenceIds;
+  candidate.units[selectionIds.secondUnit].sentenceIds = [...order].reverse();
+  return candidate;
+}
+
+test("document-core 来源重排 unit 内句子对三方合并可见：无本地修改时采用来源新顺序", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Alpha first.", "Beta second."]);
+  const current = structuredClone(base);
+  const candidate = reorderedSecondUnit(base);
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  expect(result.document.units[selectionIds.secondUnit].sentenceIds)
+    .toEqual(candidate.units[selectionIds.secondUnit].sentenceIds);
+  const unitChange = result.changeset.changes.find((entry) =>
+    entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit);
+  expect(unitChange?.status).toBe("moved");
+  // 换位的句子本身也记录 moved（阅读位置是结构事实），不得仍是 retained。
+  for (const sentenceId of base.units[selectionIds.secondUnit].sentenceIds) {
+    expect(result.changeset.changes.find((entry) =>
+      entry.nodeType === "sentence" && entry.nodeId === sentenceId)?.status).toBe("moved");
+  }
+  expect(result.changeset.changes.some((entry) =>
+    entry.status === "added" || entry.status === "removed")).toBe(false);
+});
+
+test("document-core 本地重排与来源重排方向不同时生成 unit 冲突，显式解决前不可发布", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Alpha first.", "Beta second.", "Gamma third."]);
+  const [a, b, c] = base.units[selectionIds.secondUnit].sentenceIds;
+  // 三句保证 base、current、candidate 顺序两两不同：本地与来源都重排但方向不同。
+  const current = structuredClone(base);
+  current.units[selectionIds.secondUnit].sentenceIds = [b, a, c];
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  candidate.units[selectionIds.secondUnit].sentenceIds = [c, b, a];
+
+  const unresolved = merge(base, current, candidate);
+  expect(unresolved.conflicts).toHaveLength(1);
+  expect(unresolved.conflicts[0]).toMatchObject({
+    type: "content",
+    anchors: [{ kind: "unit", unitId: selectionIds.secondUnit }],
+  });
+  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision))
+    .toThrow(/未解决|冲突/);
+
+  const resolved = resolveDocumentMergeConflict(unresolved, unresolved.conflicts[0].id, "candidate");
+  expect(resolved.document.units[selectionIds.secondUnit].sentenceIds).toEqual([c, b, a]);
+  expect(() => assertDocumentMergePublishable(resolved, resolved.baseRevision)).not.toThrow();
+});
+
+test("document-core 重转换重发句子 UUID 且重排：对齐延续 ID，顺序变化可见且无删除新增", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Alpha first.", "Beta second.", "Gamma third."]);
+  const [a, b, c] = base.units[selectionIds.secondUnit].sentenceIds;
+  const current = structuredClone(base);
+  // 真实重转换形状：句子全部重发 UUID，且来源把阅读顺序改为 c,a,b。
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const fresh = ["Gamma third.", "Alpha first.", "Beta second."].map(() => randomUUID());
+  for (const oldId of [a, b, c]) delete candidate.sentences[oldId];
+  ["Gamma third.", "Alpha first.", "Beta second."].forEach((text, index) => {
+    candidate.sentences[fresh[index]] = {
+      id: fresh[index],
+      unitId: selectionIds.secondUnit,
+      content: [{ kind: "text", text }],
+    };
+  });
+  candidate.units[selectionIds.secondUnit].sentenceIds = fresh;
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  // 文本证据延续稳定 ID：无 added/removed，阅读顺序采用来源新顺序。
+  expect(result.changeset.changes.some((entry) =>
+    entry.nodeType === "sentence" && (entry.status === "added" || entry.status === "removed"))).toBe(false);
+  expect(result.document.units[selectionIds.secondUnit].sentenceIds).toEqual([c, a, b]);
+  expect(projectSentenceText(result.document, c)).toBe("Gamma third.");
+  expect(projectSentenceText(result.document, a)).toBe("Alpha first.");
+  const unitChange = result.changeset.changes.find((entry) =>
+    entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit);
+  expect(unitChange?.status).toBe("moved");
+});
+
 test("document-core 重解析对齐 unit 后本地句子修正与来源修正产生 content 冲突", () => {
   const base = testSelectionTree(randomUUID());
   base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
@@ -418,4 +511,58 @@ test("document-core 相邻 unchanged anchor 证明的 1:1 位置延续仍然成�
     entry.nodeType === "sentence" && entry.nodeId === baseOrder[1])?.status).toBe("changed");
   expect(result.changeset.changes.some((entry) =>
     entry.nodeType === "sentence" && entry.status === "added")).toBe(false);
+});
+
+test("document-core 多个新增块共享同一锚点时按来源顺序确定插入，不依赖遍历顺序", () => {
+  const base = testSelectionTree(randomUUID());
+  const current = structuredClone(base);
+  const candidate = structuredClone(base);
+  // 在既有块之间插入三个全新单元块：它们共享前后两个已对齐锚点。
+  const anchorBlock = selectionIds.block;
+  const newTexts = ["Inserted one.", "Inserted two.", "Inserted three."];
+  const newUnitIds = newTexts.map(() => randomUUID());
+  const newBlockIds = newTexts.map(() => randomUUID());
+  newTexts.forEach((text, index) => {
+    const unitId = newUnitIds[index];
+    const sentenceId = randomUUID();
+    candidate.units[unitId] = {
+      id: unitId,
+      sectionId: selectionIds.section,
+      kind: "paragraph",
+      sentenceIds: [sentenceId],
+    };
+    candidate.sentences[sentenceId] = {
+      id: sentenceId,
+      unitId,
+      content: [{ kind: "text", text }],
+    };
+  });
+  // 直属单元顺序必须与阅读块顺序一致：新单元插在首个单元之后。
+  candidate.sections[selectionIds.section].unitIds = [
+    selectionIds.unit,
+    ...newUnitIds,
+    selectionIds.secondUnit,
+  ];
+  const anchorIndex = candidate.blocks.findIndex((block) => block.id === anchorBlock);
+  candidate.blocks.splice(
+    anchorIndex + 1,
+    0,
+    ...newBlockIds.map((blockId, index) => ({
+      id: blockId,
+      sectionId: selectionIds.section,
+      kind: "unit" as const,
+      unitId: newUnitIds[index],
+    })),
+  );
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  const order = result.document.blocks.map((block) => block.id);
+  // 三个新增块必须按来源 preferred 顺序相邻排列在锚点之后。
+  expect(order.indexOf(newBlockIds[0])).toBeGreaterThan(order.indexOf(anchorBlock));
+  expect(order.indexOf(newBlockIds[1])).toBe(order.indexOf(newBlockIds[0]) + 1);
+  expect(order.indexOf(newBlockIds[2])).toBe(order.indexOf(newBlockIds[1]) + 1);
+  expect(projectSentenceText(result.document, result.document.units[newUnitIds[0]].sentenceIds[0])).toBe("Inserted one.");
+  expect(projectSentenceText(result.document, result.document.units[newUnitIds[2]].sentenceIds[0])).toBe("Inserted three.");
 });

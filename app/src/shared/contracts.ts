@@ -228,6 +228,44 @@ export type CoreCommand =
   | { type: "coreArxivResume"; root: string; operationId: string; baseUrl?: string }
   | { type: "coreArxivCancel"; operationId: string }
   | {
+      type: "coreArxivCheckUpdate";
+      root: string;
+      operationId: string;
+      /** 受控端点基址（同 coreArxivImport）：生产省略即 https://arxiv.org。 */
+      baseUrl?: string;
+    }
+  | {
+      type: "coreArxivUpdateCandidate";
+      root: string;
+      /** 用户显式选择的目标版本；必须同一 base ID 且已固定。 */
+      reference: ArxivReference;
+      baseRevision: string;
+      operationId: string;
+      baseUrl?: string;
+    }
+  | {
+      type: "coreArxivRefetch";
+      root: string;
+      baseRevision: string;
+      operationId: string;
+      baseUrl?: string;
+    }
+  | {
+      type: "coreArxivReconvert";
+      root: string;
+      sourceSnapshotId: string;
+      baseRevision: string;
+    }
+  | {
+      type: "coreArxivPublishCandidate";
+      root: string;
+      /** 用户确认的候选身份（构建结果携带）；主进程复核来源与基线。 */
+      revisionId: string;
+      sourceSnapshotId: string;
+      baseRevision: string;
+      resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>;
+    }
+  | {
       type: "coreArxivPdfFallback";
       root: string;
       reason: ImportDiagnostic;
@@ -259,6 +297,32 @@ export type ArxivImportCommandResult =
 
 export type ArxivPdfFallbackCommandResult =
   | { ok: true; request: PdfFallbackRequest }
+  | { ok: false; diagnostic: ImportDiagnostic };
+
+/** 新版本检查经生产 IPC 的结果（SPEC-arxiv-import §8.1）：只读 abs 的版本状态。 */
+export type ArxivUpdateCheckCommandResult =
+  | {
+      ok: true;
+      current: ArxivReference;
+      status: "update-available" | "up-to-date" | "withdrawn";
+      latest: ArxivReference;
+    }
+  | { ok: false; diagnostic: ImportDiagnostic };
+
+/** 更新／同版重取／离线重转换候选经生产 IPC 的摘要：树、changeset 与冲突可序列化，
+ * 资产字节留在工程进程。reused 表示同版重取字节一致，未产生新快照或候选。 */
+export type ArxivUpdateCandidateCommandResult =
+  | {
+      ok: true;
+      outcome: "candidate";
+      candidate: DocumentMergeResult & { root: string; sourceSnapshotId: string };
+      warnings: ImportDiagnostic[];
+    }
+  | { ok: true; outcome: "reused"; sourceSnapshotId: string; warnings: ImportDiagnostic[] }
+  | { ok: false; diagnostic: ImportDiagnostic };
+
+export type ArxivUpdatePublishCommandResult =
+  | { ok: true; revision: ProjectRevisionRecord; warnings: ImportDiagnostic[] }
   | { ok: false; diagnostic: ImportDiagnostic };
 
 /** 主进程注入的本机解析配置：Token 与代理只存在于进程内存，不经 renderer。

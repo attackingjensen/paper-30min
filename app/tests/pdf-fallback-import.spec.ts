@@ -248,7 +248,7 @@ test("pdf-fallback 组合：下载失败不创建云端任务、不产生费用"
   expect((await openProject(root)).manifest.paper.currentRevision).toBeNull();
 });
 
-test("pdf-fallback 组合：PDF 来源工程冒充 arXiv HTML 更新交接被拒绝，current 不变", async () => {
+test("pdf-fallback 组合：回退发布后的更新交接按谱系回溯，候选不覆盖 current", async () => {
   // 先经首次回退发布 current，再构造同 baseId 固定版本的更新交接。
   const { root, request, paperId } = await fallbackProject("组合更新");
   const pdfBytes = await fs.readFile(SAMPLE);
@@ -264,19 +264,121 @@ test("pdf-fallback 组合：PDF 来源工程冒充 arXiv HTML 更新交接被拒
   expect(first.outcome).toBe("published");
   if (first.outcome !== "published") return;
   const current = first.revision.revisionId;
-  // 更新交接：baseRevision 指向当前 revision；主进程按 current 来源谱系核验。
-  // current 来源是 pdf-parse（父为 arXiv PDF），不是 arxiv HTML：核验必须拒绝，
-  // 不能把 PDF 来源工程冒充 arXiv HTML 更新现场。
-  const update: PdfFallbackRequest = { ...request, baseRevision: current };
+  expect(posts).toBe(1);
+  expect((await openProject(root)).manifest.paper.id).toBe(paperId);
+
+  // 更新交接（7uo 移交项 4）：current 来源是 pdf-parse（父为 arXiv PDF），
+  // 谱系回溯得到同一 baseId+vN，prepare 不再把回退工程误判为无 arXiv 来源。
+  const opened = await openProject(root);
+  const handoff = await prepareArxivPdfFallback(opened, {
+    code: "arxiv-update-requested",
+    severity: "fatal",
+    stage: "resolve",
+    messageKey: "arxiv.update.requested",
+  }, undefined, current);
+  expect(handoff.ok).toBe(true);
+  if (!handoff.ok) return;
+  expect(handoff.request).toMatchObject({ baseId: ID, version: 1, baseRevision: current });
+
+  // 谱系版本与交接不符在网络前拒绝：不下载其他版本，也不产生新任务。
+  const tampered: PdfFallbackRequest = { ...handoff.request, version: 2 };
   await expect(importArxivPdfFallback({
     root,
-    request: update,
+    request: tampered,
     transport: pdfTransport(pdfBytes, requested),
     config: config(),
     confirmUpload: async () => true,
     signal: new AbortController().signal,
   })).rejects.toThrow(/现场不符/);
   expect(posts).toBe(1);
+  expect(requested).toHaveLength(1);
+  expect((await openProject(root)).manifest.paper.currentRevision).toBe(current);
+});
+
+test("pdf-fallback 组合：谱系一致的更新交接复用 PDF 快照，重解析候选不覆盖 current", async () => {
+  const { root, request, paperId } = await fallbackProject("谱系候选");
+  const pdfBytes = await fs.readFile(SAMPLE);
+  const requested: string[] = [];
+  const first = await importArxivPdfFallback({
+    root,
+    request,
+    transport: pdfTransport(pdfBytes, requested),
+    config: config(),
+    confirmUpload: async () => true,
+    signal: new AbortController().signal,
+  });
+  expect(first.outcome).toBe("published");
+  if (first.outcome !== "published") return;
+  const current = first.revision.revisionId;
+  const handoff = await prepareArxivPdfFallback(await openProject(root), {
+    code: "arxiv-update-requested",
+    severity: "fatal",
+    stage: "resolve",
+    messageKey: "arxiv.update.requested",
+  }, undefined, current);
+  expect(handoff.ok).toBe(true);
+  if (!handoff.ok) return;
+  // 同谱系 PDF 快照直接复用：transport 一旦被调用即失败，证明零重复下载；
+  // 同版本重解析是新云端任务（第二次 POST），结果走候选而不是覆盖 current。
+  const update = await importArxivPdfFallback({
+    root,
+    request: handoff.request,
+    transport: async (url) => {
+      requested.push(url);
+      throw new Error("同谱系 PDF 快照已存在，更新交接不应重新下载");
+    },
+    config: config(),
+    confirmUpload: async () => true,
+    signal: new AbortController().signal,
+  });
+  expect(update.outcome, JSON.stringify(update)).toBe("candidate");
+  if (update.outcome !== "candidate") return;
+  expect(update.candidate.baseRevision).toBe(current);
+  expect(posts).toBe(2);
+  expect(requested).toHaveLength(1);
   expect((await openProject(root)).manifest.paper.currentRevision).toBe(current);
   expect((await openProject(root)).manifest.paper.id).toBe(paperId);
+});
+
+test("pdf-fallback 组合：本地 PDF 来源无 arXiv 谱系，更新交接被拒绝且零下载", async () => {
+  // 本地 PDF（无 arxiv 事实）发布的 current 不能冒充 arXiv 更新现场。
+  const { snapshotLocalPdf } = await import("../src/main/pdf/snapshot");
+  const { importPdfToCurrent } = await import("../src/main/parsing/pdf-import");
+  const created = await createProject({ parent: sandbox, name: "本地来源" });
+  const local = await snapshotLocalPdf({ root: created.root, source: SAMPLE });
+  expect(local.ok).toBe(true);
+  if (!local.ok) return;
+  const imported = await importPdfToCurrent({
+    root: created.root,
+    sourceSnapshotId: local.snapshot.sourceSnapshotId,
+    config: config(),
+    confirmUpload: async () => true,
+    signal: new AbortController().signal,
+  });
+  expect(imported.outcome).toBe("published");
+  if (imported.outcome !== "published") return;
+  const opened = await openProject(created.root);
+  const handoff = await prepareArxivPdfFallback(opened, {
+    code: "arxiv-update-requested",
+    severity: "fatal",
+    stage: "resolve",
+    messageKey: "arxiv.update.requested",
+  }, undefined, imported.revision.revisionId);
+  expect(handoff.ok).toBe(false);
+  if (!handoff.ok) expect(handoff.diagnostic.code).toBe("arxiv-fallback-source-invalid");
+  // 伪造交接直接进组合入口同样在谱系核验处拒绝，零新增下载与 POST。
+  const postsBefore = posts;
+  const requested: string[] = [];
+  const pdfBytes = await fs.readFile(SAMPLE);
+  await expect(importArxivPdfFallback({
+    root: created.root,
+    request: { kind: "arxiv-pdf", baseId: ID, version: 1, reasonCode: "arxiv-update-requested", baseRevision: imported.revision.revisionId },
+    transport: pdfTransport(pdfBytes, requested),
+    config: config(),
+    confirmUpload: async () => true,
+    signal: new AbortController().signal,
+  })).rejects.toThrow(/现场不符/);
+  expect(requested).toHaveLength(0);
+  expect(posts).toBe(postsBefore);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 });

@@ -16,10 +16,11 @@ import {
   updateArxivImportProgress,
   type ProjectCommitHooks,
 } from "../project-core.js";
-import { convertArxivSnapshot, type ArxivConvertPoint } from "./convert.js";
+import { convertArxivSnapshot, convertLatexml, type ArxivConvertPoint } from "./convert.js";
 import type { ArxivTransport } from "./fetch.js";
 import { parseArxivReference } from "./reference.js";
 import { fetchArxivSnapshot } from "./snapshot.js";
+import { arxivLineageReference } from "./lineage.js";
 import { resolveArxivVersion } from "./version.js";
 
 const ABS_BUDGET_BYTES = 8 * 1024 * 1024;
@@ -75,6 +76,9 @@ export interface ResumeArxivImportInput {
   hooks?: ArxivImportProgressHooks;
   /** 受控 fixture 端点（回环 http）专用；生产命令不得开启。 */
   allowFixtureLoopback?: boolean;
+  /** 转换器升级注入（SPEC §6 恢复）：未来转换器修复后离线重转换同一快照；
+   * 生产命令不注入，默认当前转换器。 */
+  converter?: typeof convertLatexml;
 }
 
 export type ArxivImportResult =
@@ -122,6 +126,7 @@ async function convertAndRecord(
   fetchWarnings: ImportDiagnostic[],
   hooks: ArxivImportProgressHooks | undefined,
   completePublished = false,
+  converter?: typeof convertLatexml,
 ): Promise<ArxivImportResult> {
   // 候选身份在本次调用内跟踪：持久化失败或提交中断后，失败记录仍携带它。
   let candidateRevisionId = progress.candidateRevisionId;
@@ -131,6 +136,7 @@ async function convertAndRecord(
     sourceSnapshotId,
     ...(candidateRevisionId === undefined ? {} : { revisionId: candidateRevisionId }),
     ...(completePublished && candidateRevisionId !== undefined ? { completePublished: true } : {}),
+    ...(converter === undefined ? {} : { converter }),
     onCandidateBuilt: async (candidate) => {
       candidateRevisionId = candidate.revisionId;
       convertWarnings = candidate.warnings;
@@ -373,7 +379,7 @@ export async function resumeArxivImport(input: ResumeArxivImportInput): Promise<
       }
       published = state === "published";
     }
-    return convertAndRecord(root, progress, progress.sourceSnapshotId, fetchWarnings, input.hooks, published);
+    return convertAndRecord(root, progress, progress.sourceSnapshotId, fetchWarnings, input.hooks, published, input.converter);
   }
   if (input.transport === undefined)
     return {
@@ -420,14 +426,17 @@ export async function prepareArxivPdfFallback(
     if (baseRevision !== current)
       return { ok: false, diagnostic: fatal("arxiv-fallback-base-mismatch", "arxiv.fallback.baseMismatch", "resolve") };
     const revision = await readRevision(latest.root, current);
-    const snapshot = await readSourceSnapshot(latest.root, revision.sourceSnapshotId);
-    if (snapshot.kind !== "arxiv" || typeof snapshot.baseId !== "string" || typeof snapshot.version !== "number")
+    // PDF 回退后的 current 来源是 pdf-parse：沿谱系回溯 arXiv 事实（7uo 移交项 4），
+    // 使回退工程仍可参与更新交接；本地 PDF 无谱系或谱系损坏时如实拒绝。
+    let lineage: Awaited<ReturnType<typeof arxivLineageReference>>;
+    try {
+      lineage = await arxivLineageReference(latest.root, revision.sourceSnapshotId);
+    } catch {
+      lineage = null;
+    }
+    if (lineage === null || lineage.version === null)
       return { ok: false, diagnostic: fatal("arxiv-fallback-source-invalid", "arxiv.fallback.sourceInvalid", "resolve") };
-    reference = {
-      baseId: snapshot.baseId,
-      version: snapshot.version,
-      canonicalId: typeof snapshot.canonicalId === "string" ? snapshot.canonicalId : `${snapshot.baseId}v${snapshot.version}`,
-    };
+    reference = lineage;
     handoffBase = current;
   }
   return {

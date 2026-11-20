@@ -1,6 +1,7 @@
 import type { ImportDiagnostic, PdfFallbackRequest } from "../../shared/arxiv.js";
 import type { ArxivTransport } from "../arxiv/fetch.js";
-import { listSourceSnapshots, openProject, readRevision, readSourceSnapshot } from "../project-core.js";
+import { arxivLineageReference } from "../arxiv/lineage.js";
+import { listSourceSnapshots, openProject, readRevision } from "../project-core.js";
 import type { BaiduPdfParseConfig } from "../parsing/baidu-task.js";
 import {
   importPdfToCurrent,
@@ -42,11 +43,18 @@ async function assertHandoffMatchesProject(root: string, request: PdfFallbackReq
   }
   if (current === null || current !== request.baseRevision) mismatch(root);
   const revision = await readRevision(opened.root, current);
-  const snapshot = await readSourceSnapshot(opened.root, revision.sourceSnapshotId);
+  // 谱系回溯与 prepareArxivPdfFallback 同一谓词：pdf-parse → pdf → arXiv 事实；
+  // 谱系损坏（父快照缺失等）与谱系不符同样拒绝，不穿透原始异常。
+  let lineage: Awaited<ReturnType<typeof arxivLineageReference>>;
+  try {
+    lineage = await arxivLineageReference(opened.root, revision.sourceSnapshotId);
+  } catch {
+    mismatch(root);
+  }
   if (
-    snapshot.kind !== "arxiv" ||
-    snapshot.baseId !== request.baseId ||
-    snapshot.version !== request.version
+    lineage === null ||
+    lineage.baseId !== request.baseId ||
+    lineage.version !== request.version
   )
     mismatch(root);
 }

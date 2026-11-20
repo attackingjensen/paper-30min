@@ -16,6 +16,7 @@
   .paper30min/revisions/        # revision 元数据与核验侧车 verification.json
   .paper30min/imports/          # 首次导入恢复记录
   .paper30min/staging/          # 尚未发布的受管候选
+  .paper30min/update-candidates/<revisionId>/ # arXiv 更新候选：candidate.json、五棵树与 changeset/tombstones、assets/（发布重载同一字节）
   .paper30min/pdf-evidence/     # 主进程 PDF 来源读取证据（一次性消费）
   .paper30min/parsing/<parseBatchId>/ # PDF 云端任务 task.json
   notes/ memories/ tmp/         # 用户文档、记忆卡片、临时产物
@@ -65,6 +66,7 @@ PDF 阅读位置及 Markdown 视图、位置保存在工程内 `.paper30min-read
 - 合并候选发布后 current 是合并树，source-base 只含新来源树，后续轮次仍能识别保留的本地修正。冲突必须逐项显式解决；未解决冲突或 baseRevision 变化拒绝发布。提交失败后只有内容、来源、基线与元数据完全一致的同一候选可按原 revisionId 重试。
 - 核验记录是 revision 关联的受管侧车 `verification.json`，不属于文档树或不可变正文。每条记录固定创建时的锚点、覆盖节点、内容摘要、PDF／解析快照、actor 与核验方式；用户记录显式确认，Agent 记录必须引用一次性消费的来源读取证据，不接受自述。发布新 current 前按实际 changeset 与 PDF 谱系继承：同 PDF 内容不变保持 `verified`，内容修正 `modified-unreviewed`，换 PDF 内容未变 `historical-source`，拆分／合并／删除 `removed`，新增节点不继承；继承保留原 `verifiedRevisionId`、来源与证据。继承逻辑属 PDF 来源语义，由 `coreCommit`、来源合并发布与重解析候选发布等 PDF 侧调用方经 commit 钩子注入通用提交路径（`before-current-replace`，串行临界区内执行）；通用文档合并（`document/merge`）不依赖来源模块，arXiv 等无核验记录的来源发布为空操作。文档级摘要聚合已核验／历史来源／修改后未复核／无记录四态，不产生主观质量分数（[SPEC-pdf-import](spec/SPEC-pdf-import.md) §9–§11）。
 - 新核经 `core*` 命令接入生产 preload、IPC 与 Node utility process（命令面见 [app/README.md](../app/README.md)）。`coreCommit` 是低层容器协议：tombstones 累积与退役语义由 document-core 合并命令层保证，直接调用方自行维护。
+- arXiv 更新编排（[SPEC-arxiv-import](spec/SPEC-arxiv-import.md) §8）：检查新版只读 abs 比较固定版本，不下载正文；更新候选要求严格更高版本，同版重取与离线重新转换都形成 document-core 三方合并候选，确认发布前 current 不变。同版重取字节一致复用快照，不一致新建不可变快照；离线重转换不访问网络、不改写快照。候选身份按快照、基线与转换器版本确定性派生，构建时整体落盘于 `.paper30min/update-candidates/`（树与资产读取执行 64 MiB／32 MiB／512 MiB 硬预算），发布按用户确认的候选身份重载同一份存储字节（不重新转换），复核 baseRevision、来源 base ID 与有效固定版本，冲突逐项显式解决。PDF 回退后的 current（pdf-parse 来源）沿 `parentSourceSnapshotId` 回溯父级 **PDF** 快照的 arXiv 事实（baseId/固定版本）参与检查与更新；父级类型不符、缺失或本地 PDF 无谱系时如实拒绝，不猜测身份。
 
 ## PDF 阅读与来源信息
 

@@ -343,6 +343,45 @@ test("arxiv-pdf-fallback 真实 Electron 组合交接：固定版本 PDF 快照�
     expect(content).not.toContain("test-baidu-token-never-persist");
   }
 
+  // PDF 回退后的工程仍可参与新版本检查与更新候选（7uo 移交项 4／SPEC §8）：
+  // current 来源是 pdf-parse，谱系回溯到 arXiv v1；发现 v2 后候选走三方合并。
+  routes.set(`/abs/${ID}`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" });
+  routes.set(`/abs/${ID}v2`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" });
+  routes.set(`/html/${ID}v2`, {
+    bytes: Buffer.from(latexmlDocument()
+      .replace('content="2401.01234v1"', 'content="2401.01234v2"')
+      .replace("We conclude with", "We now conclude with")),
+    mime: "text/html",
+  });
+  // v2 HTML 的资产相对 v2 基址解析：真实 transport 会请求这些 URL。
+  routes.set(`/html/extracted/6543210/figures/overview.png`, { bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]), mime: "image/png" });
+  routes.set(`/html/x2.png`, { bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 4, 5, 6]), mime: "image/png" });
+  const checked = await invoke<{ ok: boolean; status?: string; latest?: { version: number } }>({
+    type: "coreArxivCheckUpdate",
+    root: failed.root,
+    operationId: nextOperation(),
+    baseUrl,
+  });
+  expect(checked.ok).toBe(true);
+  expect(checked.status).toBe("update-available");
+  expect(checked.latest?.version).toBe(2);
+  const candidate = await invoke<{ ok: boolean; outcome?: string; candidate?: { baseRevision: string; document: DocumentTree } }>({
+    type: "coreArxivUpdateCandidate",
+    root: failed.root,
+    reference: { baseId: ID, version: 2, canonicalId: `${ID}v2` },
+    baseRevision: result.revision.revisionId,
+    operationId: nextOperation(),
+    baseUrl,
+  });
+  expect(candidate.ok, JSON.stringify(candidate)).toBe(true);
+  expect(candidate.outcome).toBe("candidate");
+  expect(candidate.candidate?.baseRevision).toBe(result.revision.revisionId);
+  expect(candidate.candidate?.document.paperId).toBe(before.manifest.paper.id);
+  // 候选未确认：current 仍是 PDF 解析 revision，零 PDF 下载。
+  expect((await open(failed.root)).manifest.paper.currentRevision).toBe(result.revision.revisionId);
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(true); // 仅首次回退那一次
+  expect(requests.filter((url) => url.startsWith("/pdf/"))).toHaveLength(1);
+
   // 关闭受控服务与应用后重开：正文来自本地 current revision，零新增网络请求。
   const requestsBefore = requests.length + posts;
   await stopServers();

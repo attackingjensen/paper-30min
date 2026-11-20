@@ -86,6 +86,9 @@ export interface ConvertArxivSnapshotInput {
     onConvertPoint?: (point: ArxivConvertPoint) => void | Promise<void>;
     commitHooks?: ProjectCommitHooks;
   };
+  /** 转换器升级注入（SPEC §6 恢复）：默认当前 convertLatexml；
+   * 测试模拟未来转换器修复同一快照，生产路径不注入。 */
+  converter?: typeof convertLatexml;
 }
 
 export type ConvertArxivSnapshotResult =
@@ -1442,10 +1445,24 @@ function resolveReferences(builder: TreeBuilder, sourceIds: Set<string>): void {
   }
 }
 
-/** 从受管快照离线转换并发布新 revision；不修改快照，不访问网络。 */
-export async function convertArxivSnapshot(
-  input: ConvertArxivSnapshotInput,
-): Promise<ConvertArxivSnapshotResult> {
+export type ConvertArxivSnapshotTreeResult =
+  | {
+      ok: true;
+      tree: DocumentTree;
+      warnings: ImportDiagnostic[];
+      converterVersion: number;
+      /** 图块引用的快照资产字节（含 MIME），供首次发布或合并候选携带。 */
+      assetBytes: Record<string, { bytes: Uint8Array; mime?: string }>;
+    }
+  | { ok: false; diagnostic: ImportDiagnostic };
+
+/** 从受管快照离线转换出规范树（SPEC §8.5／§9.3）：核验登记摘要后转换，
+ * 不发布 revision、不修改快照、不访问网络。首次导入与更新候选共用此入口。 */
+export async function convertArxivSnapshotTree(input: {
+  root: string;
+  sourceSnapshotId: string;
+  converter?: typeof convertLatexml;
+}): Promise<ConvertArxivSnapshotTreeResult> {
   let snapshot: SourceSnapshotRecord;
   try {
     snapshot = await readSourceSnapshot(input.root, input.sourceSnapshotId);
@@ -1463,6 +1480,60 @@ export async function convertArxivSnapshot(
   if (!htmlRecord)
     return fatal("arxiv-convert-html-missing", "arxiv.convert.htmlMissing", "convert");
 
+  const readAsset = async (relative: string): Promise<Uint8Array> => {
+    const record = snapshot.files.find((file) => file.path === relative);
+    if (!record) throw new Error(`快照文件缺失：${relative}`);
+    const bytes = await fs.readFile(path.join(input.root, snapshot.path, relative));
+    if (createHash("sha256").update(bytes).digest("hex") !== record.sha256)
+      throw new Error(`快照摘要不符：${relative}`);
+    return bytes;
+  };
+
+  let html: Uint8Array;
+  const assetBytes: Record<string, Uint8Array> = {};
+  try {
+    html = await readAsset("document.html");
+    for (const mapping of Object.values(metadata.assets ?? {}))
+      assetBytes[mapping.path] = await readAsset(mapping.path);
+  } catch (error) {
+    return fatal(
+      "arxiv-convert-snapshot-digest",
+      `arxiv.convert.snapshotDigest:${error instanceof Error ? error.message : String(error)}`,
+      "convert",
+    );
+  }
+
+  const opened = await openProject(input.root);
+  const result = (input.converter ?? convertLatexml)({
+    html,
+    paperId: opened.manifest.paper.id,
+    htmlUrl: metadata.htmlUrl,
+    assets: metadata.assets ?? {},
+    assetBytes,
+  });
+  if (!result.ok) return result;
+  const figureAssets: Record<string, { bytes: Uint8Array; mime?: string }> = {};
+  for (const block of result.tree.blocks) {
+    if (block.kind === "figure" && block.asset)
+      figureAssets[block.asset.path] = {
+        bytes: assetBytes[block.asset.path],
+        ...(block.asset.mime === undefined ? {} : { mime: block.asset.mime }),
+      };
+  }
+  return {
+    ok: true,
+    tree: result.tree,
+    warnings: result.warnings,
+    converterVersion: result.converterVersion,
+    assetBytes: figureAssets,
+  };
+}
+
+/** 从受管快照离线转换并发布首个 current；不修改快照，不访问网络。
+ * current 已存在时拒绝直写：更新候选走 document-core 合并路径（update.ts）。 */
+export async function convertArxivSnapshot(
+  input: ConvertArxivSnapshotInput,
+): Promise<ConvertArxivSnapshotResult> {
   // 已发布候选的恢复：不重新转换（节点 UUID 不可复现），核验磁盘字节后只推进 current。
   // 提前到资产读取之前：仅推进指针不需要加载 HTML 与资产字节。
   if (input.completePublished && input.revisionId !== undefined) {
@@ -1505,42 +1576,16 @@ export async function convertArxivSnapshot(
     }
   }
 
-  const readAsset = async (relative: string): Promise<Uint8Array> => {
-    const record = snapshot.files.find((file) => file.path === relative);
-    if (!record) throw new Error(`快照文件缺失：${relative}`);
-    const bytes = await fs.readFile(path.join(input.root, snapshot.path, relative));
-    if (createHash("sha256").update(bytes).digest("hex") !== record.sha256)
-      throw new Error(`快照摘要不符：${relative}`);
-    return bytes;
-  };
-
-  let html: Uint8Array;
-  const assetBytes: Record<string, Uint8Array> = {};
-  try {
-    html = await readAsset("document.html");
-    for (const mapping of Object.values(metadata.assets ?? {}))
-      assetBytes[mapping.path] = await readAsset(mapping.path);
-  } catch (error) {
-    return fatal(
-      "arxiv-convert-snapshot-digest",
-      `arxiv.convert.snapshotDigest:${error instanceof Error ? error.message : String(error)}`,
-      "convert",
-    );
-  }
-
-  const opened = await openProject(input.root);
-
-  const result = convertLatexml({
-    html,
-    paperId: opened.manifest.paper.id,
-    htmlUrl: metadata.htmlUrl,
-    assets: metadata.assets ?? {},
-    assetBytes,
+  const converted = await convertArxivSnapshotTree({
+    root: input.root,
+    sourceSnapshotId: input.sourceSnapshotId,
+    ...(input.converter === undefined ? {} : { converter: input.converter }),
   });
-  if (!result.ok) return result;
+  if (!converted.ok) return converted;
 
   // 首次导入不变量：document 与 source-base 一致、baseRevision 必须为空；
   // current 已存在时更新候选必须走 document-core 合并路径，不得在此直写。
+  const opened = await openProject(input.root);
   if (opened.manifest.paper.currentRevision !== null)
     return fatal("arxiv-convert-current-exists", "arxiv.convert.currentExists", "convert");
   try {
@@ -1555,7 +1600,7 @@ export async function convertArxivSnapshot(
 
   const revisionId = input.revisionId ?? randomUUID();
   try {
-    await input.onCandidateBuilt?.({ revisionId, warnings: result.warnings });
+    await input.onCandidateBuilt?.({ revisionId, warnings: converted.warnings });
   } catch (error) {
     // 候选进度持久化失败：结构化诊断返回，不穿透 IPC；磁盘现场保留可恢复。
     return fatal(
@@ -1565,12 +1610,12 @@ export async function convertArxivSnapshot(
     );
   }
   const baseRevision = opened.manifest.paper.currentRevision;
-  const documentJson = Buffer.from(JSON.stringify(result.tree));
+  const documentJson = Buffer.from(JSON.stringify(converted.tree));
   // 确定性 changeset：同一候选重试必须产生逐字节一致的内容，
   // 否则 project-core 的同 revisionId 幂等复核会拒绝残留候选。
   const changeset = createDocumentChangeset({
     base: null,
-    current: result.tree,
+    current: converted.tree,
     baseRevision,
     revisionId,
   });
@@ -1580,10 +1625,8 @@ export async function convertArxivSnapshot(
     "tombstones.json": Buffer.from("[]"),
     "changeset.json": Buffer.from(JSON.stringify(changeset)),
   };
-  for (const block of result.tree.blocks) {
-    if (block.kind === "figure" && block.asset)
-      files[block.asset.path] = { bytes: assetBytes[block.asset.path], mime: block.asset.mime };
-  }
+  for (const [relative, asset] of Object.entries(converted.assetBytes))
+    files[relative] = asset.mime === undefined ? asset.bytes : { bytes: asset.bytes, mime: asset.mime };
   try {
     await input.hooks?.onConvertPoint?.("before-publish");
   } catch (error) {
@@ -1602,16 +1645,16 @@ export async function convertArxivSnapshot(
       files,
       metadata: {
         arxiv: {
-          converterVersion: ARXIV_CONVERTER_VERSION,
-          warnings: result.warnings,
+          converterVersion: converted.converterVersion,
+          warnings: converted.warnings,
         },
       },
     }, input.hooks?.commitHooks);
     return {
       ok: true,
       revision,
-      warnings: result.warnings,
-      converterVersion: ARXIV_CONVERTER_VERSION,
+      warnings: converted.warnings,
+      converterVersion: converted.converterVersion,
     };
   } catch (error) {
     return fatal(

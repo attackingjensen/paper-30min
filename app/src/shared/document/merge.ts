@@ -9,9 +9,9 @@ import {
 import { parseDocumentTree, type DocumentTree } from "./tree.js";
 
 type Side = "current" | "candidate";
-type MergeChoice = Side;
+export type MergeChoice = Side;
 type ConflictType = "content" | "deletion" | "order" | "structure" | "asset";
-type MergeConflict = {
+export type MergeConflict = {
   id: string;
   type: ConflictType;
   anchors: DocumentAnchor[];
@@ -28,6 +28,8 @@ export interface DocumentMergeResult {
   current: DocumentTree;
   sourceBase: DocumentTree;
   document: DocumentTree;
+  /** 未对齐的候选原始树：候选持久化与发布重载需要完整输入，不只对齐结果。 */
+  candidateTree: DocumentTree;
   changeset: DocumentChangeset;
   tombstones: Tombstone[];
   previousTombstones: Tombstone[];
@@ -64,13 +66,16 @@ function unitSnapshot(tree: DocumentTree, unitId: string) {
     id: unit.id,
     kind: unit.kind,
     sourceAliases: unit.sourceAliases,
+    // 句子按 sentenceIds 阅读顺序比较：重排是来源／本地的真实修改，必须对
+    // 三方合并可见（排序会把重排抹平）。句子内容已剥离 ID，重发 UUID 不误报。
     sentences: unit.sentenceIds.map((sentenceId) => {
       const sentence = tree.sentences[sentenceId];
       return {
         content: sentenceContent(tree, sentenceId),
         sourceAliases: sentence.sourceAliases,
       };
-    }).sort((a, b) => canonical(a).localeCompare(canonical(b))),
+    }),
+    // atom 在快照中无固有顺序（其阅读顺序已由句子内容表达），排序保证确定性比较。
     atoms: Object.values(tree.atoms)
       .filter((atom) => atom.unitId === unitId)
       .sort((a, b) => canonical(atomContent(a)).localeCompare(canonical(atomContent(b))))
@@ -94,19 +99,25 @@ function insertByOrder(order: string[], id: string, preferred: string[]) {
   if (order.includes(id)) return;
   const index = preferred.indexOf(id);
   if (index >= 0) {
+    // 收集全部已放置锚点（前驱取最大位置、后继取最小位置），而不是就近一个：
+    // 多个新增块共享同一锚点时按 preferred 顺序确定插入，避免依赖 Map 遍历顺序。
+    let after = -1;
     for (let cursor = index - 1; cursor >= 0; cursor--) {
       const existing = order.indexOf(preferred[cursor]);
-      if (existing >= 0) {
-        order.splice(existing + 1, 0, id);
-        return;
-      }
+      if (existing >= 0) after = Math.max(after, existing);
     }
+    let before = -1;
     for (let cursor = index + 1; cursor < preferred.length; cursor++) {
       const existing = order.indexOf(preferred[cursor]);
-      if (existing >= 0) {
-        order.splice(existing, 0, id);
-        return;
-      }
+      if (existing >= 0) before = before === -1 ? existing : Math.min(before, existing);
+    }
+    if (after >= 0 && (before === -1 || after < before)) {
+      order.splice(after + 1, 0, id);
+      return;
+    }
+    if (before >= 0) {
+      order.splice(before, 0, id);
+      return;
     }
   }
   order.push(id);
@@ -876,6 +887,7 @@ export function mergeDocumentTrees(input: {
   const base = parseDocumentTree(structuredClone(input.base));
   const current = parseDocumentTree(structuredClone(input.current));
   const sourceBase = alignCandidateTree(base, input.candidate);
+  const candidateTree = parseDocumentTree(structuredClone(input.candidate));
   if (base.paperId !== current.paperId || current.paperId !== sourceBase.paperId)
     invalid("base、current 与 candidate 的 paperId 必须一致。");
   const previousTombstones = parseDocumentTombstones(input.previousTombstones ?? [], current);
@@ -913,6 +925,7 @@ export function mergeDocumentTrees(input: {
     current,
     sourceBase,
     document,
+    candidateTree,
     changeset,
     tombstones,
     previousTombstones,
