@@ -2,10 +2,11 @@
 // 只消费 project-core current revision 的文档树投影；不读取 source-base、
 // 原始 HTML 或云端 Markdown 作为另一份正文。渲染层不发隐式远端请求：
 // 图片经 paper30min 受管协议，外链经主进程受控打开入口。
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import type { ProjectCoreSnapshot, ProjectRevisionContext } from "../../shared/contracts";
+import { readDiagnosticArray, type ImportDiagnostic } from "../../shared/arxiv";
 import "./reader.css";
 import type { DocumentTree } from "../../shared/document/tree";
 import { createRangeAnchor } from "../../shared/document/anchor";
@@ -23,6 +24,16 @@ import {
   type ReadingPosition,
   type ReadingPositionAnchor,
 } from "../../shared/reader/position";
+import { collectReaderDiagnostics, type ReaderDiagnostic } from "../../shared/reader/diagnostics";
+import { summarizeVerification, type VerificationRecord } from "../../shared/verification";
+import { SourcePanel, sourcePanelFacts } from "./SourcePanel";
+import { CorrectionHost } from "./CorrectionHost";
+import { ConflictHost } from "./ConflictHost";
+import type {
+  ArxivUpdateCandidateCommandResult,
+  ArxivUpdateCheckCommandResult,
+} from "../../shared/contracts";
+import type { DocumentMergeResult } from "../../shared/document/merge";
 
 const desktop = window.desktop;
 /** raw block 白名单（与 document-core rawHtmlTags 一致）：渲染层独立消毒，
@@ -65,6 +76,12 @@ interface ReaderState {
   index: SelectionIndex;
   facts: ReaderSourceFacts;
   context: ProjectRevisionContext;
+  /** 来源诊断面板输入（SPEC-reader §7）：事实、警告与核验记录。 */
+  snapshot: Record<string, unknown>;
+  snapshotWarnings: ImportDiagnostic[];
+  verification: VerificationRecord[];
+  /** 核验侧车读取失败（损坏/预算/IO）：与真实无记录区分，正文仍可读。 */
+  verificationError: string | null;
 }
 
 /** 位置通知：changed/removed 的显式提示与 removed 摘录（不参与相似匹配）。 */
@@ -367,7 +384,10 @@ function RawView({ item }: { item: Extract<ReaderItem, { kind: "raw" }> }) {
   );
 }
 
-function UnitView({ item }: { item: Extract<ReaderItem, { kind: "unit" }> }) {
+function UnitView({ item, onCorrect }: {
+  item: Extract<ReaderItem, { kind: "unit" }>;
+  onCorrect?: (unitId: string) => void;
+}) {
   const Tag = item.unitKind === "reference" || item.unitKind === "footnote" ? "div" : "p";
   return (
     <Tag
@@ -376,6 +396,16 @@ function UnitView({ item }: { item: Extract<ReaderItem, { kind: "unit" }> }) {
       data-block-id={item.blockId}
     >
       <UnitBody unit={item} />
+      {onCorrect && (
+        <button
+          type="button"
+          className="reader-correct-entry"
+          aria-label={`修正单元 ${item.unitId.slice(0, 8)}`}
+          onClick={() => onCorrect(item.unitId)}
+        >
+          修正
+        </button>
+      )}
     </Tag>
   );
 }
@@ -410,6 +440,14 @@ export function FullReader({
   const [message, setMessage] = useState("");
   const [toolbar, setToolbar] = useState<SelectionToolbarState | null>(null);
   const [notice, setNotice] = useState<PositionNotice | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  // 修正宿主（SPEC-reader §8）：显式进入单元修正；发布成功后按新 revision 重读。
+  const [correctingUnit, setCorrectingUnit] = useState<string | null>(null);
+  // 来源候选冲突宿主（SPEC-reader §9）：候选与 current 明确区分，逐项解决后发布。
+  const [candidate, setCandidate] = useState<(DocumentMergeResult & { root: string; sourceSnapshotId: string }) | null>(null);
+  const [updateStatus, setUpdateStatus] = useState("");
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [localEpoch, setLocalEpoch] = useState(0);
   const requestRef = useRef(0);
   const articleRef = useRef<HTMLElement | null>(null);
   // 恢复请求代际：用户滚动即失效，迟到布局结果不得覆盖新位置。
@@ -446,7 +484,7 @@ export function FullReader({
         return;
       }
       const revision = core.currentRevision;
-      const [treeValue, snapshot, context] = await Promise.all([
+      const [treeValue, snapshot, context, verification] = await Promise.all([
         desktop.invoke<unknown>({
           type: "coreReadDocument",
           root,
@@ -463,6 +501,15 @@ export function FullReader({
           root,
           revisionId: revision.revisionId,
         }),
+        // 核验记录缺失不影响阅读；读取失败如实标记，不冒充“无核验记录”。
+        desktop.invoke<VerificationRecord[]>({
+          type: "corePdfReadVerification",
+          root,
+          revisionId: revision.revisionId,
+        }).then(
+          (records) => ({ records, error: null as string | null }),
+          (error: Error) => ({ records: [] as VerificationRecord[], error: error.message.replace(/^Error invoking remote method '[^']+': Error: /, "") }),
+        ),
       ]);
       if (disposed || request !== requestRef.current) return;
       // 结构校验由主进程读取路径承担；渲染层对受损 current 仍按投影防御
@@ -476,6 +523,10 @@ export function FullReader({
         index: buildSelectionIndex(projection),
         facts: sourceFacts(snapshot),
         context,
+        snapshot,
+        snapshotWarnings: readDiagnosticArray(snapshot.warnings),
+        verification: verification.records,
+        verificationError: verification.error,
       });
       setToolbar(null);
       setStatus("ready");
@@ -487,7 +538,7 @@ export function FullReader({
     return () => {
       disposed = true;
     };
-  }, [root, epoch]);
+  }, [root, epoch, localEpoch]);
 
   // 选区交互：DOM 只承担交互，权威偏移经投影索引映射；工具条不破坏原生选择。
   const refreshSelection = useCallback(() => {
@@ -741,6 +792,108 @@ export function FullReader({
     setToolbar(null);
   }
 
+  // 来源诊断（SPEC-reader §7）：投影内结构化诊断＋渲染层公式失败诊断；
+  // 核验四态按节点聚合，不产生质量分数。公式失败诊断只在面板打开时计算，
+  // 避免初始加载对每个独立公式重复一次 KaTeX 渲染。
+  const diagnostics = useMemo<ReaderDiagnostic[]>(() => {
+    if (!state) return [];
+    const collected = collectReaderDiagnostics(state.projection);
+    if (panelOpen) {
+      for (const item of state.projection.items) {
+        if (item.kind !== "formula" || item.source.format !== "latex") continue;
+        try {
+          katex.renderToString(item.source.value, { throwOnError: true, trust: false, strict: "ignore", displayMode: true });
+        } catch {
+          collected.push({
+            code: "formula-render-failed",
+            message: "公式渲染失败，保留来源表示与诊断。",
+            blockId: item.blockId,
+          });
+        }
+      }
+    }
+    return collected;
+  }, [state, panelOpen]);
+  const verificationSummary = useMemo(
+    () => state ? summarizeVerification(state.tree, state.verification) : null,
+    [state],
+  );
+  function locateBlock(blockId: string) {
+    const article = articleRef.current;
+    const container = article?.parentElement;
+    const target = article?.querySelector<HTMLElement>(`[data-block-id="${blockId}"]`);
+    if (!article || !container || !target) return;
+    container.scrollTo({
+      top: container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - 24,
+      behavior: "instant",
+    });
+    target.classList.add("reader-jump-target");
+    target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+    window.setTimeout(() => target.classList.remove("reader-jump-target"), 2000);
+  }
+
+  // 来源更新入口（SPEC-reader §9.1）：显式检查新版本并构建候选；
+  // 候选进入冲突宿主，确认发布前 current 不变。
+  async function checkSourceUpdate() {
+    if (!state) return;
+    setUpdateBusy(true);
+    setUpdateStatus("正在检查新版本…");
+    const operationId = crypto.randomUUID();
+    // 更新检查沿用来源谱系的受控端点：快照记录的 absUrl origin 即获取来源；
+    // 生产为 https://arxiv.org，测试回环端点仅在主进程测试门控下生效。
+    let baseUrl: string | undefined;
+    const absUrl = state.snapshot.absUrl;
+    if (typeof absUrl === "string") {
+      try {
+        baseUrl = new URL(absUrl).origin;
+      } catch {
+        baseUrl = undefined;
+      }
+    }
+    try {
+      const check = await desktop.invoke<ArxivUpdateCheckCommandResult>({
+        type: "coreArxivCheckUpdate", root, operationId,
+        ...(baseUrl === undefined ? {} : { baseUrl }),
+      });
+      if (!check.ok) {
+        setUpdateStatus(`无法检查更新：${check.diagnostic.messageKey}`);
+        return;
+      }
+      if (check.status === "up-to-date") {
+        setUpdateStatus("已是最新版本。");
+        return;
+      }
+      if (check.status === "withdrawn") {
+        setUpdateStatus("最新版本已撤稿，不自动采用；如需更新请显式选择历史版本。");
+        return;
+      }
+      setUpdateStatus(`发现新版本 ${check.latest.canonicalId}，正在构建候选…`);
+      const built = await desktop.invoke<ArxivUpdateCandidateCommandResult>({
+        type: "coreArxivUpdateCandidate",
+        root,
+        reference: check.latest,
+        baseRevision: state.revisionId,
+        operationId: crypto.randomUUID(),
+        ...(baseUrl === undefined ? {} : { baseUrl }),
+      });
+      if (!built.ok) {
+        setUpdateStatus(`候选构建失败：${built.diagnostic.messageKey}`);
+        return;
+      }
+      if (built.outcome === "reused") {
+        setUpdateStatus("同版重取字节一致，未产生新候选。");
+        return;
+      }
+      setUpdateStatus("");
+      setCandidate(built.candidate);
+    } catch (e) {
+      setUpdateStatus((e as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
   if (status === "loading") return <div className="empty">正在读取正文…</div>;
   if (status === "empty")
     return (
@@ -771,7 +924,73 @@ export function FullReader({
           <p className="reader-authors">{facts.authors.join("、")}</p>
         )}
         {facts.canonicalId && <p className="reader-source muted">arXiv {facts.canonicalId}</p>}
+        <button
+          type="button"
+          className="reader-source-toggle"
+          aria-expanded={panelOpen}
+          onClick={() => setPanelOpen(!panelOpen)}
+        >
+          来源与诊断{diagnostics.length > 0 ? `（${diagnostics.length} 条正文诊断）` : ""}
+        </button>
+        {facts.canonicalId && (
+          <button
+            type="button"
+            className="reader-source-toggle"
+            disabled={updateBusy}
+            onClick={() => void checkSourceUpdate()}
+          >
+            检查来源更新
+          </button>
+        )}
+        {updateStatus && <p className="reader-update-status" role="status">{updateStatus}</p>}
       </header>
+      {panelOpen && (
+        <SourcePanel
+          facts={sourcePanelFacts(state.snapshot, state.context.revision)}
+          snapshotWarnings={state.snapshotWarnings}
+          revisionWarnings={(() => {
+            const meta = state.context.revision.arxiv ?? state.context.revision.pdfParse;
+            return meta !== null && typeof meta === "object"
+              ? readDiagnosticArray((meta as Record<string, unknown>).warnings)
+              : [];
+          })()}
+          diagnostics={diagnostics}
+          verification={verificationSummary && {
+            counts: verificationSummary.counts,
+            records: state.verification,
+          }}
+          verificationError={state.verificationError}
+          onLocate={locateBlock}
+        />
+      )}
+      {candidate && (
+        <ConflictHost
+          root={root}
+          candidate={candidate}
+          currentTree={state.tree}
+          onCandidateChange={setCandidate}
+          onClose={() => setCandidate(null)}
+          onPublished={() => {
+            setCandidate(null);
+            setLocalEpoch((value) => value + 1);
+          }}
+        />
+      )}
+      {correctingUnit && (
+        <CorrectionHost
+          key={`${state.revisionId}:${correctingUnit}`}
+          root={root}
+          tab="paper"
+          tree={state.tree}
+          baseRevision={state.revisionId}
+          unitId={correctingUnit}
+          onClose={() => setCorrectingUnit(null)}
+          onPublished={() => {
+            setCorrectingUnit(null);
+            setLocalEpoch((value) => value + 1);
+          }}
+        />
+      )}
       {notice && (
         <div className="reader-position-notice" role="status">
           <p>{notice.text}</p>
@@ -792,7 +1011,13 @@ export function FullReader({
             );
           }
           case "unit":
-            return <UnitView key={item.blockId} item={item} />;
+            return (
+              <UnitView
+                key={item.blockId}
+                item={item}
+                onCorrect={(unitId) => setCorrectingUnit(unitId)}
+              />
+            );
           case "formula":
             return <FormulaView key={item.blockId} item={item} />;
           case "figure":

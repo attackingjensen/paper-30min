@@ -161,6 +161,22 @@ export type CoreCommand =
       tree: "document" | "source-base";
     }
   | {
+      type: "coreCorrectionPreview";
+      root: string;
+      baseRevision: string;
+      /** 结构化修正命令序列（shared/document/correction 契约）；主进程边界校验。 */
+      corrections: unknown[];
+      /** 预览固定的候选身份；发布沿用同一 ID 保证内容逐字节一致。 */
+      revisionId?: string;
+    }
+  | {
+      type: "coreCorrectionPublish";
+      root: string;
+      baseRevision: string;
+      revisionId: string;
+      corrections: unknown[];
+    }
+  | {
       type: "coreMergePublish";
       root: string;
       baseRevision: string;
@@ -274,6 +290,19 @@ export type CoreCommand =
       sourceSnapshotId: string;
       baseRevision: string;
       resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>;
+    }
+  | {
+      type: "coreCandidateLoad";
+      root: string;
+      /** 构建时落盘的候选身份；重载存储字节，不重新转换。 */
+      revisionId: string;
+    }
+  | {
+      type: "coreCandidateResolve";
+      root: string;
+      revisionId: string;
+      conflictId: string;
+      choice: "current" | "candidate";
     }
   | {
       type: "coreArxivPdfFallback";

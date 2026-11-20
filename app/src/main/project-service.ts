@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { renameManaged } from "./managed-rename.js";
 import { readRevisionAsset } from "./project-core.js";
+import { readUpdateCandidateAsset } from "./document/candidate-store.js";
 import type {
   Command,
   CoreCommand,
@@ -707,6 +708,14 @@ export class ProjectService {
       const revisionAsset = /^paper\/revisions\/([0-9a-f-]{36})\/(assets\/.+)$/.exec(command.path);
       if (revisionAsset) {
         const asset = await readRevisionAsset(root, revisionAsset[1], revisionAsset[2]);
+        return { bytes: new Uint8Array(asset.bytes), mime: asset.mime ?? mime };
+      }
+      // 更新候选资产（冲突预览）：受管内部存储，登记与摘要同 revision 口径。
+      const candidateAsset = /^update-candidates\/([0-9a-f-]{36})\/(assets\/.+)$/.exec(command.path);
+      if (candidateAsset) {
+        const asset = await readUpdateCandidateAsset({
+          root, revisionId: candidateAsset[1], path: candidateAsset[2],
+        });
         return { bytes: new Uint8Array(asset.bytes), mime: asset.mime ?? mime };
       }
       const file = await this.resolve(root, command.path);
