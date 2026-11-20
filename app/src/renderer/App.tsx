@@ -101,6 +101,9 @@ export function App() {
   const navigationRequest = useRef(0);
   // Full 阅读器按工程刷新代际重读 current；revision 切换以代际为边界。
   const projectEpoch = useRef(0);
+  // Full 阅读器选区提问：进入右侧持续对话草稿，不自动发送。
+  const [askDraft, setAskDraft] = useState<{ id: number; text: string } | null>(null);
+  const askDraftId = useRef(0);
   async function setSettings(value: string | null) {
     if (settings === "skills" && value !== settings && skillDirty.current && !window.confirm("放弃尚未保存的提示词编辑并离开？")) return;
     const request = ++navigationRequest.current;
@@ -393,7 +396,17 @@ export function App() {
   function contentView() {
     if (!current) return <div className="empty">尚未打开文档</div>;
     if (!current.path && current.key === "paper" && root)
-      return <FullReader key={root} root={root} epoch={projectEpoch.current} />;
+      return (
+        <FullReader
+          key={root}
+          root={root}
+          epoch={projectEpoch.current}
+          onAsk={(text) => {
+            setRight(true);
+            setAskDraft({ id: ++askDraftId.current, text });
+          }}
+        />
+      );
     if (current.path && isMarkdown(current.path)) {
       const draft = documents.drafts.get(current.path);
       return draft ? (
@@ -867,6 +880,7 @@ export function App() {
                   root={root!}
                   onSettings={() => setSettings("agent")}
                   initialView={agentViews.current[root!]}
+                  askDraft={askDraft}
                   onViewChange={(view) => {
                     agentViews.current[root!] = view;
                   }}

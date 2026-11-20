@@ -2,12 +2,13 @@
 // 只消费 project-core current revision 的文档树投影；不读取 source-base、
 // 原始 HTML 或云端 Markdown 作为另一份正文。渲染层不发隐式远端请求：
 // 图片经 paper30min 受管协议，外链经主进程受控打开入口。
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import type { ProjectCoreSnapshot } from "../../shared/contracts";
 import "./reader.css";
 import type { DocumentTree } from "../../shared/document/tree";
+import { createRangeAnchor } from "../../shared/document/anchor";
 import {
   buildReaderProjection,
   type ReaderAtom,
@@ -16,6 +17,7 @@ import {
   type ReaderSentence,
   type ReaderUnitContent,
 } from "../../shared/reader/projection";
+import { buildSelectionIndex, mapDomSelection, type SelectionIndex } from "../../shared/reader/selection";
 
 const desktop = window.desktop;
 /** raw block 白名单（与 document-core rawHtmlTags 一致）：渲染层独立消毒，
@@ -53,7 +55,9 @@ interface ReaderSourceFacts {
 
 interface ReaderState {
   revisionId: string;
+  tree: DocumentTree;
   projection: ReaderProjection;
+  index: SelectionIndex;
   facts: ReaderSourceFacts;
 }
 
@@ -83,16 +87,16 @@ function SentenceBody({ sentence }: { sentence: ReaderSentence }) {
     <span data-sentence-id={sentence.sentenceId}>
       {sentence.parts.map((part, index) =>
         part.kind === "text" ? (
-          <span key={index}>{part.text}</span>
+          <span key={index} data-start={part.start} data-end={part.end}>{part.text}</span>
         ) : (
-          <AtomView key={part.atom.id} atom={part.atom} />
+          <AtomView key={part.atom.id} atom={part.atom} start={part.start} end={part.end} />
         ),
       )}
     </span>
   );
 }
 
-function AtomView({ atom }: { atom: ReaderAtom }) {
+function AtomView({ atom, start, end }: { atom: ReaderAtom; start: number; end: number }) {
   const jump = (targetUnitId: string) => {
     const target = document.querySelector(`[data-unit-id="${targetUnitId}"]`);
     if (!target) return;
@@ -116,12 +120,14 @@ function AtomView({ atom }: { atom: ReaderAtom }) {
           <span
             className="reader-atom reader-math"
             data-atom-id={atom.id}
+            data-start={start}
+            data-end={end}
             dangerouslySetInnerHTML={{ __html: html }}
           />
         );
       } catch {
         return (
-          <span className="reader-atom reader-math-failed" data-atom-id={atom.id}>
+          <span className="reader-atom reader-math-failed" data-atom-id={atom.id} data-start={start} data-end={end}>
             <code>{atom.source.value}</code>
             <span className="reader-warning" role="note">公式渲染失败，保留来源。</span>
           </span>
@@ -134,16 +140,18 @@ function AtomView({ atom }: { atom: ReaderAtom }) {
         <span
           className="reader-atom reader-math"
           data-atom-id={atom.id}
+          data-start={start}
+          data-end={end}
           dangerouslySetInnerHTML={{ __html: atom.source.value }}
         />
       );
     }
-    return <span className="reader-atom" data-atom-id={atom.id}>{atom.text}</span>;
+    return <span className="reader-atom" data-atom-id={atom.id} data-start={start} data-end={end}>{atom.text}</span>;
   }
   if (atom.kind === "link") {
     if (atom.href === null) {
       return (
-        <span className="reader-atom reader-link-disabled" data-atom-id={atom.id}>
+        <span className="reader-atom reader-link-disabled" data-atom-id={atom.id} data-start={start} data-end={end}>
           {atom.text}
           <span className="reader-warning" role="note">{atom.warning}</span>
         </span>
@@ -153,6 +161,8 @@ function AtomView({ atom }: { atom: ReaderAtom }) {
       <a
         className="reader-atom reader-link"
         data-atom-id={atom.id}
+        data-start={start}
+        data-end={end}
         href={atom.href}
         onClick={(event) => {
           event.preventDefault();
@@ -169,6 +179,8 @@ function AtomView({ atom }: { atom: ReaderAtom }) {
         type="button"
         className="reader-atom reader-ref"
         data-atom-id={atom.id}
+        data-start={start}
+        data-end={end}
         aria-label={`脚注 ${atom.text}`}
         onClick={() => jump(atom.targetUnitId)}
       >
@@ -183,6 +195,8 @@ function AtomView({ atom }: { atom: ReaderAtom }) {
         type="button"
         className="reader-atom reader-ref"
         data-atom-id={atom.id}
+        data-start={start}
+        data-end={end}
         onClick={() => jump(atom.targetUnitId!)}
       >
         {atom.text}
@@ -190,7 +204,7 @@ function AtomView({ atom }: { atom: ReaderAtom }) {
     );
   }
   return (
-    <span className="reader-atom reader-ref-unresolved" data-atom-id={atom.id}>
+    <span className="reader-atom reader-ref-unresolved" data-atom-id={atom.id} data-start={start} data-end={end}>
       {atom.text}
       <span className="reader-warning" role="note">{atom.warning}</span>
     </span>
@@ -333,11 +347,31 @@ function UnitView({ item }: { item: Extract<ReaderItem, { kind: "unit" }> }) {
   );
 }
 
-export function FullReader({ root, epoch = 0 }: { root: string; epoch?: number }) {
+/** 选区工具条状态：逻辑映射结果＋视口坐标；revision/代际切换即失效。 */
+interface SelectionToolbarState {
+  x: number;
+  y: number;
+  quote: string;
+  context: string;
+  degraded: boolean;
+}
+
+export function FullReader({
+  root,
+  epoch = 0,
+  onAsk,
+}: {
+  root: string;
+  epoch?: number;
+  /** 解释/提问进入右侧持续对话；reader 不创建问答卡、不直接发送模型请求。 */
+  onAsk?: (draft: string) => void;
+}) {
   const [state, setState] = useState<ReaderState | null>(null);
   const [status, setStatus] = useState<"loading" | "empty" | "ready" | "error">("loading");
   const [message, setMessage] = useState("");
+  const [toolbar, setToolbar] = useState<SelectionToolbarState | null>(null);
   const requestRef = useRef(0);
+  const articleRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const request = ++requestRef.current;
@@ -379,11 +413,15 @@ export function FullReader({ root, epoch = 0 }: { root: string; epoch?: number }
       // 结构校验由主进程读取路径承担；渲染层对受损 current 仍按投影防御
       // （危险链接降级、raw 白名单消毒），不以拒绝渲染代替安全降级。
       const tree = treeValue as DocumentTree;
+      const projection = buildReaderProjection(tree);
       setState({
         revisionId: revision.revisionId,
-        projection: buildReaderProjection(tree),
+        tree,
+        projection,
+        index: buildSelectionIndex(projection),
         facts: sourceFacts(snapshot),
       });
+      setToolbar(null);
       setStatus("ready");
     })().catch((error: Error) => {
       if (disposed || request !== requestRef.current) return;
@@ -394,6 +432,66 @@ export function FullReader({ root, epoch = 0 }: { root: string; epoch?: number }
       disposed = true;
     };
   }, [root, epoch]);
+
+  // 选区交互：DOM 只承担交互，权威偏移经投影索引映射；工具条不破坏原生选择。
+  const refreshSelection = useCallback(() => {
+    const article = articleRef.current;
+    const current = state;
+    if (!article || !current) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      setToolbar(null);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    if (!article.contains(range.commonAncestorContainer)) {
+      setToolbar(null);
+      return;
+    }
+    const mapping = mapDomSelection(range, current.index);
+    if (mapping.ranges.length === 0 && mapping.degraded.length === 0) {
+      setToolbar(null);
+      return;
+    }
+    let quote = "";
+    let context = "";
+    let degraded = mapping.degraded.length > 0;
+    if (mapping.ranges.length > 0) {
+      try {
+        const anchor = createRangeAnchor(current.tree, mapping.ranges);
+        quote = anchor.quote.text;
+        context = [anchor.quote.before, anchor.quote.text, anchor.quote.after].filter(Boolean).join("");
+      } catch {
+        // 映射与树不一致（受损字节）：不伪造 quote，按降级处理。
+        degraded = true;
+      }
+    }
+    const rect = range.getBoundingClientRect();
+    const width = 220;
+    const x = Math.min(Math.max(8, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 8);
+    const y = rect.bottom + 8 + 40 > window.innerHeight ? Math.max(8, rect.top - 48) : rect.bottom + 8;
+    setToolbar({ x, y, quote, context, degraded: degraded || quote === "" });
+  }, [state]);
+
+  useEffect(() => {
+    if (status !== "ready") return;
+    document.addEventListener("selectionchange", refreshSelection);
+    window.addEventListener("resize", refreshSelection);
+    return () => {
+      document.removeEventListener("selectionchange", refreshSelection);
+      window.removeEventListener("resize", refreshSelection);
+    };
+  }, [status, refreshSelection]);
+
+  function ask(mode: "解释" | "提问") {
+    if (!toolbar || !onAsk) return;
+    const header = mode === "解释" ? "请解释以下原文选区：" : "关于以下原文选区，我想提问：";
+    const body = toolbar.quote
+      ? `> ${toolbar.quote.split("\n").join("\n> ")}\n\n（上下文：${toolbar.context}）`
+      : "（该选区包含无法精确映射的内容，已按块级锚点降级。）";
+    onAsk(`${header}\n${body}\n\n`);
+    setToolbar(null);
+  }
 
   if (status === "loading") return <div className="empty">正在读取正文…</div>;
   if (status === "empty")
@@ -412,7 +510,13 @@ export function FullReader({ root, epoch = 0 }: { root: string; epoch?: number }
   const { projection, facts } = state;
   const revisionPath = `paper/revisions/${state.revisionId}`;
   return (
-    <article className="full-reader" data-revision-id={state.revisionId}>
+    <article
+      className="full-reader"
+      data-revision-id={state.revisionId}
+      ref={articleRef}
+      onMouseUp={refreshSelection}
+      onKeyUp={refreshSelection}
+    >
       <header className="reader-header">
         <h1>{facts.title ?? "未命名论文"}</h1>
         {facts.authors.length > 0 && (
@@ -451,6 +555,19 @@ export function FullReader({ root, epoch = 0 }: { root: string; epoch?: number }
             return <RawView key={item.blockId} item={item} />;
         }
       })}
+      {toolbar && (
+        <div
+          className="reader-selection-toolbar"
+          role="toolbar"
+          aria-label="选区操作"
+          style={{ left: toolbar.x, top: toolbar.y }}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          {toolbar.degraded && <span className="reader-selection-degraded" role="note">含不可精确映射内容</span>}
+          <button type="button" onClick={() => ask("解释")}>解释</button>
+          <button type="button" onClick={() => ask("提问")}>提问</button>
+        </div>
+      )}
     </article>
   );
 }

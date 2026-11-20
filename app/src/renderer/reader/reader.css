@@ -102,6 +102,28 @@ span.reader-warning { display: inline-block; margin: 0 0 0 6px; }
   color: #4b4b55;
 }
 .reader-raw-limitations { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: #6b6b76; }
+.reader-selection-toolbar {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: #ffffff;
+  border: 1px solid #d9d9e0;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 12%);
+}
+.reader-selection-toolbar button {
+  border: none;
+  background: #f4f4f6;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.reader-selection-toolbar button:hover { background: #e8e8ee; }
+.reader-selection-degraded { font-size: 12px; color: #8a6d1a; }
 @media (prefers-reduced-motion: reduce) {
   .reader-jump-target { transition: none; }
 }
