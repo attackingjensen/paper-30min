@@ -160,9 +160,11 @@ async function selectRange(
   from: { sentenceId: string; start: number; offset: number },
   to: { sentenceId: string; start: number; offset: number; insideAtom?: string },
 ) {
-  // 目标句子可能位于文档后段：等待其真实渲染后再设置选区。
+  // 目标句子可能位于文档后段：等待其真实渲染并滚入视口后再设置选区，
+  // 避免慢 runner 上选区落在不可见区域导致工具条定位/点击竞态。
   await expect(page.locator(`[data-sentence-id="${from.sentenceId}"]`)).toBeAttached();
   await expect(page.locator(`[data-sentence-id="${to.sentenceId}"]`)).toBeAttached();
+  await page.locator(`[data-sentence-id="${from.sentenceId}"]`).scrollIntoViewIfNeeded();
   await page.evaluate(({ from, to }) => {
     const locate = (point: { sentenceId: string; start: number; offset: number; insideAtom?: string }) => {
       const sentence = document.querySelector(`[data-sentence-id="${point.sentenceId}"]`);

@@ -247,10 +247,11 @@ test("reader revision 移动目标单元（moved）：仍恢复原锚点", async
   const nextRevision = await commitNext(created.root, revision, next);
   await page.getByRole("button", { name: "刷新工程", exact: true }).click();
   await expect(page.locator(".full-reader")).toHaveAttribute("data-revision-id", nextRevision.revisionId);
-  // 恢复窗口含字体/公式度量漂移的兜底核对：轮询直到几何稳定。
+  // 恢复窗口含字体/公式度量漂移的兜底核对（最长 8s）：轮询直到几何稳定，
+  // 窗口覆盖整个恢复期，避免慢 runner 上采样落在对齐之前。
   await expect(page.locator(".reader-position-notice")).toHaveCount(0);
   let geometry = { rect: Number.NaN, scrollTop: 0, maxScroll: 0 };
-  for (let attempt = 0; attempt < 24; attempt += 1) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
     await page.waitForTimeout(500);
     geometry = await page.locator(`.full-reader [data-unit-id="${target}"]`).evaluate((element) => {
       const container = document.querySelector(".main") as HTMLElement;
@@ -273,12 +274,13 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
   const { filler } = await publish("位置抢占工程");
   const target = filler[20];
   await scrollToUnit(target);
-  // 刷新触发恢复流程；新正文挂载后用户真实滚轮向上滚动，迟到恢复必须让位。
+  // 刷新触发恢复流程；等待恢复把目标带回视口后再真实滚轮向上滚动，
+  // 迟到恢复必须让位（避免滚轮落在恢复对齐之前被覆盖的竞态）。
   await page.getByRole("button", { name: "刷新工程", exact: true }).click();
-  await expect(page.locator(".full-reader [data-sentence-id]").first()).toBeVisible();
+  await expect(page.locator(`.full-reader [data-unit-id="${target}"]`)).toBeInViewport({ timeout: 15000 });
   const box = (await page.locator(".main").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.wheel(0, -100000);
-  await page.waitForTimeout(1200);
-  expect(await scrollTop()).toBe(0);
+  // 轮询等待滚轮生效：恢复窗口内的兜底核对不得把位置拉回。
+  await expect.poll(scrollTop, { timeout: 10000 }).toBe(0);
 });
