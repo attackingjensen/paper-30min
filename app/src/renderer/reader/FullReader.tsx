@@ -122,41 +122,34 @@ function sourceFacts(snapshot: Record<string, unknown>): ReaderSourceFacts {
 }
 
 /** 单元正文：句子携带稳定 ID；文本片段按逻辑顺序渲染，atom 独立锚定。 */
-function UnitBody({ unit }: { unit: ReaderUnitContent }) {
+function UnitBody({ unit, onNavigate }: { unit: ReaderUnitContent; onNavigate: (unitId: string) => void }) {
   return (
     <>
       {unit.sentences.map((sentence) => (
-        <SentenceBody key={sentence.sentenceId} sentence={sentence} />
+        <SentenceBody key={sentence.sentenceId} sentence={sentence} onNavigate={onNavigate} />
       ))}
     </>
   );
 }
 
-function SentenceBody({ sentence }: { sentence: ReaderSentence }) {
+function SentenceBody({ sentence, onNavigate }: { sentence: ReaderSentence; onNavigate: (unitId: string) => void }) {
   return (
     <span data-sentence-id={sentence.sentenceId}>
       {sentence.parts.map((part, index) =>
         part.kind === "text" ? (
           <span key={index} data-start={part.start} data-end={part.end}>{part.text}</span>
         ) : (
-          <AtomView key={part.atom.id} atom={part.atom} start={part.start} end={part.end} />
+          <AtomView key={part.atom.id} atom={part.atom} start={part.start} end={part.end} onNavigate={onNavigate} />
         ),
       )}
     </span>
   );
 }
 
-function AtomView({ atom, start, end }: { atom: ReaderAtom; start: number; end: number }) {
+function AtomView({ atom, start, end, onNavigate }: { atom: ReaderAtom; start: number; end: number; onNavigate: (unitId: string) => void }) {
   const jump = (targetUnitId: string) => {
-    const target = document.querySelector(`[data-unit-id="${targetUnitId}"]`);
-    if (!target) return;
-    target.scrollIntoView({ block: "center" });
-    target.classList.add("reader-jump-target");
-    if (target instanceof HTMLElement) {
-      target.setAttribute("tabindex", "-1");
-      target.focus({ preventScroll: true });
-    }
-    window.setTimeout(() => target.classList.remove("reader-jump-target"), 2000);
+    if (!document.querySelector(`[data-unit-id="${targetUnitId}"]`)) return;
+    onNavigate(targetUnitId);
   };
   if (atom.kind === "math" || atom.kind === "inline-object") {
     if (atom.source.format === "latex") {
@@ -298,10 +291,12 @@ function FigureView({
   item,
   root,
   revisionPath,
+  onNavigate,
 }: {
   item: Extract<ReaderItem, { kind: "figure" }>;
   root: string;
   revisionPath: string;
+  onNavigate: (unitId: string) => void;
 }) {
   const [failed, setFailed] = useState(false);
   const captionText = item.caption?.sentences
@@ -332,20 +327,20 @@ function FigureView({
       )}
       {item.caption && (
         <figcaption data-unit-id={item.caption.unitId}>
-          <UnitBody unit={item.caption} />
+          <UnitBody unit={item.caption} onNavigate={onNavigate} />
         </figcaption>
       )}
     </figure>
   );
 }
 
-function TableView({ item }: { item: Extract<ReaderItem, { kind: "table" }> }) {
+function TableView({ item, onNavigate }: { item: Extract<ReaderItem, { kind: "table" }>; onNavigate: (unitId: string) => void }) {
   return (
     <div className="reader-table-scroll" data-block-id={item.blockId}>
       <table className="reader-table">
         {item.caption && (
           <caption data-unit-id={item.caption.unitId}>
-            <UnitBody unit={item.caption} />
+            <UnitBody unit={item.caption} onNavigate={onNavigate} />
           </caption>
         )}
         <tbody>
@@ -358,7 +353,7 @@ function TableView({ item }: { item: Extract<ReaderItem, { kind: "table" }> }) {
                   rowSpan={cell.rowSpan > 1 ? cell.rowSpan : undefined}
                   colSpan={cell.columnSpan > 1 ? cell.columnSpan : undefined}
                 >
-                  <UnitBody unit={item.cells[cell.unitId]} />
+                  <UnitBody unit={item.cells[cell.unitId]} onNavigate={onNavigate} />
                 </td>
               ))}
             </tr>
@@ -384,9 +379,10 @@ function RawView({ item }: { item: Extract<ReaderItem, { kind: "raw" }> }) {
   );
 }
 
-function UnitView({ item, onCorrect }: {
+function UnitView({ item, onCorrect, onNavigate }: {
   item: Extract<ReaderItem, { kind: "unit" }>;
   onCorrect?: (unitId: string) => void;
+  onNavigate: (unitId: string) => void;
 }) {
   const Tag = item.unitKind === "reference" || item.unitKind === "footnote" ? "div" : "p";
   return (
@@ -395,7 +391,7 @@ function UnitView({ item, onCorrect }: {
       data-unit-id={item.unitId}
       data-block-id={item.blockId}
     >
-      <UnitBody unit={item} />
+      <UnitBody unit={item} onNavigate={onNavigate} />
       {onCorrect && (
         <button
           type="button"
@@ -454,18 +450,28 @@ export function FullReader({
   const restoreEpoch = useRef(0);
   // 用户真实滚动意图（wheel/触摸/键盘）：程序化恢复滚动不算。
   const userScrolled = useRef(false);
-  // 程序化滚动归属：恢复/resize/定位的 scrollTo 在 scroll 事件里不算用户意图；
-  // 无法归属的滚动（真实滚轮/拖动滚动条）一律让恢复让位（SPEC-reader §5.6）。
-  const programmaticScrollPending = useRef(0);
-  const programmaticScrollTop = useRef<number | null>(null);
-  const scrollTrace = useRef<{ t: number; top: number; pending: number; user: boolean; src: string }[]>([]);
-  const lastProgrammaticSource = useRef("");
+  // 程序化滚动归属：记录 scrollTo 之后浏览器实际落点（含钳制），
+  // scroll 事件落在该位置即程序化；其余一律用户意图，恢复让位（§5.6）。
+  const expectedScrollTop = useRef<number | null>(null);
+  const scrollTrace = useRef<{ t: number; top: number; expected: number | null; user: boolean; src: string }[]>([]);
   const scrollTraceRecord = (container: HTMLElement, src: string) => {
     scrollTrace.current.push({
       t: Date.now(), top: container.scrollTop,
-      pending: programmaticScrollPending.current, user: userScrolled.current, src,
+      expected: expectedScrollTop.current, user: userScrolled.current, src,
     });
+    if (scrollTrace.current.length > 500) scrollTrace.current.splice(0, scrollTrace.current.length - 500);
     (window as unknown as { __readerScrollTrace?: unknown }).__readerScrollTrace = scrollTrace.current;
+  };
+  const programmaticScrollTo = (container: HTMLElement, top: number) => {
+    if (Math.abs(container.scrollTop - top) <= 1) return;
+    container.scrollTo({ top, behavior: "instant" });
+    // 读回实际落点：末尾锚点会被浏览器钳制，归属必须按钳制后位置比较。
+    expectedScrollTop.current = container.scrollTop;
+  };
+  const cancelRestore = () => {
+    userScrolled.current = true;
+    restoreEpoch.current++;
+    expectedScrollTop.current = null;
   };
   const savedRef = useRef(savedPosition);
   savedRef.current = savedPosition;
@@ -649,27 +655,14 @@ export function FullReader({
     const container = articleRef.current?.parentElement;
     if (!container) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const markUserScroll = () => {
-      userScrolled.current = true;
-      restoreEpoch.current++;
-      programmaticScrollPending.current = 0;
-      programmaticScrollTop.current = null;
-    };
     const onScroll = () => {
-      scrollTraceRecord(container, programmaticScrollPending.current > 0 ? `prog:${lastProgrammaticSource.current}` : "unattributed");
-      // 程序化滚动（恢复/resize/定位）按待消费计数与目标位置归属；
-      // 其余滚动事件视为用户意图，进行中的恢复立即让位。
-      if (
-        programmaticScrollPending.current > 0 &&
-        (programmaticScrollTop.current === null ||
-          Math.abs(container.scrollTop - programmaticScrollTop.current) <= 2)
-      ) {
-        programmaticScrollPending.current--;
-        if (programmaticScrollPending.current === 0) programmaticScrollTop.current = null;
+      const expected = expectedScrollTop.current;
+      scrollTraceRecord(container, expected !== null && Math.abs(container.scrollTop - expected) <= 2 ? "prog" : "unattributed");
+      // 落在程序化实际落点即恢复/resize/定位自身滚动；其余视为用户意图。
+      if (expected !== null && Math.abs(container.scrollTop - expected) <= 2) {
+        expectedScrollTop.current = null;
       } else {
-        programmaticScrollPending.current = 0;
-        programmaticScrollTop.current = null;
-        markUserScroll();
+        cancelRestore();
       }
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -679,20 +672,20 @@ export function FullReader({
     };
     const onKey = (event: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key))
-        markUserScroll();
+        cancelRestore();
     };
     container.addEventListener("scroll", onScroll, { passive: true });
     const onWheel = (event: WheelEvent) => {
       scrollTraceRecord(container, `wheel:${event.deltaY}`);
-      markUserScroll();
+      cancelRestore();
     };
     container.addEventListener("wheel", onWheel, { passive: true });
-    container.addEventListener("touchmove", markUserScroll, { passive: true });
+    container.addEventListener("touchmove", cancelRestore, { passive: true });
     window.addEventListener("keydown", onKey);
     return () => {
       container.removeEventListener("scroll", onScroll);
       container.removeEventListener("wheel", onWheel);
-      container.removeEventListener("touchmove", markUserScroll);
+      container.removeEventListener("touchmove", cancelRestore);
       window.removeEventListener("keydown", onKey);
       clearTimeout(timer);
       // 仅在仍对应当前 revision 时落盘：revision 切换的清理不得把
@@ -752,11 +745,7 @@ export function FullReader({
           ? container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - offset
           : 0,
       );
-      if (Math.abs(container.scrollTop - top) <= 1) return;
-      programmaticScrollPending.current++;
-      lastProgrammaticSource.current = "align";
-      programmaticScrollTop.current = top;
-      container.scrollTo({ top, behavior: "instant" });
+      programmaticScrollTo(container, top);
     };
     // 首帧同步对齐：不等 fonts.ready。离屏/隐藏窗口帧生成可能迟到，
     // 恢复必须先落在当前布局上，字体度量漂移由 observer/兜底核对修正。
@@ -808,10 +797,7 @@ export function FullReader({
           container.scrollTop + element.getBoundingClientRect().top -
             container.getBoundingClientRect().top - position.offsetWithinAnchor,
         );
-        programmaticScrollPending.current++;
-        programmaticScrollTop.current = top;
-        lastProgrammaticSource.current = "resize";
-        container.scrollTo({ top, behavior: "instant" });
+        programmaticScrollTo(container, top);
       }, 150);
     };
     window.addEventListener("resize", onResize);
@@ -866,10 +852,27 @@ export function FullReader({
       0,
       container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - 24,
     );
-    programmaticScrollPending.current++;
-    programmaticScrollTop.current = top;
-    container.scrollTo({ top, behavior: "instant" });
-    lastProgrammaticSource.current = "locate";
+    // 显式定位是用户导航意图：取消进行中的恢复，避免兜底核对拉回旧锚点。
+    cancelRestore();
+    programmaticScrollTo(container, top);
+    target.classList.add("reader-jump-target");
+    target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+    window.setTimeout(() => target.classList.remove("reader-jump-target"), 2000);
+  }
+
+  // atom 交叉引用/脚注跳转：与诊断定位同一导航语义（取消恢复、程序化归属）。
+  function navigateUnit(unitId: string) {
+    const article = articleRef.current;
+    const container = article?.parentElement;
+    const target = article?.querySelector<HTMLElement>(`[data-unit-id="${unitId}"]`);
+    if (!article || !container || !target) return;
+    const top = Math.max(
+      0,
+      container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - 24,
+    );
+    cancelRestore();
+    programmaticScrollTo(container, top);
     target.classList.add("reader-jump-target");
     target.setAttribute("tabindex", "-1");
     target.focus({ preventScroll: true });
@@ -1059,6 +1062,7 @@ export function FullReader({
                 key={item.blockId}
                 item={item}
                 onCorrect={(unitId) => setCorrectingUnit(unitId)}
+                onNavigate={navigateUnit}
               />
             );
           case "formula":
@@ -1070,10 +1074,11 @@ export function FullReader({
                 item={item}
                 root={root}
                 revisionPath={revisionPath}
+                onNavigate={navigateUnit}
               />
             );
           case "table":
-            return <TableView key={item.blockId} item={item} />;
+            return <TableView key={item.blockId} item={item} onNavigate={navigateUnit} />;
           case "raw":
             return <RawView key={item.blockId} item={item} />;
         }

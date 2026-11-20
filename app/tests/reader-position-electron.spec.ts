@@ -170,6 +170,17 @@ async function scrollToUnit(unitId: string) {
     if (settled) break;
     await page.waitForTimeout(100);
   }
+  // 前置条件必须成立：目标落顶（或尾部钳制）且已离开文首，否则显式失败。
+  const geometry = await target.evaluate((element) => {
+    const container = document.querySelector(".main")!;
+    return {
+      rect: element.getBoundingClientRect().top - container.getBoundingClientRect().top,
+      top: container.scrollTop,
+      max: container.scrollHeight - container.clientHeight,
+    };
+  });
+  expect(Math.abs(geometry.rect) <= 2 || (geometry.top >= geometry.max - 2 && geometry.rect > 0)).toBe(true);
+  expect(geometry.top).toBeGreaterThan(0);
   // 等待捕获防抖落盘。
   await page.waitForTimeout(400);
 }
@@ -290,25 +301,54 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
   await expect(page.locator(`.full-reader [data-unit-id="${target}"]`)).toBeInViewport({ timeout: 15000 });
   const box = (await page.locator(".main").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  // 离屏窗口输入派发可能丢帧：滚轮后轮询，未生效则重发；
-  // 一旦生效，恢复窗口内的兜底核对不得把位置拉回。
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.mouse.wheel(0, -100000);
-    try {
-      await expect.poll(scrollTop, { timeout: 2000 }).toBe(0);
-      break;
-    } catch {
-      if (attempt === 4) throw new Error("滚轮未生效或恢复覆盖了用户位置");
+  // 离屏窗口可能不执行滚轮的组合器滚动（监听器收到但位置不动）：
+  // 重发滚轮；仍不生效则用真实键盘 Home（输入管线在离屏可用，产品按用户意图处理）。
+  // 一旦生效，恢复窗口内的兜底核对不得把位置拉回。任何失败都附滚动溯源。
+  try {
+    let reached = false;
+    for (let attempt = 0; attempt < 5 && !reached; attempt += 1) {
+      await page.mouse.wheel(0, -100000);
+      try {
+        await expect.poll(scrollTop, { timeout: 2000 }).toBe(0);
+        reached = true;
+      } catch {
+        // 重发滚轮
+      }
     }
-  }
-  await page.waitForTimeout(1200);
-  const finalTop = await scrollTop();
-  if (finalTop !== 0) {
+    if (!reached) {
+      await page.locator(".main").click({ position: { x: 10, y: 10 } });
+      await page.keyboard.press("Home");
+      await expect.poll(scrollTop, { timeout: 5000 }).toBe(0);
+      reached = true;
+    }
+    expect(reached).toBe(true);
+    await page.waitForTimeout(1200);
+    expect(await scrollTop()).toBe(0);
+  } finally {
     const trace = await page.evaluate(() =>
       (window as unknown as { __readerScrollTrace?: unknown }).__readerScrollTrace);
     await test.info().attach("scroll-trace", {
       body: Buffer.from(JSON.stringify(trace ?? null)), contentType: "application/json",
     });
   }
-  expect(finalTop).toBe(0);
+});
+
+test("reader 恢复窗口内点击交叉引用：定位目标不被兜底核对拉回旧锚点", async () => {
+  const { ids, filler } = await publish("恢复期导航工程");
+  const target = filler[20];
+  await scrollToUnit(target);
+  // 刷新触发 8s 恢复窗口；窗口内真实点击交叉引用跳转到前文目标。
+  await page.getByRole("button", { name: "刷新工程", exact: true }).click();
+  await expect(page.locator(`.full-reader [data-unit-id="${target}"]`)).toBeInViewport({ timeout: 15000 });
+  await page.locator(`.full-reader [data-atom-id="${ids.resolvedRef}"]`).click();
+  const jumpTarget = page.locator(`.full-reader [data-unit-id="${ids.target}"]`);
+  await expect(jumpTarget).toBeInViewport();
+  // 跨过多个兜底核对周期（400ms interval）：导航结果必须保持。
+  await page.waitForTimeout(1500);
+  await expect(jumpTarget).toBeInViewport();
+  const rect = await jumpTarget.evaluate((element) => {
+    const container = document.querySelector(".main")!;
+    return element.getBoundingClientRect().top - container.getBoundingClientRect().top;
+  });
+  expect(Math.abs(rect)).toBeLessThan(120);
 });
