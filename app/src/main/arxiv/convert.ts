@@ -86,6 +86,9 @@ export interface ConvertArxivSnapshotInput {
     onConvertPoint?: (point: ArxivConvertPoint) => void | Promise<void>;
     commitHooks?: ProjectCommitHooks;
   };
+  /** 转换器升级注入（SPEC §6 恢复）：默认当前 convertLatexml；
+   * 测试模拟未来转换器修复同一快照，生产路径不注入。 */
+  converter?: typeof convertLatexml;
 }
 
 export type ConvertArxivSnapshotResult =
@@ -1458,6 +1461,7 @@ export type ConvertArxivSnapshotTreeResult =
 export async function convertArxivSnapshotTree(input: {
   root: string;
   sourceSnapshotId: string;
+  converter?: typeof convertLatexml;
 }): Promise<ConvertArxivSnapshotTreeResult> {
   let snapshot: SourceSnapshotRecord;
   try {
@@ -1500,7 +1504,7 @@ export async function convertArxivSnapshotTree(input: {
   }
 
   const opened = await openProject(input.root);
-  const result = convertLatexml({
+  const result = (input.converter ?? convertLatexml)({
     html,
     paperId: opened.manifest.paper.id,
     htmlUrl: metadata.htmlUrl,
@@ -1572,7 +1576,11 @@ export async function convertArxivSnapshot(
     }
   }
 
-  const converted = await convertArxivSnapshotTree({ root: input.root, sourceSnapshotId: input.sourceSnapshotId });
+  const converted = await convertArxivSnapshotTree({
+    root: input.root,
+    sourceSnapshotId: input.sourceSnapshotId,
+    ...(input.converter === undefined ? {} : { converter: input.converter }),
+  });
   if (!converted.ok) return converted;
 
   // 首次导入不变量：document 与 source-base 一致、baseRevision 必须为空；

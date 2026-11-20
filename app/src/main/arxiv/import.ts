@@ -16,7 +16,7 @@ import {
   updateArxivImportProgress,
   type ProjectCommitHooks,
 } from "../project-core.js";
-import { convertArxivSnapshot, type ArxivConvertPoint } from "./convert.js";
+import { convertArxivSnapshot, convertLatexml, type ArxivConvertPoint } from "./convert.js";
 import type { ArxivTransport } from "./fetch.js";
 import { parseArxivReference } from "./reference.js";
 import { fetchArxivSnapshot } from "./snapshot.js";
@@ -76,6 +76,9 @@ export interface ResumeArxivImportInput {
   hooks?: ArxivImportProgressHooks;
   /** 受控 fixture 端点（回环 http）专用；生产命令不得开启。 */
   allowFixtureLoopback?: boolean;
+  /** 转换器升级注入（SPEC §6 恢复）：未来转换器修复后离线重转换同一快照；
+   * 生产命令不注入，默认当前转换器。 */
+  converter?: typeof convertLatexml;
 }
 
 export type ArxivImportResult =
@@ -123,6 +126,7 @@ async function convertAndRecord(
   fetchWarnings: ImportDiagnostic[],
   hooks: ArxivImportProgressHooks | undefined,
   completePublished = false,
+  converter?: typeof convertLatexml,
 ): Promise<ArxivImportResult> {
   // 候选身份在本次调用内跟踪：持久化失败或提交中断后，失败记录仍携带它。
   let candidateRevisionId = progress.candidateRevisionId;
@@ -132,6 +136,7 @@ async function convertAndRecord(
     sourceSnapshotId,
     ...(candidateRevisionId === undefined ? {} : { revisionId: candidateRevisionId }),
     ...(completePublished && candidateRevisionId !== undefined ? { completePublished: true } : {}),
+    ...(converter === undefined ? {} : { converter }),
     onCandidateBuilt: async (candidate) => {
       candidateRevisionId = candidate.revisionId;
       convertWarnings = candidate.warnings;
@@ -374,7 +379,7 @@ export async function resumeArxivImport(input: ResumeArxivImportInput): Promise<
       }
       published = state === "published";
     }
-    return convertAndRecord(root, progress, progress.sourceSnapshotId, fetchWarnings, input.hooks, published);
+    return convertAndRecord(root, progress, progress.sourceSnapshotId, fetchWarnings, input.hooks, published, input.converter);
   }
   if (input.transport === undefined)
     return {

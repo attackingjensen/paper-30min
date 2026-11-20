@@ -155,6 +155,49 @@ test("arxiv-import 转换失败：有效快照保留不误报可读，修复后�
   const offline = await resumeArxivImport({ root: failed.root, baseUrl: BASE });
   expect(offline.ok).toBe(false);
   expect(calls.length).toBe(callsBefore);
+
+  // 转换器修复后的离线成功恢复（1rb）：同一快照字节不变，升级后的转换器
+  // 从快照原始 HTML 提取出可读正文。converter 注入模拟未来转换器升级
+  // （生产升级即代码更新）；恢复不注入 transport，快照与工程现场不改写。
+  const { convertLatexml } = await import("../src/main/arxiv/convert");
+  const upgraded: typeof convertLatexml = (input) => {
+    // 测试替身代表未来转换器版本：能从同一快照产出可读树。此处以补全抽取
+    // 结果实现（真实升级是算法改进，输入字节不变）；编排断言与实现方式无关。
+    const html = Buffer.from(input.html).toString("utf8").replace(
+      '<div class="ltx_abstract"><p class="ltx_p">Only abstract.</p></div>',
+      '<section id="S1" class="ltx_section"><h2 class="ltx_title ltx_title_section">Introduction</h2>' +
+      '<div id="S1.p1" class="ltx_para"><p class="ltx_p">We study energy and mass.</p></div></section>' +
+      '<div class="ltx_abstract"><p class="ltx_p">Only abstract.</p></div>',
+    );
+    return convertLatexml({ ...input, html: Buffer.from(html) });
+  };
+  // 必定失败的请求探针：即使调用方误传 transport，任何网络尝试都会立即失败。
+  const probeCalls: string[] = [];
+  const forbidden: ArxivTransport = async (url) => {
+    probeCalls.push(url);
+    throw new Error(`离线恢复不得访问网络：${url}`);
+  };
+  const recovered = await resumeArxivImport({ root: failed.root, baseUrl: BASE, converter: upgraded });
+  expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
+  expect(probeCalls).toHaveLength(0);
+  expect(calls.length).toBe(callsBefore);
+  if (!recovered.ok) return;
+  const after = await openProject(failed.root);
+  expect(after.manifest.paper.currentRevision).toBe(recovered.revision.revisionId);
+  const tree = await readRevisionDocument(failed.root, recovered.revision.revisionId, "document");
+  const texts = Object.values(tree.units).flatMap((unit) =>
+    unit.sentenceIds.flatMap((id) => tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : ""))));
+  expect(texts.some((text) => text.includes("We study energy and mass."))).toBe(true);
+  // 快照不被改写：修复只发生在转换层，来源字节保持失败现场。
+  const afterSnapshots = await listSourceSnapshots(failed.root);
+  expect(afterSnapshots).toHaveLength(1);
+  expect(afterSnapshots[0].sourceSnapshotId).toBe(snapshots[0].sourceSnapshotId);
+  // 已完成工程的恢复幂等：携带必失败探针也不触网、不重复快照或 revision。
+  const idempotent = await resumeArxivImport({ root: failed.root, transport: forbidden, baseUrl: BASE });
+  expect(idempotent.ok).toBe(true);
+  if (idempotent.ok) expect(idempotent.revision.revisionId).toBe(recovered.revision.revisionId);
+  expect(probeCalls).toHaveLength(0);
+  expect(await listSourceSnapshots(failed.root)).toHaveLength(1);
 });
 
 test("arxiv-import current 推进中断：候选保留，恢复沿用同一 revisionId 完成发布", async () => {
