@@ -275,7 +275,14 @@ test("reader 冲突宿主：发布前 current 被推进时拒绝，解决结果�
   await openFolder(root);
   const reader = page.locator(".full-reader");
   await reader.getByRole("button", { name: "检查来源更新" }).click();
-  const host = reader.locator(".conflict-host");
+  // 工程 watcher 可能在候选构建后触发重读（.full-reader 卸载）：等回到 ready，
+  // 宿主若被卸载则重新检查更新，再对当前挂载的列表逐项解决。
+  await expect(reader).toBeVisible({ timeout: 30000 });
+  let host = reader.locator(".conflict-host");
+  if ((await host.count()) === 0) {
+    await reader.getByRole("button", { name: "检查来源更新" }).click();
+    host = reader.locator(".conflict-host");
+  }
   await expect(host).toBeVisible({ timeout: 30000 });
   const items = host.locator(".conflict-item");
   await expect(items.first()).toBeVisible();
