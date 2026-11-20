@@ -34,6 +34,7 @@ import {
   publishDocumentMergeCandidate,
   resolveDocumentMergeCandidateConflict,
 } from "../document/merge.js";
+import { loadUpdateCandidate } from "../document/candidate-store.js";
 import { verificationInheritCommitHooks } from "../pdf/verification.js";
 
 /** 端到端 PDF 导入结果：published 表示 current 已原子推进，正文可离线阅读。 */
@@ -500,8 +501,9 @@ export async function resumePdfReparse(input: {
   });
 }
 
-/** 发布重解析／离线重转换候选（SPEC §8）：按批次重建同一确定性候选，
- * 应用显式冲突选择后发布；发布前复核 baseRevision 与任务记录一致，current 已变化时拒绝。 */
+/** 发布重解析／离线重转换候选（SPEC §8）：优先重载构建时落盘的同一候选
+ * （含已落盘的冲突解决），不重新转换；无存储时按同一确定性身份重建。
+ * 显式 resolutions 覆盖存储状态；发布前复核 baseRevision 与任务记录一致。 */
 export async function publishParseCandidate(input: {
   root: string;
   parseBatchId: string;
@@ -515,18 +517,34 @@ export async function publishParseCandidate(input: {
   if (!task) throw new Error("PDF 云端任务不存在。");
   if (task.baseRevision !== undefined && task.baseRevision !== input.baseRevision)
     throw new Error(`baseRevision 与任务记录不一致：候选基线为 ${task.baseRevision}，请求为 ${input.baseRevision}。`);
-  const snapshot = await findBatchParseSnapshot(opened.root, task);
-  if (!snapshot) throw new Error("解析快照缺失，不能发布候选；不自动重新上传。");
-  const { candidate } = await createParseMergeCandidate({
-    root: opened.root,
-    task,
-    snapshot,
-    baseRevision: input.baseRevision,
-    revisionId: task.baseRevision === undefined
-      ? reconvertIdentity(task.parseBatchId, input.baseRevision)
-      : task.candidateRevisionId ?? reconvertIdentity(task.parseBatchId, input.baseRevision),
-    ...(input.signal === undefined ? {} : { signal: input.signal }),
-  });
+  const candidateRevisionId = task.baseRevision === undefined
+    ? reconvertIdentity(task.parseBatchId, input.baseRevision)
+    : task.candidateRevisionId ?? reconvertIdentity(task.parseBatchId, input.baseRevision);
+  let candidate: DocumentMergeCandidate;
+  let stored: DocumentMergeCandidate | null = null;
+  try {
+    stored = await loadUpdateCandidate({ root: opened.root, revisionId: candidateRevisionId });
+  } catch (error) {
+    // 仅存储缺失（ENOENT）才重建；损坏、身份不符等错误原样抛出，不掩盖故障。
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (stored) {
+    if (stored.baseRevision !== input.baseRevision)
+      throw new Error(`候选存储基线为 ${stored.baseRevision}，请求为 ${input.baseRevision}。`);
+    candidate = stored;
+  } else {
+    const snapshot = await findBatchParseSnapshot(opened.root, task);
+    if (!snapshot) throw new Error("解析快照缺失，不能发布候选；不自动重新上传。");
+    const rebuilt = await createParseMergeCandidate({
+      root: opened.root,
+      task,
+      snapshot,
+      baseRevision: input.baseRevision,
+      revisionId: candidateRevisionId,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    candidate = rebuilt.candidate;
+  }
   let resolved = candidate;
   for (const resolution of input.resolutions ?? []) {
     resolved = resolveDocumentMergeCandidateConflict(resolved, resolution.conflictId, resolution.choice);

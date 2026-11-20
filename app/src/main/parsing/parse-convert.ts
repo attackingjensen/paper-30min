@@ -25,6 +25,7 @@ import {
   type ProjectCommitHooks,
 } from "../project-core.js";
 import { createDocumentMergeCandidate, type DocumentMergeCandidate } from "../document/merge.js";
+import { storeUpdateCandidate } from "../document/candidate-store.js";
 import { cropPdfPageRegions, type PdfCropAsset, type PdfCropRequest } from "../pdf/page-crop.js";
 import { MISSING_ASSET_PLACEHOLDER } from "./parse-snapshot.js";
 import { convertTable } from "./parse-table.js";
@@ -1156,13 +1157,13 @@ export async function createParseMergeCandidate(input: {
         [relative, { bytes: asset.bytes, mime: asset.mime }])),
     }),
   });
-  return {
-    candidate: {
-      ...candidate,
-      metadata: {
-        pdfParse: { converterVersion: PDF_CONVERTER_VERSION, warnings: converted.warnings },
-      },
+  // 与 arXiv 更新候选同一受管存储：冲突宿主按身份重载同一份字节，
+  // 解决状态落盘；发布不重新转换（新增节点 UUID 不可重放）。
+  const stored = await storeUpdateCandidate({
+    ...candidate,
+    metadata: {
+      pdfParse: { converterVersion: PDF_CONVERTER_VERSION, warnings: converted.warnings },
     },
-    warnings: converted.warnings,
-  };
+  });
+  return { candidate: stored, warnings: converted.warnings };
 }

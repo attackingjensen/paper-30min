@@ -37,12 +37,15 @@ export function AgentPanel({
   initialView,
   onViewChange,
   onOpenFile,
+  askDraft,
 }: {
   root: string;
   onSettings: () => void;
   initialView?: { active: string; text: string; attachments?: ChatAttachment[] };
   onViewChange: (view: { active: string; text: string; attachments?: ChatAttachment[] }) => void;
   onOpenFile: (path: string) => void;
+  /** Full 阅读器选区提问草稿：追加到输入框，不自动发送。 */
+  askDraft?: { id: number; text: string } | null;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [active, setActive] = useState(initialView?.active ?? "");
@@ -86,6 +89,14 @@ export function AgentPanel({
   useEffect(() => {
     onViewChange({ active, text, attachments });
   }, [active, text, attachments, onViewChange]);
+  // 选区提问草稿按 id 去重追加；只进入输入框，发送仍由用户显式触发。
+  const lastAskDraft = useRef(0);
+  useEffect(() => {
+    if (!askDraft || askDraft.id === lastAskDraft.current) return;
+    lastAskDraft.current = askDraft.id;
+    setText((old) => (old ? `${old}\n${askDraft.text}` : askDraft.text));
+    inputRef.current?.focus();
+  }, [askDraft]);
   const update = useCallback(
     (state: ChatSession) => {
       if (state.root !== root) return;

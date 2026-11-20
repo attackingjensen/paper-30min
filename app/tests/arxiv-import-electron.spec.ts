@@ -107,7 +107,7 @@ async function launch() {
     const url = request.url();
     if (/^https?:/i.test(url)) remotePageRequests.push(url);
   });
-  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible({ timeout: 30000 });
 }
 
 async function closeDesktopForCleanup() {

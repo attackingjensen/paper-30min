@@ -940,6 +940,14 @@ export async function readRevision(root: string, revisionId: string) {
   return loadRevision(root, manifest, revisionId);
 }
 
+/** Full 阅读器恢复所需侧车：与元数据同一次校验读取 changeset 与 tombstones。 */
+export async function readRevisionContext(root: string, revisionId: string) {
+  root = await canonicalRoot(root);
+  const { manifest } = await readManifest(root);
+  const { revision, tombstones, changeset } = await loadRevisionContent(root, manifest, revisionId);
+  return { revision, changeset, tombstones };
+}
+
 export async function readRevisionDocument(
   root: string,
   revisionId: string,

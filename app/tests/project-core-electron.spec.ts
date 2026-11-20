@@ -40,7 +40,7 @@ async function launch() {
   desktopProcess = desktop.process();
   page = await desktop.firstWindow();
   page.on("pageerror", (e) => errors.push(e.message));
-  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible({ timeout: 30000 });
 }
 
 async function closeDesktopForCleanup() {

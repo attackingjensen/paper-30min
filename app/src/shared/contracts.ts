@@ -10,6 +10,8 @@ import type { ChatAttachment } from "./chat-input.js";
 import type { DocumentTree } from "./document/tree.js";
 import type { DocumentMergeResult } from "./document/merge.js";
 import type { VerificationActorInput } from "./verification.js";
+import type { DocumentChangeset, Tombstone } from "./document/changeset.js";
+import type { ReadingPosition } from "./reader/position.js";
 
 export interface DocumentRecord {
   id: string;
@@ -122,6 +124,13 @@ export interface ProjectCoreSnapshot {
   currentRevision: ProjectRevisionRecord | null;
 }
 
+/** Full 阅读器恢复所需的 revision 侧车：changeset 与 tombstones 与树同一次读取。 */
+export interface ProjectRevisionContext {
+  revision: ProjectRevisionRecord;
+  changeset: DocumentChangeset;
+  tombstones: Tombstone[];
+}
+
 export type ManagedFileContent = Uint8Array | { bytes: Uint8Array; mime?: string };
 
 export type CoreCommand =
@@ -144,11 +153,28 @@ export type CoreCommand =
     }
   | { type: "coreReadSource"; root: string; sourceSnapshotId: string }
   | { type: "coreReadRevision"; root: string; revisionId: string }
+  | { type: "coreReadRevisionContext"; root: string; revisionId: string }
   | {
       type: "coreReadDocument";
       root: string;
       revisionId: string;
       tree: "document" | "source-base";
+    }
+  | {
+      type: "coreCorrectionPreview";
+      root: string;
+      baseRevision: string;
+      /** 结构化修正命令序列（shared/document/correction 契约）；主进程边界校验。 */
+      corrections: unknown[];
+      /** 预览固定的候选身份；发布沿用同一 ID 保证内容逐字节一致。 */
+      revisionId?: string;
+    }
+  | {
+      type: "coreCorrectionPublish";
+      root: string;
+      baseRevision: string;
+      revisionId: string;
+      corrections: unknown[];
     }
   | {
       type: "coreMergePublish";
@@ -264,6 +290,19 @@ export type CoreCommand =
       sourceSnapshotId: string;
       baseRevision: string;
       resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>;
+    }
+  | {
+      type: "coreCandidateLoad";
+      root: string;
+      /** 构建时落盘的候选身份；重载存储字节，不重新转换。 */
+      revisionId: string;
+    }
+  | {
+      type: "coreCandidateResolve";
+      root: string;
+      revisionId: string;
+      conflictId: string;
+      choice: "current" | "candidate";
     }
   | {
       type: "coreArxivPdfFallback";
@@ -448,6 +487,8 @@ export interface ReadingState {
   tabs: DocumentTab[];
   active: string;
   pdf: Record<string, PdfPosition>;
+  /** v2 Full 阅读器逻辑位置（按 tab key 独立）；PDF 位置仍在 pdf 表。 */
+  reader?: Record<string, ReadingPosition>;
 }
 export interface PdfSource {
   bytes: Uint8Array;
@@ -485,6 +526,7 @@ export type Command =
     }
   | { type: "createNote"; root: string; name: string }
   | { type: "readAsset"; root: string; path: string }
+  | { type: "saveReaderPosition"; root: string; tab: string; position: ReadingPosition }
   | { type: "readPdf"; root: string; path: string }
   | { type: "saveWorkspace"; root: string; tabs: DocumentTab[]; active: string }
   | {

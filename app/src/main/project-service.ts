@@ -5,6 +5,8 @@ import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { renameManaged } from "./managed-rename.js";
+import { readRevisionAsset } from "./project-core.js";
+import { readUpdateCandidateAsset } from "./document/candidate-store.js";
 import type {
   Command,
   CoreCommand,
@@ -76,6 +78,28 @@ function validateReading(value: ReadingState): ReadingState {
         (!Number.isInteger(p.rotation) || p.rotation < 0 || p.rotation > 3))
     )
       throw new Error("PDF 阅读位置无效。");
+  }
+  if (value.reader !== undefined) {
+    if (!value.reader || typeof value.reader !== "object" || Array.isArray(value.reader))
+      throw new Error("Full 阅读位置无效。");
+    for (const [tab, p] of Object.entries(value.reader)) {
+      if (
+        !tab ||
+        !p ||
+        typeof p.revisionId !== "string" ||
+        !["source", "translation"].includes(p.view) ||
+        !p.anchor ||
+        typeof p.anchor.kind !== "string" ||
+        (p.parentSectionId !== null && typeof p.parentSectionId !== "string") ||
+        typeof p.excerpt !== "string" ||
+        p.excerpt.length > 4096 ||
+        !Number.isFinite(p.offsetWithinAnchor) ||
+        !Number.isFinite(p.scrollTop) ||
+        p.scrollTop < 0 ||
+        typeof p.capturedAt !== "string"
+      )
+        throw new Error("Full 阅读位置无效。");
+    }
   }
   return value;
 }
@@ -149,6 +173,20 @@ async function checkPdf(file: string | FileHandle) {
 }
 
 function parseManifest(value: unknown): Manifest {
+  if (value && typeof value === "object" && "formatVersion" in value && value.formatVersion === 2) {
+    // 工作台只需要工程身份与名称；current 损坏不阻止打开工程，
+    // 由 Full 阅读器呈现恢复状态。身份字段损坏仍按清单错误拒绝。
+    const m = value as { id?: unknown; name?: unknown; paper?: { id?: unknown } };
+    if (typeof m.id !== "string" || !m.id || typeof m.name !== "string" ||
+        typeof m.paper?.id !== "string" || !m.paper.id)
+      throw new Error("工程清单格式不支持或已损坏。");
+    return {
+      formatVersion: 1,
+      id: m.id,
+      name: m.name,
+      paper: { id: m.paper.id, path: "", sha256: "0".repeat(64) },
+    };
+  }
   const m = value as Manifest;
   const record = (r: DocumentRecord) => {
     if (
@@ -240,8 +278,10 @@ export class ProjectService {
     if (
       (lower.startsWith("text/") && !/\.(md|markdown)$/.test(lower)) ||
       lower.startsWith("sources/") ||
+      lower.startsWith("paper/revisions/") ||
+      lower === "paper" ||
       /\.pdf$/i.test(lower) ||
-      manifest.paper.path.toLowerCase() === lower
+      (manifest.paper.path !== "" && manifest.paper.path.toLowerCase() === lower)
     )
       throw new Error("原始论文、图片和内部文件不能作为自由成果覆盖。");
   }
@@ -449,8 +489,9 @@ export class ProjectService {
     };
     await walk(root, "");
     files.sort((a, b) => a.path.localeCompare(b.path));
+    // v2 虚拟论文入口没有文件路径；正文可用性由 coreOpen/current 决定。
     const missing = [manifest.paper]
-      .filter((r) => !files.some((f) => !f.directory && f.path === r.path))
+      .filter((r) => r.path !== "" && !files.some((f) => !f.directory && f.path === r.path))
       .map((r) => r.id);
     return {
       root,
@@ -615,12 +656,15 @@ export class ProjectService {
     const m = await this.manifest(root);
     if (
       command.type === "saveWorkspace" ||
-      command.type === "savePdfPosition"
+      command.type === "savePdfPosition" ||
+      command.type === "saveReaderPosition"
     ) {
       const state = await this.reading(root);
       if (command.type === "saveWorkspace") {
         state.tabs = command.tabs;
         state.active = command.active;
+      } else if (command.type === "saveReaderPosition") {
+        (state.reader ??= {})[command.tab] = command.position;
       } else {
         relativePath(command.path);
         state.pdf[command.path] = command.position;
@@ -642,6 +686,7 @@ export class ProjectService {
       const name = /\.(md|markdown)$/i.test(command.name)
         ? command.name
         : command.name + ".md";
+      await fs.mkdir(path.join(root, "notes"), { recursive: true });
       const directory = await this.resolve(root, "notes");
       await fs.writeFile(path.join(directory, name), "", { flag: "wx" });
       return "notes/" + name;
@@ -659,6 +704,20 @@ export class ProjectService {
         } as Record<string, string>
       )[path.extname(command.path).toLowerCase()];
       if (!mime) throw new Error("不支持的图片格式。");
+      // v2 revision 资产走受管读取：登记、摘要与预算由 project-core 校验。
+      const revisionAsset = /^paper\/revisions\/([0-9a-f-]{36})\/(assets\/.+)$/.exec(command.path);
+      if (revisionAsset) {
+        const asset = await readRevisionAsset(root, revisionAsset[1], revisionAsset[2]);
+        return { bytes: new Uint8Array(asset.bytes), mime: asset.mime ?? mime };
+      }
+      // 更新候选资产（冲突预览）：受管内部存储，登记与摘要同 revision 口径。
+      const candidateAsset = /^update-candidates\/([0-9a-f-]{36})\/(assets\/.+)$/.exec(command.path);
+      if (candidateAsset) {
+        const asset = await readUpdateCandidateAsset({
+          root, revisionId: candidateAsset[1], path: candidateAsset[2],
+        });
+        return { bytes: new Uint8Array(asset.bytes), mime: asset.mime ?? mime };
+      }
       const file = await this.resolve(root, command.path);
       const stat = await fs.stat(file);
       if (!stat.isFile() || stat.size > 20 * 1024 * 1024)
@@ -683,7 +742,7 @@ export class ProjectService {
         return {
           bytes: new Uint8Array(bytes),
           sha256: createHash("sha256").update(bytes).digest("hex"),
-          document: m.paper.path === command.path ? m.paper : undefined,
+          document: m.paper.path !== "" && m.paper.path === command.path ? m.paper : undefined,
         };
       } finally {
         await handle.close();
@@ -711,7 +770,15 @@ export class ProjectService {
         throw new Error("请选择需要改名或移动的文件。");
       relativePath(command.destination);
       if (command.path === command.destination) return this.snapshot(root);
-      const ownId = m.paper.path === command.path ? m.paper.id : undefined;
+      // v2 受管正文与来源不可改名移动；revision 身份由 project-core 命令推进。
+      if (
+        command.path.startsWith("paper/revisions/") ||
+        command.path.startsWith("sources/") ||
+        command.destination.startsWith("paper/revisions/") ||
+        command.destination.startsWith("sources/")
+      )
+        throw new Error("受管正文与来源快照不能改名或移动。");
+      const ownId = m.paper.path !== "" && m.paper.path === command.path ? m.paper.id : undefined;
       ensureAvailablePath(m, command.destination, ownId);
       const parent = path.posix.dirname(command.destination);
       if (parent !== ".") await this.resolve(root, parent);
@@ -723,13 +790,15 @@ export class ProjectService {
         await fs.unlink(destination);
         throw error;
       }
-      if (m.paper.path === command.path) m.paper.path = command.destination;
-      try {
-        await atomicJson(path.join(root, manifestName), m);
-      } catch (error) {
-        await fs.link(destination, source);
-        await fs.unlink(destination);
-        throw error;
+      if (m.paper.path !== "") {
+        if (m.paper.path === command.path) m.paper.path = command.destination;
+        try {
+          await atomicJson(path.join(root, manifestName), m);
+        } catch (error) {
+          await fs.link(destination, source);
+          await fs.unlink(destination);
+          throw error;
+        }
       }
     }
     return this.snapshot(root);

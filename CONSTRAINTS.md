@@ -88,6 +88,7 @@ Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；
 |---|---|---|---|---|---|
 | W2 | 默认回归允许 `3` 个环境门控跳过 | `app/tests/desktop.spec.ts` | 真实视觉模型与真实 Pi 验证需要本机凭据、费用授权和隔离配置；默认 CI 不伪造这些证据，发布前按 README 显式验收 | @attackingjensen | 2027-02-15 |
 | W3 | 旧解析退役删除测试与断言 | `app/tests/parsing.spec.ts`、`app/tests/desktop.spec.ts` | s08.6 退役被新 corePdf* 链路取代的旧解析实现；等价行为由 pdf-import-task／pdf-snapshot-parse／pdf-import-electron 套件承担，设置加密与损坏恢复断言保留为新用例 | @attackingjensen | 2027-02-15 |
+| W4 | 启动断言旧行退役，等价断言加 30s 超时保留 | `app/tests/arxiv-import-electron.spec.ts`、`app/tests/arxiv-pdf-fallback-electron.spec.ts`、`app/tests/desktop.spec.ts`、`app/tests/pdf-import-electron.spec.ts`、`app/tests/project-core-electron.spec.ts`、`app/tests/reader-conflict-electron.spec.ts`、`app/tests/reader-correction-electron.spec.ts`、`app/tests/reader-electron.spec.ts`、`app/tests/reader-position-electron.spec.ts`、`app/tests/reader-selection-electron.spec.ts`、`app/tests/reader-source-electron.spec.ts` | 离屏 CI runner 首帧渲染迟到，默认 10s 误报启动失败；旧断言行退役但同断言（Paper30Min 首屏可见）以 30s 超时保留，非弱化；floor-guard 字面匹配将超时修改误判为断言移除，登记豁免至 guard 支持等价断言识别 | @attackingjensen | 2027-02-18 |
 
 ## 生命周期与成本
 

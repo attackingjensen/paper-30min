@@ -95,7 +95,7 @@ ${options.head ?? ""}
 <div class="ltx_authors"><span class="ltx_personname">Ada Lovelace</span></div>
 <div id="abstract" class="ltx_abstract">
 <h6 class="ltx_title ltx_title_abstract">Abstract</h6>
-<p class="ltx_p">We study energy and mass.</p>
+<p id="abstract.p1" class="ltx_p">We study energy and mass.</p>
 </div>
 ${body(options.extra ?? "")}
 </article>

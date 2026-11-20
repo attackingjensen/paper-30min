@@ -75,12 +75,13 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 | arXiv 导入与更新编排 | `src/main/arxiv/`（reference／version／transport／snapshot／convert／import／lineage／update） | [SPEC-arxiv-import](../docs/spec/SPEC-arxiv-import.md) | `-g 'arxiv-import'` |
 | PDF 云端解析 | `src/main/parsing/`（baidu-task／parse-snapshot／parse-convert／pdf-import）、`src/main/pdf/`（snapshot／verification／page-crop／fallback-import） | [SPEC-pdf-import](../docs/spec/SPEC-pdf-import.md) | `-g 'pdf-import'` |
 | 界面工程服务（formatVersion 1 过渡形态） | `src/main/project-service.ts` | [工程文件契约](../docs/project-format.md) | `desktop.spec.ts` |
+| Full 阅读器（current 投影、复杂内容渲染、原文选区与阅读位置） | `src/shared/reader/projection.ts`、`src/shared/reader/selection.ts`、`src/shared/reader/position.ts`、`src/renderer/reader/FullReader.tsx` | [SPEC-reader](../docs/spec/SPEC-reader.md) | `-g 'reader'` |
 | Agent 与模型 | `src/main/agent-service.ts`、`agent-tools.ts`、`pdf-tools.ts`、`web-tools.ts` | [SPEC-agent-integration](../docs/spec/SPEC-agent-integration.md) | `agent-files`、`web-tools` 等 |
 
 要点（细节以规格与契约为准）：
 
 - 新核经 `core*` 命令与旧命令共用同一受限 preload 和 `project:command` 通道，在 Node utility process 执行。渲染窗口开启 sandbox 和 context isolation，不直接访问文件系统；主进程负责系统选择器和外部打开。
-- 界面创建/打开链路仍是 `project-service.ts` 的 `formatVersion: 1` 过渡形态（PDF 复制入工程、EmbedPDF 只读 Viewer、Markdown CodeMirror 编辑与自动保存、外部变化冲突提示）；新核界面接管由全文阅读器等后续 phase 承接。两种格式互不读取。
+- 界面创建链路仍是 `project-service.ts` 的 `formatVersion: 1` 过渡形态（PDF 复制入工程、EmbedPDF 只读 Viewer、Markdown CodeMirror 编辑与自动保存、外部变化冲突提示）。打开 `formatVersion: 2` 工程时论文 tab 为 Full 阅读入口：正文只从 current revision 的 `document.json` 投影渲染（章节、公式、表格、图片、脚注、参考文献与受控 raw block），资产经 `paper30min://project` 协议按受管登记读取；current 为空或损坏显示导入／恢复状态，不渲染伪正文。原文精确选区经 `shared/reader/selection.ts` 映射为 UTF-16 逻辑 range（atom 占一位，KaTeX/MathML 辅助节点不计偏移，跨句/跨单元完整展开，不可映射内容显式降级）；选区工具条的解释/提问把 quote 与上下文送入右侧持续 Agent 对话草稿，不生成问答卡、不自动发送。阅读位置按 `revisionId＋稳定锚点＋锚内相对偏移` 捕获（scrollTop 仅辅助），经 `saveReaderPosition` 按 tab 持久化；重开/resize/revision 变化按锚点恢复：retained/moved 原锚点，changed 定位原节点并提示，removed 保留摘录与 tombstone、父 section 存在时显式回退否则回文首，不按相似文本重挂；恢复窗口禁用浏览器滚动锚定并做布局兜底核对，用户滚动即失效。侧栏宿主由后续切片承接。
 - arXiv／PDF 导入命令面已可用：受控 transport 的 `baseUrl` 注入点仅测试门控生效，生产拒绝回环/私网；PDF 云端命令的凭据由主进程注入，上传确认经 `pdf:uploadConfirm` 由 renderer 显式应答；提交结果不明必须人工关联任务号，不自动重传。
 - arXiv 更新编排（SPEC §8）命令面已可用：`coreArxivCheckUpdate` 只读 abs 报告版本状态；`coreArxivUpdateCandidate`（要求严格更高版本）／`coreArxivRefetch`／`coreArxivReconvert` 形成三方合并候选（离线重转换无网络参数）；候选身份含转换器版本，构建时整体落盘，`coreArxivPublishCandidate` 按用户确认的候选 revisionId 重载同一存储字节、复核 baseRevision 与来源身份并应用显式冲突选择后发布。PDF 回退后的工程按 pdf-parse→pdf→arXiv 谱系回溯参与检查与更新；候选确认前 current 不变，不做后台自动更新。
 - 通用文档合并不依赖来源模块；核验继承等来源侧车逻辑由 PDF 侧调用方经 commit 钩子注入（见工程契约）。

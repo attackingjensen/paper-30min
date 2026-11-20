@@ -12,6 +12,7 @@ import type { ManagedFileRecord } from "../../shared/contracts.js";
 import { parseDocumentTree } from "../../shared/document/tree.js";
 import { parseDocumentChangeset, parseDocumentTombstones } from "../../shared/document/changeset.js";
 import type { DocumentMergeResult, MergeChoice, MergeConflict } from "../../shared/document/merge.js";
+import { resolveDocumentMergeConflict } from "../../shared/document/merge.js";
 import { openProject, withProjectWriteLock } from "../project-core.js";
 import { renameManaged } from "../managed-rename.js";
 import type { DocumentMergeCandidate } from "./merge.js";
@@ -43,6 +44,8 @@ interface StoredCandidateManifest {
   conflicts: MergeConflict[];
   assets: ManagedFileRecord[];
   createdAt: string;
+  /** 解决代际：每次落盘解决递增；派生树按代际命名，manifest 是唯一的原子切换点。 */
+  generation?: number;
 }
 
 const TREE_NAMES = ["base", "current", "sourceBase", "document", "candidateTree", "changeset", "tombstones", "previousTombstones"] as const;
@@ -64,8 +67,7 @@ async function readJson(file: string, description: string): Promise<unknown> {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
 }
 
-async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
-  const bytes = Buffer.from(JSON.stringify(value));
+async function writeBytesAtomic(file: string, bytes: Buffer): Promise<void> {
   if (bytes.byteLength > CANDIDATE_JSON_BUDGET) throw new Error("候选记录超过写入预算。");
   const temporary = path.join(path.dirname(file), `.tmp-${randomUUID()}`);
   try {
@@ -80,6 +82,10 @@ async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   } finally {
     await fs.rm(temporary, { force: true });
   }
+}
+
+async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  await writeBytesAtomic(file, Buffer.from(JSON.stringify(value)));
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -168,6 +174,11 @@ function parseManifest(value: unknown, revisionId: string): StoredCandidateManif
     trees,
     assets,
     createdAt: record.createdAt,
+    ...(record.generation === undefined ? {} : {
+      generation: typeof record.generation === "number" && Number.isSafeInteger(record.generation) && record.generation >= 0
+        ? record.generation
+        : (() => { throw new Error("候选解决代际无效。"); })(),
+    }),
   };
 }
 
@@ -269,12 +280,22 @@ interface StoredCandidate {
   assets: Record<string, ManagedAsset>;
 }
 
-async function loadStoredCandidate(root: string, revisionId: string): Promise<StoredCandidate> {
+/** 派生树文件名：构建代际（0）用原名，解决代际 g 用 name.g.json。
+ * 代际文件不可变；manifest 是唯一原子切换点，崩溃不会留下半代际。 */
+function treeFileName(name: string, generation: number): string {
+  return generation === 0 ? `${name}.json` : `${name}.${generation}.json`;
+}
+
+async function loadStoredTrees(root: string, revisionId: string): Promise<{
+  manifest: StoredCandidateManifest;
+  trees: Record<(typeof TREE_NAMES)[number], unknown>;
+}> {
   const directory = candidateDirectory(root, revisionId);
   const manifest = parseManifest(await readJson(path.join(directory, "candidate.json"), "候选记录"), revisionId);
+  const generation = manifest.generation ?? 0;
   const trees = {} as Record<(typeof TREE_NAMES)[number], unknown>;
   for (const record of manifest.trees) {
-    const file = path.join(directory, `${record.name}.json`);
+    const file = path.join(directory, treeFileName(record.name, generation));
     // 读取前核验 regular file 与大小预算：损坏/替换的大文件不得先造成无界分配。
     const entry = await fs.lstat(file);
     if (entry.isSymbolicLink() || !entry.isFile() || entry.size > CANDIDATE_JSON_BUDGET)
@@ -284,6 +305,11 @@ async function loadStoredCandidate(root: string, revisionId: string): Promise<St
       throw new Error(`候选树摘要不符：${record.name}。`);
     trees[record.name as (typeof TREE_NAMES)[number]] = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   }
+  return { manifest, trees };
+}
+
+async function loadStoredAssets(root: string, revisionId: string, manifest: StoredCandidateManifest): Promise<Record<string, ManagedAsset>> {
+  const directory = candidateDirectory(root, revisionId);
   const assets: Record<string, ManagedAsset> = {};
   for (const record of manifest.assets) {
     const file = path.join(directory, record.path);
@@ -295,6 +321,12 @@ async function loadStoredCandidate(root: string, revisionId: string): Promise<St
       throw new Error(`候选资产摘要不符：${record.path}。`);
     assets[record.path] = { bytes, ...(record.mime === undefined ? {} : { mime: record.mime }) };
   }
+  return assets;
+}
+
+async function loadStoredCandidate(root: string, revisionId: string): Promise<StoredCandidate> {
+  const { manifest, trees } = await loadStoredTrees(root, revisionId);
+  const assets = await loadStoredAssets(root, revisionId, manifest);
   return { manifest, trees, assets };
 }
 
@@ -344,5 +376,88 @@ function rebuildFromStored(root: string, stored: StoredCandidate): DocumentMerge
     assets: stored.assets,
     ...(manifest.metadata === undefined ? {} : { metadata: manifest.metadata }),
   };
+}
+
+/** 冲突解决显式落盘（SPEC-reader §9.6）：在工程写锁内加载最新代际、重算合并树，
+ * 派生树写入新的不可变代际文件，最后原子替换 manifest 完成切换——崩溃只会留下
+ * 完整旧代际或完整新代际。并发解决串行化，不互相覆盖；current 不被解决动作推进。 */
+export async function resolveStoredCandidateConflict(input: {
+  root: string;
+  revisionId: string;
+  conflictId: string;
+  choice: MergeChoice;
+}): Promise<DocumentMergeCandidate> {
+  const opened = await openProject(input.root);
+  const root = opened.root;
+  return withProjectWriteLock(root, async () => {
+    // 锁内只读树（不读资产）：解决不需要资产字节，避免全量资产 I/O。
+    const stored = await loadStoredTrees(root, input.revisionId);
+    if (stored.manifest.projectId !== opened.manifest.id || stored.manifest.paperId !== opened.manifest.paper.id)
+      throw new Error("候选不属于当前工程。");
+    const candidate = rebuildFromStored(root, { ...stored, assets: {} });
+    const resolved = resolveDocumentMergeConflict(candidate, input.conflictId, input.choice);
+    const generation = (stored.manifest.generation ?? 0) + 1;
+    const trees: Record<string, unknown> = {
+      base: resolved.base,
+      current: resolved.current,
+      sourceBase: resolved.sourceBase,
+      document: resolved.document,
+      candidateTree: resolved.candidateTree,
+      changeset: resolved.changeset,
+      tombstones: resolved.tombstones,
+      previousTombstones: resolved.previousTombstones,
+    };
+    const treeRecords = TREE_NAMES.map((name) => {
+      const bytes = Buffer.from(JSON.stringify(trees[name]));
+      if (bytes.byteLength > CANDIDATE_JSON_BUDGET) throw new Error(`候选树超过 64 MiB 写入预算：${name}。`);
+      return { name, sha256: sha256(bytes), bytes };
+    });
+    const manifest: StoredCandidateManifest = {
+      ...stored.manifest,
+      generation,
+      resolutions: resolved.resolutions,
+      trees: treeRecords.map(({ name, sha256: hash }) => ({ name, sha256: hash })),
+    };
+    const directory = candidateDirectory(root, input.revisionId);
+    // 先写全部新代际文件（不可变、带摘要），再原子切换 manifest：
+    // 中途失败时旧 manifest 仍指向完整旧代际，候选与已落盘解决保持可读。
+    for (const { name, bytes } of treeRecords)
+      await writeBytesAtomic(path.join(directory, treeFileName(name, generation)), bytes);
+    await writeJsonAtomic(path.join(directory, "candidate.json"), manifest);
+    const assets = await loadStoredAssets(root, input.revisionId, manifest);
+    return {
+      ...resolved,
+      root,
+      sourceSnapshotId: candidate.sourceSnapshotId,
+      assets,
+      ...(candidate.metadata === undefined ? {} : { metadata: candidate.metadata }),
+    };
+  });
+}
+
+/** 候选资产受管读取（冲突预览用）：登记、摘要与预算与 revision 资产同口径。 */
+export async function readUpdateCandidateAsset(input: {
+  root: string;
+  revisionId: string;
+  path: string;
+}): Promise<{ bytes: Uint8Array; mime?: string }> {
+  if (!input.path.startsWith("assets/")) throw new Error("只能读取候选受管 assets 内容。");
+  const opened = await openProject(input.root);
+  const root = opened.root;
+  // 只读 manifest 与请求的单个资产：预览一张图不触发全量资产 I/O。
+  const directory = candidateDirectory(root, input.revisionId);
+  const manifest = parseManifest(await readJson(path.join(directory, "candidate.json"), "候选记录"), input.revisionId);
+  if (manifest.projectId !== opened.manifest.id || manifest.paperId !== opened.manifest.paper.id)
+    throw new Error("候选不属于当前工程。");
+  const record = manifest.assets.find((asset) => asset.path === input.path);
+  if (!record) throw new Error(`候选资产未登记：${input.path}。`);
+  const file = path.join(directory, record.path);
+  const entry = await fs.lstat(file);
+  if (entry.isSymbolicLink() || !entry.isFile() || entry.size !== record.size || record.size > MAX_ASSET_BYTES)
+    throw new Error(`候选资产不可读或超过预算：${input.path}。`);
+  const bytes = await fs.readFile(file);
+  if (bytes.byteLength !== record.size || sha256(bytes) !== record.sha256)
+    throw new Error(`候选资产摘要不符：${input.path}。`);
+  return { bytes, ...(record.mime === undefined ? {} : { mime: record.mime }) };
 }
 

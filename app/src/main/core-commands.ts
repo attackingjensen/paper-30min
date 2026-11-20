@@ -7,6 +7,7 @@ import {
   openProject,
   publishSourceSnapshot,
   readRevision,
+  readRevisionContext,
   readRevisionDocument,
   readSourceSnapshot,
 } from "./project-core.js";
@@ -15,6 +16,14 @@ import {
   publishDocumentMergeCandidate,
   resolveDocumentMergeCandidateConflict,
 } from "./document/merge.js";
+import {
+  previewDocumentCorrections,
+  publishDocumentCorrections,
+} from "./document/correction.js";
+import {
+  loadUpdateCandidate,
+  resolveStoredCandidateConflict,
+} from "./document/candidate-store.js";
 import {
   createVerification,
   readVerificationRecords,
@@ -85,7 +94,10 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   coreCommit: true,
   coreReadSource: true,
   coreReadRevision: true,
+  coreReadRevisionContext: true,
   coreReadDocument: true,
+  coreCorrectionPreview: true,
+  coreCorrectionPublish: true,
   coreMergePublish: true,
   coreArxivImport: true,
   coreArxivResume: true,
@@ -97,6 +109,8 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   coreArxivRefetch: true,
   coreArxivReconvert: true,
   coreArxivPublishCandidate: true,
+  coreCandidateLoad: true,
+  coreCandidateResolve: true,
   corePdfSnapshot: true,
   corePdfTasks: true,
   corePdfStop: true,
@@ -167,8 +181,54 @@ export async function dispatchCoreCommand(
       return readSourceSnapshot(command.root, command.sourceSnapshotId);
     case "coreReadRevision":
       return readRevision(command.root, command.revisionId);
+    case "coreReadRevisionContext":
+      return readRevisionContext(command.root, command.revisionId);
     case "coreReadDocument":
       return readRevisionDocument(command.root, command.revisionId, command.tree);
+    case "coreCorrectionPreview":
+      return previewDocumentCorrections({
+        root: command.root,
+        baseRevision: command.baseRevision,
+        corrections: command.corrections,
+        ...(command.revisionId === undefined ? {} : { revisionId: command.revisionId }),
+      });
+    case "coreCorrectionPublish": {
+      const revision = await readRevision(command.root, command.baseRevision);
+      // 钩子在临界区内需要修正后的树：先以基线树占位，发布重放完成后替换。
+      let hookDocument = await readRevisionDocument(command.root, command.baseRevision, "document");
+      const published = await publishDocumentCorrections({
+        root: command.root,
+        baseRevision: command.baseRevision,
+        revisionId: command.revisionId,
+        corrections: command.corrections,
+        hooks: {
+          onCommitPoint: async (point, context) => {
+            if (point === "before-current-replace")
+              hookDocument = await readRevisionDocument(command.root, command.revisionId, "document");
+            await verificationInheritCommitHooks({
+              root: command.root,
+              baseRevision: command.baseRevision,
+              revisionId: command.revisionId,
+              sourceSnapshotId: revision.sourceSnapshotId,
+              document: hookDocument,
+            }).onCommitPoint?.(point, context);
+          },
+        },
+      });
+      return published;
+    }
+    case "coreCandidateLoad":
+      return candidateSummary(await loadUpdateCandidate({
+        root: command.root,
+        revisionId: command.revisionId,
+      }));
+    case "coreCandidateResolve":
+      return candidateSummary(await resolveStoredCandidateConflict({
+        root: command.root,
+        revisionId: command.revisionId,
+        conflictId: command.conflictId,
+        choice: command.choice,
+      }));
     case "coreMergePublish":
       return mergePublish(command);
     case "corePdfSnapshot":
