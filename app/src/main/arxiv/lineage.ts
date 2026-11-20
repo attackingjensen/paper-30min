@@ -8,23 +8,23 @@ import { readSourceSnapshot } from "../project-core.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+function validVersion(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
 function arxivReferenceOf(snapshot: SourceSnapshotRecord): ArxivReference | null {
   if (snapshot.kind === "arxiv") {
-    if (typeof snapshot.baseId !== "string" || typeof snapshot.version !== "number") return null;
-    return {
-      baseId: snapshot.baseId,
-      version: snapshot.version,
-      canonicalId: typeof snapshot.canonicalId === "string"
-        ? snapshot.canonicalId
-        : `${snapshot.baseId}v${snapshot.version}`,
-    };
+    if (typeof snapshot.baseId !== "string" || !validVersion(snapshot.version)) return null;
+    const canonicalId = `${snapshot.baseId}v${snapshot.version}`;
+    if (snapshot.canonicalId !== undefined && snapshot.canonicalId !== canonicalId) return null;
+    return { baseId: snapshot.baseId, version: snapshot.version, canonicalId };
   }
   if (snapshot.kind === "pdf") {
     const arxiv = snapshot.arxiv;
     if (
       typeof arxiv !== "object" || arxiv === null ||
       !("baseId" in arxiv) || typeof arxiv.baseId !== "string" ||
-      !("version" in arxiv) || typeof arxiv.version !== "number"
+      !("version" in arxiv) || !validVersion(arxiv.version)
     ) return null;
     return {
       baseId: arxiv.baseId,

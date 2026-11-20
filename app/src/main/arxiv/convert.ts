@@ -1524,7 +1524,7 @@ export async function convertArxivSnapshotTree(input: {
     ok: true,
     tree: result.tree,
     warnings: result.warnings,
-    converterVersion: ARXIV_CONVERTER_VERSION,
+    converterVersion: result.converterVersion,
     assetBytes: figureAssets,
   };
 }

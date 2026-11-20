@@ -14,7 +14,7 @@ import {
 } from "../document/merge.js";
 import { loadUpdateCandidate, storeUpdateCandidate } from "../document/candidate-store.js";
 import { verificationInheritCommitHooks } from "../pdf/verification.js";
-import { convertArxivSnapshotTree } from "./convert.js";
+import { convertArxivSnapshotTree, convertLatexml } from "./convert.js";
 import { fetchDiagnostic, type ArxivTransport } from "./fetch.js";
 import { arxivLineageReference } from "./lineage.js";
 import { fetchArxivSnapshot } from "./snapshot.js";
@@ -120,7 +120,8 @@ export type ArxivUpdateCandidateResult =
   | { ok: false; diagnostic: ImportDiagnostic };
 
 /** 候选构建入口的统一守卫：基线必须等于 current，选定快照必须属于同一
- * arXiv base ID（renderer 输入不可信，不能借 reconvert/publish 并入其他来源）。 */
+ * arXiv base ID 且携带有效固定版本（renderer 输入不可信，不能借 reconvert/publish
+ * 并入其他来源或损坏谱系）。 */
 async function assertCandidateBaseline(input: {
   root: string;
   sourceSnapshotId: string;
@@ -142,6 +143,11 @@ async function assertCandidateBaseline(input: {
   }
   if (snapshot.kind !== "arxiv" || snapshot.baseId !== lineage.reference.baseId)
     return fatal("arxiv-update-identity-mismatch", "arxiv.update.identityMismatch", "resolve");
+  if (
+    typeof snapshot.version !== "number" || !Number.isInteger(snapshot.version) || snapshot.version < 1 ||
+    (snapshot.canonicalId !== undefined && snapshot.canonicalId !== `${snapshot.baseId}v${snapshot.version}`)
+  )
+    return fatal("arxiv-update-source-invalid", "arxiv.update.sourceInvalid", "resolve");
   return { ok: true };
 }
 
@@ -154,10 +160,16 @@ async function mergeCandidateFromSnapshot(input: {
   baseRevision: string;
   /** 获取阶段警告（外部资产未抓取等），随候选持久化供发布结果回显。 */
   fetchWarnings?: ImportDiagnostic[];
+  /** 转换器升级注入（测试模拟未来版本）；生产默认当前转换器。 */
+  converter?: typeof convertLatexml;
 }): Promise<ArxivUpdateCandidateResult> {
   const guard = await assertCandidateBaseline(input);
   if (!guard.ok) return guard;
-  const converted = await convertArxivSnapshotTree({ root: input.root, sourceSnapshotId: input.sourceSnapshotId });
+  const converted = await convertArxivSnapshotTree({
+    root: input.root,
+    sourceSnapshotId: input.sourceSnapshotId,
+    ...(input.converter === undefined ? {} : { converter: input.converter }),
+  });
   if (!converted.ok) return converted;
   const warnings = [...(input.fetchWarnings ?? []), ...converted.warnings];
   try {
@@ -167,7 +179,8 @@ async function mergeCandidateFromSnapshot(input: {
       sourceSnapshotId: input.sourceSnapshotId,
       candidate: converted.tree,
       derivedAssets: converted.assetBytes,
-      revisionId: candidateIdentity(`arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}`),
+      // 转换器版本纳入候选身份：升级后重转换形成新候选，不静默复用旧版本存储。
+      revisionId: candidateIdentity(`arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}:v${converted.converterVersion}`),
     });
     const candidate: DocumentMergeCandidate = {
       ...merged,
@@ -284,11 +297,15 @@ export async function reconvertArxivCandidate(input: {
   root: string;
   sourceSnapshotId: string;
   baseRevision: string;
+  /** 转换器升级注入（SPEC §8.5）：未来转换器修复后重转换同一快照；
+   * 生产命令不注入，默认当前转换器。版本纳入候选身份，升级产生新候选。 */
+  converter?: typeof convertLatexml;
 }): Promise<ArxivUpdateCandidateResult> {
   return mergeCandidateFromSnapshot({
     root: input.root,
     sourceSnapshotId: input.sourceSnapshotId,
     baseRevision: input.baseRevision,
+    ...(input.converter === undefined ? {} : { converter: input.converter }),
   });
 }
 
@@ -296,18 +313,21 @@ export type ArxivUpdatePublishResult =
   | { ok: true; revision: ProjectRevisionRecord; warnings: ImportDiagnostic[] }
   | { ok: false; diagnostic: ImportDiagnostic };
 
-/** 确认发布更新候选（SPEC §8.7）：重载构建时落盘的同一候选（不重新转换——
- * 新增节点 UUID 不可重放，发布内容必须与用户确认的预览一致），应用显式冲突
- * 选择后发布；发布前复核 baseRevision 与来源身份，current 已变化或未解决冲突时拒绝。 */
+/** 确认发布更新候选（SPEC §8.7）：按用户确认的候选 revisionId 重载构建时落盘
+ * 的同一候选（不重新转换——新增节点 UUID 不可重放，发布内容必须与预览一致），
+ * 应用显式冲突选择后发布；发布前复核 baseRevision 与来源身份，current 已变化
+ * 或未解决冲突时拒绝。 */
 export async function publishArxivUpdateCandidate(input: {
   root: string;
+  /** 用户确认的候选身份（构建结果携带）；来源与基线必须与候选存储一致。 */
+  revisionId: string;
   sourceSnapshotId: string;
   baseRevision: string;
   resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>;
 }): Promise<ArxivUpdatePublishResult> {
   const guard = await assertCandidateBaseline(input);
   if (!guard.ok) return guard;
-  const revisionId = candidateIdentity(`arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}`);
+  const revisionId = input.revisionId;
   let candidate: DocumentMergeCandidate;
   let warnings: ImportDiagnostic[];
   try {

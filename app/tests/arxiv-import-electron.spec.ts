@@ -462,10 +462,11 @@ const refetch = (root: string, baseRevision: string) =>
   invoke<ArxivUpdateCandidateCommandResult>({ type: "coreArxivRefetch", root, baseRevision, operationId: `op-${++operationSeq}`, baseUrl });
 const reconvert = (root: string, sourceSnapshotId: string, baseRevision: string) =>
   invoke<ArxivUpdateCandidateCommandResult>({ type: "coreArxivReconvert", root, sourceSnapshotId, baseRevision });
-const publishCandidate = (root: string, sourceSnapshotId: string, baseRevision: string, resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>) =>
+const publishCandidate = (root: string, revisionId: string, sourceSnapshotId: string, baseRevision: string, resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>) =>
   invoke<ArxivUpdatePublishCommandResult>({
     type: "coreArxivPublishCandidate",
     root,
+    revisionId,
     sourceSnapshotId,
     baseRevision,
     ...(resolutions === undefined ? {} : { resolutions }),
@@ -504,10 +505,10 @@ test("arxiv-import 真实 Electron 检查新版只读 abs，候选确认发布�
   const advanced = await reconvert(imported.root, imported.revision.sourceSnapshotId, imported.revision.revisionId);
   expect(advanced.ok).toBe(true);
   if (!advanced.ok || advanced.outcome !== "candidate") return;
-  const ahead = await publishCandidate(imported.root, imported.revision.sourceSnapshotId, imported.revision.revisionId);
+  const ahead = await publishCandidate(imported.root, advanced.candidate.revisionId, imported.revision.sourceSnapshotId, imported.revision.revisionId);
   expect(ahead.ok).toBe(true);
   if (!ahead.ok) return;
-  const stale = await publishCandidate(imported.root, candidate.candidate.sourceSnapshotId, imported.revision.revisionId);
+  const stale = await publishCandidate(imported.root, candidate.candidate.revisionId, candidate.candidate.sourceSnapshotId, imported.revision.revisionId);
   expect(stale.ok).toBe(false);
   expect((await open(imported.root)).manifest.paper.currentRevision).toBe(ahead.revision.revisionId);
 
@@ -515,7 +516,7 @@ test("arxiv-import 真实 Electron 检查新版只读 abs，候选确认发布�
   const fresh = await updateCandidate(imported.root, 2, ahead.revision.revisionId);
   expect(fresh.ok).toBe(true);
   if (!fresh.ok || fresh.outcome !== "candidate") return;
-  const published = await publishCandidate(imported.root, fresh.candidate.sourceSnapshotId, ahead.revision.revisionId);
+  const published = await publishCandidate(imported.root, fresh.candidate.revisionId, fresh.candidate.sourceSnapshotId, ahead.revision.revisionId);
   expect(published.ok, JSON.stringify(published)).toBe(true);
   if (!published.ok) return;
   expect((await open(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
@@ -551,7 +552,7 @@ test("arxiv-import 真实 Electron 同版重取相同字节复用，离线重转
   expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 
   // 确认发布同样离线完成；正文内容不变（同一快照与转换器）。
-  const published = await publishCandidate(imported.root, imported.revision.sourceSnapshotId, imported.revision.revisionId);
+  const published = await publishCandidate(imported.root, offline.candidate.revisionId, imported.revision.sourceSnapshotId, imported.revision.revisionId);
   expect(published.ok, JSON.stringify(published)).toBe(true);
   if (!published.ok) return;
   expect(published.revision.revisionId).toBe(offline.candidate.revisionId);

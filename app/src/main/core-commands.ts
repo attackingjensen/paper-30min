@@ -251,6 +251,7 @@ export async function dispatchCoreCommand(
     case "coreArxivPublishCandidate": {
       const published: ArxivUpdatePublishCommandResult = await publishArxivUpdateCandidate({
         root: command.root,
+        revisionId: command.revisionId,
         sourceSnapshotId: command.sourceSnapshotId,
         baseRevision: command.baseRevision,
         ...(command.resolutions === undefined ? {} : { resolutions: command.resolutions }),

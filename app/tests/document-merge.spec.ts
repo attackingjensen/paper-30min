@@ -512,3 +512,57 @@ test("document-core 相邻 unchanged anchor 证明的 1:1 位置延续仍然成�
   expect(result.changeset.changes.some((entry) =>
     entry.nodeType === "sentence" && entry.status === "added")).toBe(false);
 });
+
+test("document-core 多个新增块共享同一锚点时按来源顺序确定插入，不依赖遍历顺序", () => {
+  const base = testSelectionTree(randomUUID());
+  const current = structuredClone(base);
+  const candidate = structuredClone(base);
+  // 在既有块之间插入三个全新单元块：它们共享前后两个已对齐锚点。
+  const anchorBlock = selectionIds.block;
+  const newTexts = ["Inserted one.", "Inserted two.", "Inserted three."];
+  const newUnitIds = newTexts.map(() => randomUUID());
+  const newBlockIds = newTexts.map(() => randomUUID());
+  newTexts.forEach((text, index) => {
+    const unitId = newUnitIds[index];
+    const sentenceId = randomUUID();
+    candidate.units[unitId] = {
+      id: unitId,
+      sectionId: selectionIds.section,
+      kind: "paragraph",
+      sentenceIds: [sentenceId],
+    };
+    candidate.sentences[sentenceId] = {
+      id: sentenceId,
+      unitId,
+      content: [{ kind: "text", text }],
+    };
+  });
+  // 直属单元顺序必须与阅读块顺序一致：新单元插在首个单元之后。
+  candidate.sections[selectionIds.section].unitIds = [
+    selectionIds.unit,
+    ...newUnitIds,
+    selectionIds.secondUnit,
+  ];
+  const anchorIndex = candidate.blocks.findIndex((block) => block.id === anchorBlock);
+  candidate.blocks.splice(
+    anchorIndex + 1,
+    0,
+    ...newBlockIds.map((blockId, index) => ({
+      id: blockId,
+      sectionId: selectionIds.section,
+      kind: "unit" as const,
+      unitId: newUnitIds[index],
+    })),
+  );
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  const order = result.document.blocks.map((block) => block.id);
+  // 三个新增块必须按来源 preferred 顺序相邻排列在锚点之后。
+  expect(order.indexOf(newBlockIds[0])).toBeGreaterThan(order.indexOf(anchorBlock));
+  expect(order.indexOf(newBlockIds[1])).toBe(order.indexOf(newBlockIds[0]) + 1);
+  expect(order.indexOf(newBlockIds[2])).toBe(order.indexOf(newBlockIds[1]) + 1);
+  expect(projectSentenceText(result.document, result.document.units[newUnitIds[0]].sentenceIds[0])).toBe("Inserted one.");
+  expect(projectSentenceText(result.document, result.document.units[newUnitIds[2]].sentenceIds[0])).toBe("Inserted three.");
+});

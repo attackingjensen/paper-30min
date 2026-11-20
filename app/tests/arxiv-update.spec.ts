@@ -247,6 +247,7 @@ test("arxiv-import 更新候选：三方合并保留本地修正，确认发布�
   const ahead = await localEdit(imported.root, edited.revisionId, " second note");
   const stale = await publishArxivUpdateCandidate({
     root: imported.root,
+    revisionId: candidate.candidate.revisionId,
     sourceSnapshotId: candidate.candidate.sourceSnapshotId,
     baseRevision: edited.revisionId,
   });
@@ -265,6 +266,7 @@ test("arxiv-import 更新候选：三方合并保留本地修正，确认发布�
   if (!fresh.ok) return;
   const published = await publishArxivUpdateCandidate({
     root: imported.root,
+    revisionId: fresh.candidate.revisionId,
     sourceSnapshotId: fresh.candidate.sourceSnapshotId,
     baseRevision: ahead.revisionId,
   });
@@ -367,6 +369,7 @@ test("arxiv-import 同版重取：字节不同新建快照与候选，规范正�
   // 确认发布后 current 推进，正文与旧 current 一致。
   const published = await publishArxivUpdateCandidate({
     root: imported.root,
+    revisionId: refetched.candidate.revisionId,
     sourceSnapshotId: refetched.candidate.sourceSnapshotId,
     baseRevision: imported.revision.revisionId,
   });
@@ -414,6 +417,7 @@ test("arxiv-import 离线重新转换：不触网、不伪造 source-base，确�
 
   const published = await publishArxivUpdateCandidate({
     root: imported.root,
+    revisionId: reconverted.candidate.revisionId,
     sourceSnapshotId: imported.revision.sourceSnapshotId,
     baseRevision: edited.revisionId,
   });
@@ -468,6 +472,7 @@ test("arxiv-import 更新冲突候选未解决拒绝发布，显式选择后发�
 
   const blocked = await publishArxivUpdateCandidate({
     root: imported.root,
+    revisionId: refetched.candidate.revisionId,
     sourceSnapshotId: refetched.candidate.sourceSnapshotId,
     baseRevision: edited.revisionId,
   });
@@ -477,6 +482,7 @@ test("arxiv-import 更新冲突候选未解决拒绝发布，显式选择后发�
 
   const resolved = await publishArxivUpdateCandidate({
     root: imported.root,
+    revisionId: refetched.candidate.revisionId,
     sourceSnapshotId: refetched.candidate.sourceSnapshotId,
     baseRevision: edited.revisionId,
     resolutions: [{ conflictId: conflict.id, choice: "candidate" }],
@@ -566,28 +572,67 @@ test("arxiv-import 首次导入未完成时拒绝更新动作，不绕过恢复�
   expect(probe.calls).toHaveLength(0);
 });
 
-test("arxiv-import 更新候选要求严格更高版本：同版与更旧版本网络前拒绝", async () => {
+test("arxiv-import 更新候选要求严格更高版本：同版、更旧与未固定分别网络前拒绝", async () => {
   const imported = await importedProject("版本守卫");
   const probe = forbiddenTransport();
-  // 同版（v1）与未固定版本都在网络前拒绝；更旧版本不可能低于 v1，同版即边界。
-  for (const reference of [
-    { baseId: ID, version: 1, canonicalId: `${ID}v1` },
-    { baseId: ID, version: null, canonicalId: ID },
-  ]) {
-    const rejected = await fetchArxivUpdateCandidate({
-      root: imported.root,
-      baseRevision: imported.revision.revisionId,
-      reference,
-      transport: probe.transport,
-      baseUrl: BASE,
-    });
-    expect(rejected.ok).toBe(false);
-    if (!rejected.ok)
-      expect(["arxiv-update-version-not-newer", "arxiv-version-unpinned"]).toContain(rejected.diagnostic.code);
-  }
+  // 同版（v1）：唯一诊断 version-not-newer。
+  const same = await fetchArxivUpdateCandidate({
+    root: imported.root,
+    baseRevision: imported.revision.revisionId,
+    reference: { baseId: ID, version: 1, canonicalId: `${ID}v1` },
+    transport: probe.transport,
+    baseUrl: BASE,
+  });
+  expect(same.ok).toBe(false);
+  if (!same.ok) expect(same.diagnostic.code).toBe("arxiv-update-version-not-newer");
+  // 未固定版本：唯一诊断 unpinned。
+  const unpinned = await fetchArxivUpdateCandidate({
+    root: imported.root,
+    baseRevision: imported.revision.revisionId,
+    reference: { baseId: ID, version: null, canonicalId: ID },
+    transport: probe.transport,
+    baseUrl: BASE,
+  });
+  expect(unpinned.ok).toBe(false);
+  if (!unpinned.ok) expect(unpinned.diagnostic.code).toBe("arxiv-version-unpinned");
   expect(probe.calls).toHaveLength(0);
   expect(await listSourceSnapshots(imported.root)).toHaveLength(1);
   expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+
+  // 更旧版本：先把工程更新到 v2，再以 v1 为目标——网络前拒绝，不降级来源。
+  const routes = fullRoutes();
+  routes[absUrl(2)] = { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" };
+  routes[htmlUrl(2)] = { bytes: Buffer.from(latexmlV2()), mime: "text/html" };
+  const { transport } = controlledTransport(routes);
+  const upgraded = await fetchArxivUpdateCandidate({
+    root: imported.root,
+    baseRevision: imported.revision.revisionId,
+    reference: { baseId: ID, version: 2, canonicalId: `${ID}v2` },
+    transport,
+    baseUrl: BASE,
+  });
+  expect(upgraded.ok, JSON.stringify(upgraded)).toBe(true);
+  if (!upgraded.ok) return;
+  const published = await publishArxivUpdateCandidate({
+    root: imported.root,
+    revisionId: upgraded.candidate.revisionId,
+    sourceSnapshotId: upgraded.candidate.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(published.ok).toBe(true);
+  if (!published.ok) return;
+  const olderProbe = forbiddenTransport();
+  const older = await fetchArxivUpdateCandidate({
+    root: imported.root,
+    baseRevision: published.revision.revisionId,
+    reference: { baseId: ID, version: 1, canonicalId: `${ID}v1` },
+    transport: olderProbe.transport,
+    baseUrl: BASE,
+  });
+  expect(older.ok).toBe(false);
+  if (!older.ok) expect(older.diagnostic.code).toBe("arxiv-update-version-not-newer");
+  expect(olderProbe.calls).toHaveLength(0);
+  expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
 });
 
 test("arxiv-import 异 base 快照不能借 reconvert/publish 并入当前论文", async () => {
@@ -609,6 +654,7 @@ test("arxiv-import 异 base 快照不能借 reconvert/publish 并入当前论文
   if (!reconverted.ok) expect(reconverted.diagnostic.code).toBe("arxiv-update-identity-mismatch");
   const published = await publishArxivUpdateCandidate({
     root: imported.root,
+    revisionId: "00000000-0000-4000-8000-011111100000",
     sourceSnapshotId: foreign.sourceSnapshotId,
     baseRevision: imported.revision.revisionId,
   });
@@ -661,6 +707,7 @@ test("arxiv-import 新增节点候选：发布树与预览一致，current 推�
   // 同身份重试：重载同一存储候选，字节一致，幂等完成发布；发布树即预览树。
   const published = await publishArxivUpdateCandidate({
     root: imported.root,
+    revisionId: candidate.candidate.revisionId,
     sourceSnapshotId: candidate.candidate.sourceSnapshotId,
     baseRevision: imported.revision.revisionId,
   });
@@ -774,4 +821,119 @@ test("arxiv-import PDF 谱系形状守卫：父级非 PDF、父级缺失与本�
   const localHandoff = await prepareArxivPdfFallback(await openProject(local.root), reason, BASE, localRevision.revisionId);
   expect(localHandoff.ok).toBe(false);
   if (!localHandoff.ok) expect(localHandoff.diagnostic.code).toBe("arxiv-fallback-source-invalid");
+});
+
+test("arxiv-import 转换器升级后重转换形成新候选，不静默复用旧版本存储", async () => {
+  const imported = await importedProject("转换器升级");
+  const first = await reconvertArxivCandidate({
+    root: imported.root,
+    sourceSnapshotId: imported.revision.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(first.ok, JSON.stringify(first)).toBe(true);
+  if (!first.ok) return;
+  // 模拟升级后的转换器：同一快照产出可区分的新内容（版本标记进入正文）。
+  const { convertLatexml } = await import("../src/main/arxiv/convert");
+  const upgraded: typeof convertLatexml = (input) => {
+    const result = convertLatexml(input);
+    if (!result.ok) return result;
+    const tree = structuredClone(result.tree);
+    const unit = Object.values(tree.units)[0];
+    const sentence = tree.sentences[unit.sentenceIds[0]];
+    sentence.content.push({ kind: "text", text: " [converter-v2]" });
+    return { ...result, tree, converterVersion: result.converterVersion + 1 };
+  };
+  const second = await reconvertArxivCandidate({
+    root: imported.root,
+    sourceSnapshotId: imported.revision.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+    converter: upgraded,
+  });
+  expect(second.ok, JSON.stringify(second)).toBe(true);
+  if (!second.ok) return;
+  // 版本纳入候选身份：新候选而非旧存储；内容是升级转换器的输出。
+  expect(second.candidate.revisionId).not.toBe(first.candidate.revisionId);
+  expect(sentenceTexts(second.candidate.document).join(" ")).toContain("[converter-v2]");
+  expect(sentenceTexts(first.candidate.document).join(" ")).not.toContain("[converter-v2]");
+  // 发布用户确认的新候选：旧候选存储保留，current 推进到升级内容。
+  const published = await publishArxivUpdateCandidate({
+    root: imported.root,
+    revisionId: second.candidate.revisionId,
+    sourceSnapshotId: imported.revision.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(published.ok, JSON.stringify(published)).toBe(true);
+  if (!published.ok) return;
+  expect(published.revision.revisionId).toBe(second.candidate.revisionId);
+  expect(sentenceTexts(await readRevisionDocument(imported.root, published.revision.revisionId, "document")).join(" "))
+    .toContain("[converter-v2]");
+});
+
+test("arxiv-import 同 base 非法固定版本快照被 reconvert/publish 拒绝", async () => {
+  const imported = await importedProject("非法版本快照");
+  const { publishSourceSnapshot } = await import("../src/main/project-core");
+  const corrupt = await publishSourceSnapshot({
+    root: imported.root,
+    files: { "document.html": Buffer.from(latexmlDocument()), "abs.html": Buffer.from(absHtml({ id: ID, versions: [1] })) },
+    metadata: { kind: "arxiv", baseId: ID, version: 0, canonicalId: `${ID}v0`, htmlUrl: htmlUrl(1), assets: {} },
+  });
+  const reconverted = await reconvertArxivCandidate({
+    root: imported.root,
+    sourceSnapshotId: corrupt.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(reconverted.ok).toBe(false);
+  if (!reconverted.ok) expect(reconverted.diagnostic.code).toBe("arxiv-update-source-invalid");
+  const published = await publishArxivUpdateCandidate({
+    root: imported.root,
+    revisionId: "00000000-0000-4000-8000-011111100000",
+    sourceSnapshotId: corrupt.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(published.ok).toBe(false);
+  if (!published.ok) expect(published.diagnostic.code).toBe("arxiv-update-source-invalid");
+  expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+});
+
+test("arxiv-import 候选存储硬预算：超限树与超限资产登记在读取前拒绝", async () => {
+  const imported = await importedProject("候选预算");
+  const reconverted = await reconvertArxivCandidate({
+    root: imported.root,
+    sourceSnapshotId: imported.revision.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(reconverted.ok).toBe(true);
+  if (!reconverted.ok) return;
+  const directory = path.join(imported.root, ".paper30min", "update-candidates", reconverted.candidate.revisionId);
+  const manifestFile = path.join(directory, "candidate.json");
+  const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
+
+  // 树文件被替换为超预算大文件：lstat 阶段拒绝，不先读入全文。
+  const treeFile = path.join(directory, "document.json");
+  const originalTree = await fs.readFile(treeFile);
+  const handle = await fs.open(treeFile, "w");
+  await handle.truncate(64 * 1024 * 1024 + 1);
+  await handle.close();
+  const oversized = await publishArxivUpdateCandidate({
+    root: imported.root,
+    revisionId: reconverted.candidate.revisionId,
+    sourceSnapshotId: imported.revision.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(oversized.ok).toBe(false);
+  if (!oversized.ok) expect(oversized.diagnostic.messageKey).toContain("预算");
+  await fs.writeFile(treeFile, originalTree);
+
+  // manifest 资产登记超单项预算：解析阶段拒绝，不读取资产字节。
+  manifest.assets.push({ path: `assets/${"a".repeat(64)}.png`, sha256: "a".repeat(64), size: 32 * 1024 * 1024 + 1 });
+  await fs.writeFile(manifestFile, JSON.stringify(manifest));
+  const oversizedAsset = await publishArxivUpdateCandidate({
+    root: imported.root,
+    revisionId: reconverted.candidate.revisionId,
+    sourceSnapshotId: imported.revision.sourceSnapshotId,
+    baseRevision: imported.revision.revisionId,
+  });
+  expect(oversizedAsset.ok).toBe(false);
+  if (!oversizedAsset.ok) expect(oversizedAsset.diagnostic.messageKey).toContain("预算");
+  expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 });

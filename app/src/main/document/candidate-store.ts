@@ -13,6 +13,7 @@ import { parseDocumentTree } from "../../shared/document/tree.js";
 import { parseDocumentChangeset, parseDocumentTombstones } from "../../shared/document/changeset.js";
 import type { DocumentMergeResult, MergeChoice, MergeConflict } from "../../shared/document/merge.js";
 import { openProject, withProjectWriteLock } from "../project-core.js";
+import { renameManaged } from "../managed-rename.js";
 import type { DocumentMergeCandidate } from "./merge.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -75,7 +76,7 @@ async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
     } finally {
       await handle.close();
     }
-    await fs.rename(temporary, file);
+    await renameManaged(temporary, file);
   } finally {
     await fs.rm(temporary, { force: true });
   }
@@ -132,6 +133,16 @@ function parseManifest(value: unknown, revisionId: string): StoredCandidateManif
         };
       })
     : (() => { throw new Error("候选资产登记无效。"); })();
+  // 登记本身也执行硬预算与路径唯一性：损坏 manifest 不得诱导无界读取。
+  let declaredTotal = 0;
+  const declaredPaths = new Set<string>();
+  for (const asset of assets) {
+    if (declaredPaths.has(asset.path)) throw new Error("候选资产登记路径重复。");
+    declaredPaths.add(asset.path);
+    if (asset.size > MAX_ASSET_BYTES) throw new Error(`候选资产登记超过 32 MiB 预算：${asset.path}。`);
+    declaredTotal += asset.size;
+    if (declaredTotal > MAX_TOTAL_ASSET_BYTES) throw new Error("候选资产登记总量超过 512 MiB 预算。");
+  }
   const conflicts = Array.isArray(record.conflicts)
     ? (record.conflicts as unknown[]).map((entry) => {
         const item = objectValue(entry);
@@ -180,6 +191,7 @@ export async function storeUpdateCandidate(candidate: DocumentMergeCandidate): P
   };
   const treeRecords = TREE_NAMES.map((name) => {
     const bytes = Buffer.from(JSON.stringify(trees[name]));
+    if (bytes.byteLength > CANDIDATE_JSON_BUDGET) throw new Error(`候选树超过 64 MiB 写入预算：${name}。`);
     return { name, sha256: sha256(bytes), bytes };
   });
   const assetEntries = Object.entries(candidate.assets).sort(([a], [b]) => a.localeCompare(b));
@@ -236,7 +248,7 @@ export async function storeUpdateCandidate(candidate: DocumentMergeCandidate): P
         await fs.writeFile(target, asset.bytes);
       }
       await writeJsonAtomic(path.join(staging, "candidate.json"), manifest);
-      await fs.rename(staging, directory);
+      await renameManaged(staging, directory);
     } catch (error) {
       await fs.rm(staging, { recursive: true, force: true });
       throw error;
@@ -263,15 +275,21 @@ async function loadStoredCandidate(root: string, revisionId: string): Promise<St
   const trees = {} as Record<(typeof TREE_NAMES)[number], unknown>;
   for (const record of manifest.trees) {
     const file = path.join(directory, `${record.name}.json`);
+    // 读取前核验 regular file 与大小预算：损坏/替换的大文件不得先造成无界分配。
+    const entry = await fs.lstat(file);
+    if (entry.isSymbolicLink() || !entry.isFile() || entry.size > CANDIDATE_JSON_BUDGET)
+      throw new Error(`候选树无效或超过读取预算：${record.name}。`);
     const bytes = await fs.readFile(file);
-    if (sha256(bytes) !== record.sha256) throw new Error(`候选树摘要不符：${record.name}。`);
+    if (bytes.byteLength > CANDIDATE_JSON_BUDGET || sha256(bytes) !== record.sha256)
+      throw new Error(`候选树摘要不符：${record.name}。`);
     trees[record.name as (typeof TREE_NAMES)[number]] = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   }
   const assets: Record<string, ManagedAsset> = {};
   for (const record of manifest.assets) {
     const file = path.join(directory, record.path);
     const entry = await fs.lstat(file);
-    if (entry.isSymbolicLink() || !entry.isFile()) throw new Error(`候选资产不可读：${record.path}。`);
+    if (entry.isSymbolicLink() || !entry.isFile() || entry.size !== record.size || record.size > MAX_ASSET_BYTES)
+      throw new Error(`候选资产不可读或超过预算：${record.path}。`);
     const bytes = await fs.readFile(file);
     if (bytes.byteLength !== record.size || sha256(bytes) !== record.sha256)
       throw new Error(`候选资产摘要不符：${record.path}。`);

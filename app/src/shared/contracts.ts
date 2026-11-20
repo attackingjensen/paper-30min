@@ -259,6 +259,8 @@ export type CoreCommand =
   | {
       type: "coreArxivPublishCandidate";
       root: string;
+      /** 用户确认的候选身份（构建结果携带）；主进程复核来源与基线。 */
+      revisionId: string;
       sourceSnapshotId: string;
       baseRevision: string;
       resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>;
