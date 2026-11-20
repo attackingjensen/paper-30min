@@ -270,6 +270,58 @@ test("document-core 重解析对齐 unit 后句子延续稳定 ID：来源修正
     entry.nodeType === "sentence" && entry.status === "added")).toBe(false);
 });
 
+/** 句子重排的候选：unit 经 alias 对齐，句子沿用同一 ID 但顺序颠倒。 */
+function reorderedSecondUnit(base: DocumentTree): DocumentTree {
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  const order = base.units[selectionIds.secondUnit].sentenceIds;
+  candidate.units[selectionIds.secondUnit].sentenceIds = [...order].reverse();
+  return candidate;
+}
+
+test("document-core 来源重排 unit 内句子对三方合并可见：无本地修改时采用来源新顺序", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Alpha first.", "Beta second."]);
+  const current = structuredClone(base);
+  const candidate = reorderedSecondUnit(base);
+
+  const result = merge(base, current, candidate);
+
+  expect(result.conflicts).toEqual([]);
+  expect(result.document.units[selectionIds.secondUnit].sentenceIds)
+    .toEqual(candidate.units[selectionIds.secondUnit].sentenceIds);
+  const unitChange = result.changeset.changes.find((entry) =>
+    entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit);
+  expect(unitChange?.status).toBe("moved");
+});
+
+test("document-core 本地重排与来源重排方向不同时生成 unit 冲突，显式解决前不可发布", () => {
+  const base = testSelectionTree(randomUUID());
+  base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  reissueSentences(base, selectionIds.secondUnit, ["Alpha first.", "Beta second.", "Gamma third."]);
+  const [a, b, c] = base.units[selectionIds.secondUnit].sentenceIds;
+  // 三句保证 base、current、candidate 顺序两两不同：本地与来源都重排但方向不同。
+  const current = structuredClone(base);
+  current.units[selectionIds.secondUnit].sentenceIds = [b, a, c];
+  const candidate = structuredClone(base);
+  candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
+  candidate.units[selectionIds.secondUnit].sentenceIds = [c, b, a];
+
+  const unresolved = merge(base, current, candidate);
+  expect(unresolved.conflicts).toHaveLength(1);
+  expect(unresolved.conflicts[0]).toMatchObject({
+    type: "content",
+    anchors: [{ kind: "unit", unitId: selectionIds.secondUnit }],
+  });
+  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision))
+    .toThrow(/未解决|冲突/);
+
+  const resolved = resolveDocumentMergeConflict(unresolved, unresolved.conflicts[0].id, "candidate");
+  expect(resolved.document.units[selectionIds.secondUnit].sentenceIds).toEqual([c, b, a]);
+  expect(() => assertDocumentMergePublishable(resolved, resolved.baseRevision)).not.toThrow();
+});
+
 test("document-core 重解析对齐 unit 后本地句子修正与来源修正产生 content 冲突", () => {
   const base = testSelectionTree(randomUUID());
   base.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];

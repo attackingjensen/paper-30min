@@ -64,13 +64,16 @@ function unitSnapshot(tree: DocumentTree, unitId: string) {
     id: unit.id,
     kind: unit.kind,
     sourceAliases: unit.sourceAliases,
+    // 句子按 sentenceIds 阅读顺序比较：重排是来源／本地的真实修改，必须对
+    // 三方合并可见（排序会把重排抹平）。句子内容已剥离 ID，重发 UUID 不误报。
     sentences: unit.sentenceIds.map((sentenceId) => {
       const sentence = tree.sentences[sentenceId];
       return {
         content: sentenceContent(tree, sentenceId),
         sourceAliases: sentence.sourceAliases,
       };
-    }).sort((a, b) => canonical(a).localeCompare(canonical(b))),
+    }),
+    // atom 在快照中无固有顺序（其阅读顺序已由句子内容表达），排序保证确定性比较。
     atoms: Object.values(tree.atoms)
       .filter((atom) => atom.unitId === unitId)
       .sort((a, b) => canonical(atomContent(a)).localeCompare(canonical(atomContent(b))))
