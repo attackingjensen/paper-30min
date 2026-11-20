@@ -5,7 +5,6 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
-import { expectAppReady } from "./electron-launch";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -41,7 +40,7 @@ async function launch() {
   desktopProcess = desktop.process();
   page = await desktop.firstWindow();
   page.on("pageerror", (e) => errors.push(e.message));
-  await expectAppReady(page);
+  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible({ timeout: 30000 });
 }
 
 async function closeDesktopForCleanup() {

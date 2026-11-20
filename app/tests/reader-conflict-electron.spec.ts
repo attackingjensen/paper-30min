@@ -9,7 +9,6 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
-import { expectAppReady } from "./electron-launch";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -109,7 +108,7 @@ async function launch() {
     const url = request.url();
     if (/^https?:/i.test(url)) remotePageRequests.push(url);
   });
-  await expectAppReady(page);
+  await expect(page.getByRole("heading", { name: "Paper30Min" })).toBeVisible({ timeout: 30000 });
 }
 
 async function closeDesktopForCleanup() {
