@@ -337,14 +337,14 @@ async function arxivUpdateNetworkCommand(
 /** 候选结果经 IPC：剥离资产字节，保留树、changeset、冲突与警告。 */
 async function arxivCandidateCommand(
   run: Promise<
-    | { ok: true; candidate: DocumentMergeCandidate; warnings: ImportDiagnostic[] }
+    | { ok: true; outcome: "candidate"; candidate: DocumentMergeCandidate; warnings: ImportDiagnostic[] }
     | { ok: true; outcome: "reused"; sourceSnapshotId: string; warnings: ImportDiagnostic[] }
     | { ok: false; diagnostic: ImportDiagnostic }
   >,
 ): Promise<ArxivUpdateCandidateCommandResult> {
   const result = await run;
   if (!result.ok) return result;
-  if ("outcome" in result)
+  if (result.outcome === "reused")
     return { ok: true, outcome: "reused", sourceSnapshotId: result.sourceSnapshotId, warnings: result.warnings };
   return { ok: true, outcome: "candidate", candidate: candidateSummary(result.candidate), warnings: result.warnings };
 }

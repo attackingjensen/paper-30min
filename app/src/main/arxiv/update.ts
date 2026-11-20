@@ -110,7 +110,7 @@ function candidateIdentity(seed: string): string {
 }
 
 export type ArxivUpdateCandidateResult =
-  | { ok: true; candidate: DocumentMergeCandidate; warnings: ImportDiagnostic[] }
+  | { ok: true; outcome: "candidate"; candidate: DocumentMergeCandidate; warnings: ImportDiagnostic[] }
   | { ok: false; diagnostic: ImportDiagnostic };
 
 /** 快照 → 三方合并候选（SPEC §8.2/§8.4/§8.5 共用尾段）：离线转换后交由
@@ -134,6 +134,7 @@ async function mergeCandidateFromSnapshot(input: {
     });
     return {
       ok: true,
+      outcome: "candidate",
       candidate: {
         ...candidate,
         metadata: {

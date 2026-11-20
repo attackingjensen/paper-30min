@@ -16,6 +16,9 @@ import { createHash } from "node:crypto";
 import type {
   ArxivImportCommandResult,
   ArxivPdfFallbackCommandResult,
+  ArxivUpdateCandidateCommandResult,
+  ArxivUpdateCheckCommandResult,
+  ArxivUpdatePublishCommandResult,
   CoreCommand,
   ProjectCoreSnapshot,
 } from "../src/shared/contracts";
@@ -413,4 +416,171 @@ test("arxiv-import 真实 Electron 整体搬迁后快照、current 与资产按�
   }
   const fig1 = tree.blocks.find((block) => block.kind === "figure" && block.asset?.sha256 === createHash("sha256").update(PNG1).digest("hex"));
   expect(fig1).toBeDefined();
+});
+
+/** v2 LaTeX 文档：同一 base ID，citation 元数据固定 v2，结论句有真实内容变化。 */
+function latexmlV2(): string {
+  return latexmlDocument()
+    .replace('content="2401.01234v1"', 'content="2401.01234v2"')
+    .replace("We conclude with", "We now conclude with");
+}
+
+function serveV2() {
+  routes.set(`/abs/${ID}`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" });
+  routes.set(`/abs/${ID}v2`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" });
+  routes.set(`/html/${ID}v2`, { bytes: Buffer.from(latexmlV2()), mime: "text/html" });
+}
+
+const checkUpdate = (root: string) =>
+  invoke<ArxivUpdateCheckCommandResult>({ type: "coreArxivCheckUpdate", root, operationId: `op-${++operationSeq}`, baseUrl });
+const updateCandidate = (root: string, version: number, baseRevision: string) =>
+  invoke<ArxivUpdateCandidateCommandResult>({
+    type: "coreArxivUpdateCandidate",
+    root,
+    reference: { baseId: ID, version, canonicalId: `${ID}v${version}` },
+    baseRevision,
+    operationId: `op-${++operationSeq}`,
+    baseUrl,
+  });
+const refetch = (root: string, baseRevision: string) =>
+  invoke<ArxivUpdateCandidateCommandResult>({ type: "coreArxivRefetch", root, baseRevision, operationId: `op-${++operationSeq}`, baseUrl });
+const reconvert = (root: string, sourceSnapshotId: string, baseRevision: string) =>
+  invoke<ArxivUpdateCandidateCommandResult>({ type: "coreArxivReconvert", root, sourceSnapshotId, baseRevision });
+const publishCandidate = (root: string, sourceSnapshotId: string, baseRevision: string, resolutions?: Array<{ conflictId: string; choice: "current" | "candidate" }>) =>
+  invoke<ArxivUpdatePublishCommandResult>({
+    type: "coreArxivPublishCandidate",
+    root,
+    sourceSnapshotId,
+    baseRevision,
+    ...(resolutions === undefined ? {} : { resolutions }),
+  });
+
+test("arxiv-import 真实 Electron 检查新版只读 abs，候选确认发布前 current 不变，stale base 拒绝", async () => {
+  const imported = await importPaper("更新检查", ID);
+  expect(imported.ok).toBe(true);
+  if (!imported.ok) return;
+  serveV2();
+
+  // 检查新版：只有 abs 请求，无 HTML/资产/PDF 下载，无候选或 current 变化。
+  const requestsBefore = requests.length;
+  const checked = await checkUpdate(imported.root);
+  expect(checked.ok).toBe(true);
+  if (!checked.ok) return;
+  expect(checked.status).toBe("update-available");
+  if (checked.status !== "update-available") return;
+  expect(checked.latest.version).toBe(2);
+  expect(requests.slice(requestsBefore).every((url) => url.startsWith("/abs/"))).toBe(true);
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+  expect(await fs.readdir(path.join(imported.root, "sources"))).toHaveLength(1);
+
+  // 获取候选：新版快照落盘、三方合并摘要经 IPC 返回；current 未确认前不变。
+  const candidate = await updateCandidate(imported.root, 2, imported.revision.revisionId);
+  expect(candidate.ok, JSON.stringify(candidate)).toBe(true);
+  if (!candidate.ok || candidate.outcome !== "candidate") return;
+  expect(candidate.candidate.baseRevision).toBe(imported.revision.revisionId);
+  expect(candidate.candidate.conflicts).toEqual([]);
+  expect(treeTexts(candidate.candidate.document).join(" ")).toContain("We now conclude with");
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+  expect(await fs.readdir(path.join(imported.root, "sources"))).toHaveLength(2);
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+
+  // stale base：current 已前进（以重转换发布模拟另一动作）后旧基线发布被拒绝。
+  const advanced = await reconvert(imported.root, imported.revision.sourceSnapshotId, imported.revision.revisionId);
+  expect(advanced.ok).toBe(true);
+  if (!advanced.ok || advanced.outcome !== "candidate") return;
+  const ahead = await publishCandidate(imported.root, imported.revision.sourceSnapshotId, imported.revision.revisionId);
+  expect(ahead.ok).toBe(true);
+  if (!ahead.ok) return;
+  const stale = await publishCandidate(imported.root, candidate.candidate.sourceSnapshotId, imported.revision.revisionId);
+  expect(stale.ok).toBe(false);
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(ahead.revision.revisionId);
+
+  // 以最新 current 重建候选并确认发布：来源 v2 内容进入 current。
+  const fresh = await updateCandidate(imported.root, 2, ahead.revision.revisionId);
+  expect(fresh.ok).toBe(true);
+  if (!fresh.ok || fresh.outcome !== "candidate") return;
+  const published = await publishCandidate(imported.root, fresh.candidate.sourceSnapshotId, ahead.revision.revisionId);
+  expect(published.ok, JSON.stringify(published)).toBe(true);
+  if (!published.ok) return;
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
+  const finalTree = await readDocument(imported.root, published.revision.revisionId);
+  expect(treeTexts(finalTree).join(" ")).toContain("We now conclude with");
+});
+
+test("arxiv-import 真实 Electron 同版重取相同字节复用，离线重转换断网可用且不覆盖 current", async () => {
+  const imported = await importPaper("同版与离线", ID);
+  expect(imported.ok).toBe(true);
+  if (!imported.ok) return;
+
+  // 同版重取：字节一致 → reused，零新快照/候选，current 不变。
+  const reused = await refetch(imported.root, imported.revision.revisionId);
+  expect(reused.ok, JSON.stringify(reused)).toBe(true);
+  if (!reused.ok) return;
+  expect(reused.outcome).toBe("reused");
+  if (reused.outcome !== "reused") return;
+  expect(reused.sourceSnapshotId).toBe(imported.revision.sourceSnapshotId);
+  expect(await fs.readdir(path.join(imported.root, "sources"))).toHaveLength(1);
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+
+  // 断网后离线重转换：候选摘要经 IPC 返回，全程零网络请求。
+  const requestsBefore = requests.length;
+  await stopServer();
+  const offline = await reconvert(imported.root, imported.revision.sourceSnapshotId, imported.revision.revisionId);
+  expect(offline.ok, JSON.stringify(offline)).toBe(true);
+  if (!offline.ok || offline.outcome !== "candidate") return;
+  expect(offline.candidate.conflicts).toEqual([]);
+  expect(requests.length).toBe(requestsBefore);
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+
+  // 确认发布同样离线完成；正文内容不变（同一快照与转换器）。
+  const published = await publishCandidate(imported.root, imported.revision.sourceSnapshotId, imported.revision.revisionId);
+  expect(published.ok, JSON.stringify(published)).toBe(true);
+  if (!published.ok) return;
+  expect(published.revision.revisionId).toBe(offline.candidate.revisionId);
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
+  const before = await readDocument(imported.root, imported.revision.revisionId);
+  const after = await readDocument(imported.root, published.revision.revisionId);
+  expect([...treeTexts(after)].sort()).toEqual([...treeTexts(before)].sort());
+  expect(requests.length).toBe(requestsBefore);
+});
+
+test("arxiv-import 真实 Electron 同版异字节新快照候选，撤稿新版如实报告不产生候选", async () => {
+  const imported = await importPaper("异字节与撤稿", ID);
+  expect(imported.ok).toBe(true);
+  if (!imported.ok) return;
+
+  // 同版 HTML 字节变化（仅注释）：新快照 + 无内容变化候选，旧快照与 current 保留。
+  routes.set(HTML_PATH, { bytes: Buffer.from(latexmlDocument().replace("</head>", "<!-- refreshed --></head>")), mime: "text/html" });
+  const requestsBeforeRefetch = requests.length;
+  const refetched = await refetch(imported.root, imported.revision.revisionId);
+  expect(refetched.ok, JSON.stringify(refetched)).toBe(true);
+  if (!refetched.ok) return;
+  expect(refetched.outcome, JSON.stringify(requests.slice(requestsBeforeRefetch))).toBe("candidate");
+  if (refetched.outcome !== "candidate") return;
+  // 重取确实再次请求了 HTML（不是复用旧响应）。
+  expect(requests.slice(requestsBeforeRefetch)).toContain(HTML_PATH);
+  expect(refetched.candidate.sourceSnapshotId).not.toBe(imported.revision.sourceSnapshotId);
+  expect(refetched.candidate.changeset.changes.some((entry) =>
+    entry.status === "changed" || entry.status === "added" || entry.status === "removed")).toBe(false);
+  expect(await fs.readdir(path.join(imported.root, "sources"))).toHaveLength(2);
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
+
+  // 检查更新不比较 HTML：同版字节变化仍报告 up-to-date。
+  const sameVersion = await checkUpdate(imported.root);
+  expect(sameVersion.ok).toBe(true);
+  if (sameVersion.ok) expect(sameVersion.status).toBe("up-to-date");
+
+  // 撤稿新版：检查报告 withdrawn；显式获取候选被拒绝，不产生空正文或自动采用上一版。
+  routes.set(`/abs/${ID}`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2], withdrawn: [2] })), mime: "text/html" });
+  routes.set(`/abs/${ID}v2`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2], withdrawn: [2] })), mime: "text/html" });
+  routes.set(`/html/${ID}v2`, { bytes: Buffer.from(latexmlV2()), mime: "text/html" });
+  const withdrawn = await checkUpdate(imported.root);
+  expect(withdrawn.ok).toBe(true);
+  if (!withdrawn.ok) return;
+  expect(withdrawn.status).toBe("withdrawn");
+  const blocked = await updateCandidate(imported.root, 2, imported.revision.revisionId);
+  expect(blocked.ok).toBe(false);
+  if (!blocked.ok) expect(blocked.diagnostic.code).toBe("arxiv-version-withdrawn");
+  expect(requests.some((url) => url === `/html/${ID}v2`)).toBe(false);
+  expect((await open(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 });
