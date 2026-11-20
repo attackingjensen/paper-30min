@@ -153,13 +153,23 @@ async function commitNext(
 const scrollTop = () => page.locator(".main").evaluate((element) => element.scrollTop);
 
 async function scrollToUnit(unitId: string) {
-  await page.locator(`.full-reader [data-unit-id="${unitId}"]`).evaluate((element) => {
-    const container = document.querySelector(".main")!;
-    container.scrollTo({
-      top: container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top,
-      behavior: "instant",
+  // 布局未稳定（字体/公式度量）时一次 scrollTo 可能被钳制或随后漂移：
+  // 重复对齐直到目标真的落在容器顶部附近，再等捕获防抖落盘。
+  const target = page.locator(`.full-reader [data-unit-id="${unitId}"]`);
+  await expect(target).toBeAttached();
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const settled = await target.evaluate((element) => {
+      const container = document.querySelector(".main")!;
+      const rect = element.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      if (Math.abs(rect) > 2) {
+        container.scrollTo({ top: container.scrollTop + rect, behavior: "instant" });
+        return false;
+      }
+      return container.scrollTop > 0;
     });
-  });
+    if (settled) break;
+    await page.waitForTimeout(100);
+  }
   // 等待捕获防抖落盘。
   await page.waitForTimeout(400);
 }
@@ -280,7 +290,17 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
   await expect(page.locator(`.full-reader [data-unit-id="${target}"]`)).toBeInViewport({ timeout: 15000 });
   const box = (await page.locator(".main").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, -100000);
-  // 轮询等待滚轮生效：恢复窗口内的兜底核对不得把位置拉回。
-  await expect.poll(scrollTop, { timeout: 10000 }).toBe(0);
+  // 离屏窗口输入派发可能丢帧：滚轮后轮询，未生效则重发；
+  // 一旦生效，恢复窗口内的兜底核对不得把位置拉回。
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await page.mouse.wheel(0, -100000);
+    try {
+      await expect.poll(scrollTop, { timeout: 2000 }).toBe(0);
+      break;
+    } catch {
+      if (attempt === 4) throw new Error("滚轮未生效或恢复覆盖了用户位置");
+    }
+  }
+  await page.waitForTimeout(1200);
+  expect(await scrollTop()).toBe(0);
 });

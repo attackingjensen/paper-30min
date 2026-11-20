@@ -278,9 +278,14 @@ test("reader 冲突宿主：发布前 current 被推进时拒绝，解决结果�
   const host = reader.locator(".conflict-host");
   await expect(host).toBeVisible({ timeout: 30000 });
   const items = host.locator(".conflict-item");
+  await expect(items.first()).toBeVisible();
   const count = await items.count();
-  for (let index = 0; index < count; index++)
+  expect(count).toBeGreaterThan(0);
+  // 逐项解决并等待落盘呈现：慢 runner 上不得把未消费的点击当成已解决。
+  for (let index = 0; index < count; index++) {
     await items.nth(index).getByRole("button", { name: "保留 current" }).click();
+    await expect(items.nth(index)).toHaveClass(/resolved/);
+  }
   await expect(host.getByRole("button", { name: "发布候选为新 current" })).toBeEnabled();
   // 另一操作经 IPC 推进 current。
   const tree = await invoke<DocumentTree>({ type: "coreReadDocument", root, revisionId: edited.revisionId, tree: "document" });

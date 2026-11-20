@@ -454,6 +454,10 @@ export function FullReader({
   const restoreEpoch = useRef(0);
   // 用户真实滚动意图（wheel/触摸/键盘）：程序化恢复滚动不算。
   const userScrolled = useRef(false);
+  // 程序化滚动归属：恢复/resize/定位的 scrollTo 在 scroll 事件里不算用户意图；
+  // 无法归属的滚动（真实滚轮/拖动滚动条）一律让恢复让位（SPEC-reader §5.6）。
+  const programmaticScrollPending = useRef(0);
+  const programmaticScrollTop = useRef<number | null>(null);
   const savedRef = useRef(savedPosition);
   savedRef.current = savedPosition;
   const onPositionRef = useRef(onPosition);
@@ -639,8 +643,24 @@ export function FullReader({
     const markUserScroll = () => {
       userScrolled.current = true;
       restoreEpoch.current++;
+      programmaticScrollPending.current = 0;
+      programmaticScrollTop.current = null;
     };
     const onScroll = () => {
+      // 程序化滚动（恢复/resize/定位）按待消费计数与目标位置归属；
+      // 其余滚动事件视为用户意图，进行中的恢复立即让位。
+      if (
+        programmaticScrollPending.current > 0 &&
+        (programmaticScrollTop.current === null ||
+          Math.abs(container.scrollTop - programmaticScrollTop.current) <= 2)
+      ) {
+        programmaticScrollPending.current--;
+        if (programmaticScrollPending.current === 0) programmaticScrollTop.current = null;
+      } else {
+        programmaticScrollPending.current = 0;
+        programmaticScrollTop.current = null;
+        markUserScroll();
+      }
       clearTimeout(timer);
       timer = setTimeout(() => {
         const position = capturePosition();
@@ -712,39 +732,39 @@ export function FullReader({
         ? article.querySelector<HTMLElement>(positionAnchorSelector(target))
         : null;
       if (target && !element) return;
-      const top = element
-        ? container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - offset
-        : 0;
-      container.scrollTo({ top: Math.max(0, top), behavior: "instant" });
+      const top = Math.max(
+        0,
+        element
+          ? container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - offset
+          : 0,
+      );
+      if (Math.abs(container.scrollTop - top) <= 1) return;
+      programmaticScrollPending.current++;
+      programmaticScrollTop.current = top;
+      container.scrollTo({ top, behavior: "instant" });
     };
-    (async () => {
-      try {
-        await document.fonts.ready;
-      } catch {
-        // 字体接口不可用时仍按当前布局恢复。
-      }
-      if (disposed || epochAtStart !== restoreEpoch.current) return;
-      align();
-      // 图片/公式懒加载与 KaTeX 字体度量都会改变高度：尺寸与子树变化
-      // 都按同一锚点重对齐；用户滚动即整体失效。
-      resizeObserver = new ResizeObserver(align);
-      resizeObserver.observe(article);
-      mutationObserver = new MutationObserver(align);
-      mutationObserver.observe(article, { childList: true, subtree: true, characterData: true });
-      timers.push(window.setTimeout(() => {
-        resizeObserver?.disconnect();
-        resizeObserver = null;
-        mutationObserver?.disconnect();
-        mutationObserver = null;
-      }, 2000));
-      // 兜底核对：字体度量/懒加载可能在 observer 静默期后仍改变上方高度；
-      // 周期性按同一锚点核对，仍受代际与用户滚动约束。
-      interval = window.setInterval(align, 400);
-      timers.push(window.setTimeout(() => {
-        if (interval !== null) window.clearInterval(interval);
-        interval = null;
-      }, 8000));
-    })();
+    // 首帧同步对齐：不等 fonts.ready。离屏/隐藏窗口帧生成可能迟到，
+    // 恢复必须先落在当前布局上，字体度量漂移由 observer/兜底核对修正。
+    align();
+    // 图片/公式懒加载与 KaTeX 字体度量都会改变高度：尺寸与子树变化
+    // 都按同一锚点重对齐；用户滚动即整体失效。
+    resizeObserver = new ResizeObserver(align);
+    resizeObserver.observe(article);
+    mutationObserver = new MutationObserver(align);
+    mutationObserver.observe(article, { childList: true, subtree: true, characterData: true });
+    timers.push(window.setTimeout(() => {
+      resizeObserver?.disconnect();
+      resizeObserver = null;
+      mutationObserver?.disconnect();
+      mutationObserver = null;
+    }, 2000));
+    // 兜底核对：字体度量/懒加载可能在 observer 静默期后仍改变上方高度；
+    // 周期性按同一锚点核对，仍受代际与用户滚动约束。
+    interval = window.setInterval(align, 400);
+    timers.push(window.setTimeout(() => {
+      if (interval !== null) window.clearInterval(interval);
+      interval = null;
+    }, 8000));
     return () => {
       disposed = true;
       for (const timer of timers) window.clearTimeout(timer);
@@ -768,11 +788,14 @@ export function FullReader({
         if (!position || !container || !article) return;
         const element = article.querySelector<HTMLElement>(positionAnchorSelector(position.anchor));
         if (!element) return;
-        container.scrollTop = Math.max(
+        const top = Math.max(
           0,
           container.scrollTop + element.getBoundingClientRect().top -
             container.getBoundingClientRect().top - position.offsetWithinAnchor,
         );
+        programmaticScrollPending.current++;
+        programmaticScrollTop.current = top;
+        container.scrollTo({ top, behavior: "instant" });
       }, 150);
     };
     window.addEventListener("resize", onResize);
@@ -823,10 +846,13 @@ export function FullReader({
     const container = article?.parentElement;
     const target = article?.querySelector<HTMLElement>(`[data-block-id="${blockId}"]`);
     if (!article || !container || !target) return;
-    container.scrollTo({
-      top: container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - 24,
-      behavior: "instant",
-    });
+    const top = Math.max(
+      0,
+      container.scrollTop + target.getBoundingClientRect().top - container.getBoundingClientRect().top - 24,
+    );
+    programmaticScrollPending.current++;
+    programmaticScrollTop.current = top;
+    container.scrollTo({ top, behavior: "instant" });
     target.classList.add("reader-jump-target");
     target.setAttribute("tabindex", "-1");
     target.focus({ preventScroll: true });
