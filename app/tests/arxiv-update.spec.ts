@@ -1,6 +1,6 @@
-// SPEC-arxiv-import §8 契约回归：新版本检查只读 abs；更新候选、同版重取与
-// 离线重新转换形成三方合并候选；确认发布前 current 不变，stale base 拒绝。
-// 受控 transport + 真实临时工程；离线动作注入必定失败的 transport 探针。
+// SPEC-arxiv-import §8 契约回归（arxiv-import 更新编排）：新版本检查只读 abs；
+// 更新候选、同版重取与离线重新转换形成三方合并候选；确认发布前 current 不变，
+// stale base 拒绝。受控 transport + 真实临时工程；离线动作以无 transport 签名与必失败探针证明不触网。
 import { test, expect } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -138,7 +138,7 @@ function sentenceTexts(tree: Awaited<ReturnType<typeof readRevisionDocument>>): 
       tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : ""))));
 }
 
-test("arxiv-update 检查新版只读 abs：报告新版本，不下载 HTML、不生成候选或推进 current", async () => {
+test("arxiv-import 更新检查只读 abs：报告新版本，不下载 HTML、不生成候选或推进 current", async () => {
   const imported = await importedProject("检查新版");
   const routes = fullRoutes();
   routes[absUrl(null)] = { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" };
@@ -161,7 +161,7 @@ test("arxiv-update 检查新版只读 abs：报告新版本，不下载 HTML、�
   expect(await fs.readdir(path.join(imported.root, "paper", "revisions"))).toEqual([imported.revision.revisionId]);
 });
 
-test("arxiv-update 已经最新与无法检查如实区分；同版远端 HTML 变化不冒充新版本", async () => {
+test("arxiv-import 更新检查已经最新与无法检查如实区分；同版远端 HTML 变化不冒充新版本", async () => {
   const imported = await importedProject("已经最新");
   const routes = fullRoutes();
   // 同版 HTML 字节已变化：检查更新只报告论文版本状态，不比较 HTML。
@@ -179,7 +179,7 @@ test("arxiv-update 已经最新与无法检查如实区分；同版远端 HTML �
   expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 });
 
-test("arxiv-update 撤稿新版如实报告 withdrawn，不产生候选或自动采用上一版", async () => {
+test("arxiv-import 更新检查撤稿新版如实报告 withdrawn，不产生候选或自动采用上一版", async () => {
   const imported = await importedProject("撤稿新版");
   const routes = fullRoutes();
   routes[absUrl(null)] = { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2], withdrawn: [2] })), mime: "text/html" };
@@ -195,7 +195,7 @@ test("arxiv-update 撤稿新版如实报告 withdrawn，不产生候选或自动
   expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 });
 
-test("arxiv-update 新版候选：三方合并保留本地修正，确认发布前 current 不变，stale base 拒绝", async () => {
+test("arxiv-import 更新候选：三方合并保留本地修正，确认发布前 current 不变，stale base 拒绝", async () => {
   const imported = await importedProject("新版候选");
   const edited = await localEdit(imported.root, imported.revision.revisionId, " local note");
   const routes = fullRoutes();
@@ -261,7 +261,7 @@ test("arxiv-update 新版候选：三方合并保留本地修正，确认发布�
   expect(finalTexts).toContain("We now conclude with");
 });
 
-test("arxiv-update 更新候选拒绝其他 base ID 与撤稿版本，不静默换来源", async () => {
+test("arxiv-import 更新候选拒绝其他 base ID 与撤稿版本，不静默换来源", async () => {
   const imported = await importedProject("边界拒绝");
   const routes = fullRoutes();
   routes[absUrl(2)] = { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2], withdrawn: [2] })), mime: "text/html" };
@@ -293,7 +293,7 @@ test("arxiv-update 更新候选拒绝其他 base ID 与撤稿版本，不静默�
   expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 });
 
-test("arxiv-update 同版重取：相同字节复用快照，不制造重复快照或候选", async () => {
+test("arxiv-import 同版重取：相同字节复用快照，不制造重复快照或候选", async () => {
   const imported = await importedProject("同版复用");
   const { calls, transport } = controlledTransport(fullRoutes());
   const refetched = await refetchArxivSnapshot({
@@ -313,7 +313,7 @@ test("arxiv-update 同版重取：相同字节复用快照，不制造重复快�
   expect(calls.some((url) => url === htmlUrl(1))).toBe(true);
 });
 
-test("arxiv-update 同版重取：字节不同新建快照与候选，规范正文相同则 changeset 无内容变化", async () => {
+test("arxiv-import 同版重取：字节不同新建快照与候选，规范正文相同则 changeset 无内容变化", async () => {
   const imported = await importedProject("同版异字节");
   const routes = fullRoutes();
   // 仅 HTML 注释变化：来源字节不同，规范正文完全相同。
@@ -355,7 +355,7 @@ test("arxiv-update 同版重取：字节不同新建快照与候选，规范正�
   expect([...sentenceTexts(after)].sort()).toEqual([...sentenceTexts(before)].sort());
 });
 
-test("arxiv-update 离线重新转换：不触网、不伪造 source-base，确认前 current 不变", async () => {
+test("arxiv-import 离线重新转换：不触网、不伪造 source-base，确认前 current 不变", async () => {
   const imported = await importedProject("离线重转换");
   const edited = await localEdit(imported.root, imported.revision.revisionId, " offline keep");
   const reconverted = await reconvertArxivCandidate({
@@ -397,7 +397,7 @@ test("arxiv-update 离线重新转换：不触网、不伪造 source-base，确�
   expect((await openProject(imported.root)).manifest.paper.currentRevision).toBe(published.revision.revisionId);
 });
 
-test("arxiv-update 冲突候选未解决拒绝发布，显式选择后发布，旧 current 全程可读", async () => {
+test("arxiv-import 更新冲突候选未解决拒绝发布，显式选择后发布，旧 current 全程可读", async () => {
   const imported = await importedProject("冲突候选");
   // 本地与来源改同一句：摘要 unit 双方不同修改 → content 冲突。
   const revision = await readRevision(imported.root, imported.revision.revisionId);
@@ -460,7 +460,7 @@ test("arxiv-update 冲突候选未解决拒绝发布，显式选择后发布，�
   expect(finalTexts).not.toContain("local rewrite");
 });
 
-test("arxiv-update PDF 回退工程按谱系参与检查与更新候选，baseId 与 paper.id 不变", async () => {
+test("arxiv-import PDF 回退工程按谱系参与更新检查与候选，baseId 与 paper.id 不变", async () => {
   // 构造回退后的谱系现场：pdf（arXiv 事实）→ pdf-parse → current。
   const { publishSourceSnapshot } = await import("../src/main/project-core");
   const { testDocumentTree } = await import("./fixtures/document-tree");
@@ -522,7 +522,7 @@ test("arxiv-update PDF 回退工程按谱系参与检查与更新候选，baseId
   expect(calls.some((url) => url.includes("/pdf/"))).toBe(false);
 });
 
-test("arxiv-update 首次导入未完成时拒绝更新动作，不绕过恢复流程", async () => {
+test("arxiv-import 首次导入未完成时拒绝更新动作，不绕过恢复流程", async () => {
   const { createProject } = await import("../src/main/project-core");
   const created = await createProject({ parent: sandbox, name: "无正文" });
   const probe = forbiddenTransport();
