@@ -14,13 +14,15 @@ const base = (() => {
 // new file, so that output is kept. Any other failure is null, and null never reads as clean.
 // 大基线变更（如全仓格式化）的 unified=0 diff 可超过默认 1MiB 管道缓冲；ENOBUFS 必须失败而非误读为干净。
 const git = (args, { diffExit = false } = {}) => {
-  try { return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }
-  catch (e) { return diffExit && e.status === 1 && typeof e.stdout === "string" ? e.stdout : null; }
+  try {
     return execFileSync("git", args, {
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
     });
+  } catch (e) {
+    return diffExit && e.status === 1 && typeof e.stdout === "string" ? e.stdout : null;
+  }
 };
 const bail = (msg) => { console.error("floor-guard: " + msg); process.exit(2); };
 
@@ -183,7 +185,7 @@ for (const f of deleted)
   if (isTest(f) && !retirementWaivers.includes(f)) flag("test-deleted", f, "file deleted");
 for (const { file, text } of removed) {
   if (isTest(file) && !deleted.includes(file) && !retirementWaivers.includes(file)
-      && /\b(expect|assert|should)\b/.test(text)) {
+      && /\b(expect|assert|should)\b/.test(text) && !reflowedFiles.has(file)) {
     flag("assertion-removed", file, text);
   }
 }
