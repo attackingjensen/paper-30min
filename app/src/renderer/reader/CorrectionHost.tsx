@@ -12,6 +12,8 @@ import {
 import type { CorrectionPreview } from "../../shared/document/correction";
 import { summarizeCorrectionChangeset } from "../../shared/document/correction";
 import { getCorrectionDraft, setCorrectionDraft } from "./correction-draft";
+import { Button } from "../ui/Button";
+import { InlineMessage } from "../ui/Feedback";
 
 const desktop = window.desktop;
 
@@ -85,17 +87,17 @@ function AtomEditor({
       <p className="correction-atom-kind">原子类型：{atom.kind}（类型不可在此改变）</p>
       <label>
         显示文本（占位）
-        <input value={text} onChange={(e) => setText(e.target.value)} />
+        <input className="ui-input" value={text} onChange={(e) => setText(e.target.value)} />
       </label>
       {(atom.kind === "math" || atom.kind === "inline-object") && (
         <>
           <label>
             来源表示
-            <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={3} />
+            <textarea className="ui-input" value={value} onChange={(e) => setValue(e.target.value)} rows={3} />
           </label>
           <label>
             格式
-            <select value={format} onChange={(e) => setFormat(e.target.value as typeof format)}>
+            <select className="ui-input" value={format} onChange={(e) => setFormat(e.target.value as typeof format)}>
               <option value="latex">latex</option>
               <option value="mathml">mathml</option>
               <option value="text">text</option>
@@ -106,7 +108,7 @@ function AtomEditor({
       {atom.kind === "link" && (
         <label>
           链接地址（https/http/mailto）
-          <input value={value} onChange={(e) => setValue(e.target.value)} />
+          <input className="ui-input" value={value} onChange={(e) => setValue(e.target.value)} />
         </label>
       )}
       {(atom.kind === "citation" || atom.kind === "cross-reference" || atom.kind === "footnote-reference") && (
@@ -115,17 +117,17 @@ function AtomEditor({
         </p>
       )}
       {error && (
-        <p className="correction-error" role="alert">
+        <InlineMessage variant="error" className="correction-error">
           {error}
-        </p>
+        </InlineMessage>
       )}
       <div className="correction-actions">
-        <button type="button" className="primary" onClick={submit}>
+        <Button type="button" variant="primary" onClick={submit}>
           保存原子修正
-        </button>
-        <button type="button" onClick={onCancel}>
+        </Button>
+        <Button type="button" onClick={onCancel}>
           取消
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -194,9 +196,9 @@ export function CorrectionHost({
     return (
       <section className="correction-host" role="alert">
         <p>修正目标单元已不存在（可能已被删除）。请关闭修正模式重新选择。</p>
-        <button type="button" onClick={onClose}>
+        <Button type="button" onClick={onClose}>
           关闭
-        </button>
+        </Button>
       </section>
     );
   }
@@ -294,19 +296,19 @@ export function CorrectionHost({
         <h2>
           修正单元 <code>{unitId.slice(0, 8)}</code>
         </h2>
-        <button type="button" onClick={cancel}>
+        <Button type="button" onClick={cancel}>
           取消修正
-        </button>
+        </Button>
       </header>
       {baselineBroken && (
-        <p className="correction-error" role="alert">
+        <InlineMessage variant="error" className="correction-error">
           current 基线已变化：草稿已保留，但不能发布。请关闭后重新读取正文，再决定是否重新应用修正。
-        </p>
+        </InlineMessage>
       )}
       <label className="correction-text-label">
         单元文本（atom 占位必须按原顺序保留）
         <textarea
-          className="correction-text"
+          className="ui-input correction-text"
           value={text}
           rows={5}
           onChange={(e) => {
@@ -328,9 +330,9 @@ export function CorrectionHost({
             <span className="correction-atom-placeholder" data-atom-id={atom.id}>
               {atom.kind}：{atomPlaceholder(atom)}
             </span>
-            <button type="button" onClick={() => setAtomEditing(atom.id === atomEditing ? null : atom.id)}>
+            <Button type="button" onClick={() => setAtomEditing(atom.id === atomEditing ? null : atom.id)}>
               {atom.id === atomEditing ? "收起" : "修正原子"}
-            </button>
+            </Button>
             {atom.id === atomEditing && (
               <AtomEditor
                 atom={atom}
@@ -349,7 +351,7 @@ export function CorrectionHost({
         ))}
       </div>
       <div className="correction-structure" role="group" aria-label="结构操作">
-        <button
+        <Button
           type="button"
           disabled={atoms.length > 0}
           title={atoms.length > 0 ? "含原子的单元暂不支持拆分" : undefined}
@@ -368,8 +370,8 @@ export function CorrectionHost({
           }}
         >
           按空行拆分为多单元
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           onClick={() => {
             setExtraEdits((edits) => [...edits, { type: "unit-delete", unitId, expected: original }]);
@@ -377,9 +379,9 @@ export function CorrectionHost({
           }}
         >
           删除该单元
-        </button>
+        </Button>
         {extraEdits.length > 0 && (
-          <button
+          <Button
             type="button"
             onClick={() => {
               setExtraEdits([]);
@@ -387,7 +389,7 @@ export function CorrectionHost({
             }}
           >
             清除结构操作
-          </button>
+          </Button>
         )}
       </div>
       {extraEdits.length > 0 && (
@@ -401,17 +403,17 @@ export function CorrectionHost({
         </ul>
       )}
       {error && (
-        <p className="correction-error" role="alert">
+        <InlineMessage variant="error" className="correction-error">
           {error}
-        </p>
+        </InlineMessage>
       )}
       <div className="correction-actions">
-        <button type="button" className="primary" disabled={busy || baselineBroken} onClick={() => void runPreview()}>
+        <Button type="button" variant="primary" disabled={busy || baselineBroken} onClick={() => void runPreview()}>
           预览 changeset
-        </button>
-        <button type="button" disabled={busy || !preview || baselineBroken} onClick={() => void runPublish()}>
+        </Button>
+        <Button type="button" disabled={busy || !preview || baselineBroken} onClick={() => void runPublish()}>
           确认发布新 revision
-        </button>
+        </Button>
       </div>
       {preview && counts && (
         <div className="correction-preview" aria-label="修正预览">

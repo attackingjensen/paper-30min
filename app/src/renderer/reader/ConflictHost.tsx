@@ -6,6 +6,8 @@ import { useMemo, useState } from "react";
 import type { DocumentMergeResult, MergeConflict } from "../../shared/document/merge";
 import type { DocumentTree } from "../../shared/document/tree";
 import type { ArxivUpdatePublishCommandResult } from "../../shared/contracts";
+import { Button } from "../ui/Button";
+import { EmptyState, InlineMessage } from "../ui/Feedback";
 
 const desktop = window.desktop;
 
@@ -123,9 +125,9 @@ function AssetPreview({
         : null;
   if (!asset || typeof asset.path !== "string") {
     return (
-      <p className="conflict-side-empty">
+      <EmptyState className="conflict-side-empty">
         {label}：{snapshotText(value, null)}
-      </p>
+      </EmptyState>
     );
   }
   const src =
@@ -259,23 +261,23 @@ export function ConflictHost({
         <p className="conflict-baseline">
           基线 current <code>{state.baseRevision.slice(0, 8)}</code>；查看与解决冲突不会推进 current。
         </p>
-        <button type="button" onClick={onClose}>
+        <Button type="button" onClick={onClose}>
           返回阅读
-        </button>
+        </Button>
       </header>
-      <p className="conflict-count" role="status">
+      <InlineMessage className="conflict-count">
         冲突 {ordered.length} 项，未解决 <strong>{unresolved.length}</strong> 项。
         {unresolved.length > 0 ? "全部逐项解决后才能发布。" : "全部已解决，可以预览并发布。"}
-      </p>
+      </InlineMessage>
       {baselineBroken && (
-        <p className="conflict-error" role="alert">
+        <InlineMessage variant="error" className="conflict-error">
           current 已被另一操作推进：已选解决结果保留，但不能套用到新基线。请基于新 current 重新构建候选。
-        </p>
+        </InlineMessage>
       )}
       {error && (
-        <p className="conflict-error" role="alert">
+        <InlineMessage variant="error" className="conflict-error">
           {error}
-        </p>
+        </InlineMessage>
       )}
       <ol className="conflict-list">
         {ordered.map((conflict) => {
@@ -323,42 +325,46 @@ export function ConflictHost({
                 />
               </div>
               <div className="conflict-actions" role="group" aria-label={`解决冲突 ${conflict.id}`}>
-                <button
+                <Button
                   type="button"
                   disabled={busy || choice === "current"}
+                  aria-pressed={choice === "current"}
                   className={choice === "current" ? "selected" : ""}
                   onClick={() => void resolve(conflict.id, "current")}
                 >
                   保留 current
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   disabled={busy || choice === "candidate"}
+                  aria-pressed={choice === "candidate"}
                   className={choice === "candidate" ? "selected" : ""}
                   onClick={() => void resolve(conflict.id, "candidate")}
                 >
                   采用 candidate
-                </button>
+                </Button>
               </div>
             </li>
           );
         })}
       </ol>
       {ordered.length === 0 && (
-        <p className="conflict-empty">候选与 current 无冲突；确认后将按 changeset 发布新 revision。</p>
+        <EmptyState className="conflict-empty">
+          候选与 current 无冲突；确认后将按 changeset 发布新 revision。
+        </EmptyState>
       )}
       <div className="conflict-publish">
-        <button
+        <Button
           type="button"
-          className="primary"
+          variant="primary"
           disabled={busy || unresolved.length > 0 || baselineBroken}
           onClick={() => void publish()}
         >
           发布候选为新 current
-        </button>
-        <button type="button" disabled={busy || unresolved.length > 0} onClick={() => setPreviewOrder(!previewOrder)}>
+        </Button>
+        <Button type="button" disabled={busy || unresolved.length > 0} onClick={() => setPreviewOrder(!previewOrder)}>
           {previewOrder ? "收起阅读流预览" : "预览发布后阅读流"}
-        </button>
+        </Button>
       </div>
       {previewOrder && (
         <div className="conflict-order-preview" aria-label="发布后阅读流预览">

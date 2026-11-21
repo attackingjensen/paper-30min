@@ -202,6 +202,55 @@ test("reader Full 正文经真实 Electron 渲染全部章节、公式、表格�
   await page.screenshot({ path: "test-results/reader-full.png", fullPage: false });
 });
 
+test("reader UI 保持正文排版并复用来源与修正控件语义基线", async () => {
+  const { created } = await complexProject("阅读器 UI 基线工程");
+  await openFolder(created.root);
+  const reader = page.locator(".full-reader");
+  await expect(reader).toBeVisible();
+
+  const sourceToggle = reader.getByRole("button", { name: /^来源与诊断/ });
+  await expect(sourceToggle).toHaveClass(/\bbutton secondary/);
+  const tokens = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const result = { text: resolve("--text"), borderStrong: resolve("--border-strong") };
+    probe.remove();
+    return result;
+  });
+  const typography = await reader.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      color: style.color,
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      maxWidth: style.maxWidth,
+    };
+  });
+  expect(typography).toEqual({ color: tokens.text, fontSize: "15px", lineHeight: "26.25px", maxWidth: "860px" });
+  expect(await sourceToggle.evaluate((element) => getComputedStyle(element).borderTopColor)).toBe(tokens.borderStrong);
+
+  await sourceToggle.click();
+  const allFilter = page.getByRole("button", { name: /^全部 \d+$/ });
+  await expect(allFilter).toHaveClass(/\bbutton/);
+  await expect(allFilter).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".source-panel")).toBeVisible();
+
+  const correctionEntry = reader.locator(".reader-correct-entry").first();
+  await expect(correctionEntry).toHaveClass(/\bbutton/);
+  await correctionEntry.click();
+  const correction = page.locator(".correction-host");
+  await expect(correction).toBeVisible();
+  await expect(correction.locator(".correction-text")).toHaveClass(/ui-input/);
+  await expect(correction.getByRole("button", { name: "预览 changeset", exact: true })).toHaveClass(/\bbutton primary/);
+  await page.screenshot({ path: "test-results/ou7-reader-controls.png", animations: "disabled" });
+});
+
 test("reader 内部引用点击定位目标并聚焦；未解析引用保留文本与警告；外链走受控入口", async () => {
   const { created, ids } = await complexProject("引用工程");
   await openFolder(created.root);

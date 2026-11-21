@@ -25,6 +25,8 @@ import { summarizeVerification, type VerificationRecord } from "../../shared/ver
 import { SourcePanel, sourcePanelFacts } from "./SourcePanel";
 import { CorrectionHost } from "./CorrectionHost";
 import { ConflictHost } from "./ConflictHost";
+import { Button } from "../ui/Button";
+import { EmptyState, InlineMessage } from "../ui/Feedback";
 import type { ArxivUpdateCandidateCommandResult, ArxivUpdateCheckCommandResult } from "../../shared/contracts";
 import type { DocumentMergeResult } from "../../shared/document/merge";
 
@@ -437,14 +439,13 @@ function UnitView({
     <Tag className={`reader-unit reader-unit-${item.unitKind}`} data-unit-id={item.unitId} data-block-id={item.blockId}>
       <UnitBody unit={item} onNavigate={onNavigate} />
       {onCorrect && (
-        <button
-          type="button"
+        <Button
           className="reader-correct-entry"
           aria-label={`修正单元 ${item.unitId.slice(0, 8)}`}
           onClick={() => onCorrect(item.unitId)}
         >
           修正
-        </button>
+        </Button>
       )}
     </Tag>
   );
@@ -984,18 +985,18 @@ export function FullReader({
     }
   }
 
-  if (status === "loading") return <div className="empty">正在读取正文…</div>;
+  if (status === "loading") return <EmptyState>正在读取正文…</EmptyState>;
   if (status === "empty")
     return (
-      <div className="full-reader-empty empty" role="status">
+      <EmptyState className="full-reader-empty" role="status">
         尚未发布正文：工程已创建，但 current 为空。完成导入后这里会显示全文。
-      </div>
+      </EmptyState>
     );
   if (status === "error" || !state)
     return (
-      <div className="full-reader-empty empty" role="alert">
+      <InlineMessage variant="error" className="full-reader-empty empty">
         正文不可读：{message || "revision 损坏或引用不完整。"}请重新导入或恢复工程，不会以旧内容冒充正文。
-      </div>
+      </InlineMessage>
     );
 
   const { projection, facts } = state;
@@ -1012,29 +1013,15 @@ export function FullReader({
         <h1>{facts.title ?? "未命名论文"}</h1>
         {facts.authors.length > 0 && <p className="reader-authors">{facts.authors.join("、")}</p>}
         {facts.canonicalId && <p className="reader-source muted">arXiv {facts.canonicalId}</p>}
-        <button
-          type="button"
-          className="reader-source-toggle"
-          aria-expanded={panelOpen}
-          onClick={() => setPanelOpen(!panelOpen)}
-        >
+        <Button className="reader-source-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen(!panelOpen)}>
           来源与诊断{diagnostics.length > 0 ? `（${diagnostics.length} 条正文诊断）` : ""}
-        </button>
+        </Button>
         {facts.canonicalId && (
-          <button
-            type="button"
-            className="reader-source-toggle"
-            disabled={updateBusy}
-            onClick={() => void checkSourceUpdate()}
-          >
+          <Button className="reader-source-toggle" disabled={updateBusy} onClick={() => void checkSourceUpdate()}>
             检查来源更新
-          </button>
+          </Button>
         )}
-        {updateStatus && (
-          <p className="reader-update-status" role="status">
-            {updateStatus}
-          </p>
-        )}
+        {updateStatus && <InlineMessage className="reader-update-status">{updateStatus}</InlineMessage>}
       </header>
       {panelOpen && (
         <SourcePanel
@@ -1086,13 +1073,11 @@ export function FullReader({
         />
       )}
       {notice && (
-        <div className="reader-position-notice" role="status">
+        <InlineMessage variant="warning" className="reader-position-notice">
           <p>{notice.text}</p>
           {notice.excerpt && <blockquote className="reader-position-excerpt">{notice.excerpt}</blockquote>}
-          <button type="button" onClick={() => setNotice(null)}>
-            知道了
-          </button>
-        </div>
+          <Button onClick={() => setNotice(null)}>知道了</Button>
+        </InlineMessage>
       )}
       {projection.items.map((item, index) => {
         switch (item.kind) {
@@ -1145,12 +1130,8 @@ export function FullReader({
               含不可精确映射内容
             </span>
           )}
-          <button type="button" onClick={() => ask("解释")}>
-            解释
-          </button>
-          <button type="button" onClick={() => ask("提问")}>
-            提问
-          </button>
+          <Button onClick={() => ask("解释")}>解释</Button>
+          <Button onClick={() => ask("提问")}>提问</Button>
         </div>
       )}
     </article>
