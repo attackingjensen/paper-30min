@@ -12,9 +12,15 @@ const base = (() => {
 
 // `git diff --no-index` exits 1 whenever the two sides differ, which is the normal case for a
 // new file, so that output is kept. Any other failure is null, and null never reads as clean.
+// 大基线变更（如全仓格式化）的 unified=0 diff 可超过默认 1MiB 管道缓冲；ENOBUFS 必须失败而非误读为干净。
 const git = (args, { diffExit = false } = {}) => {
   try { return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }
   catch (e) { return diffExit && e.status === 1 && typeof e.stdout === "string" ? e.stdout : null; }
+    return execFileSync("git", args, {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 };
 const bail = (msg) => { console.error("floor-guard: " + msg); process.exit(2); };
 
@@ -77,6 +83,35 @@ for (const line of diff.split("\n")) {
   else if (line.startsWith("-")) removed.push({ file, text: line.slice(1) });
 }
 
+// 排版不变归一：去空白与成对括号、去尾逗号/分号、union 竖线、引号风格与可去转义、
+// JSX 显式空格；markdown 表格对齐填充（:---:）归一为 ---。
+// 按文件比较基线与工作区的归一全文：整文件只是重排时，其行级增删不构成 floor 变更。
+// 归一不能证明语义等价，故只在整文件 canon 相等时豁免；混入真实修改的文件仍逐行扫描。
+const formatCanon = (t) =>
+  t
+    .replace(/\s+/g, "")
+    .replace(/,(?=[)\]}])/g, "")
+    .replace(/;(?=[)\]}])/g, "")
+    .replace(/[()]/g, "")
+    .replace(/\|/g, "")
+    .replace(/\\(["'`])/g, "$1")
+    .replace(/'/g, '"')
+    .replace(/\{""\}/g, "")
+    .replace(/:?-{3,}:?/g, "---");
+const reflowedFiles = new Set();
+for (const f of new Set([...added, ...removed].map((l) => l.file))) {
+  if (!f || addedFiles.has(f) || deleted.includes(f)) continue;
+  const before = git(["show", `${mergeBase}:${f}`]);
+  if (before === null) continue;
+  let after;
+  try {
+    after = readFileSync(f, "utf8");
+  } catch {
+    continue;
+  }
+  if (formatCanon(before) === formatCanon(after)) reflowedFiles.add(f);
+}
+
 const findings = [];
 const flag = (rule, f, text) => {
   if (!ignored(f)) findings.push({ rule, file: f, text: text.trim().slice(0, 120) });
@@ -137,6 +172,7 @@ for (const { file, text } of added) {
       && /^\s*(?:\[{1,2}[^\]]*allowlist[^\]]*\]{1,2}|paths\s*=|regexes\s*=|stopwords\s*=|\[\[rules\]\]|'''.*''',?\s*$)/i.test(text)) {
     flag("new-scan-exclusion", file, text);
   }
+  if (reflowedFiles.has(file)) continue;
   const suppression = text.match(SUPPRESSIONS);
   if (suppression) flag("silenced-checker", file, suppression[0]);
   if (STUBS.test(text)) flag("unfinished-work", file, text);
@@ -180,6 +216,7 @@ const removedRules = removed.filter(l => isConstraints(l.file) && ruleKey(l.text
 const addedRules = added.filter(l => isConstraints(l.file) && ruleKey(l.text) !== null);
 for (const r of removedRules) {
   const a = addedRules.find(x => ruleKey(x.text) === ruleKey(r.text));
+  if (reflowedFiles.has(r.file)) continue;
   if (!a) {
     if (!isException(r.text)) flag("rule-removed", r.file, r.text);
     continue;
