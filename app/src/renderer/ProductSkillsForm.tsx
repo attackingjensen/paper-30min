@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Save, RotateCcw } from "lucide-react";
 import type { ProductSkill } from "../shared/product-skills";
 import { Button, IconButton } from "./ui/Button";
@@ -13,6 +13,7 @@ export function ProductSkillsForm({ onDirty }: { onDirty: (dirty: boolean) => vo
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmReload, setConfirmReload] = useState(false);
+  const reloadTrigger = useRef<HTMLButtonElement | null>(null);
   const current = skills.find((skill) => skill.id === active);
   useEffect(() => {
     let disposed = false;
@@ -76,6 +77,9 @@ export function ProductSkillsForm({ onDirty }: { onDirty: (dirty: boolean) => vo
       setError((error as Error).message);
     } finally {
       setBusy(false);
+      requestAnimationFrame(() => {
+        if (reloadTrigger.current?.isConnected) reloadTrigger.current.focus({ preventScroll: true });
+      });
     }
   }
   return (
@@ -117,7 +121,8 @@ export function ProductSkillsForm({ onDirty }: { onDirty: (dirty: boolean) => vo
         <IconButton
           label="重新载入提示词"
           disabled={busy || !current}
-          onClick={() => {
+          onClick={(event) => {
+            reloadTrigger.current = event.currentTarget;
             if (dirty) setConfirmReload(true);
             else void reload();
           }}

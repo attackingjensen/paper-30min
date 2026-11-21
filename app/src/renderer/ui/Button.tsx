@@ -10,9 +10,14 @@ export function Button({ variant = "secondary", type = "button", className = "",
   return <button type={type} className={`button ${variant} ${className}`.trim()} {...props} />;
 }
 
-export function IconButton({ label, children, ...props }: ButtonProps & { label: string; children: ReactNode }) {
+export function IconButton({
+  label,
+  children,
+  className = "",
+  ...props
+}: ButtonProps & { label: string; children: ReactNode }) {
   return (
-    <Button variant="ghost" className="icon" title={label} aria-label={label} {...props}>
+    <Button variant="ghost" className={`icon ${className}`.trim()} title={label} aria-label={label} {...props}>
       {children}
     </Button>
   );

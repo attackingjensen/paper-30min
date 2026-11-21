@@ -900,7 +900,7 @@
   height: 13px;
   color: var(--accent);
 }
-.settings-icon {
+.button.icon.settings-icon {
   width: 32px;
   height: 32px;
   min-width: 32px;
@@ -1034,6 +1034,11 @@
   }
   .composer-wrap {
     padding: 8px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .process-chevron {
+    transition: none;
   }
 }
 @media (hover: none) {

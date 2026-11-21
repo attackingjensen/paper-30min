@@ -372,6 +372,21 @@ test("多服务模型选择、思考流与会话恢复", async () => {
     await page.getByLabel("Agent 消息").fill("第一轮");
     await page.getByRole("button", { name: "发送消息" }).click();
     await expect(page.locator(".thinking-card")).toBeVisible();
+    const stop = page.getByRole("button", { name: "停止回复", exact: true });
+    const supplement = page.getByRole("button", { name: "补充消息", exact: true });
+    await expect(stop).toBeVisible();
+    const stopGeometry = await stop.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { width: style.width, height: style.height, borderRadius: style.borderTopLeftRadius };
+    });
+    const supplementGeometry = await supplement.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { width: style.width, height: style.height, borderRadius: style.borderTopLeftRadius };
+    });
+    expect(stopGeometry).toEqual(supplementGeometry);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(page.locator(".process-chevron").first()).toHaveCSS("transition-property", "none");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.locator(".thinking-card summary").click();
     await expect(page.locator(".thinking-content")).toHaveText("先核对证据。");
     await page.screenshot({ path: "test-results/thinking-expanded.png" });
@@ -3241,6 +3256,7 @@ test("UI 未保存提示词重新载入与离开经 renderer 确认", async () =
   await reload.click();
   await dialog.getByRole("button", { name: "放弃并重新载入", exact: true }).click();
   await expect(skill).toHaveValue(original);
+  await expect(reload).toBeFocused();
 
   await skill.fill(edited);
   const parsing = page.getByRole("button", { name: "解析模型", exact: true });
@@ -3270,6 +3286,7 @@ test("UI Select 键盘选择与统一浮层语义色", async () => {
   await expect(page.getByLabel("代理地址", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByRole("button", { name: "编辑服务名称", exact: true })).toHaveCSS("width", "32px");
   const api = page.getByLabel("接口协议", { exact: true });
   await expect(api).toHaveValue("openai-completions");
   await api.click();
@@ -3331,6 +3348,35 @@ test("UI Field 原生校验错误与控件关联", async () => {
   await expect(name).toHaveAttribute("aria-describedby", new RegExp(errorId!));
   await name.fill("修正名称");
   await expect(error).toBeHidden();
+});
+
+test("UI 工作台选中态与装饰图标消费统一语义色", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  const tokens = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const result = {
+      accentInk: resolve("--accent-ink"),
+      accentSoft: resolve("--accent-soft"),
+      surfaceSelected: resolve("--surface-selected"),
+      text: resolve("--text"),
+    };
+    probe.remove();
+    return result;
+  });
+  const avatar = page.locator(".avatar");
+  await expect(avatar).toHaveCSS("background-color", tokens.accentSoft);
+  await expect(avatar).toHaveCSS("color", tokens.accentInk);
+  const selectedNav = page.locator(".nav.selected").first();
+  await expect(selectedNav).toHaveCSS("color", tokens.text);
+  await expect(selectedNav).toHaveCSS("background-color", tokens.surfaceSelected);
+  await expect(page.locator('.file-tab.active > button[role="tab"] svg')).toHaveCSS("color", tokens.accentInk);
 });
 
 test("UI reduced-motion 与三种窗口宽度保持焦点和布局", async () => {
