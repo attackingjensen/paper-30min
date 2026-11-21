@@ -15,7 +15,7 @@
   ],
   "includeEntryExports": true,
   // 外部安全工具由开发机或 CI 安装，不是 npm 依赖。
-  "ignoreBinaries": ["gitleaks", "osv-scanner"],
+  "ignoreBinaries": ["gitleaks"],
   // dependency-cruiser 按 parser: "swc" 动态加载，静态引用图看不到。
   "ignoreDependencies": ["@swc/core"],
   // Phase 0 临时豁免已全部移除：contracts.ts 随 Phase 1 契约收敛、arxiv.ts 随

@@ -17,10 +17,16 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 ## 失败与例外策略
 
 - 类型、knip、secrets、floor、架构边界和完整扫描结果属于确定性检查，失败立即阻断。
-- OSV high / critical、契约硬预算和 Windows 全量回归失败立即阻断；low / moderate 仅测量，不借此隐瞒 high / critical。
+- npm audit high / critical、契约硬预算和 Windows 全量回归失败立即阻断；low / moderate 仅测量，不借此隐瞒 high / critical。
 - 测量型指标回退先警告；连续 **3 次**回退必须转为阻断或经 review 重设基线。选择 3 次是为了过滤单次环境波动，同时防止“下次再处理”无限延续。
-- 扫描器不可启动、报告不完整、未知严重度或解析器不受支持均视为检查不可用并阻断，不能按零 finding 通过。
+- 扫描器不可启动、报告不完整、未知严重度或解析器不受支持均视为检查不可用并阻断，不能按零 finding 通过；npm registry / audit 错误同样非零退出。
 - 例外必须有 owner 和到期日，默认 **90 天**，足以安排修复又能避免永久豁免；到期前必须修复、移除或重新评审，不得静默续期。
+- 例外登记执行：新增 W/E 行由 floor-guard 验证登记要素（非空 owner、未来且不超过 90 天的到期日），要素缺失仍阻断。
+
+### 已退役规则（仅历史对照，不再执行）
+
+- OSV high / critical、契约硬预算和 Windows 全量回归失败立即阻断；low / moderate 仅测量，不借此隐瞒 high / critical。
+- 扫描器不可启动、报告不完整、未知严重度或解析器不受支持均视为检查不可用并阻断，不能按零 finding 通过。
 - 例外登记执行：新增 W/E 行由 floor-guard 验证登记要素（非空 owner、未来且不超过 90 天的到期日），要素缺失仍阻断；OSV 例外另由 `app/scripts/osv-exceptions.json` 按公告／包／版本精确匹配执行，被豁免 finding 在扫描输出中保持可见，过期例外自动恢复阻断。
 
 ## Enforced with numbers
@@ -34,7 +40,9 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 | C5 | Security: dependencies | high / critical 为 `0`；unknown severity 阻断；扫描包清单 `>= 1` | 高危依赖必须有修复或有期限的明确处置；低级别不掩盖高级别；非空包清单区分“零漏洞”与“未扫描” | `npm run check:dependencies` | REVIEW、CI |
 | C6 | Build | `0` 个构建错误 | 生产运行目录必须能由锁定依赖重建；构建不等同安装包 | `npm run build` | REVIEW、CI |
 | C7 | Contract tests | `0` 个失败 | 工程、文档、来源、核验与解析预算必须由真实契约回归裁决 | `npx playwright test -g "project-core\|document-core\|arxiv-import\|pdf-import\|pdf-reparse\|pdf-snapshot\|pdf-verification"` | VERIFY |
-| C8 | Windows Electron | `0` 个失败；环境跳过按 M1 测量并仅登记 W2 | 桌面行为不能用 Linux 构建或纯静态检查替代 | `npm test` | Windows CI、完整本地验证 |
+| C8 | Windows Electron | `0` 个失败；环境跳过按 M1 测量并仅登记 W2 | 桌面行为不能用 Linux 构建或纯静态检查替代 | `npm run test:electron`（Windows CI）；`npm test`（本地全量） | Windows CI、完整本地验证 |
+
+依赖漏洞覆盖差异：旧 OSV 路径直接读取 lockfile 并查询 OSV 数据；新路径以 `npm audit --audit-level=high` 查询当前 npm registry 的 advisory，按实际 npm 依赖树计算，并校验非空报告、依赖总数和严重度。npm audit 会把直接依赖的 meta-vulnerability 单列，因此 low / moderate 数量不与 OSV 逐项相等。当前安装边界只有 `app/package-lock.json`；不保留 OSV 对其他语言生态的扫描。Dependabot 如启用，仅作 GitHub 后台监控与提醒，不替代 npm audit，也不作为本地或 CI 合并门禁。
 
 ## Contract budgets（硬约束）
 
@@ -75,12 +83,13 @@ Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；
 | ID | Metric | Today（2026-11-17，本分支实测） | Direction | 理由与命令 |
 |---|---|---:|---|---|
 | M1 | 默认全量回归环境跳过数 | `3` | 不得增长 | 防止用环境条件静默扩大未测范围；`npm test`，既有 3 项登记为 W2（真实百度门控用例已随旧路径退役删除） |
-| M2 | OSV low + moderate finding | `2`（LOW `1`、MODERATE `1`） | 不得增长 | 当前为 katex LOW 与 minimatch MODERATE；不强迫在本约束任务中做 major 升级，但需观察积累；`npm run check:dependencies` |
+| M2 | 历史 OSV low + moderate finding（已退役） | `2`（LOW `1`、MODERATE `1`） | 不得增长 | 历史值为 katex LOW 与 minimatch MODERATE；OSV 已退役，仅保留作覆盖对照，不再执行 |
+| M4 | npm audit low + moderate finding | `4`（LOW `2`、MODERATE `2`） | 不得增长 | 当前为 katex、minimatch 及两个直接依赖 meta-vulnerability；`npm run check:dependencies` |
 | M3 | knip 临时源码豁免 | `0` | 不得增长 | 历史豁免已全部移除，新增豁免须 review；`npm run test:dead-code` 并 review `knip.jsonc` |
 
 整数计数不设容差，因为新增一次跳过、漏洞或豁免都是可审查的离散事件。比例型指标若以后引入，ratchet 容差为 **0.5 个百分点**，用于吸收无关文件的轻微比例波动，而不是允许真实回退。
 
-补充基线为测量参考，不是阻断阈值：全量回归 `489 passed / 3 skipped (10.6m)`（s08.6 检查点，HEAD be02cc0），架构 `108 modules / 0 violations`（wp4 起 109）。耗时只记录当日成本；机器与 runner 负载不同，耗时本身不自动阻断。
+补充基线为测量参考，不是阻断阈值：拆分前 PR #160（d52ace9）共 `602` 条，`599 passed / 3 skipped (9.9m)`，其中 `9` 条为 OSV 工具自测；c3e 本地拆分后产品清单 `593` 条，`590 passed / 3 skipped`，非 Electron `482` 条（4 workers，71.7 秒），Electron `108 passed / 3 skipped`（1 worker，568.7 秒）。产品测试 ID 与跳过数前后一致，删除的 `9` 条 OSV 自测由 W5 单独审查；新增 `10` 条 npm audit 工具回归单独计入完整套件，不计入产品清单。架构 `126 modules / 0 violations`。耗时只记录当日成本；机器与 runner 负载不同，耗时本身不自动阻断。
 
 ## Exceptions
 
@@ -89,17 +98,22 @@ Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；
 | W2 | 默认回归允许 `3` 个环境门控跳过 | `app/tests/desktop.spec.ts` | 真实视觉模型与真实 Pi 验证需要本机凭据、费用授权和隔离配置；默认 CI 不伪造这些证据，发布前按 README 显式验收 | @attackingjensen | 2027-02-15 |
 | W3 | 旧解析退役删除测试与断言 | `app/tests/parsing.spec.ts`、`app/tests/desktop.spec.ts` | s08.6 退役被新 corePdf* 链路取代的旧解析实现；等价行为由 pdf-import-task／pdf-snapshot-parse／pdf-import-electron 套件承担，设置加密与损坏恢复断言保留为新用例 | @attackingjensen | 2027-02-15 |
 | W4 | 启动断言旧行退役，等价断言加 30s 超时保留 | `app/tests/arxiv-import-electron.spec.ts`、`app/tests/arxiv-pdf-fallback-electron.spec.ts`、`app/tests/desktop.spec.ts`、`app/tests/pdf-import-electron.spec.ts`、`app/tests/project-core-electron.spec.ts`、`app/tests/reader-conflict-electron.spec.ts`、`app/tests/reader-correction-electron.spec.ts`、`app/tests/reader-electron.spec.ts`、`app/tests/reader-position-electron.spec.ts`、`app/tests/reader-selection-electron.spec.ts`、`app/tests/reader-source-electron.spec.ts` | 离屏 CI runner 首帧渲染迟到，默认 10s 误报启动失败；旧断言行退役但同断言（Paper30Min 首屏可见）以 30s 超时保留，非弱化；floor-guard 字面匹配将超时修改误判为断言移除，登记豁免至 guard 支持等价断言识别 | @attackingjensen | 2027-02-18 |
+| W5 | OSV 工具退役删除自测 | `app/tests/osv-gate.spec.ts` | c3e 以 npm audit 接管依赖门禁，OSV 报告解析、例外配置与其自测单独进入 review；产品测试与断言不变 | @attackingjensen | 2027-02-19 |
 
 ## 生命周期与成本
 
 | Stage | Command | 内容与成本 |
 |---|---|---|
 | BUILD / 编辑循环 | `npm run check:fast` | 类型、knip、secrets、diff floor；保持秒级，secrets 今日扫描约 2.3 秒 |
-| VERIFY / 任务交还前 | `npm run check:task` | fast、架构和导入/工程契约 Playwright；分钟级，其他功能另跑相关 `-g` 套件 |
-| REVIEW / 完整本地验证 | `npm run check:full` | fast、架构、OSV、构建和 Windows 全量 Electron；以分钟计 |
-| SHIP / CI | `.github/workflows/ci.yml` | Windows 与 Linux 执行 fast、架构、OSV、构建；仅 Windows 执行完整桌面回归 |
+| VERIFY / 任务交还前 | `npm run check:task` | fast、架构和导入/工程契约 Playwright；非 Electron 并行，Electron 串行，其他功能另跑相关 `-g` 套件 |
+| REVIEW / 完整本地验证 | `npm run check:full` | fast、架构、npm audit、构建和完整分层回归；以分钟计 |
+| SHIP / CI | `.github/workflows/ci.yml` | Linux quality 执行静态门禁、构建与并行非 Electron；Windows electron 执行构建、定向 `win32` junction 非 Electron 与串行全量 Electron；两条路径并行且各安装一次依赖 |
 
-CI 固定 gitleaks 8.30.1 与 osv-scanner 2.7.0，避免未审查的工具漂移；dependency-cruiser、SWC 和 npm 依赖由 `app/package-lock.json` 固定。gitleaks 的 `.local/`、`.upstream/`、`node_modules/` 与生成目录排除只界定非产品文件，不是源码 finding 豁免。
+Playwright 在 `test-results/timing/non-electron.json` 与 `test-results/timing/electron.json` 写入 JSON 时序报告，包含开始时间、持续时间和通过／跳过／失败计数；直接运行默认配置时写入 `full.json`。CI 分别上传两类报告，PR 记录拆分前后的墙钟时间与 GitHub runner 成本。
+
+CI 固定 gitleaks 8.30.1，避免未审查的工具漂移；dependency-cruiser、SWC 和 npm 依赖由 `app/package-lock.json` 固定。Go 仅用于安装 gitleaks，OSV 不再安装。gitleaks 的 `.local/`、`.upstream/`、`node_modules/` 与生成目录排除只界定非产品文件，不是源码 finding 豁免。
+
+2026-11-21 用户确认暂时无法取得仓库 admin 权限或由持有者调整 GitHub 安全设置，因此本任务保留 gitleaks、setup-go 与现有仓库设置。repository-level Secret Scanning / Push Protection 状态未验证，不声称已由 GitHub 推送保护接管；取得证据后另行评估替换。
 
 ## 当前不采用的维度
 

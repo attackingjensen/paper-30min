@@ -67,7 +67,7 @@ async function appendException(line: string) {
 function exceptionLine(overrides: { owner?: string; expires?: string } = {}) {
   const owner = overrides.owner ?? "@attackingjensen";
   const expires = overrides.expires ?? futureDate(30);
-  return `| W3 | OSV high（C5） | app/package-lock.json picomatch@4.0.7 | dev-only 无上游修复 | ${owner} | ${expires} |`;
+  return `| W3 | Dependency high（C5） | app/package-lock.json picomatch@4.0.7 | dev-only 无上游修复 | ${owner} | ${expires} |`;
 }
 
 test("floor-guard 要素齐全且在 90 天内的新例外行放行", async () => {

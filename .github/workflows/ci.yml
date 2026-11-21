@@ -2,31 +2,26 @@ name: Electron CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: electron-ci-${{ github.event_name }}-${{ github.ref }}
+  group: electron-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  electron:
-    name: v2 / ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Windows 验证真实桌面行为；Linux 仅验证类型和构建。
-        os: [windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+  quality:
+    name: v2 / ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: app
-    env:
-      PAPER30MIN_TEST_WINDOW: hidden
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,10 +39,8 @@ jobs:
           go-version: '1.27'
 
       - name: Install pinned security scanners
-        shell: bash
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
-          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
           printf '%s\n' "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -62,21 +55,65 @@ jobs:
       - name: Dependency vulnerabilities
         run: npm run check:dependencies
 
-      # build 已包含 typecheck；先构建一次，再直接运行 Playwright。
       - name: Typecheck and build
         run: npm run build
 
-      - name: Run Windows Electron tests
-        if: runner.os == 'Windows'
-        run: npx playwright test --reporter=list,html
+      - name: Run non-Electron tests
+        run: npm run test:fast
 
-      - name: Upload test evidence
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
+      - name: Upload non-Electron test evidence
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: electron-test-evidence-${{ matrix.os }}
+          name: non-electron-test-evidence
+          path: |
+            app/test-results/timing/non-electron.json
+            app/test-results/non-electron/
+          retention-days: 14
+          if-no-files-found: warn
+
+  electron:
+    name: v2 / windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: app
+    env:
+      PAPER30MIN_TEST_WINDOW: hidden
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run build
+
+      # Linux 运行完整非 Electron；这两条保留 win32 junction 分支覆盖。
+      - name: Run Windows-specific non-Electron tests
+        run: npm run test:fast -- --grep "公共工程写入保护基线、取消与所有权|受管写入不跟随 sources 目录链接"
+
+      - name: Run Windows Electron tests
+        run: npm run test:electron
+
+      - name: Upload Electron test evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-test-evidence-windows-latest
           path: |
             app/playwright-report/
-            app/test-results/
+            app/test-results/*.png
+            app/test-results/electron/
+            app/test-results/non-electron/
+            app/test-results/timing/electron.json
+            app/test-results/timing/non-electron.json
           retention-days: 14
           if-no-files-found: warn
