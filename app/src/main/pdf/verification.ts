@@ -21,7 +21,6 @@ import {
   createDocumentChangeset,
   documentNodeContentFingerprint,
   documentNodeExcerpt,
-  type NodeType,
 } from "../../shared/document/changeset.js";
 import type { DocumentTree } from "../../shared/document/tree.js";
 import {

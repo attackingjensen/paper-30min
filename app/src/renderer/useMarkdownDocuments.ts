@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { EditorState } from "@codemirror/state";
 import type {
   DocumentTab,
@@ -40,12 +40,12 @@ export function useMarkdownDocuments(
   });
   if (store.current.root !== root) store.current = { root, drafts: new Map() };
   const drafts = store.current.drafts;
-  const alive = () => store.current.drafts === drafts;
-  const notify = () => {
+  const alive = useCallback(() => store.current.drafts === drafts, [drafts]);
+  const notify = useCallback(() => {
     if (alive()) render();
-  };
+  }, [alive]);
 
-  async function sync(draft: MarkdownDraft) {
+  const sync = useCallback(async (draft: MarkdownDraft) => {
     const baseline = draft.file;
     try {
       const file = await window.desktop.invoke<MarkdownFile>({
@@ -79,7 +79,7 @@ export function useMarkdownDocuments(
         notify();
       }
     }
-  }
+  }, [alive, notify, root]);
   useEffect(() => {
     if (!root) return;
     for (const tab of tabs) {
@@ -102,7 +102,7 @@ export function useMarkdownDocuments(
       }
       void sync(draft);
     }
-  }, [root, tabs, revision]);
+  }, [root, tabs, revision, drafts, sync]);
 
   function changed(draft: MarkdownDraft) {
     clearTimeout(draft.saveTimer);

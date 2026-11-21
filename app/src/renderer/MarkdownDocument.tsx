@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invertedEffects } from "@codemirror/commands";
 import { EditorState, StateField, StateEffect } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
@@ -78,7 +78,7 @@ export function MarkdownDocument({
   const positionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
-  function recordPosition() {
+  const recordPosition = useCallback(() => {
     clearTimeout(positionTimer.current);
     positionTimer.current = setTimeout(
       () =>
@@ -90,7 +90,7 @@ export function MarkdownDocument({
         }),
       180,
     );
-  }
+  }, [draft]);
   const readOnly = /^sources\//i.test(draft.path);
   const editing = !readOnly && draft.mode !== "read";
   useEffect(() => {
@@ -172,7 +172,7 @@ export function MarkdownDocument({
       view.destroy();
       if (draft.composing) { draft.composing = false; callbacks.current.onChange(); }
     };
-  }, [draft, editing, draft.loading, draft.revision]);
+  }, [draft, editing, draft.loading, draft.revision, recordPosition]);
   useEffect(() => {
     if (preview.current) preview.current.scrollTop = draft.readScroll;
   }, [draft, draft.mode, draft.loading]);

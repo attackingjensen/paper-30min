@@ -48,13 +48,13 @@ function sanitizeRawHtml(html: string): string {
   const template = document.createElement("template");
   template.innerHTML = html;
   const walk = (parent: Element | DocumentFragment) => {
-    for (const child of [...parent.children]) {
+    for (const child of Array.from(parent.children)) {
       const tag = child.tagName.toLowerCase();
       if (!rawAllowedTags.has(tag)) {
         child.remove();
         continue;
       }
-      for (const attribute of [...child.attributes])
+      for (const attribute of Array.from(child.attributes))
         child.removeAttribute(attribute.name);
       walk(child);
     }

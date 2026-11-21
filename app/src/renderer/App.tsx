@@ -930,7 +930,7 @@ export function App() {
                   setProject(
                     await desktop.invoke<Project>({ type: "refresh", root }),
                   );
-                  openPath(path);
+                  void openPath(path);
                   setDialog(null);
                 });
               if (dialog.type === "move" && root)

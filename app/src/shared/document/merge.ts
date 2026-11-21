@@ -716,7 +716,7 @@ function buildMergedTree(
   }
 
   const parentSelections = new Map<string, { side: Side; value: string }>();
-  for (const [unitId, selected] of [...unitSelections]) {
+  for (const [unitId, selected] of Array.from(unitSelections)) {
     const source = selected.side === "current" ? current : candidate;
     const baseParent = base.units[unitId]?.sectionId ?? null;
     const currentParent = current.units[unitId]?.sectionId ?? null;
@@ -835,7 +835,7 @@ function buildMergedTree(
     const block = source.blocks.find((candidateBlock) => blockUnits(candidateBlock).includes(unitId));
     if (block) blockSelections.set(block.id, { side: selected.side, value: structuredClone(block) });
   }
-  for (const [blockId, selected] of [...blockSelections]) {
+  for (const [blockId, selected] of Array.from(blockSelections)) {
     const required = selected.value.kind === "unit" ? [selected.value.unitId] : [];
     if (required.some((unitId) => !merged.units[unitId])) blockSelections.delete(blockId);
   }

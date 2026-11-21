@@ -82,7 +82,7 @@ const flag = (rule, f, text) => {
   if (!ignored(f)) findings.push({ rule, file: f, text: text.trim().slice(0, 120) });
 };
 const isTest = (f) => /\.(test|spec)\.|_test\.|test_/.test(f);
-const isConstraints = (f) => /CONSTRAINTS\.md$/.test(f);
+const isConstraints = (f) => f.endsWith("CONSTRAINTS.md");
 
 // 登记要素验证（CONSTRAINTS 失败与例外策略）：例外行须有非空 owner 与未来且 ≤90 天的
 // 到期日（| ID | Rule | Path | Reason | Owner | Expires |）。要素缺失、过期或超期仍拦截。
@@ -116,7 +116,7 @@ const retirementWaivers = (() => {
   return waivers;
 })();
 
-const SUPPRESSIONS = /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|biome-ignore|# *noqa|# *type: *ignore|istanbul ignore|nosemgrep|gitleaks:allow|Stryker disable/;
+const SUPPRESSIONS = /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|oxlint-disable|biome-ignore|# *noqa|# *type: *ignore|istanbul ignore|nosemgrep|gitleaks:allow|Stryker disable/;
 const STUBS = /throw new (Error|NotImplemented).*[Nn]ot implemented|catch\s*\(\w*\)\s*\{\s*\}|catch\s*\{\s*\}|\bTODO\b|\bpass\s*# *stub/;
 const SKIPS = /\.(skip|todo)\b|\bxit\(|\bxdescribe\(|@pytest\.mark\.skip|t\.Skip\(/;
 

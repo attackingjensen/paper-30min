@@ -1,0 +1,17 @@
+{
+  "$schema": "./app/node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "react"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "error",
+    "react/refs": "off",
+    "react/immutability": "off",
+    "react/error-boundaries": "off",
+    "react/set-state-in-effect": "off",
+    "typescript/no-base-to-string": "off",
+    "typescript/no-floating-promises": "error"
+  }
+}

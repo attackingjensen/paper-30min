@@ -14,10 +14,12 @@
     "test:desktop": "npm run build && npm run test:electron",
     "test:electron": "playwright test --config=playwright.electron.config.ts",
     "test:dead-code": "knip --no-progress",
-    "check:fast": "npm run typecheck && npm run test:dead-code && npm run check:secrets && node scripts/floor-guard.mjs",
-    "check:task": "npm run check:fast && npm run check:architecture && node scripts/test.mjs -g \"project-core|document-core|arxiv-import|pdf-import|pdf-reparse|pdf-snapshot|pdf-verification\"",
-    "check:full": "npm run check:fast && npm run check:architecture && npm run check:dependencies && npm run build && node scripts/test.mjs",
+    "check:fast": "npm run typecheck && npm run test:dead-code && npm run check:lint && npm run check:secrets && node scripts/floor-guard.mjs",
+    "check:task": "npm run check:fast && npm run check:architecture && npm run check:lint:type-aware && node scripts/test.mjs -g \"project-core|document-core|arxiv-import|pdf-import|pdf-reparse|pdf-snapshot|pdf-verification\"",
+    "check:full": "npm run check:fast && npm run check:architecture && npm run check:lint:type-aware && npm run check:dependencies && npm run build && node scripts/test.mjs",
     "check:secrets": "gitleaks dir .. --redact --no-banner --config ../.gitleaks.toml",
+    "check:lint": "node scripts/check-lint.mjs",
+    "check:lint:type-aware": "node scripts/check-lint.mjs --type-aware",
     "check:architecture": "node scripts/check-architecture.mjs",
     "check:dependencies": "node scripts/check-dependencies.mjs"
   },
@@ -75,6 +77,8 @@
     "dependency-cruiser": "18.8.0",
     "electron": "44.9.1",
     "knip": "6.45.1",
+    "oxlint": "1.94.0",
+    "tsrs": "7.1.0-beta.tsrs4",
     "typescript": "7.0.2",
     "vite": "8.3.4"
   }

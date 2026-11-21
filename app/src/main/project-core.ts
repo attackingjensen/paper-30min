@@ -35,7 +35,7 @@ const requiredRevisionFiles = [
   "tombstones.json",
   "changeset.json",
 ];
-const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
+const invalidName = /[<>:"/\\|?*]/;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const sha256 = /^[a-f0-9]{64}$/;
 const jsonBudget = 1024 * 1024;
@@ -91,6 +91,7 @@ function validName(name: string) {
     !name ||
     name !== name.trim() ||
     invalidName.test(name) ||
+    Array.from(name).some((character) => character.charCodeAt(0) < 32) ||
     /[. ]$/.test(name) ||
     /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ||
     name === "." ||

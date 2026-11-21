@@ -25,7 +25,7 @@ import {
 import type { ArxivFetchResponse, ArxivTransport } from "../src/main/arxiv/fetch";
 import { ArxivFetchError } from "../src/main/arxiv/fetch";
 import { absHtml } from "./fixtures/arxiv-abs";
-import { latexmlDocument, FIG1_SRC, FIG2_SRC } from "./fixtures/arxiv-latexml";
+import { latexmlDocument } from "./fixtures/arxiv-latexml";
 
 const BASE = "http://127.0.0.1:9999";
 const ID = "2401.01234";

@@ -123,6 +123,16 @@ test("floor-guard 细化后仍拦截产品源码的新抑制注释", async () =>
   expect(result.stderr).toContain("silenced-checker");
 });
 
+test("floor-guard 拦截 Oxlint 抑制注释", async () => {
+  await fixtureRepo();
+  await appendException(exceptionLine());
+  const suppression = "oxlint-" + "disable";
+  await fs.writeFile(path.join(sandbox, "src.ts"), `// ${suppression}-next-line\nexport const x = 1;\n`);
+  const result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("silenced-checker");
+});
+
 test("floor-guard 已登记退役例外按文件豁免删除测试与移除断言", async () => {
   await fixtureRepo();
   await fs.mkdir(path.join(sandbox, "tests"), { recursive: true });

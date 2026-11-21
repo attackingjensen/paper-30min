@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { MockAgent, type Dispatcher } from "undici";
+import { MockAgent } from "undici";
 import {
   arxivFetch,
   ArxivFetchError,

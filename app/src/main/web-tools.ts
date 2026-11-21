@@ -123,7 +123,7 @@ export function createWebTools(
         throw new Error("Exa 请求超时，请稍后重试。");
       const message = (error as Error).message;
       const status = error instanceof McpHttpError ? error.status : undefined;
-      if (/^Exa /.test(message)) throw new Error(redact(message, secrets));
+      if (message.startsWith("Exa ")) throw new Error(redact(message, secrets));
       if (status === 401 || status === 403)
         throw new Error("Exa 认证失败，请检查或移除设置中的 Exa API key。");
       if (status === 429)

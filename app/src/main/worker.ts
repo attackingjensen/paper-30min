@@ -192,8 +192,8 @@ port.on(
       if (data.shutdown) {
         // 先以拒绝解决全部未决确认并中止全部操作，等待落定后再关服务，
         // 保证退出时任务现场完整、无新增 POST。
-        for (const entry of [...pdfConfirmations.values()]) entry.resolve(false);
-        for (const operation of [...pdfOperations.values()]) operation.controller.abort();
+        for (const entry of Array.from(pdfConfirmations.values())) entry.resolve(false);
+        for (const operation of Array.from(pdfOperations.values())) operation.controller.abort();
         await Promise.allSettled([...pdfOperations.values()].map((operation) => operation.done));
         await agent.close();
         await service.close();

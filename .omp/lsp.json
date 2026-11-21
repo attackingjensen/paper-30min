@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "oxlint": {
+      "command": "node",
+      "args": ["app/node_modules/oxlint/bin/oxlint", "--lsp"],
+      "fileTypes": [".ts", ".tsx", ".cts", ".mts", ".js", ".jsx", ".mjs", ".cjs"],
+      "rootMarkers": [".oxlintrc.json"],
+      "isLinter": true
+    }
+  }
+}

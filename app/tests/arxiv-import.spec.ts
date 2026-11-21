@@ -8,14 +8,13 @@ import {
   openProject,
   readRevisionDocument,
 } from "../src/main/project-core";
-import { convertArxivSnapshot } from "../src/main/arxiv/convert";
 import { importArxivPaper, prepareArxivPdfFallback, resumeArxivImport } from "../src/main/arxiv/import";
 import type { ArxivImportProgressHooks } from "../src/main/arxiv/import";
 import type { ImportDiagnostic } from "../src/shared/arxiv";
 import type { ArxivFetchOptions, ArxivFetchResponse, ArxivTransport } from "../src/main/arxiv/fetch";
 import { ArxivFetchError } from "../src/main/arxiv/fetch";
 import { absHtml } from "./fixtures/arxiv-abs";
-import { latexmlDocument, FIG1_SRC, FIG2_SRC } from "./fixtures/arxiv-latexml";
+import { latexmlDocument, FIG2_SRC } from "./fixtures/arxiv-latexml";
 
 const BASE = "http://127.0.0.1:9999";
 const ABS_URL = `${BASE}/abs/2401.01234v1`;

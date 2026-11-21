@@ -80,7 +80,6 @@ test("document-core current 与 source-base 共用树 schema，重开保留五�
 
 test("document-core 提交生成绑定 revision 的真实 changeset，重开可直接验证", async () => {
   const { created, source } = await createdProject();
-  const tree = testDocumentTree(created.manifest.paper.id, "变化集");
   const revision = await commitRevision({
     root: created.root,
     baseRevision: null,
