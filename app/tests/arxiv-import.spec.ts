@@ -2,12 +2,7 @@ import { test, expect } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import {
-  createProject,
-  listSourceSnapshots,
-  openProject,
-  readRevisionDocument,
-} from "../src/main/project-core";
+import { createProject, listSourceSnapshots, openProject, readRevisionDocument } from "../src/main/project-core";
 import { importArxivPaper, prepareArxivPdfFallback, resumeArxivImport } from "../src/main/arxiv/import";
 import type { ArxivImportProgressHooks } from "../src/main/arxiv/import";
 import type { ImportDiagnostic } from "../src/shared/arxiv";
@@ -63,7 +58,13 @@ function controlledTransport(routes: Record<string, { bytes: Uint8Array; mime: s
 
 test("arxiv-import 首次导入：无版本输入固定实际版本，发布 current，全程无 PDF 请求", async () => {
   const { calls, transport } = controlledTransport(fullRoutes());
-  const result = await importArxivPaper({ parent: sandbox, name: "首次导入", input: "2401.01234", transport, baseUrl: BASE });
+  const result = await importArxivPaper({
+    parent: sandbox,
+    name: "首次导入",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(result.ok).toBe(true);
   if (!result.ok) return;
   expect(result.reference.version).toBe(1);
@@ -79,7 +80,13 @@ test("arxiv-import 首次导入：无版本输入固定实际版本，发布 cur
 
 test("arxiv-import 非法输入在网络与工程写入前被拒绝", async () => {
   const { calls, transport } = controlledTransport(fullRoutes());
-  const result = await importArxivPaper({ parent: sandbox, name: "非法输入", input: "https://evil.org/abs/2401.01234", transport, baseUrl: BASE });
+  const result = await importArxivPaper({
+    parent: sandbox,
+    name: "非法输入",
+    input: "https://evil.org/abs/2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.diagnostic.stage).toBe("resolve");
   expect(calls).toHaveLength(0);
@@ -90,7 +97,13 @@ test("arxiv-import HTML 获取失败：保留工程与恢复记录，current 为
   const routes = fullRoutes();
   delete routes[HTML_URL];
   const { calls, transport } = controlledTransport(routes);
-  const result = await importArxivPaper({ parent: sandbox, name: "HTML失败", input: "2401.01234", transport, baseUrl: BASE });
+  const result = await importArxivPaper({
+    parent: sandbox,
+    name: "HTML失败",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(result.ok).toBe(false);
   if (result.ok) return;
   expect(result.diagnostic.stage).toBe("fetch");
@@ -108,7 +121,14 @@ test("arxiv-import 快照发布中断：重试不重复已验证内容，恢复�
       if (point === "source-content") throw new Error("injected snapshot failure");
     },
   };
-  const failed = await importArxivPaper({ parent: sandbox, name: "快照中断", input: "2401.01234", transport, baseUrl: BASE, hooks });
+  const failed = await importArxivPaper({
+    parent: sandbox,
+    name: "快照中断",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+    hooks,
+  });
   expect(failed.ok).toBe(false);
   if (failed.ok) return;
   expect(failed.diagnostic.stage).toBe("snapshot");
@@ -130,11 +150,19 @@ test("arxiv-import 快照发布中断：重试不重复已验证内容，恢复�
 test("arxiv-import 转换失败：有效快照保留不误报可读，修复后离线重转换恢复", async () => {
   const routes = fullRoutes();
   routes[HTML_URL] = {
-    bytes: Buffer.from(`<!DOCTYPE html><html><head><meta name="citation_arxiv_id" content="2401.01234v1"/></head><body><article class="ltx_document"><div class="ltx_abstract"><p class="ltx_p">Only abstract.</p></div></article></body></html>`),
+    bytes: Buffer.from(
+      `<!DOCTYPE html><html><head><meta name="citation_arxiv_id" content="2401.01234v1"/></head><body><article class="ltx_document"><div class="ltx_abstract"><p class="ltx_p">Only abstract.</p></div></article></body></html>`,
+    ),
     mime: "text/html",
   };
   const { calls, transport } = controlledTransport(routes);
-  const failed = await importArxivPaper({ parent: sandbox, name: "转换失败", input: "2401.01234", transport, baseUrl: BASE });
+  const failed = await importArxivPaper({
+    parent: sandbox,
+    name: "转换失败",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(failed.ok).toBe(false);
   if (failed.ok) return;
   expect(failed.diagnostic.stage).toBe("convert");
@@ -162,12 +190,14 @@ test("arxiv-import 转换失败：有效快照保留不误报可读，修复后�
   const upgraded: typeof convertLatexml = (input) => {
     // 测试替身代表未来转换器版本：能从同一快照产出可读树。此处以补全抽取
     // 结果实现（真实升级是算法改进，输入字节不变）；编排断言与实现方式无关。
-    const html = Buffer.from(input.html).toString("utf8").replace(
-      '<div class="ltx_abstract"><p class="ltx_p">Only abstract.</p></div>',
-      '<section id="S1" class="ltx_section"><h2 class="ltx_title ltx_title_section">Introduction</h2>' +
-      '<div id="S1.p1" class="ltx_para"><p class="ltx_p">We study energy and mass.</p></div></section>' +
-      '<div class="ltx_abstract"><p class="ltx_p">Only abstract.</p></div>',
-    );
+    const html = Buffer.from(input.html)
+      .toString("utf8")
+      .replace(
+        '<div class="ltx_abstract"><p class="ltx_p">Only abstract.</p></div>',
+        '<section id="S1" class="ltx_section"><h2 class="ltx_title ltx_title_section">Introduction</h2>' +
+          '<div id="S1.p1" class="ltx_para"><p class="ltx_p">We study energy and mass.</p></div></section>' +
+          '<div class="ltx_abstract"><p class="ltx_p">Only abstract.</p></div>',
+      );
     return convertLatexml({ ...input, html: Buffer.from(html) });
   };
   // 必定失败的请求探针：即使调用方误传 transport，任何网络尝试都会立即失败。
@@ -176,7 +206,12 @@ test("arxiv-import 转换失败：有效快照保留不误报可读，修复后�
     probeCalls.push(url);
     throw new Error(`离线恢复不得访问网络：${url}`);
   };
-  const recovered = await resumeArxivImport({ root: failed.root, transport: forbidden, baseUrl: BASE, converter: upgraded });
+  const recovered = await resumeArxivImport({
+    root: failed.root,
+    transport: forbidden,
+    baseUrl: BASE,
+    converter: upgraded,
+  });
   expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
   expect(probeCalls).toHaveLength(0);
   expect(calls.length).toBe(callsBefore);
@@ -185,7 +220,8 @@ test("arxiv-import 转换失败：有效快照保留不误报可读，修复后�
   expect(after.manifest.paper.currentRevision).toBe(recovered.revision.revisionId);
   const tree = await readRevisionDocument(failed.root, recovered.revision.revisionId, "document");
   const texts = Object.values(tree.units).flatMap((unit) =>
-    unit.sentenceIds.flatMap((id) => tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : ""))));
+    unit.sentenceIds.flatMap((id) => tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : ""))),
+  );
   expect(texts.some((text) => text.includes("We study energy and mass."))).toBe(true);
   // 快照不被改写：修复只发生在转换层，来源字节保持失败现场。
   const afterSnapshots = await listSourceSnapshots(failed.root);
@@ -206,7 +242,14 @@ test("arxiv-import current 推进中断：候选保留，恢复沿用同一 revi
       if (point === "before-current-replace") throw new Error("injected current failure");
     },
   };
-  const failed = await importArxivPaper({ parent: sandbox, name: "推进中断", input: "2401.01234", transport, baseUrl: BASE, hooks });
+  const failed = await importArxivPaper({
+    parent: sandbox,
+    name: "推进中断",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+    hooks,
+  });
   expect(failed.ok).toBe(false);
   if (failed.ok) return;
   expect(failed.diagnostic.stage).toBe("publish");
@@ -234,7 +277,13 @@ test("arxiv-import 显式 PDF 回退：确认前无 PDF 请求，交接固定版
   const routes = fullRoutes();
   delete routes[HTML_URL];
   const { calls, transport } = controlledTransport(routes);
-  const failed = await importArxivPaper({ parent: sandbox, name: "回退现场", input: "2401.01234", transport, baseUrl: BASE });
+  const failed = await importArxivPaper({
+    parent: sandbox,
+    name: "回退现场",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(failed.ok).toBe(false);
   if (failed.ok) return;
   expect(calls.some((url) => url.includes("/pdf/"))).toBe(false);
@@ -274,7 +323,13 @@ test("arxiv-import 回退边界：版本未固定拒绝；更新场景携带 bas
   expect(unresolved.ok).toBe(false);
 
   const { transport } = controlledTransport(fullRoutes());
-  const imported = await importArxivPaper({ parent: sandbox, name: "已可读", input: "2401.01234", transport, baseUrl: BASE });
+  const imported = await importArxivPaper({
+    parent: sandbox,
+    name: "已可读",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(imported.ok).toBe(true);
   if (!imported.ok) return;
   const readable = await openProject(imported.root);
@@ -302,7 +357,13 @@ test("arxiv-import 回退边界：版本未固定拒绝；更新场景携带 bas
 
 test("arxiv-import 离线重开：完整正文来自 current revision，不发起任何网络请求", async () => {
   const { calls, transport } = controlledTransport(fullRoutes());
-  const imported = await importArxivPaper({ parent: sandbox, name: "离线重开", input: "2401.01234", transport, baseUrl: BASE });
+  const imported = await importArxivPaper({
+    parent: sandbox,
+    name: "离线重开",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(imported.ok).toBe(true);
   if (!imported.ok) return;
   const callsAfterImport = calls.length;
@@ -319,7 +380,13 @@ test("arxiv-import 离线重开：完整正文来自 current revision，不发�
 
 test("arxiv-import 已完成工程恢复为幂等：不重复快照或 revision", async () => {
   const { transport } = controlledTransport(fullRoutes());
-  const imported = await importArxivPaper({ parent: sandbox, name: "幂等恢复", input: "2401.01234", transport, baseUrl: BASE });
+  const imported = await importArxivPaper({
+    parent: sandbox,
+    name: "幂等恢复",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(imported.ok).toBe(true);
   if (!imported.ok) return;
   const resumed = await resumeArxivImport({ root: imported.root, transport, baseUrl: BASE });
@@ -336,7 +403,14 @@ test("arxiv-import 转换中崩溃：候选未落盘，恢复沿用已记录候�
       if (point === "before-publish") throw new Error("injected convert crash");
     },
   };
-  const failed = await importArxivPaper({ parent: sandbox, name: "转换中断", input: "2401.01234", transport, baseUrl: BASE, hooks });
+  const failed = await importArxivPaper({
+    parent: sandbox,
+    name: "转换中断",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+    hooks,
+  });
   expect(failed.ok).toBe(false);
   if (failed.ok) return;
   expect(failed.diagnostic.stage).toBe("convert");
@@ -362,7 +436,14 @@ test("arxiv-import revision-content 中断：残留候选被清除，恢复沿�
       if (point === "revision-content") throw new Error("injected content failure");
     },
   };
-  const failed = await importArxivPaper({ parent: sandbox, name: "内容中断", input: "2401.01234", transport, baseUrl: BASE, hooks });
+  const failed = await importArxivPaper({
+    parent: sandbox,
+    name: "内容中断",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+    hooks,
+  });
   expect(failed.ok).toBe(false);
   if (failed.ok) return;
   const opened = await openProject(failed.root);
@@ -370,7 +451,9 @@ test("arxiv-import revision-content 中断：残留候选被清除，恢复沿�
   expect(candidateId).toBeTruthy();
   // 内容目录已 rename 但元数据未写：残留候选存在。
   await expect(fs.access(path.join(failed.root, "paper", "revisions", candidateId!))).resolves.toBeUndefined();
-  await expect(fs.access(path.join(failed.root, ".paper30min", "revisions", candidateId!, "revision.json"))).rejects.toThrow();
+  await expect(
+    fs.access(path.join(failed.root, ".paper30min", "revisions", candidateId!, "revision.json")),
+  ).rejects.toThrow();
 
   const resumed = await resumeArxivImport({ root: failed.root, transport, baseUrl: BASE });
   expect(resumed.ok).toBe(true);
@@ -383,7 +466,13 @@ test("arxiv-import revision-content 中断：残留候选被清除，恢复沿�
 
 test("arxiv-import 回退 stale base：读取后 current 实际推进，旧 base 请求被拒绝", async () => {
   const { transport } = controlledTransport(fullRoutes());
-  const imported = await importArxivPaper({ parent: sandbox, name: "stale现场", input: "2401.01234", transport, baseUrl: BASE });
+  const imported = await importArxivPaper({
+    parent: sandbox,
+    name: "stale现场",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(imported.ok).toBe(true);
   if (!imported.ok) return;
   const openedAtA = await openProject(imported.root);
@@ -408,7 +497,10 @@ test("arxiv-import 回退 stale base：读取后 current 实际推进，旧 base
   expect(revisionB.revisionId).not.toBe(revisionA);
 
   const reason: ImportDiagnostic = {
-    code: "arxiv-html-fetch-failed", severity: "fatal", stage: "fetch", messageKey: "arxiv.html.notFound",
+    code: "arxiv-html-fetch-failed",
+    severity: "fatal",
+    stage: "fetch",
+    messageKey: "arxiv.html.notFound",
   };
   // 调用方仍持有 A 时刻的 opened 与 baseRevision=A：必须按最新 current=B 拒绝。
   const stale = await prepareArxivPdfFallback(openedAtA, reason, BASE, revisionA);
@@ -436,7 +528,13 @@ test("arxiv-import 重开恢复返回持久化的警告与转换器版本", asyn
     mime: "text/html",
   };
   const { transport } = controlledTransport(routes);
-  const imported = await importArxivPaper({ parent: sandbox, name: "警告持久化", input: "2401.01234", transport, baseUrl: BASE });
+  const imported = await importArxivPaper({
+    parent: sandbox,
+    name: "警告持久化",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(imported.ok).toBe(true);
   if (!imported.ok) return;
   expect(imported.warnings.length).toBeGreaterThan(0);
@@ -449,8 +547,7 @@ test("arxiv-import 重开恢复返回持久化的警告与转换器版本", asyn
   expect(resumed.warnings.some((w) => w.code === "arxiv-convert-asset-missing")).toBe(true);
   const meta = resumed.revision.arxiv;
   expect(meta).toBeDefined();
-  if (meta !== null && typeof meta === "object" && "converterVersion" in meta)
-    expect(meta.converterVersion).toBe(1);
+  if (meta !== null && typeof meta === "object" && "converterVersion" in meta) expect(meta.converterVersion).toBe(1);
 });
 
 test("arxiv-import completePublished 恢复返回持久化转换器版本，缺失时明确失败", async () => {
@@ -468,23 +565,26 @@ test("arxiv-import completePublished 恢复返回持久化转换器版本，缺�
     });
     const tree = testDocumentTree(created.manifest.paper.id, "候选");
     const revisionId = randomUUID();
-    await commitRevision({
-      root: created.root,
-      baseRevision: null,
-      sourceSnapshotId: source.sourceSnapshotId,
-      revisionId,
-      files: {
-        "document.json": Buffer.from(JSON.stringify(tree)),
-        "source-base.json": Buffer.from(JSON.stringify(tree)),
-        "tombstones.json": Buffer.from("[]"),
-        "changeset.json": Buffer.from(JSON.stringify({ baseRevision: null })),
+    await commitRevision(
+      {
+        root: created.root,
+        baseRevision: null,
+        sourceSnapshotId: source.sourceSnapshotId,
+        revisionId,
+        files: {
+          "document.json": Buffer.from(JSON.stringify(tree)),
+          "source-base.json": Buffer.from(JSON.stringify(tree)),
+          "tombstones.json": Buffer.from("[]"),
+          "changeset.json": Buffer.from(JSON.stringify({ baseRevision: null })),
+        },
+        metadata: { arxiv: arxivMeta },
       },
-      metadata: { arxiv: arxivMeta },
-    }, {
-      onCommitPoint(point) {
-        if (point === "before-current-replace") throw new Error("injected current failure");
+      {
+        onCommitPoint(point) {
+          if (point === "before-current-replace") throw new Error("injected current failure");
+        },
       },
-    }).catch(() => undefined);
+    ).catch(() => undefined);
     return { root: created.root, sourceSnapshotId: source.sourceSnapshotId, revisionId };
   }
 
@@ -522,7 +622,10 @@ test("arxiv-import completePublished 恢复返回持久化转换器版本，缺�
   expect((await openProject(missingVersion.root)).manifest.paper.currentRevision).toBeNull();
 
   // warnings 损坏同样在 current 推进前拒绝。
-  const corruptWarnings = await candidateWithoutCurrent("警告损坏候选", { converterVersion: 1, warnings: [{ code: 123 }] });
+  const corruptWarnings = await candidateWithoutCurrent("警告损坏候选", {
+    converterVersion: 1,
+    warnings: [{ code: 123 }],
+  });
   const corrupt = await convertArxivSnapshot({
     root: corruptWarnings.root,
     sourceSnapshotId: corruptWarnings.sourceSnapshotId,
@@ -547,23 +650,26 @@ test("arxiv-import 无关提交故障即使消息含校验文本也返回 publis
   });
   const tree = testDocumentTree(created.manifest.paper.id, "候选");
   const revisionId = randomUUID();
-  await commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    revisionId,
-    files: {
-      "document.json": Buffer.from(JSON.stringify(tree)),
-      "source-base.json": Buffer.from(JSON.stringify(tree)),
-      "tombstones.json": Buffer.from("[]"),
-      "changeset.json": Buffer.from(JSON.stringify({ baseRevision: null })),
+  await commitRevision(
+    {
+      root: created.root,
+      baseRevision: null,
+      sourceSnapshotId: source.sourceSnapshotId,
+      revisionId,
+      files: {
+        "document.json": Buffer.from(JSON.stringify(tree)),
+        "source-base.json": Buffer.from(JSON.stringify(tree)),
+        "tombstones.json": Buffer.from("[]"),
+        "changeset.json": Buffer.from(JSON.stringify({ baseRevision: null })),
+      },
+      metadata: { arxiv: { converterVersion: 1, warnings: [] } },
     },
-    metadata: { arxiv: { converterVersion: 1, warnings: [] } },
-  }, {
-    onCommitPoint(point) {
-      if (point === "before-current-replace") throw new Error("injected current failure");
+    {
+      onCommitPoint(point) {
+        if (point === "before-current-replace") throw new Error("injected current failure");
+      },
     },
-  }).catch(() => undefined);
+  ).catch(() => undefined);
 
   const result = await convertArxivSnapshot({
     root: created.root,
@@ -587,7 +693,13 @@ test("arxiv-import 无关提交故障即使消息含校验文本也返回 publis
 
 test("arxiv-import 受管警告损坏时恢复明确失败，不静默清空警告", async () => {
   const { transport } = controlledTransport(fullRoutes());
-  const imported = await importArxivPaper({ parent: sandbox, name: "警告损坏", input: "2401.01234", transport, baseUrl: BASE });
+  const imported = await importArxivPaper({
+    parent: sandbox,
+    name: "警告损坏",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+  });
   expect(imported.ok).toBe(true);
   if (!imported.ok) return;
   // 篡改 revision 元数据中的 warnings 为畸形数组。
@@ -614,7 +726,14 @@ test("arxiv-import 进度写入持续失败时返回结构化诊断，不穿透�
       }
     },
   };
-  const failed = await importArxivPaper({ parent: sandbox, name: "进度故障", input: "2401.01234", transport, baseUrl: BASE, hooks });
+  const failed = await importArxivPaper({
+    parent: sandbox,
+    name: "进度故障",
+    input: "2401.01234",
+    transport,
+    baseUrl: BASE,
+    hooks,
+  });
   expect(failed.ok).toBe(false);
   if (failed.ok) return;
   // 快照后进度写入失败：结构化诊断而非原始异常穿透。
@@ -662,7 +781,10 @@ test("arxiv-import PDF 回退谱系：current 为 pdf-parse 时更新交接按�
   });
   const opened = await openProject(created.root);
   const reason: ImportDiagnostic = {
-    code: "arxiv-html-fetch-failed", severity: "fatal", stage: "fetch", messageKey: "arxiv.html.notFound",
+    code: "arxiv-html-fetch-failed",
+    severity: "fatal",
+    stage: "fetch",
+    messageKey: "arxiv.html.notFound",
   };
   const handoff = await prepareArxivPdfFallback(opened, reason, BASE, revision.revisionId);
   expect(handoff.ok).toBe(true);
@@ -696,9 +818,7 @@ test("arxiv-import PDF 回退谱系：current 为 pdf-parse 时更新交接按�
       "changeset.json": Buffer.from(JSON.stringify({ baseRevision: revision.revisionId })),
     },
   });
-  const local = await prepareArxivPdfFallback(
-    await openProject(created.root), reason, BASE, localRevision.revisionId,
-  );
+  const local = await prepareArxivPdfFallback(await openProject(created.root), reason, BASE, localRevision.revisionId);
   expect(local.ok).toBe(false);
   if (!local.ok) expect(local.diagnostic.code).toBe("arxiv-fallback-source-invalid");
 });

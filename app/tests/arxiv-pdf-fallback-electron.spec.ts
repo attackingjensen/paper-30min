@@ -2,13 +2,7 @@
 // arXiv 固定版本 PDF 回退的组合交接经生产 preload、project:command IPC 与
 // Node utility process：受控 arXiv fixture 服务提供固定 vN PDF，受控百度服务
 // 提供解析结果；工程与 paper.id 不变，上传确认前零 POST。
-import {
-  test,
-  expect,
-  _electron as electron,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -133,10 +127,12 @@ async function startServers() {
         return;
       }
       if (request.url === "/jobs/job-fallback-0") {
-        response.end(JSON.stringify({
-          code: 0,
-          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/job-fallback-0` } },
-        }));
+        response.end(
+          JSON.stringify({
+            code: 0,
+            data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/job-fallback-0` } },
+          }),
+        );
         return;
       }
       if (request.url === "/jobs/result/job-fallback-0") {
@@ -155,9 +151,7 @@ async function stopServers() {
   for (const server of [arxivServer, baiduServer]) {
     if (!server) continue;
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
   arxivServer = null;
   baiduServer = null;
@@ -167,9 +161,7 @@ async function launch() {
   const visible = process.env.PAPER30MIN_TEST_WINDOW === "visible";
   const env: Record<string, string> = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
@@ -187,18 +179,12 @@ async function launch() {
 }
 
 async function closeDesktopForCleanup() {
-  if (
-    !desktopProcess ||
-    desktopProcess.exitCode !== null ||
-    desktopProcess.signalCode !== null
-  ) return;
+  if (!desktopProcess || desktopProcess.exitCode !== null || desktopProcess.signalCode !== null) return;
   await desktop.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = (...args: unknown[]) => {
       const options = args.at(-1) as Electron.MessageBoxSyncOptions;
-      if (
-        options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" ||
-        options.buttons?.[1] !== "放弃并关闭"
-      ) throw new Error("测试清理遇到非预期的原生确认框。");
+      if (options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" || options.buttons?.[1] !== "放弃并关闭")
+        throw new Error("测试清理遇到非预期的原生确认框。");
       return 1;
     };
   });
@@ -208,7 +194,9 @@ async function closeDesktopForCleanup() {
 /** 本机解析设置经生产 parsing:command 通道保存；Token 加密留在主进程。 */
 async function saveParsingSettings() {
   await page.evaluate(async (value) => {
-    const settings = await window.desktop.parsing<{ endpoint: string; model: string; hasKey: boolean }>({ type: "settings" });
+    const settings = await window.desktop.parsing<{ endpoint: string; model: string; hasKey: boolean }>({
+      type: "settings",
+    });
     await window.desktop.parsing({
       type: "saveSettings",
       settings: { ...settings, endpoint: value },
@@ -309,9 +297,7 @@ test("arxiv-pdf-fallback 真实 Electron 组合交接：固定版本 PDF 快照�
     tree: "document",
   });
   const texts = Object.values(tree.units).flatMap((unit) =>
-    unit.sentenceIds.flatMap((id) =>
-      tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : "")),
-    ),
+    unit.sentenceIds.flatMap((id) => tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : ""))),
   );
   expect(texts.join(" ")).toContain("Fallback first page");
   const revision = await invoke<{ sourceSnapshotId: string }>({
@@ -348,13 +334,18 @@ test("arxiv-pdf-fallback 真实 Electron 组合交接：固定版本 PDF 快照�
   routes.set(`/abs/${ID}`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" });
   routes.set(`/abs/${ID}v2`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2] })), mime: "text/html" });
   routes.set(`/html/${ID}v2`, {
-    bytes: Buffer.from(latexmlDocument()
-      .replace('content="2401.01234v1"', 'content="2401.01234v2"')
-      .replace("We conclude with", "We now conclude with")),
+    bytes: Buffer.from(
+      latexmlDocument()
+        .replace('content="2401.01234v1"', 'content="2401.01234v2"')
+        .replace("We conclude with", "We now conclude with"),
+    ),
     mime: "text/html",
   });
   // v2 HTML 的资产相对 v2 基址解析：真实 transport 会请求这些 URL。
-  routes.set(`/html/extracted/6543210/figures/overview.png`, { bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]), mime: "image/png" });
+  routes.set(`/html/extracted/6543210/figures/overview.png`, {
+    bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
+    mime: "image/png",
+  });
   routes.set(`/html/x2.png`, { bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 4, 5, 6]), mime: "image/png" });
   const checked = await invoke<{ ok: boolean; status?: string; latest?: { version: number } }>({
     type: "coreArxivCheckUpdate",
@@ -365,7 +356,11 @@ test("arxiv-pdf-fallback 真实 Electron 组合交接：固定版本 PDF 快照�
   expect(checked.ok).toBe(true);
   expect(checked.status).toBe("update-available");
   expect(checked.latest?.version).toBe(2);
-  const candidate = await invoke<{ ok: boolean; outcome?: string; candidate?: { baseRevision: string; document: DocumentTree } }>({
+  const candidate = await invoke<{
+    ok: boolean;
+    outcome?: string;
+    candidate?: { baseRevision: string; document: DocumentTree };
+  }>({
     type: "coreArxivUpdateCandidate",
     root: failed.root,
     reference: { baseId: ID, version: 2, canonicalId: `${ID}v2` },
@@ -439,14 +434,14 @@ test("arxiv-pdf-fallback 真实 Electron 拒绝上传确认：零 POST，PDF 快
   const expectedSha256 = createHash("sha256").update(pdfBytes).digest("hex");
   const sources = await fs.readdir(path.join(failed.root, "sources"));
   expect(sources.length).toBeGreaterThan(0);
-  const snapshots = await Promise.all(sources.map(async (sourceSnapshotId) =>
-    JSON.parse(
-      await fs.readFile(
-        path.join(failed.root, "sources", sourceSnapshotId, "snapshot.json"),
-        "utf8",
-      ),
-    ) as PdfSourceSnapshotRecord
-  ));
+  const snapshots = await Promise.all(
+    sources.map(
+      async (sourceSnapshotId) =>
+        JSON.parse(
+          await fs.readFile(path.join(failed.root, "sources", sourceSnapshotId, "snapshot.json"), "utf8"),
+        ) as PdfSourceSnapshotRecord,
+    ),
+  );
   const pdfSnapshots = snapshots.filter((snapshot) => snapshot.kind === "pdf");
   expect(pdfSnapshots).toHaveLength(1);
   const [pdfSnapshot] = pdfSnapshots;
@@ -460,12 +455,14 @@ test("arxiv-pdf-fallback 真实 Electron 拒绝上传确认：零 POST，PDF 快
     sha256: expectedSha256,
     arxiv: { baseId: ID, version: 1 },
   });
-  expect(pdfSnapshot.files).toEqual([{
-    path: "paper.pdf",
-    sha256: expectedSha256,
-    size: pdfBytes.length,
-    mime: "application/pdf",
-  }]);
+  expect(pdfSnapshot.files).toEqual([
+    {
+      path: "paper.pdf",
+      sha256: expectedSha256,
+      size: pdfBytes.length,
+      mime: "application/pdf",
+    },
+  ]);
   expect((await fs.readFile(path.join(snapshotPath, "paper.pdf"))).equals(pdfBytes)).toBe(true);
   expect(requests.filter((url) => url === PDF_PATH)).toHaveLength(1);
 

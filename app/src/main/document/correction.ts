@@ -24,8 +24,7 @@ function json(value: unknown) {
 function referencedAssetPaths(tree: DocumentTree): string[] {
   const paths = new Set<string>();
   for (const block of tree.blocks)
-    if ((block.kind === "figure" || block.kind === "formula") && block.asset)
-      paths.add(block.asset.path);
+    if ((block.kind === "figure" || block.kind === "formula") && block.asset) paths.add(block.asset.path);
   return [...paths].sort();
 }
 
@@ -39,7 +38,9 @@ export async function previewDocumentCorrections(input: {
   const revisionId = input.revisionId ?? randomUUID();
   const opened = await openProject(input.root);
   if (opened.manifest.paper.currentRevision !== input.baseRevision)
-    throw new Error(`baseRevision 已变化：修正基线为 ${input.baseRevision}，current 为 ${opened.manifest.paper.currentRevision}。`);
+    throw new Error(
+      `baseRevision 已变化：修正基线为 ${input.baseRevision}，current 为 ${opened.manifest.paper.currentRevision}。`,
+    );
   const root = opened.root;
   const [base, previousTombstones] = await Promise.all([
     readRevisionDocument(root, input.baseRevision, "document"),
@@ -104,8 +105,7 @@ export async function publishDocumentCorrections(input: {
     "changeset.json": json(result.changeset),
   };
   for (const [relative, asset] of Object.entries(result.assets)) {
-    if (asset.bytes.byteLength > MAX_ASSET_BYTES)
-      throw new Error(`修正资产超过 32 MiB 预算：${relative}。`);
+    if (asset.bytes.byteLength > MAX_ASSET_BYTES) throw new Error(`修正资产超过 32 MiB 预算：${relative}。`);
     files[relative] = { bytes: asset.bytes, mime: asset.mime };
   }
   // 两棵树引用资产的并集随 revision 发布；既有资产按基线登记读取，缺失即拒绝。
@@ -114,12 +114,15 @@ export async function publishDocumentCorrections(input: {
     const asset = await readRevisionAsset(root, input.baseRevision, relative);
     files[relative] = { bytes: new Uint8Array(asset.bytes), ...(asset.mime === undefined ? {} : { mime: asset.mime }) };
   }
-  return commitRevision({
-    root,
-    baseRevision: input.baseRevision,
-    sourceSnapshotId: revision.sourceSnapshotId,
-    revisionId: input.revisionId,
-    files,
-    metadata: { normalizationVersion: 1, operation: "local-correction" },
-  }, input.hooks ?? {});
+  return commitRevision(
+    {
+      root,
+      baseRevision: input.baseRevision,
+      sourceSnapshotId: revision.sourceSnapshotId,
+      revisionId: input.revisionId,
+      files,
+      metadata: { normalizationVersion: 1, operation: "local-correction" },
+    },
+    input.hooks ?? {},
+  );
 }

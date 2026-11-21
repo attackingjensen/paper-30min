@@ -66,27 +66,20 @@ function parseUrl(input: string): ArxivReferenceParseResult {
   } catch {
     return invalid("arxiv.reference.urlMalformed");
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:")
-    return invalid("arxiv.reference.protocol");
-  if (url.username !== "" || url.password !== "")
-    return invalid("arxiv.reference.credentials");
+  if (url.protocol !== "https:" && url.protocol !== "http:") return invalid("arxiv.reference.protocol");
+  if (url.username !== "" || url.password !== "") return invalid("arxiv.reference.credentials");
   if (!isAllowedArxivHost(url.hostname)) return invalid("arxiv.reference.host");
   // 编码斜杠、点段与百分号编码一律拒绝，杜绝路径穿越与编码绕过。
   // WHATWG URL 会静默归一化点段，因此穿越检查必须作用于原始输入路径。
   const rawPath = input.slice(input.indexOf("://") + 3).replace(/^[^/?#]*/, "");
-  if (
-    rawPath.includes("%") ||
-    rawPath.split(/[/?#]/).some((segment) => segment === ".." || segment === ".")
-  )
+  if (rawPath.includes("%") || rawPath.split(/[/?#]/).some((segment) => segment === ".." || segment === "."))
     return invalid("arxiv.reference.path");
   // query/fragment 不得静默改变来源含义：出现即拒绝。
-  if (url.search !== "" || url.hash !== "")
-    return invalid("arxiv.reference.queryOrFragment");
+  if (url.search !== "" || url.hash !== "") return invalid("arxiv.reference.queryOrFragment");
   const segments = url.pathname.split("/").filter((segment) => segment !== "");
   if (segments.length === 0) return invalid("arxiv.reference.endpoint");
   const [endpoint, ...idSegments] = segments;
-  if (endpoint !== "abs" && endpoint !== "html" && endpoint !== "pdf")
-    return invalid("arxiv.reference.endpoint");
+  if (endpoint !== "abs" && endpoint !== "html" && endpoint !== "pdf") return invalid("arxiv.reference.endpoint");
   let text = idSegments.join("/");
   if (endpoint === "pdf" && text.endsWith(".pdf")) text = text.slice(0, -4);
   return parseIdentifier(text);

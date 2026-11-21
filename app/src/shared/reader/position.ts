@@ -50,21 +50,31 @@ export interface PositionRevisionContext {
 /** 锚点主节点（removed 判定与 tombstone 查找的对象）。 */
 function primaryNode(anchor: ReadingPositionAnchor): { nodeType: NodeType; nodeId: string } {
   switch (anchor.kind) {
-    case "section": return { nodeType: "section", nodeId: anchor.sectionId };
-    case "unit": return { nodeType: "unit", nodeId: anchor.unitId };
-    case "sentence": return { nodeType: "sentence", nodeId: anchor.sentenceId };
-    case "atom": return { nodeType: "atom", nodeId: anchor.atomId };
-    case "block": return { nodeType: "block", nodeId: anchor.blockId };
+    case "section":
+      return { nodeType: "section", nodeId: anchor.sectionId };
+    case "unit":
+      return { nodeType: "unit", nodeId: anchor.unitId };
+    case "sentence":
+      return { nodeType: "sentence", nodeId: anchor.sentenceId };
+    case "atom":
+      return { nodeType: "atom", nodeId: anchor.atomId };
+    case "block":
+      return { nodeType: "block", nodeId: anchor.blockId };
   }
 }
 
 function nodeExists(tree: DocumentTree, nodeType: NodeType, nodeId: string): boolean {
   switch (nodeType) {
-    case "section": return Boolean(tree.sections[nodeId]);
-    case "unit": return Boolean(tree.units[nodeId]);
-    case "sentence": return Boolean(tree.sentences[nodeId]);
-    case "atom": return Boolean(tree.atoms[nodeId]);
-    case "block": return tree.blocks.some((block) => block.id === nodeId);
+    case "section":
+      return Boolean(tree.sections[nodeId]);
+    case "unit":
+      return Boolean(tree.units[nodeId]);
+    case "sentence":
+      return Boolean(tree.sentences[nodeId]);
+    case "atom":
+      return Boolean(tree.atoms[nodeId]);
+    case "block":
+      return tree.blocks.some((block) => block.id === nodeId);
   }
 }
 
@@ -84,9 +94,8 @@ export function resolveReadingPosition(
     : undefined;
 
   if (!exists || status === "removed" || status === "conflicted") {
-    const tombstone = tombstones.find(
-      (entry) => entry.nodeType === primary.nodeType && entry.nodeId === primary.nodeId,
-    ) ?? null;
+    const tombstone =
+      tombstones.find((entry) => entry.nodeType === primary.nodeType && entry.nodeId === primary.nodeId) ?? null;
     const parentAlive = position.parentSectionId !== null && Boolean(tree.sections[position.parentSectionId]);
     return {
       status: "removed",
@@ -95,9 +104,8 @@ export function resolveReadingPosition(
         : "原阅读位置已失效：目标内容与所属章节均已删除，已回到文首。",
       excerpt: position.excerpt,
       tombstone,
-      fallback: parentAlive && position.parentSectionId
-        ? { kind: "section", sectionId: position.parentSectionId }
-        : null,
+      fallback:
+        parentAlive && position.parentSectionId ? { kind: "section", sectionId: position.parentSectionId } : null,
     };
   }
   if (covered) {

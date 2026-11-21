@@ -2,11 +2,7 @@
 // 只组合 project-core 与 document-core 的公开命令；不合并文档、不改写已发布 current。
 import type { ArxivReference, ImportDiagnostic, PdfFallbackRequest } from "../../shared/arxiv.js";
 import { readDiagnosticArray } from "../../shared/arxiv.js";
-import type {
-  ArxivImportProgress,
-  ProjectCoreSnapshot,
-  ProjectRevisionRecord,
-} from "../../shared/contracts.js";
+import type { ArxivImportProgress, ProjectCoreSnapshot, ProjectRevisionRecord } from "../../shared/contracts.js";
 import {
   createProject,
   inspectImportCandidate,
@@ -40,8 +36,11 @@ function revisionArxivMetadata(revision: ProjectRevisionRecord): ArxivRevisionMe
   if (value === null || typeof value !== "object") return {};
   const record: Record<string, unknown> = { ...value };
   return {
-    ...(typeof record.converterVersion === "number" && Number.isInteger(record.converterVersion) && record.converterVersion >= 1
-      ? { converterVersion: record.converterVersion } : {}),
+    ...(typeof record.converterVersion === "number" &&
+    Number.isInteger(record.converterVersion) &&
+    record.converterVersion >= 1
+      ? { converterVersion: record.converterVersion }
+      : {}),
     warnings: readDiagnosticArray(record.warnings),
   };
 }
@@ -91,9 +90,7 @@ export type ArxivImportResult =
     }
   | { ok: false; root: string; diagnostic: ImportDiagnostic };
 
-export type PdfFallbackResult =
-  | { ok: true; request: PdfFallbackRequest }
-  | { ok: false; diagnostic: ImportDiagnostic };
+export type PdfFallbackResult = { ok: true; request: PdfFallbackRequest } | { ok: false; diagnostic: ImportDiagnostic };
 
 function fatal(
   code: string,
@@ -181,7 +178,13 @@ async function convertAndRecord(
 async function fetchConvertPipeline(
   root: string,
   progress: ArxivImportProgress,
-  input: { transport: ArxivTransport; baseUrl?: string; signal?: AbortSignal; hooks?: ArxivImportProgressHooks; allowFixtureLoopback?: boolean },
+  input: {
+    transport: ArxivTransport;
+    baseUrl?: string;
+    signal?: AbortSignal;
+    hooks?: ArxivImportProgressHooks;
+    allowFixtureLoopback?: boolean;
+  },
 ): Promise<ArxivImportResult> {
   if (progress.reference.version === null)
     return { ok: false, root, diagnostic: fatal("arxiv-version-unpinned", "arxiv.version.unpinned", "resolve") };
@@ -257,14 +260,18 @@ export async function importArxivPaper(input: ImportArxivPaperInput): Promise<Ar
   }
   const root = created.root;
   const absUrl = endpointUrl(input.baseUrl, "abs", parsed.reference);
-  const resolved = await resolveArxivVersion(parsed.reference, async (url) => {
-    const response = await input.transport(url, {
-      budgetBytes: ABS_BUDGET_BYTES,
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
-      ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
-    });
-    return Buffer.from(response.bytes).toString("utf8");
-  }, absUrl);
+  const resolved = await resolveArxivVersion(
+    parsed.reference,
+    async (url) => {
+      const response = await input.transport(url, {
+        budgetBytes: ABS_BUDGET_BYTES,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
+      });
+      return Buffer.from(response.bytes).toString("utf8");
+    },
+    absUrl,
+  );
   if (!resolved.ok) {
     const diagnostic = resolved.diagnostic;
     try {
@@ -311,7 +318,11 @@ export async function resumeArxivImport(input: ResumeArxivImportInput): Promise<
     const revision = await readRevision(root, opened.manifest.paper.currentRevision);
     const snapshot = await readSourceSnapshot(root, revision.sourceSnapshotId);
     if (snapshot.kind !== "arxiv" || typeof snapshot.baseId !== "string" || typeof snapshot.version !== "number")
-      return { ok: false, root, diagnostic: fatal("arxiv-import-source-invalid", "arxiv.import.sourceInvalid", "resolve") };
+      return {
+        ok: false,
+        root,
+        diagnostic: fatal("arxiv-import-source-invalid", "arxiv.import.sourceInvalid", "resolve"),
+      };
     let persisted: ArxivRevisionMetadata;
     let snapshotWarnings: ImportDiagnostic[];
     try {
@@ -334,7 +345,8 @@ export async function resumeArxivImport(input: ResumeArxivImportInput): Promise<
       reference: {
         baseId: snapshot.baseId,
         version: snapshot.version,
-        canonicalId: typeof snapshot.canonicalId === "string" ? snapshot.canonicalId : `${snapshot.baseId}v${snapshot.version}`,
+        canonicalId:
+          typeof snapshot.canonicalId === "string" ? snapshot.canonicalId : `${snapshot.baseId}v${snapshot.version}`,
       },
       revision,
       warnings: [...snapshotWarnings, ...(persisted.warnings ?? [])],
@@ -342,7 +354,11 @@ export async function resumeArxivImport(input: ResumeArxivImportInput): Promise<
   }
   const progress = opened.importRecord?.arxiv;
   if (!progress)
-    return { ok: false, root, diagnostic: fatal("arxiv-import-progress-missing", "arxiv.import.progressMissing", "resolve") };
+    return {
+      ok: false,
+      root,
+      diagnostic: fatal("arxiv-import-progress-missing", "arxiv.import.progressMissing", "resolve"),
+    };
   if ((progress.stage === "snapshot" || progress.stage === "convert") && progress.sourceSnapshotId !== undefined) {
     const snapshot = await readSourceSnapshot(root, progress.sourceSnapshotId);
     let fetchWarnings: ImportDiagnostic[];
@@ -379,7 +395,15 @@ export async function resumeArxivImport(input: ResumeArxivImportInput): Promise<
       }
       published = state === "published";
     }
-    return convertAndRecord(root, progress, progress.sourceSnapshotId, fetchWarnings, input.hooks, published, input.converter);
+    return convertAndRecord(
+      root,
+      progress,
+      progress.sourceSnapshotId,
+      fetchWarnings,
+      input.hooks,
+      published,
+      input.converter,
+    );
   }
   if (input.transport === undefined)
     return {
@@ -435,7 +459,10 @@ export async function prepareArxivPdfFallback(
       lineage = null;
     }
     if (lineage === null || lineage.version === null)
-      return { ok: false, diagnostic: fatal("arxiv-fallback-source-invalid", "arxiv.fallback.sourceInvalid", "resolve") };
+      return {
+        ok: false,
+        diagnostic: fatal("arxiv-fallback-source-invalid", "arxiv.fallback.sourceInvalid", "resolve"),
+      };
     reference = lineage;
     handoffBase = current;
   }

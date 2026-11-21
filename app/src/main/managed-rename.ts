@@ -11,11 +11,7 @@ export interface RenameHooks {
   delay?: (ms: number) => Promise<void>;
 }
 
-export async function renameManaged(
-  from: string,
-  to: string,
-  hooks: RenameHooks = {},
-): Promise<void> {
+export async function renameManaged(from: string, to: string, hooks: RenameHooks = {}): Promise<void> {
   const rename = hooks.rename ?? fs.rename;
   const wait = hooks.delay ?? delay;
   for (let attempt = 0; ; attempt += 1) {

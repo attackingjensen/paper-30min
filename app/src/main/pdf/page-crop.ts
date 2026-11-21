@@ -92,11 +92,7 @@ function calibrate(
   if (!(pdfWidth > 0) || !(pdfHeight > 0)) return null;
   const vendorAspect = request.pageWidth / request.pageHeight;
   const pdfAspect = pdfWidth / pdfHeight;
-  if (
-    !Number.isFinite(vendorAspect) ||
-    Math.abs(vendorAspect - pdfAspect) > ASPECT_TOLERANCE * pdfAspect
-  )
-    return null;
+  if (!Number.isFinite(vendorAspect) || Math.abs(vendorAspect - pdfAspect) > ASPECT_TOLERANCE * pdfAspect) return null;
   const bbox = request.bbox;
   if (
     !bbox ||
@@ -133,9 +129,7 @@ export async function cropPdfPageRegions(input: {
   const uncalibrated = (key: string) => {
     warnings.push(warning("pdf-crop-region-uncalibrated", key));
   };
-  const wasmBinary = await fs.readFile(
-    new URL(import.meta.resolve("@embedpdf/pdfium/pdfium.wasm")),
-  );
+  const wasmBinary = await fs.readFile(new URL(import.meta.resolve("@embedpdf/pdfium/pdfium.wasm")));
   const [{ init }, { PdfEngine, PdfiumNative }] = await Promise.all([
     import("@embedpdf/pdfium"),
     import("@embedpdf/engines/pdfium"),

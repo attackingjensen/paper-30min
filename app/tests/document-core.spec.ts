@@ -11,11 +11,7 @@ import {
   readRevisionDocument,
 } from "../src/main/project-core";
 import { parseDocumentTree } from "../src/shared/document/tree";
-import {
-  testDocumentIds,
-  testDocumentTree,
-  testRevisionFiles,
-} from "./fixtures/document-tree";
+import { testDocumentIds, testDocumentTree, testRevisionFiles } from "./fixtures/document-tree";
 
 let sandbox: string;
 
@@ -71,8 +67,7 @@ test("document-core current 与 source-base 共用树 schema，重开保留五�
     atoms: [testDocumentIds.atom],
     blocks: [testDocumentIds.block],
   });
-  expect(current.sentences[testDocumentIds.sentence].content)
-    .toEqual(tree.sentences[testDocumentIds.sentence].content);
+  expect(current.sentences[testDocumentIds.sentence].content).toEqual(tree.sentences[testDocumentIds.sentence].content);
   expect(Object.keys(current.sentences)).toHaveLength(1);
   expect(await fs.readFile(documentFile)).toEqual(originalDocument);
   expect(await fs.readFile(sourceBaseFile)).toEqual(originalSourceBase);
@@ -87,22 +82,21 @@ test("document-core 提交生成绑定 revision 的真实 changeset，重开可�
     files: testRevisionFiles(created.manifest.paper.id, "变化集"),
   });
 
-  const persisted = JSON.parse(await fs.readFile(
-    path.join(created.root, revision.path, "changeset.json"),
-    "utf8",
-  ));
+  const persisted = JSON.parse(await fs.readFile(path.join(created.root, revision.path, "changeset.json"), "utf8"));
   expect(persisted).toMatchObject({
     changesetFormatVersion: 1,
     baseRevision: null,
     revisionId: revision.revisionId,
   });
-  expect(persisted.changes).toEqual(expect.arrayContaining([
-    { nodeType: "section", nodeId: testDocumentIds.section, status: "added" },
-    { nodeType: "unit", nodeId: testDocumentIds.unit, status: "added" },
-    { nodeType: "sentence", nodeId: testDocumentIds.sentence, status: "added" },
-    { nodeType: "atom", nodeId: testDocumentIds.atom, status: "added" },
-    { nodeType: "block", nodeId: testDocumentIds.block, status: "added" },
-  ]));
+  expect(persisted.changes).toEqual(
+    expect.arrayContaining([
+      { nodeType: "section", nodeId: testDocumentIds.section, status: "added" },
+      { nodeType: "unit", nodeId: testDocumentIds.unit, status: "added" },
+      { nodeType: "sentence", nodeId: testDocumentIds.sentence, status: "added" },
+      { nodeType: "atom", nodeId: testDocumentIds.atom, status: "added" },
+      { nodeType: "block", nodeId: testDocumentIds.block, status: "added" },
+    ]),
+  );
   expect(persisted.changes).toHaveLength(5);
   await expect(openProject(created.root)).resolves.toMatchObject({
     manifest: { paper: { currentRevision: revision.revisionId } },
@@ -113,20 +107,24 @@ test("document-core 显式 changeset 的 revisionId 不一致时拒绝发布", a
   const { created, source } = await createdProject();
   const paperId = created.manifest.paper.id;
 
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: {
-      ...testRevisionFiles(paperId, "错误变化集"),
-      "changeset.json": Buffer.from(JSON.stringify({
-        changesetFormatVersion: 1,
-        baseRevision: null,
-        revisionId: randomUUID(),
-        changes: [],
-      })),
-    },
-  })).rejects.toThrow(/changeset|revisionId|变化/);
+  await expect(
+    commitRevision({
+      root: created.root,
+      baseRevision: null,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        ...testRevisionFiles(paperId, "错误变化集"),
+        "changeset.json": Buffer.from(
+          JSON.stringify({
+            changesetFormatVersion: 1,
+            baseRevision: null,
+            revisionId: randomUUID(),
+            changes: [],
+          }),
+        ),
+      },
+    }),
+  ).rejects.toThrow(/changeset|revisionId|变化/);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 
@@ -135,27 +133,31 @@ test("document-core revisionId 与 baseRevision 匹配但 changeset 内容不符
   const paperId = created.manifest.paper.id;
   const revisionId = randomUUID();
 
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    revisionId,
-    files: {
-      ...testRevisionFiles(paperId, "错误变化集"),
-      "changeset.json": Buffer.from(JSON.stringify({
-        changesetFormatVersion: 1,
-        baseRevision: null,
-        revisionId,
-        changes: [
-          { nodeType: "section", nodeId: testDocumentIds.section, status: "retained" },
-          { nodeType: "unit", nodeId: testDocumentIds.unit, status: "added" },
-          { nodeType: "sentence", nodeId: testDocumentIds.sentence, status: "added" },
-          { nodeType: "atom", nodeId: testDocumentIds.atom, status: "added" },
-          { nodeType: "block", nodeId: testDocumentIds.block, status: "added" },
-        ],
-      })),
-    },
-  })).rejects.toThrow("changeset 与 baseRevision、revisionId 或候选文档树不一致，拒绝发布。");
+  await expect(
+    commitRevision({
+      root: created.root,
+      baseRevision: null,
+      sourceSnapshotId: source.sourceSnapshotId,
+      revisionId,
+      files: {
+        ...testRevisionFiles(paperId, "错误变化集"),
+        "changeset.json": Buffer.from(
+          JSON.stringify({
+            changesetFormatVersion: 1,
+            baseRevision: null,
+            revisionId,
+            changes: [
+              { nodeType: "section", nodeId: testDocumentIds.section, status: "retained" },
+              { nodeType: "unit", nodeId: testDocumentIds.unit, status: "added" },
+              { nodeType: "sentence", nodeId: testDocumentIds.sentence, status: "added" },
+              { nodeType: "atom", nodeId: testDocumentIds.atom, status: "added" },
+              { nodeType: "block", nodeId: testDocumentIds.block, status: "added" },
+            ],
+          }),
+        ),
+      },
+    }),
+  ).rejects.toThrow("changeset 与 baseRevision、revisionId 或候选文档树不一致，拒绝发布。");
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 
@@ -169,24 +171,28 @@ test("document-core 提交对 current 与 source-base 执行同一引用完整�
   const invalidSourceBase = testDocumentTree(paperId);
   invalidSourceBase.sentences[testDocumentIds.sentence].unitId = randomUUID();
 
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: {
-      ...testRevisionFiles(paperId, "有效正文"),
-      "document.json": Buffer.from(JSON.stringify(invalidCurrent)),
-    },
-  })).rejects.toThrow(/文档树|引用/);
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: {
-      ...testRevisionFiles(paperId, "有效正文"),
-      "source-base.json": Buffer.from(JSON.stringify(invalidSourceBase)),
-    },
-  })).rejects.toThrow(/文档树|引用/);
+  await expect(
+    commitRevision({
+      root: created.root,
+      baseRevision: null,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        ...testRevisionFiles(paperId, "有效正文"),
+        "document.json": Buffer.from(JSON.stringify(invalidCurrent)),
+      },
+    }),
+  ).rejects.toThrow(/文档树|引用/);
+  await expect(
+    commitRevision({
+      root: created.root,
+      baseRevision: null,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        ...testRevisionFiles(paperId, "有效正文"),
+        "source-base.json": Buffer.from(JSON.stringify(invalidSourceBase)),
+      },
+    }),
+  ).rejects.toThrow(/文档树|引用/);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 

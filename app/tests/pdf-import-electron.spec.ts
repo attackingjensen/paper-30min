@@ -1,13 +1,7 @@
 // 真实 Electron 高层回归（SPEC-pdf-import Testing Strategy／s08.8）：
 // 生产 preload、project:command IPC、Node utility process 与真实 undici 传输，
 // 端点经本机解析设置映射到受控百度服务，不访问真实云端。
-import {
-  test,
-  expect,
-  _electron as electron,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -56,10 +50,7 @@ function block(id: number, content: string) {
   };
 }
 
-function vendorPage(
-  blocks: ReturnType<typeof block>[],
-  markdown?: Record<string, unknown>,
-) {
+function vendorPage(blocks: ReturnType<typeof block>[], markdown?: Record<string, unknown>) {
   return {
     prunedResult: {
       width: 1191,
@@ -83,8 +74,7 @@ function parseResponse(
     vendorPage([block(0, "First page paragraph"), block(1, "Figure 1: caption")]),
     vendorPage([block(0, secondPageText)]),
   ];
-  if (extra.images && pages[0])
-    pages[0] = vendorPage(pages[0].prunedResult.parsing_res_list, { images: extra.images });
+  if (extra.images && pages[0]) pages[0] = vendorPage(pages[0].prunedResult.parsing_res_list, { images: extra.images });
   const row = {
     result: {
       dataInfo: {
@@ -135,19 +125,19 @@ async function startServer() {
       const query = /^\/jobs\/(job-electron-\d+)$/.exec(request.url ?? "");
       if (query) {
         counts.queries += 1;
-        if (holdQueries)
-          await new Promise<void>((resolve) => heldQueries.push(resolve));
-        response.end(JSON.stringify({
-          code: 0,
-          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/${query[1]}` } },
-        }));
+        if (holdQueries) await new Promise<void>((resolve) => heldQueries.push(resolve));
+        response.end(
+          JSON.stringify({
+            code: 0,
+            data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/${query[1]}` } },
+          }),
+        );
         return;
       }
       const download = /^\/jobs\/result\/(job-electron-\d+)$/.exec(request.url ?? "");
       if (download) {
         counts.downloads += 1;
-        if (holdDownloads)
-          await new Promise<void>((resolve) => heldDownloads.push(resolve));
+        if (holdDownloads) await new Promise<void>((resolve) => heldDownloads.push(resolve));
         response.end(results[Number(download[1].slice("job-electron-".length))]());
         return;
       }
@@ -164,18 +154,14 @@ async function stopServer() {
   const closing = server;
   server = null;
   closing.closeAllConnections();
-  await new Promise<void>((resolve, reject) =>
-    closing.close((error) => (error ? reject(error) : resolve())),
-  );
+  await new Promise<void>((resolve, reject) => closing.close((error) => (error ? reject(error) : resolve())));
 }
 
 async function launch() {
   const visible = process.env.PAPER30MIN_TEST_WINDOW === "visible";
   const env: Record<string, string> = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
@@ -193,18 +179,12 @@ async function launch() {
 }
 
 async function closeDesktopForCleanup() {
-  if (
-    !desktopProcess ||
-    desktopProcess.exitCode !== null ||
-    desktopProcess.signalCode !== null
-  ) return;
+  if (!desktopProcess || desktopProcess.exitCode !== null || desktopProcess.signalCode !== null) return;
   await desktop.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = (...args: unknown[]) => {
       const options = args.at(-1) as Electron.MessageBoxSyncOptions;
-      if (
-        options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" ||
-        options.buttons?.[1] !== "放弃并关闭"
-      ) throw new Error("测试清理遇到非预期的原生确认框。");
+      if (options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" || options.buttons?.[1] !== "放弃并关闭")
+        throw new Error("测试清理遇到非预期的原生确认框。");
       return 1;
     };
   });
@@ -226,7 +206,9 @@ async function quitDesktop() {
 /** 本机解析设置经生产 parsing:command 通道保存；Token 加密留在主进程。 */
 async function saveParsingSettings() {
   await page.evaluate(async (value) => {
-    const settings = await window.desktop.parsing<{ endpoint: string; model: string; hasKey: boolean }>({ type: "settings" });
+    const settings = await window.desktop.parsing<{ endpoint: string; model: string; hasKey: boolean }>({
+      type: "settings",
+    });
     await window.desktop.parsing({
       type: "saveSettings",
       settings: { ...settings, endpoint: value },
@@ -269,8 +251,7 @@ function startImport(root: string, sourceSnapshotId: string) {
   return { operationId, run };
 }
 
-const confirmDialog = () =>
-  page.getByRole("dialog", { name: "确认上传 PDF 到云端解析" });
+const confirmDialog = () => page.getByRole("dialog", { name: "确认上传 PDF 到云端解析" });
 
 /** 捕获 worker 经生产通道发来的确认请求（含 confirmationId）：在主进程侧旁路
  * 记录 webContents.send 的原始 payload，生产转发路径不变。 */
@@ -289,23 +270,22 @@ async function captureConfirmations(): Promise<void> {
 }
 
 async function readCapturedConfirmations(): Promise<PdfUploadConfirmation[]> {
-  return desktop.evaluate(() =>
-    (globalThis as unknown as { __pdfConfirms?: PdfUploadConfirmation[] }).__pdfConfirms ?? []);
+  return desktop.evaluate(
+    () => (globalThis as unknown as { __pdfConfirms?: PdfUploadConfirmation[] }).__pdfConfirms ?? [],
+  );
 }
 
 /** 经生产 preload 直接发送确认应答；可携带任意 confirmed 值以验证 fail-closed。 */
-async function replyConfirmation(
-  operationId: string,
-  confirmationId: string,
-  confirmed: unknown,
-): Promise<void> {
-  await page.evaluate(({ operationId, confirmationId, confirmed }) =>
-    window.desktop.replyPdfUploadConfirm({
-      operationId,
-      confirmationId,
-      confirmed,
-    } as Parameters<Window["desktop"]["replyPdfUploadConfirm"]>[0]),
-  { operationId, confirmationId, confirmed });
+async function replyConfirmation(operationId: string, confirmationId: string, confirmed: unknown): Promise<void> {
+  await page.evaluate(
+    ({ operationId, confirmationId, confirmed }) =>
+      window.desktop.replyPdfUploadConfirm({
+        operationId,
+        confirmationId,
+        confirmed,
+      } as Parameters<Window["desktop"]["replyPdfUploadConfirm"]>[0]),
+    { operationId, confirmationId, confirmed },
+  );
 }
 
 /** 真实本地修正：改第一页句子文本后经 coreCommit 发布新 current；返回新 revision。 */
@@ -316,33 +296,39 @@ async function commitLocalCorrection(
 ): Promise<ProjectRevisionRecord> {
   const document = await readTree(root, base.revisionId);
   const sourceBase = await invoke<DocumentTree>({
-    type: "coreReadDocument", root, revisionId: base.revisionId, tree: "source-base",
+    type: "coreReadDocument",
+    root,
+    revisionId: base.revisionId,
+    tree: "source-base",
   });
   const sentenceId = firstSentence(document);
   const part = document.sentences[sentenceId].content[0];
   if (part.kind !== "text") throw new Error("fixture 首句不是纯文本");
   part.text = correctedText;
-  return page.evaluate(({ root, baseRevision, sourceSnapshotId, document, sourceBase }) => {
-    const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-    return window.desktop.invoke({
-      type: "coreCommit",
+  return page.evaluate(
+    ({ root, baseRevision, sourceSnapshotId, document, sourceBase }) => {
+      const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+      return window.desktop.invoke({
+        type: "coreCommit",
+        root,
+        baseRevision,
+        sourceSnapshotId,
+        files: {
+          "document.json": json(document),
+          "source-base.json": json(sourceBase),
+          "tombstones.json": json([]),
+          "changeset.json": json({ baseRevision }),
+        },
+      });
+    },
+    {
       root,
-      baseRevision,
-      sourceSnapshotId,
-      files: {
-        "document.json": json(document),
-        "source-base.json": json(sourceBase),
-        "tombstones.json": json([]),
-        "changeset.json": json({ baseRevision }),
-      },
-    });
-  }, {
-    root,
-    baseRevision: base.revisionId,
-    sourceSnapshotId: base.sourceSnapshotId,
-    document,
-    sourceBase,
-  }) as Promise<ProjectRevisionRecord>;
+      baseRevision: base.revisionId,
+      sourceSnapshotId: base.sourceSnapshotId,
+      document,
+      sourceBase,
+    },
+  ) as Promise<ProjectRevisionRecord>;
 }
 
 async function listProjectFiles(root: string): Promise<string[]> {
@@ -364,11 +350,12 @@ async function readTree(root: string, revisionId: string): Promise<DocumentTree>
 }
 
 function firstSentence(tree: DocumentTree): string {
-  const unit = Object.values(tree.units).find((entry) =>
-    entry.kind === "paragraph" &&
-    entry.sentenceIds.length === 1 &&
-    projectSentenceText(tree, entry.sentenceIds[0]).replace(/\s+/g, " ").trim() ===
-      "First page paragraph");
+  const unit = Object.values(tree.units).find(
+    (entry) =>
+      entry.kind === "paragraph" &&
+      entry.sentenceIds.length === 1 &&
+      projectSentenceText(tree, entry.sentenceIds[0]).replace(/\s+/g, " ").trim() === "First page paragraph",
+  );
   if (!unit) throw new Error("fixture sentence not found");
   return unit.sentenceIds[0];
 }
@@ -459,10 +446,12 @@ test("pdf-import 真实 Electron 受理后停止，重开应用恢复沿用原�
   // 受控服务扣住查询响应：受理后任务停在 querying，停止确定命中本机等待。
   holdQueries = true;
   await page.getByRole("button", { name: "确认上传并解析" }).click();
-  await expect.poll(async () => {
-    const tasks = await invoke<PdfParseTaskRecord[]>({ type: "corePdfTasks", root });
-    return tasks[0]?.jobId ?? "";
-  }).not.toBe("");
+  await expect
+    .poll(async () => {
+      const tasks = await invoke<PdfParseTaskRecord[]>({ type: "corePdfTasks", root });
+      return tasks[0]?.jobId ?? "";
+    })
+    .not.toBe("");
   const stopped = await invoke<{ stopped: boolean }>({
     type: "corePdfStop",
     root,
@@ -471,8 +460,7 @@ test("pdf-import 真实 Electron 受理后停止，重开应用恢复沿用原�
   expect(stopped.stopped).toBe(true);
   const first = await run;
   expect(first.outcome === "stopped" || first.outcome === "incomplete").toBe(true);
-  if (first.outcome !== "stopped" && first.outcome !== "incomplete")
-    throw new Error("expected stopped task");
+  if (first.outcome !== "stopped" && first.outcome !== "incomplete") throw new Error("expected stopped task");
   expect(first.task.phase).toBe("stopped");
   const postsAfterStop = counts.posts;
 
@@ -554,14 +542,15 @@ test("pdf-import 真实 Electron 同 PDF 重解析形成候选，发布保留本
   if (published.outcome !== "published") throw new Error("seed import did not publish");
 
   // 真实本地修正：经 coreCommit 发布新 current，重解析以新 current 为基线。
-  const corrected = await commitLocalCorrection(
-    root, published.revision, "First page paragraph corrected locally");
+  const corrected = await commitLocalCorrection(root, published.revision, "First page paragraph corrected locally");
   expect(corrected.revisionId).not.toBe(published.revision.revisionId);
   const correctedTree = await readTree(root, corrected.revisionId);
-  const correctedSentence = Object.values(correctedTree.units).find((entry) =>
-    entry.kind === "paragraph" && entry.sentenceIds.length === 1 &&
-    projectSentenceText(correctedTree, entry.sentenceIds[0]) ===
-      "First page paragraph corrected locally");
+  const correctedSentence = Object.values(correctedTree.units).find(
+    (entry) =>
+      entry.kind === "paragraph" &&
+      entry.sentenceIds.length === 1 &&
+      projectSentenceText(correctedTree, entry.sentenceIds[0]) === "First page paragraph corrected locally",
+  );
   expect(correctedSentence).toBeDefined();
 
   results.push(() => parseResponse("Second page text v2"));
@@ -593,7 +582,8 @@ test("pdf-import 真实 Electron 同 PDF 重解析形成候选，发布保留本
   expect(merged.revisionId).toBe(candidate.candidate.revisionId);
   const tree = await readTree(root, merged.revisionId);
   const texts = Object.values(tree.units).flatMap((unit) =>
-    unit.sentenceIds.map((id) => projectSentenceText(tree, id)));
+    unit.sentenceIds.map((id) => projectSentenceText(tree, id)),
+  );
   // 发布后本地修正保留，候选的第二页更新同时生效。
   expect(texts).toContain("First page paragraph corrected locally");
   expect(texts).toContain("Second page text v2");
@@ -609,17 +599,17 @@ test("pdf-import 真实 Electron 本地修正与候选冲突：未选择拒绝�
   const published = await first.run;
   expect(published.outcome).toBe("published");
   if (published.outcome !== "published") throw new Error("seed import did not publish");
-  const corrected = await commitLocalCorrection(
-    root, published.revision, "First page paragraph corrected locally");
+  const corrected = await commitLocalCorrection(root, published.revision, "First page paragraph corrected locally");
 
   // 候选改写同一句：与本地修正形成内容冲突。
-  results.push(() => parseResponse(
-    "Second page text v2",
-    { pages: [
-      vendorPage([block(0, "First page paragraph cloud rewrite"), block(1, "Figure 1: caption")]),
-      vendorPage([block(0, "Second page text v2")]),
-    ] },
-  ));
+  results.push(() =>
+    parseResponse("Second page text v2", {
+      pages: [
+        vendorPage([block(0, "First page paragraph cloud rewrite"), block(1, "Figure 1: caption")]),
+        vendorPage([block(0, "Second page text v2")]),
+      ],
+    }),
+  );
   const reparse = invoke<PdfReparseCommandResult>({
     type: "corePdfReparse",
     root,
@@ -636,14 +626,17 @@ test("pdf-import 真实 Electron 本地修正与候选冲突：未选择拒绝�
   const conflictId = candidate.candidate.conflicts[0].id;
 
   // 未解决冲突不得发布，current 不变。
-  await expect(invoke({
-    type: "corePdfPublishCandidate",
-    root,
-    parseBatchId: candidate.task.parseBatchId,
-    baseRevision: corrected.revisionId,
-  })).rejects.toThrow(/冲突/);
-  expect((await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root }))
-    .manifest.paper.currentRevision).toBe(corrected.revisionId);
+  await expect(
+    invoke({
+      type: "corePdfPublishCandidate",
+      root,
+      parseBatchId: candidate.task.parseBatchId,
+      baseRevision: corrected.revisionId,
+    }),
+  ).rejects.toThrow(/冲突/);
+  expect((await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root })).manifest.paper.currentRevision).toBe(
+    corrected.revisionId,
+  );
 
   // 显式选择 candidate 后发布：冲突句取云端改写，其余本地修正不受影响。
   const merged = await invoke<ProjectRevisionRecord>({
@@ -655,7 +648,8 @@ test("pdf-import 真实 Electron 本地修正与候选冲突：未选择拒绝�
   });
   const tree = await readTree(root, merged.revisionId);
   const texts = Object.values(tree.units).flatMap((unit) =>
-    unit.sentenceIds.map((id) => projectSentenceText(tree, id)));
+    unit.sentenceIds.map((id) => projectSentenceText(tree, id)),
+  );
   expect(texts).toContain("First page paragraph cloud rewrite");
   expect(texts).not.toContain("First page paragraph corrected locally");
 });
@@ -685,14 +679,15 @@ test("pdf-import 真实 Electron 发布前基线变化：候选发布拒绝，cu
   if (candidate.outcome !== "candidate") throw new Error("reparse did not form candidate");
 
   // 候选形成后 current 又前进：旧基线的发布必须拒绝。
-  const advanced = await commitLocalCorrection(
-    root, published.revision, "First page paragraph advanced baseline");
-  await expect(invoke({
-    type: "corePdfPublishCandidate",
-    root,
-    parseBatchId: candidate.task.parseBatchId,
-    baseRevision: published.revision.revisionId,
-  })).rejects.toThrow(/baseRevision/);
+  const advanced = await commitLocalCorrection(root, published.revision, "First page paragraph advanced baseline");
+  await expect(
+    invoke({
+      type: "corePdfPublishCandidate",
+      root,
+      parseBatchId: candidate.task.parseBatchId,
+      baseRevision: published.revision.revisionId,
+    }),
+  ).rejects.toThrow(/baseRevision/);
   const opened = await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root });
   expect(opened.manifest.paper.currentRevision).toBe(advanced.revisionId);
 });
@@ -757,7 +752,10 @@ test("pdf-import 真实 Electron 错误 confirmationId 与重复应答不命中�
   const snapshot = await snapshotPdf(root);
   const operationId = nextOperation();
   const first = invoke<PdfImportCommandResult>({
-    type: "corePdfImport", root, sourceSnapshotId: snapshot.sourceSnapshotId, operationId,
+    type: "corePdfImport",
+    root,
+    sourceSnapshotId: snapshot.sourceSnapshotId,
+    operationId,
   });
   await expect(confirmDialog()).toBeVisible();
   await expect.poll(async () => (await readCapturedConfirmations()).length).toBe(1);
@@ -778,7 +776,10 @@ test("pdf-import 真实 Electron 错误 confirmationId 与重复应答不命中�
   // 操作结束后复用同一 operationId：旧 confirmationId 的迟到 true 不得命中新确认。
   results.push(() => parseResponse("Second page text v2"));
   const second = invoke<PdfImportCommandResult>({
-    type: "corePdfImport", root, sourceSnapshotId: snapshot.sourceSnapshotId, operationId,
+    type: "corePdfImport",
+    root,
+    sourceSnapshotId: snapshot.sourceSnapshotId,
+    operationId,
   });
   await expect(confirmDialog()).toBeVisible();
   await expect.poll(async () => (await readCapturedConfirmations()).length).toBe(2);
@@ -868,10 +869,12 @@ test("pdf-import 真实 Electron 查询中退出：任务保留 querying 可恢�
   await expect(confirmDialog()).toBeVisible();
   holdQueries = true;
   await page.getByRole("button", { name: "确认上传并解析" }).click();
-  await expect.poll(async () => {
-    const tasks = await invoke<PdfParseTaskRecord[]>({ type: "corePdfTasks", root });
-    return tasks[0]?.phase ?? "";
-  }).toBe("querying");
+  await expect
+    .poll(async () => {
+      const tasks = await invoke<PdfParseTaskRecord[]>({ type: "corePdfTasks", root });
+      return tasks[0]?.phase ?? "";
+    })
+    .toBe("querying");
   const postsBefore = counts.posts;
   const settled = run.then(
     (result) => ({ ok: true as const, result }),
@@ -945,15 +948,15 @@ test("pdf-import 真实 Electron 缺失图片仍发布并携带 warning；缺页
   const root = await createCoreProject("缺图缺页");
   const snapshot = await snapshotPdf(root);
   // 正文引用图片但资源 404：成为可读占位，局部失败不阻断全文发布，warnings 非空。
-  results[0] = () => parseResponse("Second page text", {
-    pages: [
-      vendorPage(
-        [block(0, "First page paragraph"), block(1, "Before ![Figure B](imgs/lost.png) after.")],
-        { images: { "imgs/lost.png": `${endpoint}/missing-asset` } },
-      ),
-      vendorPage([block(0, "Second page text")]),
-    ],
-  });
+  results[0] = () =>
+    parseResponse("Second page text", {
+      pages: [
+        vendorPage([block(0, "First page paragraph"), block(1, "Before ![Figure B](imgs/lost.png) after.")], {
+          images: { "imgs/lost.png": `${endpoint}/missing-asset` },
+        }),
+        vendorPage([block(0, "Second page text")]),
+      ],
+    });
   const first = startImport(root, snapshot.sourceSnapshotId);
   await expect(confirmDialog()).toBeVisible();
   await page.getByRole("button", { name: "确认上传并解析" }).click();
@@ -964,9 +967,11 @@ test("pdf-import 真实 Electron 缺失图片仍发布并携带 warning；缺页
   expect(published.warnings.some((warning) => warning.code === "pdf-convert-figure-missing")).toBe(true);
 
   // 缺页（响应只含 1 页，父 PDF 为 2 页）：incomplete，current 不推进。
-  results.push(() => parseResponse("Second page text v2", {
-    pages: [vendorPage([block(0, "Only page text")])],
-  }));
+  results.push(() =>
+    parseResponse("Second page text v2", {
+      pages: [vendorPage([block(0, "Only page text")])],
+    }),
+  );
   const reparse = invoke<PdfReparseCommandResult>({
     type: "corePdfReparse",
     root,
@@ -1000,16 +1005,22 @@ test("pdf-import 真实 Electron 用户核验：未确认拒绝，显式确认�
     unitId: tree.sentences[sentenceId].unitId,
     sentenceId,
   };
-  await expect(invoke({
-    type: "corePdfVerify",
-    root,
-    expectedRevisionId: published.revision.revisionId,
-    anchor,
-    actor: { kind: "user", confirmed: false },
-  })).rejects.toThrow(/确认/);
-  expect(await invoke({
-    type: "corePdfReadVerification", root, revisionId: published.revision.revisionId,
-  })).toEqual([]);
+  await expect(
+    invoke({
+      type: "corePdfVerify",
+      root,
+      expectedRevisionId: published.revision.revisionId,
+      anchor,
+      actor: { kind: "user", confirmed: false },
+    }),
+  ).rejects.toThrow(/确认/);
+  expect(
+    await invoke({
+      type: "corePdfReadVerification",
+      root,
+      revisionId: published.revision.revisionId,
+    }),
+  ).toEqual([]);
 
   const record = await invoke<VerificationRecord>({
     type: "corePdfVerify",
@@ -1021,7 +1032,9 @@ test("pdf-import 真实 Electron 用户核验：未确认拒绝，显式确认�
   expect(record.coverage.length).toBeGreaterThan(0);
   expect(record.coverage.every((entry) => entry.validity === "verified")).toBe(true);
   const records = await invoke<VerificationRecord[]>({
-    type: "corePdfReadVerification", root, revisionId: published.revision.revisionId,
+    type: "corePdfReadVerification",
+    root,
+    revisionId: published.revision.revisionId,
   });
   expect(records).toHaveLength(1);
   expect(records[0].verificationId).toBe(record.verificationId);

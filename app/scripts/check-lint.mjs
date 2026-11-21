@@ -65,16 +65,25 @@ if (scan.error) {
   try {
     const report = JSON.parse(scan.stdout);
     const diagnostics = report?.diagnostics;
-    const valid = Number.isInteger(report?.number_of_files) && report.number_of_files >= 1
-      && Number.isInteger(report?.number_of_rules) && report.number_of_rules >= 1
-      && Array.isArray(diagnostics)
-      && diagnostics.every(diagnostic => typeof diagnostic?.message === "string"
-        && typeof diagnostic?.code === "string" && typeof diagnostic?.filename === "string"
-        && ["error", "warning"].includes(diagnostic?.severity));
+    const valid =
+      Number.isInteger(report?.number_of_files) &&
+      report.number_of_files >= 1 &&
+      Number.isInteger(report?.number_of_rules) &&
+      report.number_of_rules >= 1 &&
+      Array.isArray(diagnostics) &&
+      diagnostics.every(
+        (diagnostic) =>
+          typeof diagnostic?.message === "string" &&
+          typeof diagnostic?.code === "string" &&
+          typeof diagnostic?.filename === "string" &&
+          ["error", "warning"].includes(diagnostic?.severity),
+      );
     if (!valid || (scan.status === 1 && diagnostics.length === 0)) {
       fail("oxlint returned an empty, incomplete, or unsupported report");
     } else {
-      console.log(`oxlint: ${report.number_of_files} files, ${report.number_of_rules} rules, ${diagnostics.length} findings${typeAware ? " (type-aware)" : ""}`);
+      console.log(
+        `oxlint: ${report.number_of_files} files, ${report.number_of_rules} rules, ${diagnostics.length} findings${typeAware ? " (type-aware)" : ""}`,
+      );
       for (const diagnostic of diagnostics) {
         const span = diagnostic.labels?.[0]?.span;
         const location = `${diagnostic.filename}:${span?.line ?? 0}:${span?.column ?? 0}`;

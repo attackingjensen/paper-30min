@@ -1,14 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  Check,
-  ChevronDown,
-  KeyRound,
-  Pencil,
-  Plus,
-  Save,
-  SlidersHorizontal,
-  Trash2,
-} from "lucide-react";
+import { Check, ChevronDown, KeyRound, Pencil, Plus, Save, SlidersHorizontal, Trash2 } from "lucide-react";
 import "./agent.css";
 import {
   defaultAgentSettings,
@@ -36,11 +27,7 @@ type SettingsDraft = {
   maxTokens: number | string;
 };
 
-function draftOf(
-  catalog: AgentSettings,
-  serviceId: string,
-  modelId: string,
-): SettingsDraft {
+function draftOf(catalog: AgentSettings, serviceId: string, modelId: string): SettingsDraft {
   const service = catalog.services.find((item) => item.id === serviceId)!;
   const model = catalog.models.find((item) => item.id === modelId)!;
   return {
@@ -61,11 +48,7 @@ function draftOf(
   };
 }
 
-export function AgentSettingsForm({
-  section,
-}: {
-  section: "agent" | "proxy" | "search";
-}) {
+export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "search" }) {
   const [settings, setSettings] = useState<SettingsDraft>();
   const [catalog, setCatalog] = useState<AgentSettings>();
   const [serviceId, setServiceId] = useState("default");
@@ -92,9 +75,7 @@ export function AgentSettingsForm({
       .catch(() => {
         if (!disposed) {
           load(structuredClone(defaultAgentSettings));
-          setMessage(
-            "模型配置无法读取，请重新填写配置和 API 密钥，或移除旧密钥。",
-          );
+          setMessage("模型配置无法读取，请重新填写配置和 API 密钥，或移除旧密钥。");
         }
       });
     return () => {
@@ -102,12 +83,8 @@ export function AgentSettingsForm({
     };
   }, []);
   function load(value: AgentSettings) {
-    const first =
-      value.models.find((item) => item.id === value.selectedModelId) ??
-      value.models[0];
-    const service =
-      value.services.find((item) => item.id === first?.serviceId) ??
-      value.services[0];
+    const first = value.models.find((item) => item.id === value.selectedModelId) ?? value.models[0];
+    const service = value.services.find((item) => item.id === first?.serviceId) ?? value.services[0];
     setCatalog(value);
     setServiceId(service.id);
     setModelId(first.id);
@@ -139,8 +116,7 @@ export function AgentSettingsForm({
             ...model,
             name: settings!.name,
             model: settings!.model,
-            contextWindow:
-              Number(settings!.contextWindow) || model.contextWindow,
+            contextWindow: Number(settings!.contextWindow) || model.contextWindow,
             maxTokens: Number(settings!.maxTokens) || model.maxTokens,
             availableThinking: settings!.availableThinking,
             thinking: settings!.thinking,
@@ -159,9 +135,7 @@ export function AgentSettingsForm({
   function switchTo(next: AgentSettings, service: string, model: string) {
     const entered = { ...apiKeys, ...(key ? { [serviceId]: key } : {}) };
     const nextKeys = Object.fromEntries(
-      Object.entries(entered).filter(([id]) =>
-        next.services.some((item) => item.id === id),
-      ),
+      Object.entries(entered).filter(([id]) => next.services.some((item) => item.id === id)),
     );
     setApiKeys(nextKeys);
     setCatalog(next);
@@ -213,9 +187,7 @@ export function AgentSettingsForm({
           maxTokens < 1 ||
           maxTokens > contextWindow
         ) {
-          throw new Error(
-            `模型 ${model.name || model.model || "新模型"} 的预算无效`,
-          );
+          throw new Error(`模型 ${model.name || model.model || "新模型"} 的预算无效`);
         }
         return { ...model, contextWindow, maxTokens };
       });
@@ -230,12 +202,7 @@ export function AgentSettingsForm({
       load(saved);
       setMessage("已保存");
     } catch (e) {
-      setMessage(
-        (e as Error).message.replace(
-          /^Error invoking remote method '[^']+': Error: /,
-          "",
-        ),
-      );
+      setMessage((e as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
     } finally {
       setBusy(false);
     }
@@ -245,9 +212,7 @@ export function AgentSettingsForm({
     setSettings({ ...settings, ...value });
     setMessage("");
   };
-  const serviceModels = catalog!.models.filter(
-    (model) => model.serviceId === serviceId,
-  );
+  const serviceModels = catalog!.models.filter((model) => model.serviceId === serviceId);
   return (
     <form
       className="agent-settings"
@@ -279,22 +244,14 @@ export function AgentSettingsForm({
                     onClick={() => {
                       if (service.id === serviceId) return;
                       const next = merged();
-                      const target = next.models.find(
-                        (model) => model.serviceId === service.id,
-                      )!;
+                      const target = next.models.find((model) => model.serviceId === service.id)!;
                       switchTo(next, service.id, target.id);
                       setExpandedModelId(undefined);
                     }}
                   >
                     <SlidersHorizontal aria-hidden="true" />
-                    <span>
-                      {service.id === serviceId
-                        ? settings.serviceName
-                        : service.name}
-                    </span>
-                    {service.hasKey && (
-                      <i className="key-dot" title="已配置密钥" />
-                    )}
+                    <span>{service.id === serviceId ? settings.serviceName : service.name}</span>
+                    {service.hasKey && <i className="key-dot" title="已配置密钥" />}
                   </button>
                 ))}
               </div>
@@ -360,11 +317,7 @@ export function AgentSettingsForm({
                   >
                     <Pencil />
                   </button>
-                  <span
-                    className={
-                      settings.hasKey ? "key-state configured" : "key-state"
-                    }
-                  >
+                  <span className={settings.hasKey ? "key-state configured" : "key-state"}>
                     {settings.hasKey ? "密钥已配置" : "密钥未配置"}
                   </span>
                   <button
@@ -375,18 +328,10 @@ export function AgentSettingsForm({
                     disabled={catalog!.services.length < 2}
                     onClick={() => {
                       const next = merged();
-                      next.services = next.services.filter(
-                        (item) => item.id !== serviceId,
-                      );
-                      next.models = next.models.filter(
-                        (item) => item.serviceId !== serviceId,
-                      );
+                      next.services = next.services.filter((item) => item.id !== serviceId);
+                      next.models = next.models.filter((item) => item.serviceId !== serviceId);
                       next.selectedModelId = next.models[0].id;
-                      switchTo(
-                        next,
-                        next.models[0].serviceId,
-                        next.models[0].id,
-                      );
+                      switchTo(next, next.models[0].serviceId, next.models[0].id);
                       setExpandedModelId(undefined);
                     }}
                   >
@@ -402,12 +347,8 @@ export function AgentSettingsForm({
                       const api = e.target.value as AgentApi;
                       if (api !== "openai-completions") {
                         const withoutUltra = (levels: ThinkingLevel[]) => {
-                          const allowed = levels.filter(
-                            (level) => level !== "ultra",
-                          );
-                          return allowed.length
-                            ? allowed
-                            : ["off" as ThinkingLevel];
+                          const allowed = levels.filter((level) => level !== "ultra");
+                          return allowed.length ? allowed : ["off" as ThinkingLevel];
                         };
                         setCatalog(
                           (current) =>
@@ -415,43 +356,31 @@ export function AgentSettingsForm({
                               ...current,
                               models: current.models.map((model) => {
                                 if (model.serviceId !== serviceId) return model;
-                                const availableThinking = withoutUltra(
-                                  model.availableThinking,
-                                );
+                                const availableThinking = withoutUltra(model.availableThinking);
                                 return {
                                   ...model,
                                   availableThinking,
-                                  thinking: availableThinking.includes(
-                                    model.thinking,
-                                  )
+                                  thinking: availableThinking.includes(model.thinking)
                                     ? model.thinking
                                     : availableThinking[0],
                                 };
                               }),
                             },
                         );
-                        const availableThinking = withoutUltra(
-                          settings.availableThinking,
-                        );
+                        const availableThinking = withoutUltra(settings.availableThinking);
                         update({
                           api,
                           availableThinking,
-                          thinking: availableThinking.includes(
-                            settings.thinking,
-                          )
+                          thinking: availableThinking.includes(settings.thinking)
                             ? settings.thinking
                             : availableThinking[0],
                         });
                       } else update({ api });
                     }}
                   >
-                    <option value="openai-completions">
-                      OpenAI 兼容 Chat Completions
-                    </option>
+                    <option value="openai-completions">OpenAI 兼容 Chat Completions</option>
                     <option value="openai-responses">OpenAI Responses</option>
-                    <option value="anthropic-messages">
-                      Anthropic Messages
-                    </option>
+                    <option value="anthropic-messages">Anthropic Messages</option>
                   </select>
                 </label>
                 <label>
@@ -462,9 +391,7 @@ export function AgentSettingsForm({
                     value={settings.baseUrl}
                     onChange={(e) => update({ baseUrl: e.target.value })}
                     placeholder={
-                      settings.api === "anthropic-messages"
-                        ? "https://api.anthropic.com"
-                        : "https://api.example.com/v1"
+                      settings.api === "anthropic-messages" ? "https://api.anthropic.com" : "https://api.example.com/v1"
                     }
                   />
                 </label>
@@ -472,11 +399,7 @@ export function AgentSettingsForm({
                   <span>
                     <KeyRound /> API 密钥
                   </span>
-                  <span
-                    className={
-                      settings.hasKey ? "key-state configured" : "key-state"
-                    }
-                  >
+                  <span className={settings.hasKey ? "key-state configured" : "key-state"}>
                     {settings.hasKey ? "已配置" : "未配置"}
                   </span>
                 </div>
@@ -488,16 +411,12 @@ export function AgentSettingsForm({
                     autoComplete="off"
                     value={key}
                     onChange={(e) => setKey(e.target.value)}
-                    placeholder={
-                      settings.hasKey ? "已保存在本机，留空保留" : "尚未配置"
-                    }
+                    placeholder={settings.hasKey ? "已保存在本机，留空保留" : "尚未配置"}
                   />
                 </label>
                 <div className="key-help">
                   <p>
-                    {settings.keyError
-                      ? "此密钥无法读取，请替换或移除。"
-                      : "此服务的模型共用密钥；留空保留现有密钥。"}
+                    {settings.keyError ? "此密钥无法读取，请替换或移除。" : "此服务的模型共用密钥；留空保留现有密钥。"}
                   </p>
                   <button
                     type="button"
@@ -518,8 +437,7 @@ export function AgentSettingsForm({
                       model.id === modelId
                         ? settings.name || settings.model || "新模型"
                         : model.name || model.model || "新模型";
-                    const modelCode =
-                      model.id === modelId ? settings.model : model.model;
+                    const modelCode = model.id === modelId ? settings.model : model.model;
                     return (
                       <div className="agent-model-item" key={model.id}>
                         <div className="agent-model-row">
@@ -534,28 +452,15 @@ export function AgentSettingsForm({
                           <button
                             type="button"
                             className="settings-icon"
-                            title={
-                              expandedModelId === model.id
-                                ? "收起模型"
-                                : "编辑模型"
-                            }
+                            title={expandedModelId === model.id ? "收起模型" : "编辑模型"}
                             aria-label={`编辑模型 ${title}`}
                             aria-expanded={expandedModelId === model.id}
                             onClick={() => {
-                              if (model.id !== modelId)
-                                switchTo(merged(), serviceId, model.id);
-                              setExpandedModelId(
-                                expandedModelId === model.id
-                                  ? undefined
-                                  : model.id,
-                              );
+                              if (model.id !== modelId) switchTo(merged(), serviceId, model.id);
+                              setExpandedModelId(expandedModelId === model.id ? undefined : model.id);
                             }}
                           >
-                            {expandedModelId === model.id ? (
-                              <ChevronDown />
-                            ) : (
-                              <Pencil />
-                            )}
+                            {expandedModelId === model.id ? <ChevronDown /> : <Pencil />}
                           </button>
                           <button
                             type="button"
@@ -565,14 +470,9 @@ export function AgentSettingsForm({
                             disabled={serviceModels.length < 2}
                             onClick={() => {
                               const next = merged();
-                              next.models = next.models.filter(
-                                (item) => item.id !== model.id,
-                              );
-                              if (next.selectedModelId === model.id)
-                                next.selectedModelId = next.models[0].id;
-                              const target = next.models.find(
-                                (item) => item.serviceId === serviceId,
-                              )!;
+                              next.models = next.models.filter((item) => item.id !== model.id);
+                              if (next.selectedModelId === model.id) next.selectedModelId = next.models[0].id;
+                              const target = next.models.find((item) => item.serviceId === serviceId)!;
                               switchTo(next, serviceId, target.id);
                               setExpandedModelId(undefined);
                             }}
@@ -580,123 +480,95 @@ export function AgentSettingsForm({
                             <Trash2 />
                           </button>
                         </div>
-                        {expandedModelId === model.id &&
-                          modelId === model.id && (
-                            <div className="agent-model-editor">
+                        {expandedModelId === model.id && modelId === model.id && (
+                          <div className="agent-model-editor">
+                            <label>
+                              显示名称
+                              <input
+                                aria-label="模型显示名称"
+                                value={settings.name}
+                                onChange={(e) => update({ name: e.target.value })}
+                                placeholder="可选，默认使用模型 ID"
+                              />
+                            </label>
+                            <label>
+                              模型 ID
+                              <input
+                                aria-label="模型名称"
+                                placeholder="填写服务商提供的模型 ID"
+                                value={settings.model}
+                                onChange={(e) => update({ model: e.target.value })}
+                              />
+                            </label>
+                            <label className="settings-checkbox">
+                              <input
+                                type="checkbox"
+                                aria-label="支持视觉输入"
+                                checked={settings.vision}
+                                onChange={(e) => update({ vision: e.target.checked })}
+                              />
+                              支持视觉输入
+                            </label>
+                            <div className="settings-grid">
                               <label>
-                                显示名称
+                                上下文预算
                                 <input
-                                  aria-label="模型显示名称"
-                                  value={settings.name}
-                                  onChange={(e) =>
-                                    update({ name: e.target.value })
-                                  }
-                                  placeholder="可选，默认使用模型 ID"
+                                  aria-label="上下文预算"
+                                  type="number"
+                                  required
+                                  min="1024"
+                                  max="2000000"
+                                  value={settings.contextWindow}
+                                  onChange={(e) => update({ contextWindow: e.target.value })}
                                 />
                               </label>
                               <label>
-                                模型 ID
+                                输出上限
                                 <input
-                                  aria-label="模型名称"
-                                  placeholder="填写服务商提供的模型 ID"
-                                  value={settings.model}
-                                  onChange={(e) =>
-                                    update({ model: e.target.value })
-                                  }
+                                  aria-label="输出上限"
+                                  type="number"
+                                  required
+                                  min="1"
+                                  max={settings.contextWindow}
+                                  value={settings.maxTokens}
+                                  onChange={(e) => update({ maxTokens: e.target.value })}
                                 />
                               </label>
-                              <label className="settings-checkbox">
-                                <input
-                                  type="checkbox"
-                                  aria-label="支持视觉输入"
-                                  checked={settings.vision}
-                                  onChange={(e) => update({ vision: e.target.checked })}
-                                />
-                                支持视觉输入
-                              </label>
-                              <div className="settings-grid">
-                                <label>
-                                  上下文预算
-                                  <input
-                                    aria-label="上下文预算"
-                                    type="number"
-                                    required
-                                    min="1024"
-                                    max="2000000"
-                                    value={settings.contextWindow}
-                                    onChange={(e) =>
-                                      update({ contextWindow: e.target.value })
-                                    }
-                                  />
-                                </label>
-                                <label>
-                                  输出上限
-                                  <input
-                                    aria-label="输出上限"
-                                    type="number"
-                                    required
-                                    min="1"
-                                    max={settings.contextWindow}
-                                    value={settings.maxTokens}
-                                    onChange={(e) =>
-                                      update({ maxTokens: e.target.value })
-                                    }
-                                  />
-                                </label>
+                            </div>
+                            <p className="field-help">单位为 token；输出上限不能超过上下文预算。</p>
+                            <div className="settings-thinking">
+                              <span>可用思考等级</span>
+                              <div className="thinking-levels">
+                                {thinkingLevels
+                                  .filter((level) => level !== "ultra" || settings.api === "openai-completions")
+                                  .map((level) => (
+                                    <label key={level}>
+                                      <input
+                                        type="checkbox"
+                                        checked={settings.availableThinking.includes(level)}
+                                        onChange={(e) => {
+                                          const availableThinking = e.target.checked
+                                            ? [...settings.availableThinking, level]
+                                            : settings.availableThinking.filter((item) => item !== level);
+                                          if (!availableThinking.length) return;
+                                          update({
+                                            availableThinking,
+                                            thinking: availableThinking.includes(settings.thinking)
+                                              ? settings.thinking
+                                              : availableThinking[0],
+                                          });
+                                        }}
+                                      />
+                                      {level === "off" ? "无" : level}
+                                    </label>
+                                  ))}
                               </div>
                               <p className="field-help">
-                                单位为 token；输出上限不能超过上下文预算。
+                                仅勾选该模型与端点实际支持的等级；ultra 仅适用于明确支持它的 Chat Completions 端点。
                               </p>
-                              <div className="settings-thinking">
-                                <span>可用思考等级</span>
-                                <div className="thinking-levels">
-                                  {thinkingLevels
-                                    .filter(
-                                      (level) =>
-                                        level !== "ultra" ||
-                                        settings.api === "openai-completions",
-                                    )
-                                    .map((level) => (
-                                      <label key={level}>
-                                        <input
-                                          type="checkbox"
-                                          checked={settings.availableThinking.includes(
-                                            level,
-                                          )}
-                                          onChange={(e) => {
-                                            const availableThinking = e.target
-                                              .checked
-                                              ? [
-                                                  ...settings.availableThinking,
-                                                  level,
-                                                ]
-                                              : settings.availableThinking.filter(
-                                                  (item) => item !== level,
-                                                );
-                                            if (!availableThinking.length)
-                                              return;
-                                            update({
-                                              availableThinking,
-                                              thinking:
-                                                availableThinking.includes(
-                                                  settings.thinking,
-                                                )
-                                                  ? settings.thinking
-                                                  : availableThinking[0],
-                                            });
-                                          }}
-                                        />
-                                        {level === "off" ? "无" : level}
-                                      </label>
-                                    ))}
-                                </div>
-                                <p className="field-help">
-                                  仅勾选该模型与端点实际支持的等级；ultra
-                                  仅适用于明确支持它的 Chat Completions 端点。
-                                </p>
-                              </div>
                             </div>
-                          )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -737,9 +609,7 @@ export function AgentSettingsForm({
               <select
                 aria-label="连接方式"
                 value={settings.proxy}
-                onChange={(e) =>
-                  update({ proxy: e.target.value as AgentSettings["proxy"] })
-                }
+                onChange={(e) => update({ proxy: e.target.value as AgentSettings["proxy"] })}
               >
                 <option value="direct">直连</option>
                 <option value="environment">环境代理</option>
@@ -774,10 +644,7 @@ export function AgentSettingsForm({
           <div className="settings-group-heading">
             <h2>Exa 网页搜索</h2>
           </div>
-          <p className="field-help">
-            默认使用免费搜索服务。也可以填写自己的 Exa
-            密钥，使用对应账户的额度。
-          </p>
+          <p className="field-help">默认使用免费搜索服务。也可以填写自己的 Exa 密钥，使用对应账户的额度。</p>
           <label>
             Exa API key
             <input
@@ -786,20 +653,14 @@ export function AgentSettingsForm({
               autoComplete="off"
               disabled={busy}
               value={exaKey}
-              placeholder={
-                catalog?.search?.hasKey && !clearExaKey
-                  ? "已保存，留空保留"
-                  : "未配置，使用免费服务"
-              }
+              placeholder={catalog?.search?.hasKey && !clearExaKey ? "已保存，留空保留" : "未配置，使用免费服务"}
               onChange={(e) => {
                 setExaKey(e.target.value);
                 setClearExaKey(false);
               }}
             />
           </label>
-          {catalog?.search?.keyError && !clearExaKey && (
-            <p role="alert">Exa 密钥无法读取，请替换或移除。</p>
-          )}
+          {catalog?.search?.keyError && !clearExaKey && <p role="alert">Exa 密钥无法读取，请替换或移除。</p>}
           {catalog?.search?.hasKey && (
             <label className="settings-checkbox">
               <input
@@ -821,14 +682,7 @@ export function AgentSettingsForm({
           <Save /> {busy ? "正在保存…" : "保存配置"}
         </button>
         {message && (
-          <p
-            className={
-              message === "已保存"
-                ? "settings-feedback success"
-                : "settings-feedback"
-            }
-            role="status"
-          >
+          <p className={message === "已保存" ? "settings-feedback success" : "settings-feedback"} role="status">
             {message === "已保存" && <Check />}
             {message}
           </p>

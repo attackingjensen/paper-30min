@@ -38,13 +38,9 @@ export function sourcePanelFacts(
   revision: Record<string, unknown>,
 ): SourcePanelFacts {
   const pdfParse = revision.pdfParse;
-  const parseMeta = pdfParse !== null && typeof pdfParse === "object"
-    ? pdfParse as Record<string, unknown>
-    : null;
+  const parseMeta = pdfParse !== null && typeof pdfParse === "object" ? (pdfParse as Record<string, unknown>) : null;
   const arxiv = revision.arxiv;
-  const arxivMeta = arxiv !== null && typeof arxiv === "object"
-    ? arxiv as Record<string, unknown>
-    : null;
+  const arxivMeta = arxiv !== null && typeof arxiv === "object" ? (arxiv as Record<string, unknown>) : null;
   return {
     kind: factString(snapshot.kind),
     canonicalId: factString(snapshot.canonicalId),
@@ -56,13 +52,14 @@ export function sourcePanelFacts(
     provider: factString(snapshot.provider) ?? factString(parseMeta?.provider),
     model: factString(snapshot.model) ?? factString(parseMeta?.model),
     parseBatchId: factString(snapshot.parseBatchId) ?? factString(parseMeta?.parseBatchId),
-    converterVersion: parseMeta?.converterVersion !== undefined &&
+    converterVersion:
+      parseMeta?.converterVersion !== undefined &&
       (typeof parseMeta.converterVersion === "string" || typeof parseMeta.converterVersion === "number")
-      ? parseMeta.converterVersion
-      : arxivMeta?.converterVersion !== undefined &&
-        (typeof arxivMeta.converterVersion === "string" || typeof arxivMeta.converterVersion === "number")
-      ? arxivMeta.converterVersion
-      : null,
+        ? parseMeta.converterVersion
+        : arxivMeta?.converterVersion !== undefined &&
+            (typeof arxivMeta.converterVersion === "string" || typeof arxivMeta.converterVersion === "number")
+          ? arxivMeta.converterVersion
+          : null,
   };
 }
 
@@ -98,10 +95,7 @@ export function SourcePanel({
 }) {
   const [filter, setFilter] = useState<string>("all");
   const [showRecords, setShowRecords] = useState(false);
-  const codes = useMemo(
-    () => [...new Set(diagnostics.map((entry) => entry.code))],
-    [diagnostics],
-  );
+  const codes = useMemo(() => [...new Set(diagnostics.map((entry) => entry.code))], [diagnostics]);
   const visible = filter === "all" ? diagnostics : diagnostics.filter((entry) => entry.code === filter);
   const warnings = [...snapshotWarnings, ...revisionWarnings];
   return (
@@ -111,7 +105,13 @@ export function SourcePanel({
         <Fact label="来源类型" value={facts.kind} />
         {facts.kind === "arxiv" && (
           <>
-            <Fact label="arXiv 固定版本" value={facts.canonicalId ?? (facts.baseId && facts.version !== null ? `${facts.baseId}v${facts.version}` : null)} />
+            <Fact
+              label="arXiv 固定版本"
+              value={
+                facts.canonicalId ??
+                (facts.baseId && facts.version !== null ? `${facts.baseId}v${facts.version}` : null)
+              }
+            />
             <Fact label="HTML 快照获取时间" value={facts.fetchedAt} />
           </>
         )}
@@ -146,20 +146,11 @@ export function SourcePanel({
       )}
       <h3>正文诊断（{diagnostics.length}）</h3>
       <div className="source-filter" role="group" aria-label="诊断筛选">
-        <button
-          type="button"
-          className={filter === "all" ? "active" : ""}
-          onClick={() => setFilter("all")}
-        >
+        <button type="button" className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
           全部 {diagnostics.length}
         </button>
         {codes.map((code) => (
-          <button
-            key={code}
-            type="button"
-            className={filter === code ? "active" : ""}
-            onClick={() => setFilter(code)}
-          >
+          <button key={code} type="button" className={filter === code ? "active" : ""} onClick={() => setFilter(code)}>
             {code} {diagnostics.filter((entry) => entry.code === code).length}
           </button>
         ))}
@@ -195,9 +186,7 @@ export function SourcePanel({
               </li>
             ))}
           </ul>
-          <p className="source-verification-note">
-            核验状态只描述实际核验范围，不代表全文质量结论。
-          </p>
+          <p className="source-verification-note">核验状态只描述实际核验范围，不代表全文质量结论。</p>
           {verification.records.length > 0 && (
             <>
               <button
@@ -213,10 +202,10 @@ export function SourcePanel({
                   {verification.records.map((record) => (
                     <li key={record.verificationId}>
                       <p>
-                        核验于 revision <code>{record.verifiedRevisionId.slice(0, 8)}</code>，
-                        覆盖 {record.coverage.length} 个节点，
-                        执行者：{record.actor.kind === "user" ? "用户确认" : `Agent 会话 ${record.actor.sessionId.slice(0, 8)}`}，
-                        时间 {record.createdAt}。
+                        核验于 revision <code>{record.verifiedRevisionId.slice(0, 8)}</code>， 覆盖{" "}
+                        {record.coverage.length} 个节点， 执行者：
+                        {record.actor.kind === "user" ? "用户确认" : `Agent 会话 ${record.actor.sessionId.slice(0, 8)}`}
+                        ， 时间 {record.createdAt}。
                       </p>
                       <ul>
                         {record.coverage.slice(0, 20).map((entry, index) => (
@@ -226,9 +215,7 @@ export function SourcePanel({
                             {entry.quote && <blockquote>{entry.quote}</blockquote>}
                           </li>
                         ))}
-                        {record.coverage.length > 20 && (
-                          <li>其余 {record.coverage.length - 20} 个节点略。</li>
-                        )}
+                        {record.coverage.length > 20 && <li>其余 {record.coverage.length - 20} 个节点略。</li>}
                       </ul>
                     </li>
                   ))}

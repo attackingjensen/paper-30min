@@ -40,7 +40,6 @@ const EVIDENCE_BUDGET = 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 
-
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -62,8 +61,7 @@ async function managedDirectory(root: string, relative: string, create: boolean)
       await fs.mkdir(target);
       entry = await fs.lstat(target);
     }
-    if (entry.isSymbolicLink() || !entry.isDirectory())
-      throw new Error("核验受管目录不能通过链接或普通文件访问。");
+    if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("核验受管目录不能通过链接或普通文件访问。");
   }
   return target;
 }
@@ -81,12 +79,7 @@ async function readManagedJsonFile(file: string, budget: number, description: st
   }
 }
 
-async function atomicWriteJson(
-  destination: string,
-  value: unknown,
-  budget: number,
-  description: string,
-) {
+async function atomicWriteJson(destination: string, value: unknown, budget: number, description: string) {
   const bytes = Buffer.from(JSON.stringify(value, null, 2) + "\n");
   if (bytes.byteLength > budget) throw new Error(`${description}超过写入预算。`);
   const temporary = path.join(path.dirname(destination), `.paper30min-${randomUUID()}.tmp`);
@@ -104,26 +97,24 @@ async function atomicWriteJson(
   }
 }
 
-function nodeAliases(
-  tree: DocumentTree,
-  nodeType: VerificationNodeType,
-  nodeId: string,
-): string[] | undefined {
+function nodeAliases(tree: DocumentTree, nodeType: VerificationNodeType, nodeId: string): string[] | undefined {
   switch (nodeType) {
-    case "section": return tree.sections[nodeId]?.sourceAliases;
-    case "unit": return tree.units[nodeId]?.sourceAliases;
-    case "sentence": return tree.sentences[nodeId]?.sourceAliases;
-    case "atom": return tree.atoms[nodeId]?.sourceAliases;
-    case "block": return tree.blocks.find((block) => block.id === nodeId)?.sourceAliases;
+    case "section":
+      return tree.sections[nodeId]?.sourceAliases;
+    case "unit":
+      return tree.units[nodeId]?.sourceAliases;
+    case "sentence":
+      return tree.sentences[nodeId]?.sourceAliases;
+    case "atom":
+      return tree.atoms[nodeId]?.sourceAliases;
+    case "block":
+      return tree.blocks.find((block) => block.id === nodeId)?.sourceAliases;
   }
 }
 
 /** 创建时固定 coverage（SPEC-pdf-import §9）：展开锚点当时实际包含的节点，
  * 记录内容摘要与 quote；section 不覆盖未来新增节点。 */
-export function resolveVerificationCoverage(
-  tree: DocumentTree,
-  anchor: DocumentAnchor,
-): VerificationCoverageEntry[] {
+export function resolveVerificationCoverage(tree: DocumentTree, anchor: DocumentAnchor): VerificationCoverageEntry[] {
   const ranges = anchor.kind === "range" ? anchor.ranges : [];
   const rangeBySentence = new Map(ranges.map((range) => [range.sentenceId, range]));
   return documentAnchorDependencies(tree, anchor).map((dependency) => {
@@ -134,9 +125,7 @@ export function resolveVerificationCoverage(
       quote: documentNodeExcerpt(tree, dependency.nodeType, dependency.nodeId),
       validity: "verified",
     };
-    const range = dependency.nodeType === "sentence"
-      ? rangeBySentence.get(dependency.nodeId)
-      : undefined;
+    const range = dependency.nodeType === "sentence" ? rangeBySentence.get(dependency.nodeId) : undefined;
     if (range) {
       entry.range = { sentenceId: range.sentenceId, start: range.start, end: range.end };
       entry.quote = excerpt(createRangeAnchor(tree, [range]).quote.text);
@@ -159,12 +148,10 @@ function requiredPages(tree: DocumentTree, coverage: VerificationCoverageEntry[]
 /** PDF 来源谱系：pdf-parse 快照回溯父 PDF；pdf 快照即自身；其他来源无 PDF。 */
 async function pdfLineage(root: string, sourceSnapshotId: string) {
   const snapshot = await readSourceSnapshot(root, sourceSnapshotId);
-  if (snapshot.kind === "pdf")
-    return { pdfSnapshotId: snapshot.sourceSnapshotId, parseSnapshotId: null };
+  if (snapshot.kind === "pdf") return { pdfSnapshotId: snapshot.sourceSnapshotId, parseSnapshotId: null };
   if (snapshot.kind === "pdf-parse") {
     const parentId = snapshot.parentSourceSnapshotId;
-    if (typeof parentId !== "string" || !UUID.test(parentId))
-      throw new Error("解析快照缺少有效的父级 PDF 来源快照。");
+    if (typeof parentId !== "string" || !UUID.test(parentId)) throw new Error("解析快照缺少有效的父级 PDF 来源快照。");
     const parent = await readSourceSnapshot(root, parentId);
     if (parent.kind !== "pdf") throw new Error("解析快照的父级不是 PDF 来源快照。");
     return { pdfSnapshotId: parent.sourceSnapshotId, parseSnapshotId: snapshot.sourceSnapshotId };
@@ -172,17 +159,10 @@ async function pdfLineage(root: string, sourceSnapshotId: string) {
   return { pdfSnapshotId: null, parseSnapshotId: null };
 }
 
-export async function readVerificationRecords(
-  root: string,
-  revisionId: string,
-): Promise<VerificationRecord[]> {
+export async function readVerificationRecords(root: string, revisionId: string): Promise<VerificationRecord[]> {
   if (!UUID.test(revisionId)) throw new Error("revisionId 无效。");
   const opened = await openProject(root);
-  const directory = await managedDirectory(
-    opened.root,
-    `.paper30min/revisions/${revisionId}`,
-    false,
-  );
+  const directory = await managedDirectory(opened.root, `.paper30min/revisions/${revisionId}`, false);
   if (!directory) return [];
   const file = path.join(directory, "verification.json");
   try {
@@ -195,11 +175,7 @@ export async function readVerificationRecords(
   return parseVerificationSidecar(value, revisionId).records;
 }
 
-async function writeVerificationSidecar(
-  root: string,
-  revisionId: string,
-  records: VerificationRecord[],
-) {
+async function writeVerificationSidecar(root: string, revisionId: string, records: VerificationRecord[]) {
   const directory = await managedDirectory(root, `.paper30min/revisions/${revisionId}`, true);
   if (!directory) throw new Error("核验侧车目录不可用。");
   await atomicWriteJson(
@@ -221,14 +197,9 @@ async function loadEvidence(
   if (!directory) throw new Error(`来源读取证据不存在：${evidenceId}。`);
   let value: unknown;
   try {
-    value = await readManagedJsonFile(
-      path.join(directory, `${evidenceId}.json`),
-      EVIDENCE_BUDGET,
-      "来源读取证据",
-    );
+    value = await readManagedJsonFile(path.join(directory, `${evidenceId}.json`), EVIDENCE_BUDGET, "来源读取证据");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      throw new Error(`来源读取证据不存在：${evidenceId}。`);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`来源读取证据不存在：${evidenceId}。`);
     throw error;
   }
   return parsePdfSourceEvidence(value, { projectId, paperId });
@@ -252,8 +223,7 @@ async function recordPdfSourceEvidence(input: {
   const pageCount = snapshot.pageCount;
   if (typeof pageCount !== "number" || !Number.isSafeInteger(pageCount) || pageCount < 1)
     throw new Error("PDF 来源快照页数事实无效。");
-  if (!Array.isArray(input.pages) || input.pages.length === 0)
-    throw new Error("来源读取证据必须至少包含一页。");
+  if (!Array.isArray(input.pages) || input.pages.length === 0) throw new Error("来源读取证据必须至少包含一页。");
   const pages = [...new Set(input.pages)];
   for (const page of pages)
     if (!Number.isSafeInteger(page) || page < 1 || page > pageCount)
@@ -277,12 +247,7 @@ async function recordPdfSourceEvidence(input: {
   };
   const directory = await managedDirectory(root, ".paper30min/pdf-evidence", true);
   if (!directory) throw new Error("来源读取证据目录不可用。");
-  await atomicWriteJson(
-    path.join(directory, `${evidence.evidenceId}.json`),
-    evidence,
-    EVIDENCE_BUDGET,
-    "来源读取证据",
-  );
+  await atomicWriteJson(path.join(directory, `${evidence.evidenceId}.json`), evidence, EVIDENCE_BUDGET, "来源读取证据");
   return evidence;
 }
 
@@ -306,8 +271,7 @@ export async function recordReadPdfEvidence(input: {
     if (snapshotId === null) snapshotId = snapshot.sourceSnapshotId;
     else {
       const previous = await readSourceSnapshot(opened.root, snapshotId);
-      if (snapshot.createdAt.localeCompare(previous.createdAt) > 0)
-        snapshotId = snapshot.sourceSnapshotId;
+      if (snapshot.createdAt.localeCompare(previous.createdAt) > 0) snapshotId = snapshot.sourceSnapshotId;
     }
   }
   if (snapshotId === null) return null;
@@ -336,15 +300,16 @@ export async function createVerification(input: {
     const latest = await openProject(root);
     const current = latest.manifest.paper.currentRevision;
     if (current === null || current !== input.expectedRevisionId)
-      throw new Error(`current 已变化：核验请求基于 ${input.expectedRevisionId}，当前为 ${current ?? "无"}；拒绝建立核验记录。`);
+      throw new Error(
+        `current 已变化：核验请求基于 ${input.expectedRevisionId}，当前为 ${current ?? "无"}；拒绝建立核验记录。`,
+      );
     if (input.actor.kind === "user" && input.actor.confirmed !== true)
       throw new Error("用户核验必须显式确认已对照此 PDF 范围。");
     const revision = await readRevision(root, current);
     const tree = await readRevisionDocument(root, current, "document");
     const anchor = parseDocumentAnchor(tree, input.anchor);
     const lineage = await pdfLineage(root, revision.sourceSnapshotId);
-    if (lineage.pdfSnapshotId === null)
-      throw new Error("当前 revision 没有 PDF 来源，不能建立 PDF 核验。");
+    if (lineage.pdfSnapshotId === null) throw new Error("当前 revision 没有 PDF 来源，不能建立 PDF 核验。");
     const coverage = resolveVerificationCoverage(tree, anchor);
     let actor: VerificationActor;
     if (input.actor.kind === "user") {
@@ -354,27 +319,18 @@ export async function createVerification(input: {
       const evidenceIds = [...new Set(input.actor.evidenceIds ?? [])];
       if (!sessionId || !taskId || sessionId.length > 200 || taskId.length > 200)
         throw new Error("Agent 核验必须绑定有效的 session 与 task。");
-      if (evidenceIds.length === 0)
-        throw new Error("Agent 核验必须提供主进程来源读取证据。");
+      if (evidenceIds.length === 0) throw new Error("Agent 核验必须提供主进程来源读取证据。");
       const required = requiredPages(tree, coverage);
-      if (required.size === 0)
-        throw new Error("核验范围没有页级来源事实，Agent 不能建立核验。");
+      if (required.size === 0) throw new Error("核验范围没有页级来源事实，Agent 不能建立核验。");
       const covered = new Set<number>();
       const loaded: { evidence: PdfSourceEvidenceRecord; file: string }[] = [];
       for (const evidenceId of evidenceIds) {
-        const evidence = await loadEvidence(
-          root,
-          evidenceId,
-          latest.manifest.id,
-          latest.manifest.paper.id,
-        );
+        const evidence = await loadEvidence(root, evidenceId, latest.manifest.id, latest.manifest.paper.id);
         if (evidence.sessionId !== sessionId || evidence.taskId !== taskId)
           throw new Error("来源读取证据与核验任务的 session/task 不一致。");
-        if (evidence.pdfSnapshotId !== lineage.pdfSnapshotId)
-          throw new Error("来源读取证据不属于当前 PDF 快照。");
+        if (evidence.pdfSnapshotId !== lineage.pdfSnapshotId) throw new Error("来源读取证据不属于当前 PDF 快照。");
         // 一次性：已消费的证据不得重放建立新核验（renderer 可读 evidenceId）。
-        if (evidence.consumedAt !== undefined)
-          throw new Error(`来源读取证据已消费，不能重复用于核验：${evidenceId}。`);
+        if (evidence.consumedAt !== undefined) throw new Error(`来源读取证据已消费，不能重复用于核验：${evidenceId}。`);
         for (const page of evidence.pages) covered.add(page);
         loaded.push({
           evidence,
@@ -382,8 +338,7 @@ export async function createVerification(input: {
         });
       }
       const missing = [...required].filter((page) => !covered.has(page)).sort((a, b) => a - b);
-      if (missing.length > 0)
-        throw new Error(`来源读取证据未覆盖请求范围：缺少页 ${missing.join("、")}。`);
+      if (missing.length > 0) throw new Error(`来源读取证据未覆盖请求范围：缺少页 ${missing.join("、")}。`);
       // 校验全部通过后才烧掉 nonce：任何失败都不消费证据，可修正后重试。
       const consumedAt = new Date().toISOString();
       for (const { evidence, file } of loaded)

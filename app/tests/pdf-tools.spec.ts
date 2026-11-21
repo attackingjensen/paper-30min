@@ -8,9 +8,7 @@ import { createPdfTools } from "../src/main/pdf-tools";
 import type { Project } from "../src/shared/contracts";
 
 test("旋转页按阅读器的未旋转坐标返回尺寸和图像", async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "paper30min-rotated-"),
-  );
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-rotated-"));
   const service = new ProjectService(path.join(directory, "config.json"));
   try {
     // A black rectangle at (20, 30) in top-left coordinates, with page rotation metadata.
@@ -31,9 +29,7 @@ test("旋转页按阅读器的未旋转坐标返回尺寸和图像", async () =>
     pdf += `xref\n0 5\n0000000000 65535 f \n${offsets
       .slice(1)
       .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
-      .join(
-        "",
-      )}trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+      .join("")}trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
     const source = path.join(directory, "rotated.pdf");
     await fs.writeFile(source, pdf);
     const { root } = (await service.dispatch({
@@ -46,12 +42,7 @@ test("旋转页按阅读器的未旋转坐标返回尺寸和图像", async () =>
         operationId: "rotation",
       },
     })) as Project;
-    const result = await createPdfTools(
-      root,
-      service,
-      true,
-      () => true,
-    )[0].execute(
+    const result = await createPdfTools(root, service, true, () => true)[0].execute(
       "rotated",
       {
         path: "text/paper.pdf",
@@ -62,13 +53,10 @@ test("旋转页按阅读器的未旋转坐标返回尺寸和图像", async () =>
     );
     const info = JSON.parse((result.content[0] as any).text);
     expect(info).toMatchObject({ width: 300, height: 200 });
-    const image = PNG.sync.read(
-      Buffer.from((result.content[1] as any).data, "base64"),
-    );
+    const image = PNG.sync.read(Buffer.from((result.content[1] as any).data, "base64"));
     expect(image).toMatchObject({ width: 450, height: 300 });
     let ink = 0;
-    for (let i = 0; i < image.data.length; i += 4)
-      if (image.data[i] < 128) ink++;
+    for (let i = 0; i < image.data.length; i += 4) if (image.data[i] < 128) ink++;
     expect(ink).toBeGreaterThan(1000);
   } finally {
     await service.close();
@@ -83,9 +71,7 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     const project = (await service.dispatch({
       type: "create",
       input: {
-        source: path.resolve(
-          "tests/fixtures/corpus/1706.03762.pdf",
-        ),
+        source: path.resolve("tests/fixtures/corpus/1706.03762.pdf"),
         parent: directory,
         name: "project",
         makeDefault: false,
@@ -96,16 +82,8 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     let active = true;
     const tool = createPdfTools(root, service, true, () => active)[0];
     const run = (args: any, signal?: AbortSignal) =>
-      tool.execute(
-        "call",
-        { path: "text/paper.pdf", ...args },
-        signal,
-        undefined,
-        {} as any,
-      );
-    const before = await fs
-      .readFile(path.join(root, ".paper30min-reading.json"), "utf8")
-      .catch(() => null);
+      tool.execute("call", { path: "text/paper.pdf", ...args }, signal, undefined, {} as any);
+    const before = await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8").catch(() => null);
     const page = await run({});
     const info = JSON.parse((page.content[0] as any).text);
     expect(info).not.toHaveProperty("text");
@@ -113,13 +91,17 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     expect(info).not.toHaveProperty("textTruncated");
     expect(info.pageCount).toBeGreaterThan(1);
     expect(info.granularity).toBe("页面");
-    expect(info).toMatchObject({ path: "text/paper.pdf", documentId: project.manifest.paper.id,
-      page: 1, width: 612, height: 792, scale: 1.5 });
+    expect(info).toMatchObject({
+      path: "text/paper.pdf",
+      documentId: project.manifest.paper.id,
+      page: 1,
+      width: 612,
+      height: 792,
+      scale: 1.5,
+    });
     expect(info.sha256).toMatch(/^[a-f0-9]{64}$/);
     for (const field of ["citation", "link", "markdown"]) expect(info).not.toHaveProperty(field);
-    const image = PNG.sync.read(
-      Buffer.from((page.content[1] as any).data, "base64"),
-    );
+    const image = PNG.sync.read(Buffer.from((page.content[1] as any).data, "base64"));
     expect(image.width).toBeGreaterThan(600);
     expect(new Set(image.data).size).toBeGreaterThan(30);
     const args = {
@@ -128,21 +110,14 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     };
     const enlarged = await run(args);
     const enlargedInfo = JSON.parse((enlarged.content[0] as any).text);
-    const crop = PNG.sync.read(
-      Buffer.from((enlarged.content[1] as any).data, "base64"),
-    );
+    const crop = PNG.sync.read(Buffer.from((enlarged.content[1] as any).data, "base64"));
     expect([crop.width, crop.height]).toEqual([1583, 2048]);
     expect(enlargedInfo).toMatchObject({ width: 612, height: 792, scale: 2048 / 792 });
     const repeated = await run(args);
     expect(JSON.parse((repeated.content[0] as any).text)).toEqual(enlargedInfo);
     const reopened = new ProjectService(path.join(directory, "config2.json"));
     try {
-      const again = await createPdfTools(
-        root,
-        reopened,
-        true,
-        () => true,
-      )[0].execute(
+      const again = await createPdfTools(root, reopened, true, () => true)[0].execute(
         "reopen",
         { path: "text/paper.pdf", ...args },
         undefined,
@@ -153,11 +128,7 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     } finally {
       await reopened.close();
     }
-    expect(
-      await fs
-        .readFile(path.join(root, ".paper30min-reading.json"), "utf8")
-        .catch(() => null),
-    ).toBe(before);
+    expect(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8").catch(() => null)).toBe(before);
     await expect(run({ page: 999 })).rejects.toThrow("越界");
     await expect(run({ path: "../outside.pdf" })).rejects.toThrow("路径");
     await expect(
@@ -175,10 +146,7 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
     active = false;
     await expect(run({})).rejects.toThrow("任务已停止");
     active = true;
-    await fs.copyFile(
-      path.resolve("tests/fixtures/long-150.pdf"),
-      path.join(root, "text/paper.pdf"),
-    );
+    await fs.copyFile(path.resolve("tests/fixtures/long-150.pdf"), path.join(root, "text/paper.pdf"));
     const current = await run({});
     expect(current.content.some((item) => item.type === "image")).toBe(true);
   } finally {
@@ -188,17 +156,13 @@ test("read_pdf 只读完整页图与定位信息，不依赖阅读器和解析�
 });
 
 test("公式页和扫描页均只返回实际图像与定位信息，取消不返回迟到图像", async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "paper30min-scan-"),
-  );
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-scan-"));
   const service = new ProjectService(path.join(directory, "config.json"));
   try {
     const { root } = (await service.dispatch({
       type: "create",
       input: {
-        source: path.resolve(
-          "tests/fixtures/pdfparse_formula_graphics.pdf",
-        ),
+        source: path.resolve("tests/fixtures/pdfparse_formula_graphics.pdf"),
         parent: directory,
         name: "scan",
         makeDefault: false,
@@ -209,25 +173,18 @@ test("公式页和扫描页均只返回实际图像与定位信息，取消不�
     const args = {
       path: "text/paper.pdf",
     };
-    const invoke = (value: any, signal?: AbortSignal) =>
-      tool.execute("scan", value, signal, undefined, {} as any);
+    const invoke = (value: any, signal?: AbortSignal) => tool.execute("scan", value, signal, undefined, {} as any);
     const result = await invoke({ ...args, page: 1 });
     const info = JSON.parse((result.content[0] as any).text);
     expect(info).not.toHaveProperty("text");
-    const formulaImage = PNG.sync.read(
-      Buffer.from((result.content[1] as any).data, "base64"),
-    );
+    const formulaImage = PNG.sync.read(Buffer.from((result.content[1] as any).data, "base64"));
     // The fixture uses a 612 × 792 point page, rendered at the default 1.5 scale.
     expect([formulaImage.width, formulaImage.height]).toEqual([918, 1188]);
     let ink = 0;
-    for (let i = 0; i < formulaImage.data.length; i += 4)
-      if (formulaImage.data[i] < 128) ink++;
+    for (let i = 0; i < formulaImage.data.length; i += 4) if (formulaImage.data[i] < 128) ink++;
     expect(ink).toBeGreaterThan(500);
     const scanPath = "text/scan.pdf";
-    await fs.copyFile(
-      path.resolve("tests/fixtures/pdfparse_scanned_blank.pdf"),
-      path.join(root, scanPath),
-    );
+    await fs.copyFile(path.resolve("tests/fixtures/pdfparse_scanned_blank.pdf"), path.join(root, scanPath));
     const scan = await invoke({ path: scanPath });
     const scanInfo = JSON.parse((scan.content[0] as any).text);
     expect(scanInfo).not.toHaveProperty("text");
@@ -235,10 +192,7 @@ test("公式页和扫描页均只返回实际图像与定位信息，取消不�
     expect(scan.content[1].type).toBe("image");
     const before = (await fs.readdir(root, { recursive: true })).sort();
     const controller = new AbortController();
-    const stopped = invoke(
-      { ...args, page: 2 },
-      controller.signal,
-    );
+    const stopped = invoke({ ...args, page: 2 }, controller.signal);
     controller.abort();
     await expect(stopped).rejects.toThrow();
     expect((await fs.readdir(root, { recursive: true })).sort()).toEqual(before);

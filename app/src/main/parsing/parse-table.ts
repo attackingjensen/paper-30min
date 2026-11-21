@@ -22,16 +22,48 @@ type ParentNode = DefaultTreeAdapterMap["parentNode"];
 const MAX_TABLE_ROWS = 4096;
 const MAX_TABLE_COLUMNS = 256;
 const RAW_HTML_TAGS: Record<string, true> = {
-  blockquote: true, br: true, code: true, em: true, li: true, ol: true, p: true,
-  pre: true, span: true, strong: true, sub: true, sup: true, table: true,
-  tbody: true, td: true, tfoot: true, th: true, thead: true, tr: true, ul: true,
+  blockquote: true,
+  br: true,
+  code: true,
+  em: true,
+  li: true,
+  ol: true,
+  p: true,
+  pre: true,
+  span: true,
+  strong: true,
+  sub: true,
+  sup: true,
+  table: true,
+  tbody: true,
+  td: true,
+  tfoot: true,
+  th: true,
+  thead: true,
+  tr: true,
+  ul: true,
 };
 const CELL_INLINE_TAGS: Record<string, true> = {
-  br: true, code: true, em: true, p: true, span: true, strong: true, sub: true, sup: true,
+  br: true,
+  code: true,
+  em: true,
+  p: true,
+  span: true,
+  strong: true,
+  sub: true,
+  sup: true,
 };
 const DANGEROUS_TAGS: Record<string, true> = {
-  script: true, style: true, iframe: true, object: true, embed: true, noscript: true,
-  template: true, link: true, meta: true, base: true,
+  script: true,
+  style: true,
+  iframe: true,
+  object: true,
+  embed: true,
+  noscript: true,
+  template: true,
+  link: true,
+  meta: true,
+  base: true,
 };
 /** 消毒后为空的表格只保留该固定占位；清洗前原文不进入任何持久化内容。 */
 const EMPTY_TABLE_PLACEHOLDER = "[empty table]";
@@ -99,14 +131,12 @@ function imagePlaceholder(element: Element, context: TableContext): string {
 
 /** 单元格文本投影：保留文字，图片给可读占位，危险与未知标记消毒。 */
 function cellText(node: Node, context: TableContext): string {
-  if (node.nodeName === "#text")
-    return (node as DefaultTreeAdapterMap["textNode"]).value;
+  if (node.nodeName === "#text") return (node as DefaultTreeAdapterMap["textNode"]).value;
   if (node.nodeName === "#comment") {
     context.sanitized = true;
     return "";
   }
-  if (!isElement(node))
-    return isParent(node) ? node.childNodes.map((child) => cellText(child, context)).join("") : "";
+  if (!isElement(node)) return isParent(node) ? node.childNodes.map((child) => cellText(child, context)).join("") : "";
   const element = node;
   if (DANGEROUS_TAGS[element.tagName]) {
     context.sanitized = true;
@@ -147,15 +177,15 @@ function tableRows(tabular: Element, context: TableContext): SpanCell[][] | null
   };
   collectRows(tabular);
   if (!trs.length || trs.length > MAX_TABLE_ROWS) return null;
-  const cellsOf = (tr: Element): Element[] => tr.childNodes.filter(
-    (child): child is Element => isElement(child) && (child.tagName === "td" || child.tagName === "th"),
-  );
+  const cellsOf = (tr: Element): Element[] =>
+    tr.childNodes.filter(
+      (child): child is Element => isElement(child) && (child.tagName === "td" || child.tagName === "th"),
+    );
   for (const tr of trs) {
     const cells = cellsOf(tr);
     if (!cells.length) return null;
     // 任意深度的嵌套表格都无法用行列跨度无损表达。
-    for (const cell of cells)
-      if (findTag(cell, "table")) return null;
+    for (const cell of cells) if (findTag(cell, "table")) return null;
   }
   const spanOf = (cell: Element, name: string): number | null => {
     const raw = attr(cell, name);
@@ -180,8 +210,7 @@ function tableRows(tabular: Element, context: TableContext): SpanCell[][] | null
       if (columnIndex + columnSpan > MAX_TABLE_COLUMNS) return null;
       // 跨度范围内部任一格已被占用都会产生重叠单元：整体降级，不静默错排。
       for (let dr = 0; dr < rowSpan; dr += 1)
-        for (let dc = 0; dc < columnSpan; dc += 1)
-          if (occupied.has(key(rowIndex + dr, columnIndex + dc))) return null;
+        for (let dc = 0; dc < columnSpan; dc += 1) if (occupied.has(key(rowIndex + dr, columnIndex + dc))) return null;
       row.push({
         unitId: context.builder.reserveUnit(),
         rowSpan,
@@ -189,8 +218,7 @@ function tableRows(tabular: Element, context: TableContext): SpanCell[][] | null
         text: cellText(cell, context),
       });
       for (let dr = 0; dr < rowSpan; dr += 1)
-        for (let dc = 0; dc < columnSpan; dc += 1)
-          occupied.set(key(rowIndex + dr, columnIndex + dc), true);
+        for (let dc = 0; dc < columnSpan; dc += 1) occupied.set(key(rowIndex + dr, columnIndex + dc), true);
       columnIndex += columnSpan;
     }
     rows.push(row);
@@ -225,11 +253,13 @@ function sanitizeNode(node: Node, context: TableContext): Node[] {
     context.sanitized = true;
     return children;
   }
-  return [{
-    ...element,
-    attrs: [],
-    childNodes: children as DefaultTreeAdapterMap["element"]["childNodes"],
-  }];
+  return [
+    {
+      ...element,
+      attrs: [],
+      childNodes: children as DefaultTreeAdapterMap["element"]["childNodes"],
+    },
+  ];
 }
 
 function textProjection(nodes: Node[]): string {
@@ -259,13 +289,19 @@ export function convertTable(content: string, context: TableContext): void {
     builder.addRaw(html, text, ["pdf.convert.tableLossy"], aliases);
     // 图注随 raw 降级为普通段落，按 vendor 顺序落在表格投影之后，不丢弃。
     if (caption)
-      builder.flushUnit(caption.unitId, "paragraph", caption.sentences, {
-        id: randomUUID(),
-        sectionId: builder.currentSectionId,
-        kind: "unit",
-        unitId: caption.unitId,
-        ...(caption.aliases ? { sourceAliases: caption.aliases } : {}),
-      } as BlockNode, caption.aliases);
+      builder.flushUnit(
+        caption.unitId,
+        "paragraph",
+        caption.sentences,
+        {
+          id: randomUUID(),
+          sectionId: builder.currentSectionId,
+          kind: "unit",
+          unitId: caption.unitId,
+          ...(caption.aliases ? { sourceAliases: caption.aliases } : {}),
+        } as BlockNode,
+        caption.aliases,
+      );
   };
   const emptyPlaceholder = (): void => {
     // 空表格或清洗后为空：保留视觉块事实与固定可读占位，绝不回退清洗前原文。
@@ -288,13 +324,14 @@ export function convertTable(content: string, context: TableContext): void {
     return;
   }
   const fragment = parseFragment(content);
-  const tables = fragment.childNodes.filter(
-    (child): child is Element => isElement(child) && child.tagName === "table",
-  );
-  const onlyTable = tables.length === 1 && fragment.childNodes.every(
-    (child) => child === tables[0] ||
-      (child.nodeName === "#text" && !(child as DefaultTreeAdapterMap["textNode"]).value.trim()),
-  );
+  const tables = fragment.childNodes.filter((child): child is Element => isElement(child) && child.tagName === "table");
+  const onlyTable =
+    tables.length === 1 &&
+    fragment.childNodes.every(
+      (child) =>
+        child === tables[0] ||
+        (child.nodeName === "#text" && !(child as DefaultTreeAdapterMap["textNode"]).value.trim()),
+    );
   const rows = onlyTable ? tableRows(tables[0], context) : null;
   if (rows) {
     // 结构化成功但所有单元格消毒后无文字（如 script 独占）：等价于清洗后为空，
@@ -304,22 +341,24 @@ export function convertTable(content: string, context: TableContext): void {
       if (context.sanitized) context.warn("pdf-convert-html-sanitized", aliases[0]);
       return;
     }
-    const cells: CellInput[][] = rows.map((row) => row.map((cell) => ({
-      unitId: cell.unitId,
-      rowSpan: cell.rowSpan,
-      columnSpan: cell.columnSpan,
-      sentences: textSentences(cell.text || " ", cell.unitId, builder),
-      ...(aliases ? { aliases } : {}),
-    })));
+    const cells: CellInput[][] = rows.map((row) =>
+      row.map((cell) => ({
+        unitId: cell.unitId,
+        rowSpan: cell.rowSpan,
+        columnSpan: cell.columnSpan,
+        sentences: textSentences(cell.text || " ", cell.unitId, builder),
+        ...(aliases ? { aliases } : {}),
+      })),
+    );
     builder.addTable(cells, caption, aliases);
     if (context.tableImage) context.warn("pdf-convert-table-image", aliases[0]);
     if (context.sanitized) context.warn("pdf-convert-html-sanitized", aliases[0]);
     return;
   }
   const cleaned = fragment.childNodes.flatMap((child) => sanitizeNode(child, context));
-  const html = cleaned.map((node) => isElement(node)
-    ? serialize(node)
-    : escapeText((node as DefaultTreeAdapterMap["textNode"]).value)).join("");
+  const html = cleaned
+    .map((node) => (isElement(node) ? serialize(node) : escapeText((node as DefaultTreeAdapterMap["textNode"]).value)))
+    .join("");
   const text = textProjection(cleaned);
   if (!html.trim() && !text.trim()) {
     emptyPlaceholder();

@@ -83,9 +83,7 @@ function okResult(result: ConvertLatexmlResult): Extract<ConvertLatexmlResult, {
 }
 
 function unitText(tree: DocumentTree, unitId: string): string {
-  return tree.units[unitId].sentenceIds
-    .map((id) => projectSentenceText(tree, id))
-    .join("\n");
+  return tree.units[unitId].sentenceIds.map((id) => projectSentenceText(tree, id)).join("\n");
 }
 
 function allUnitTexts(tree: DocumentTree): string[] {
@@ -93,9 +91,7 @@ function allUnitTexts(tree: DocumentTree): string[] {
 }
 
 function sectionByAlias(tree: DocumentTree, alias: string) {
-  return Object.values(tree.sections).find(
-    (section) => section.sourceAliases?.includes(alias),
-  );
+  return Object.values(tree.sections).find((section) => section.sourceAliases?.includes(alias));
 }
 
 function unitByAlias(tree: DocumentTree, alias: string) {
@@ -130,10 +126,8 @@ test("arxiv-import 转换核心：章节/附录结构、来源别名与阅读顺
   // 阅读顺序：每个章节的首个直属单元在 blocks 展平顺序中的位置（Intro → Method → Conclusion → 附录 → 参考文献）。
   const order = tree.blocks.flatMap((block) => {
     if (block.kind === "unit") return [tree.units[block.unitId].sectionId];
-    if (block.kind === "figure")
-      return block.captionUnitId ? [tree.units[block.captionUnitId].sectionId] : [];
-    if (block.kind === "table")
-      return [tree.units[block.rows[0][0].unitId].sectionId];
+    if (block.kind === "figure") return block.captionUnitId ? [tree.units[block.captionUnitId].sectionId] : [];
+    if (block.kind === "table") return [tree.units[block.rows[0][0].unitId].sectionId];
     return [];
   });
   const firstIndex = (sectionId: string) => order.indexOf(sectionId);
@@ -149,8 +143,7 @@ test("arxiv-import 转换核心：章节/附录结构、来源别名与阅读顺
   expect(unitText(tree, listItem.id)).toBe("First item.");
   expect(texts.some((text) => text.includes("Every right triangle satisfies"))).toBe(true);
   expect(texts.filter((text) => text.includes("We repeat the claim"))).toHaveLength(1);
-  const repeated = Object.values(tree.units).find((unit) =>
-    unitText(tree, unit.id).includes("We repeat the claim"))!;
+  const repeated = Object.values(tree.units).find((unit) => unitText(tree, unit.id).includes("We repeat the claim"))!;
   expect(repeated.sentenceIds.length).toBe(2);
 
   // 参考文献条目成为 reference unit。
@@ -206,9 +199,7 @@ test("arxiv-import 图表：图片本地资产引用、caption 单元与表格�
   expect(unitText(tree, fig1.captionUnitId!)).toBe("System overview.");
   expect(tree.units[fig1.captionUnitId!].kind).toBe("caption");
 
-  const table = tree.blocks.find(
-    (block) => block.kind === "table" && block.sourceAliases?.includes("S2.T1"),
-  )!;
+  const table = tree.blocks.find((block) => block.kind === "table" && block.sourceAliases?.includes("S2.T1"))!;
   if (table.kind !== "table") throw new Error("table missing");
   expect(unitText(tree, table.captionUnitId!)).toBe("Measured results.");
   expect(table.rows.length).toBe(2);
@@ -224,9 +215,7 @@ test("arxiv-import 交叉引用：图/公式/文献解析到规范节点，脚�
 
   const crossRefs = Object.values(tree.atoms).filter((atom) => atom.kind === "cross-reference");
   const figureRef = crossRefs.find((atom) => atom.sourceTarget === "S2.F1")!;
-  const fig1 = tree.blocks.find(
-    (block) => block.kind === "figure" && block.sourceAliases?.includes("S2.F1"),
-  )!;
+  const fig1 = tree.blocks.find((block) => block.kind === "figure" && block.sourceAliases?.includes("S2.F1"))!;
   if (fig1.kind !== "figure") throw new Error("figure missing");
   expect(figureRef.targetUnitId).toBe(fig1.captionUnitId);
 
@@ -256,8 +245,9 @@ test("arxiv-import 缺失引用目标：保留显示文本与 sourceTarget，记
   if (unresolved.kind !== "cross-reference") throw new Error("atom missing");
   expect(unresolved.targetUnitId).toBeNull();
   expect(unresolved.text).toContain("Equation 9");
-  expect(result.warnings.some((warning) =>
-    warning.severity === "warning" && warning.sourceAlias === "S2.E9")).toBe(true);
+  expect(result.warnings.some((warning) => warning.severity === "warning" && warning.sourceAlias === "S2.E9")).toBe(
+    true,
+  );
 });
 
 test("arxiv-import 确定性：同快照同算法版本两次转换产生一致的规范内容", () => {
@@ -308,8 +298,25 @@ function canonicalContent(tree: DocumentTree): unknown {
     blocks: tree.blocks.map((block) => {
       const base = { kind: block.kind, section: sectionIndex.get(block.sectionId), aliases: block.sourceAliases ?? [] };
       if (block.kind === "unit") return { ...base, unit: unitIndex.get(block.unitId) };
-      if (block.kind === "figure") return { ...base, asset: block.asset, caption: block.captionUnitId ? unitIndex.get(block.captionUnitId) : null, warning: block.warning ?? null };
-      if (block.kind === "table") return { ...base, caption: block.captionUnitId ? unitIndex.get(block.captionUnitId) : null, rows: block.rows.map((row) => row.map((cell) => ({ unit: unitIndex.get(cell.unitId), rowSpan: cell.rowSpan, columnSpan: cell.columnSpan }))) };
+      if (block.kind === "figure")
+        return {
+          ...base,
+          asset: block.asset,
+          caption: block.captionUnitId ? unitIndex.get(block.captionUnitId) : null,
+          warning: block.warning ?? null,
+        };
+      if (block.kind === "table")
+        return {
+          ...base,
+          caption: block.captionUnitId ? unitIndex.get(block.captionUnitId) : null,
+          rows: block.rows.map((row) =>
+            row.map((cell) => ({
+              unit: unitIndex.get(cell.unitId),
+              rowSpan: cell.rowSpan,
+              columnSpan: cell.columnSpan,
+            })),
+          ),
+        };
       if (block.kind === "formula") return { ...base, source: block.source, text: block.text };
       return { ...base, html: block.html, text: block.text, limitations: block.limitations };
     }),
@@ -409,10 +416,7 @@ test("arxiv-import 系统性失败：全部图片缺失或全部公式不可读�
 });
 
 test("arxiv-import 局部降级：单张外部图片保留 caption 与占位 warning，正文仍可发布", () => {
-  const html = latexmlDocument().replace(
-    `src="${FIG2_SRC}"`,
-    `src="https://cdn.example.org/external.png"`,
-  );
+  const html = latexmlDocument().replace(`src="${FIG2_SRC}"`, `src="https://cdn.example.org/external.png"`);
   const result = okResult(convert(html));
   const tree = result.tree;
   const figures = tree.blocks.filter((block) => block.kind === "figure");
@@ -429,9 +433,7 @@ test("arxiv-import 局部降级：单张外部图片保留 caption 与占位 war
 test("arxiv-import 内联 SVG：不执行内容，降级为占位与 warning，caption 保留", () => {
   const result = okResult(convert(latexmlDocument({ extra: SVG_EXTRA })));
   const tree = result.tree;
-  const svgFigure = tree.blocks.find(
-    (block) => block.kind === "figure" && block.sourceAliases?.includes("S2.F3"),
-  );
+  const svgFigure = tree.blocks.find((block) => block.kind === "figure" && block.sourceAliases?.includes("S2.F3"));
   expect(svgFigure).toBeDefined();
   if (svgFigure?.kind === "figure") {
     expect(svgFigure.asset).toBeNull();
@@ -459,9 +461,7 @@ test("arxiv-import 未知可见内容：结构化降级为 raw block 且保留�
 test("arxiv-import 嵌套表格：无法无损表达时 raw 降级并保留全部单元格文本", () => {
   const result = okResult(convert(latexmlDocument({ extra: NESTED_TABLE_EXTRA })));
   const tree = result.tree;
-  const raw = tree.blocks.find(
-    (block) => block.kind === "raw" && block.sourceAliases?.includes("S2.T2"),
-  );
+  const raw = tree.blocks.find((block) => block.kind === "raw" && block.sourceAliases?.includes("S2.T2"));
   expect(raw).toBeDefined();
   if (raw?.kind === "raw") {
     expect(raw.text).toContain("outer");
@@ -499,10 +499,12 @@ test("arxiv-import 资产摘要不符：拒绝发布而不是引用错误字节"
     htmlUrl: HTML_URL,
     assets,
     assetBytes: {
-      ...Object.fromEntries(Object.values(assets).map((mapping) => [
-        mapping.path,
-        mapping.originalUrl.endsWith("overview.png") ? PNG1 : PNG2,
-      ])),
+      ...Object.fromEntries(
+        Object.values(assets).map((mapping) => [
+          mapping.path,
+          mapping.originalUrl.endsWith("overview.png") ? PNG1 : PNG2,
+        ]),
+      ),
       [firstPath]: Buffer.from("tampered"),
     },
   });
@@ -585,7 +587,9 @@ test("arxiv-import 子图：每个子图独立成块并解析各自引用，不�
   expect(captionTexts.filter((t) => t === "Sub one.")).toHaveLength(1);
   expect(captionTexts.filter((t) => t === "Sub two.")).toHaveLength(1);
   // 父 figure alias 持久化到锚定 caption 单元（SPEC §4.3），不只留在临时映射。
-  const parentCaption = Object.values(tree.units).find((u) => u.kind === "caption" && unitText(tree, u.id) === "Both subfigures.");
+  const parentCaption = Object.values(tree.units).find(
+    (u) => u.kind === "caption" && unitText(tree, u.id) === "Both subfigures.",
+  );
   expect(parentCaption?.sourceAliases).toContain("S2.FS");
   // 父 figure 引用解析到该锚定单元。
   const parentRef = Object.values(tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.FS");
@@ -642,7 +646,9 @@ test("arxiv-import 文件型 SVG 资产：不进入 revision，降级占位与 w
   if (missing?.kind === "figure") expect(missing.warning).toBeTruthy();
   expect(result.warnings.some((w) => w.code === "arxiv-convert-asset-missing")).toBe(true);
   // revision 资产集合中没有任何 svg。
-  expect(result.tree.blocks.every((b) => b.kind !== "figure" || b.asset === null || !b.asset.path.endsWith(".svg"))).toBe(true);
+  expect(
+    result.tree.blocks.every((b) => b.kind !== "figure" || b.asset === null || !b.asset.path.endsWith(".svg")),
+  ).toBe(true);
 });
 
 test("arxiv-import 无 caption 表格：结构化与 raw 降级均有合法锚点，引用不使整篇失败", () => {
@@ -652,7 +658,9 @@ test("arxiv-import 无 caption 表格：结构化与 raw 降级均有合法锚�
 </figure>
 <div id="S2.p6" class="ltx_para"><p class="ltx_p">See <a href="#S2.TB" class="ltx_ref">the table</a>.</p></div>`;
   const structured = okResult(convert(latexmlDocument({ extra: bareTable })));
-  const ref = Object.values(structured.tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.TB");
+  const ref = Object.values(structured.tree.atoms).find(
+    (a) => a.kind === "cross-reference" && a.sourceTarget === "S2.TB",
+  );
   expect(ref).toBeDefined();
   if (ref?.kind !== "cross-reference") throw new Error("ref missing");
   expect(ref.targetUnitId).not.toBeNull();
@@ -664,7 +672,9 @@ test("arxiv-import 无 caption 表格：结构化与 raw 降级均有合法锚�
     '<td class="ltx_td"><table class="ltx_tabular"><tbody><tr class="ltx_tr"><td class="ltx_td">nested</td></tr></tbody></table></td>',
   );
   const rawResult = okResult(convert(latexmlDocument({ extra: lossy })));
-  const rawRef = Object.values(rawResult.tree.atoms).find((a) => a.kind === "cross-reference" && a.sourceTarget === "S2.TB");
+  const rawRef = Object.values(rawResult.tree.atoms).find(
+    (a) => a.kind === "cross-reference" && a.sourceTarget === "S2.TB",
+  );
   expect(rawRef).toBeDefined();
   if (rawRef?.kind !== "cross-reference") throw new Error("raw ref missing");
   expect(rawRef.targetUnitId).not.toBeNull();

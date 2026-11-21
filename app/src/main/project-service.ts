@@ -41,8 +41,7 @@ function validateReading(value: ReadingState): ReadingState {
   )
     throw new Error("阅读位置文件已损坏。");
   for (const tab of value.tabs) {
-    if (!tab || typeof tab.key !== "string" || typeof tab.title !== "string")
-      throw new Error("文档标签无效。");
+    if (!tab || typeof tab.key !== "string" || typeof tab.title !== "string") throw new Error("文档标签无效。");
     if (tab.path) relativePath(tab.path);
     if (
       tab.markdown &&
@@ -50,8 +49,7 @@ function validateReading(value: ReadingState): ReadingState {
         !Number.isFinite(tab.markdown.scroll) ||
         tab.markdown.scroll < 0 ||
         (tab.markdown.readScroll !== undefined &&
-          (!Number.isFinite(tab.markdown.readScroll) ||
-            tab.markdown.readScroll < 0)) ||
+          (!Number.isFinite(tab.markdown.readScroll) || tab.markdown.readScroll < 0)) ||
         !Number.isInteger(tab.markdown.cursor) ||
         tab.markdown.cursor < 0)
     )
@@ -70,12 +68,9 @@ function validateReading(value: ReadingState): ReadingState {
       !Number.isFinite(p.zoom) ||
       p.zoom < 0.2 ||
       p.zoom > 60 ||
-      (p.scrollStrategy !== undefined &&
-        !["vertical", "horizontal"].includes(p.scrollStrategy)) ||
-      (p.spreadMode !== undefined &&
-        !["none", "odd", "even"].includes(p.spreadMode)) ||
-      (p.rotation !== undefined &&
-        (!Number.isInteger(p.rotation) || p.rotation < 0 || p.rotation > 3))
+      (p.scrollStrategy !== undefined && !["vertical", "horizontal"].includes(p.scrollStrategy)) ||
+      (p.spreadMode !== undefined && !["none", "odd", "even"].includes(p.spreadMode)) ||
+      (p.rotation !== undefined && (!Number.isInteger(p.rotation) || p.rotation < 0 || p.rotation > 3))
     )
       throw new Error("PDF 阅读位置无效。");
   }
@@ -120,34 +115,25 @@ function validName(name: string) {
 }
 
 function relativePath(value: string) {
-  if (
-    typeof value !== "string" ||
-    !value ||
-    value.includes("\\") ||
-    path.posix.isAbsolute(value)
-  )
+  if (typeof value !== "string" || !value || value.includes("\\") || path.posix.isAbsolute(value))
     throw new Error("需要工程内相对路径。");
   const parts = value.split("/");
   parts.forEach(validName);
-  if (
-    parts[0].toLowerCase() === manifestName ||
-    parts[0].startsWith(".paper30min-")
-  )
+  if (parts[0].toLowerCase() === manifestName || parts[0].startsWith(".paper30min-"))
     throw new Error("不能操作工程清单或内部临时文件。");
   return value;
 }
 
 async function atomicJson(file: string, value: unknown, signal?: AbortSignal) {
-  const temporary = path.join(
-    path.dirname(file),
-    `.paper30min-${randomUUID()}.tmp`,
-  );
+  const temporary = path.join(path.dirname(file), `.paper30min-${randomUUID()}.tmp`);
   try {
     const handle = await fs.open(temporary, "wx");
     try {
       await handle.writeFile(JSON.stringify(value, null, 2) + "\n");
       await handle.sync();
-    } finally { await handle.close(); }
+    } finally {
+      await handle.close();
+    }
     signal?.throwIfAborted();
     await renameManaged(temporary, file);
   } finally {
@@ -157,8 +143,7 @@ async function atomicJson(file: string, value: unknown, signal?: AbortSignal) {
 
 async function digest(file: string, signal?: AbortSignal) {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(file, { signal }))
-    hash.update(chunk);
+  for await (const chunk of createReadStream(file, { signal })) hash.update(chunk);
   return hash.digest("hex");
 }
 
@@ -178,8 +163,13 @@ function parseManifest(value: unknown): Manifest {
     // 工作台只需要工程身份与名称；current 损坏不阻止打开工程，
     // 由 Full 阅读器呈现恢复状态。身份字段损坏仍按清单错误拒绝。
     const m = value as { id?: unknown; name?: unknown; paper?: { id?: unknown } };
-    if (typeof m.id !== "string" || !m.id || typeof m.name !== "string" ||
-        typeof m.paper?.id !== "string" || !m.paper.id)
+    if (
+      typeof m.id !== "string" ||
+      !m.id ||
+      typeof m.name !== "string" ||
+      typeof m.paper?.id !== "string" ||
+      !m.paper.id
+    )
       throw new Error("工程清单格式不支持或已损坏。");
     return {
       formatVersion: 1,
@@ -190,36 +180,18 @@ function parseManifest(value: unknown): Manifest {
   }
   const m = value as Manifest;
   const record = (r: DocumentRecord) => {
-    if (
-      !r ||
-      typeof r.id !== "string" ||
-      !r.id ||
-      !/^[a-f0-9]{64}$/.test(r.sha256)
-    )
+    if (!r || typeof r.id !== "string" || !r.id || !/^[a-f0-9]{64}$/.test(r.sha256))
       throw new Error("工程文档身份无效。");
     relativePath(r.path);
   };
-  if (
-    !m ||
-    m.formatVersion !== 1 ||
-    typeof m.id !== "string" ||
-    !m.id ||
-    typeof m.name !== "string"
-  )
+  if (!m || m.formatVersion !== 1 || typeof m.id !== "string" || !m.id || typeof m.name !== "string")
     throw new Error("工程清单格式不支持或已损坏。");
   record(m.paper);
   return m;
 }
 
-function ensureAvailablePath(
-  manifest: Manifest,
-  relative: string,
-  ownId?: string,
-) {
-  if (
-    manifest.paper.id !== ownId &&
-    manifest.paper.path.toLowerCase() === relative.toLowerCase()
-  ) {
+function ensureAvailablePath(manifest: Manifest, relative: string, ownId?: string) {
+  if (manifest.paper.id !== ownId && manifest.paper.path.toLowerCase() === relative.toLowerCase()) {
     throw new Error("此路径已关联另一份文档，请选择该文档自己的文件。");
   }
 }
@@ -242,13 +214,12 @@ export class ProjectService {
     }
     if (command.type === "create") {
       const operationId = command.input.operationId;
-      if (this.creation.has(operationId))
-        return Promise.reject(new Error("创建任务已存在。"));
+      if (this.creation.has(operationId)) return Promise.reject(new Error("创建任务已存在。"));
       const controller = new AbortController();
       this.creation.set(operationId, controller);
-      return this.serialize<unknown>(() =>
-        this.create(command.input, controller.signal),
-      ).finally(() => this.creation.delete(operationId));
+      return this.serialize<unknown>(() => this.create(command.input, controller.signal)).finally(() =>
+        this.creation.delete(operationId),
+      );
     }
     return this.serialize(() => this.execute(command, signal));
   }
@@ -262,18 +233,13 @@ export class ProjectService {
   private agentPath(root: string, absolute: string) {
     const relative = path.relative(root, absolute).split(path.sep).join("/");
     relativePath(relative);
-    if (relative.split("/").some((part) => part.startsWith(".")))
-      throw new Error("Agent 不能访问工程内部文件。");
+    if (relative.split("/").some((part) => part.startsWith("."))) throw new Error("Agent 不能访问工程内部文件。");
     return relative;
   }
 
-  private async writablePath(
-    root: string,
-    relative: string,
-  ) {
+  private async writablePath(root: string, relative: string) {
     relativePath(relative);
-    if (relative.split("/").some((part) => part.startsWith(".")))
-      throw new Error("不能写入工程内部文件。");
+    if (relative.split("/").some((part) => part.startsWith("."))) throw new Error("不能写入工程内部文件。");
     const lower = relative.toLowerCase();
     const manifest = await this.manifest(root);
     if (
@@ -294,17 +260,10 @@ export class ProjectService {
       const handle = await fs.open(file, "r");
       try {
         const stat = await handle.stat();
-        if (
-          !stat.isFile() ||
-          stat.size > 2 * 1024 * 1024 ||
-          /\.pdf$/i.test(relative)
-        )
-          throw new Error(
-            "read 支持 2 MiB 内普通文件；PDF 请使用论文读取工具。",
-          );
+        if (!stat.isFile() || stat.size > 2 * 1024 * 1024 || /\.pdf$/i.test(relative))
+          throw new Error("read 支持 2 MiB 内普通文件；PDF 请使用论文读取工具。");
         const bytes = await handle.readFile();
-        if (bytes.length > 2 * 1024 * 1024)
-          throw new Error("文件超过读取预算。");
+        if (bytes.length > 2 * 1024 * 1024) throw new Error("文件超过读取预算。");
         return {
           bytes,
           version: createHash("sha256").update(bytes).digest("hex"),
@@ -332,21 +291,16 @@ export class ProjectService {
 
   private async preferences(): Promise<Preferences> {
     try {
-      const p = JSON.parse(
-        await fs.readFile(this.configFile, "utf8"),
-      ) as Preferences;
+      const p = JSON.parse(await fs.readFile(this.configFile, "utf8")) as Preferences;
       if (
         (p.defaultFolder !== null && typeof p.defaultFolder !== "string") ||
         !Array.isArray(p.recent) ||
-        p.recent.some(
-          (r) => typeof r.root !== "string" || typeof r.name !== "string",
-        )
+        p.recent.some((r) => typeof r.root !== "string" || typeof r.name !== "string")
       )
         throw new Error("本机配置已损坏。");
       return p;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return { defaultFolder: null, recent: [] };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { defaultFolder: null, recent: [] };
       throw error;
     }
   }
@@ -354,14 +308,11 @@ export class ProjectService {
   private async reading(root: string): Promise<ReadingState> {
     const file = path.join(root, readingName);
     try {
-      if ((await fs.lstat(file)).isSymbolicLink())
-        throw new Error("阅读位置文件不能为符号链接。");
-      if ((await fs.stat(file)).size > 1024 * 1024)
-        throw new Error("阅读位置文件过大。");
+      if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("阅读位置文件不能为符号链接。");
+      if ((await fs.stat(file)).size > 1024 * 1024) throw new Error("阅读位置文件过大。");
       return validateReading(JSON.parse(await fs.readFile(file, "utf8")));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return { tabs: [], active: "", pdf: {} };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { tabs: [], active: "", pdf: {} };
       throw error;
     }
   }
@@ -373,8 +324,7 @@ export class ProjectService {
 
   private async writableFolder(folder: string) {
     try {
-      if (!path.isAbsolute(folder) || !(await fs.stat(folder)).isDirectory())
-        throw new Error();
+      if (!path.isAbsolute(folder) || !(await fs.stat(folder)).isDirectory()) throw new Error();
       await fs.access(folder, constants.W_OK);
       const probe = path.join(folder, `.paper30min-${randomUUID()}.tmp`);
       await fs.writeFile(probe, "", { flag: "wx" });
@@ -394,10 +344,7 @@ export class ProjectService {
     await this.savePreferences(p);
   }
 
-  private async create(
-    input: CreateInput,
-    signal: AbortSignal,
-  ): Promise<Project> {
+  private async create(input: CreateInput, signal: AbortSignal): Promise<Project> {
     validName(input.name);
     await this.writableFolder(input.parent);
     await checkPdf(input.source);
@@ -412,16 +359,11 @@ export class ProjectService {
       throw error;
     }
     try {
-      for (const directory of directories)
-        await fs.mkdir(path.join(root, directory));
+      for (const directory of directories) await fs.mkdir(path.join(root, directory));
       await fs.mkdir(path.join(root, ".pi", "sessions"), { recursive: true });
       const paperPath = "text/paper.pdf";
       const target = path.join(root, paperPath);
-      await pipeline(
-        createReadStream(input.source),
-        createWriteStream(target, { flags: "wx" }),
-        { signal },
-      );
+      await pipeline(createReadStream(input.source), createWriteStream(target, { flags: "wx" }), { signal });
       const sha256 = await digest(target, signal);
       const manifest: Manifest = {
         formatVersion: 1,
@@ -434,10 +376,7 @@ export class ProjectService {
       const project = await this.snapshot(root);
       signal.throwIfAborted();
       // Registration is the commit point. Late cancellation cannot undo a committed project.
-      await this.remember(
-        project,
-        input.makeDefault ? input.parent : undefined,
-      );
+      await this.remember(project, input.makeDefault ? input.parent : undefined);
       return project;
     } catch (error) {
       await fs.rm(root, { recursive: true, force: true });
@@ -449,8 +388,7 @@ export class ProjectService {
   private async manifest(root: string) {
     if (!path.isAbsolute(root)) throw new Error("需要完整工程路径。");
     const file = path.join(root, manifestName);
-    if ((await fs.lstat(file)).isSymbolicLink())
-      throw new Error("工程清单不能是符号链接。");
+    if ((await fs.lstat(file)).isSymbolicLink()) throw new Error("工程清单不能是符号链接。");
     return parseManifest(JSON.parse(await fs.readFile(file, "utf8")));
   }
 
@@ -461,8 +399,7 @@ export class ProjectService {
     for (const part of relative.split("/")) {
       cursor = path.join(cursor, part);
       const entry = await fs.lstat(cursor);
-      if (entry.isSymbolicLink())
-        throw new Error("工程文件不能通过链接指向其他位置。");
+      if (entry.isSymbolicLink()) throw new Error("工程文件不能通过链接指向其他位置。");
     }
     return cursor;
   }
@@ -484,8 +421,7 @@ export class ProjectService {
           continue;
         const relative = prefix + entry.name;
         files.push({ path: relative, directory: entry.isDirectory() });
-        if (entry.isDirectory())
-          await walk(path.join(directory, entry.name), relative + "/");
+        if (entry.isDirectory()) await walk(path.join(directory, entry.name), relative + "/");
       }
     };
     await walk(root, "");
@@ -503,31 +439,20 @@ export class ProjectService {
     };
   }
 
-  private async markdown(
-    root: string,
-    relative: string,
-  ): Promise<MarkdownFile> {
-    if (!/\.(md|markdown)$/i.test(relative))
-      throw new Error("请选择 Markdown 文档。");
+  private async markdown(root: string, relative: string): Promise<MarkdownFile> {
+    if (!/\.(md|markdown)$/i.test(relative)) throw new Error("请选择 Markdown 文档。");
     return this.textFile(root, relative);
   }
 
-  private async textFile(
-    root: string,
-    relative: string,
-    budget = 2 * 1024 * 1024,
-  ): Promise<MarkdownFile> {
+  private async textFile(root: string, relative: string, budget = 2 * 1024 * 1024): Promise<MarkdownFile> {
     const file = await this.resolve(root, relative);
     const handle = await fs.open(file, "r");
     try {
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > budget)
-        throw new Error(
-          "Markdown 超过 2 MiB 编辑预算或不是文件，请在外部应用中打开。",
-        );
+        throw new Error("Markdown 超过 2 MiB 编辑预算或不是文件，请在外部应用中打开。");
       const bytes = await handle.readFile();
-      if (bytes.length > budget)
-        throw new Error("Markdown 超过编辑预算。");
+      if (bytes.length > budget) throw new Error("Markdown 超过编辑预算。");
       // Keep a UTF-8 BOM in the text so saving does not silently remove it.
       const text = new TextDecoder("utf-8", {
         fatal: true,
@@ -542,14 +467,8 @@ export class ProjectService {
     }
   }
 
-  private async saveMarkdown(
-    root: string,
-    relative: string,
-    text: string,
-    version: string,
-  ): Promise<MarkdownSave> {
-    if (!/\.(md|markdown)$/i.test(relative))
-      throw new Error("请选择 Markdown 文档。");
+  private async saveMarkdown(root: string, relative: string, text: string, version: string): Promise<MarkdownSave> {
+    if (!/\.(md|markdown)$/i.test(relative)) throw new Error("请选择 Markdown 文档。");
     await this.writablePath(root, relative);
     return this.saveText(root, relative, text, version);
   }
@@ -577,8 +496,7 @@ export class ProjectService {
       }
     };
     const current = await readCurrent();
-    if ((current?.version ?? null) !== version)
-      return { saved: false, file: current };
+    if ((current?.version ?? null) !== version) return { saved: false, file: current };
     if (current && text === current.text) return { saved: true, file: current };
     let parent = root;
     for (const part of path.posix.dirname(relative).split("/")) {
@@ -589,23 +507,13 @@ export class ProjectService {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
-      if ((await fs.lstat(parent)).isSymbolicLink())
-        throw new Error("不能写入链接目录。");
+      if ((await fs.lstat(parent)).isSymbolicLink()) throw new Error("不能写入链接目录。");
     }
-    const file = current
-      ? await this.resolve(root, relative)
-      : path.join(root, relative);
+    const file = current ? await this.resolve(root, relative) : path.join(root, relative);
     if (current) await fs.access(file, constants.W_OK);
-    const temporary = path.join(
-      path.dirname(file),
-      ".paper30min-" + randomUUID() + ".tmp",
-    );
+    const temporary = path.join(path.dirname(file), ".paper30min-" + randomUUID() + ".tmp");
     try {
-      const handle = await fs.open(
-        temporary,
-        "wx",
-        current ? (await fs.stat(file)).mode : undefined,
-      );
+      const handle = await fs.open(temporary, "wx", current ? (await fs.stat(file)).mode : undefined);
       try {
         await handle.writeFile(text, "utf8");
         await handle.sync();
@@ -613,8 +521,7 @@ export class ProjectService {
         await handle.close();
       }
       const latest = await readCurrent();
-      if ((latest?.version ?? null) !== version)
-        return { saved: false, file: latest };
+      if ((latest?.version ?? null) !== version) return { saved: false, file: latest };
       // Recheck the path after staging; ordinary external edits are detected before replacement.
       if (current) await this.resolve(root, relative);
       signal?.throwIfAborted();
@@ -623,8 +530,7 @@ export class ProjectService {
         try {
           await fs.link(temporary, file);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST")
-            return { saved: false, file: await readCurrent() };
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") return { saved: false, file: await readCurrent() };
           throw error;
         }
       }
@@ -673,20 +579,11 @@ export class ProjectService {
       await atomicJson(path.join(root, readingName), validateReading(state));
       return;
     }
-    if (command.type === "readMarkdown")
-      return this.markdown(root, command.path);
-    if (command.type === "saveMarkdown")
-      return this.saveMarkdown(
-        root,
-        command.path,
-        command.text,
-        command.version,
-      );
+    if (command.type === "readMarkdown") return this.markdown(root, command.path);
+    if (command.type === "saveMarkdown") return this.saveMarkdown(root, command.path, command.text, command.version);
     if (command.type === "createNote") {
       validName(command.name);
-      const name = /\.(md|markdown)$/i.test(command.name)
-        ? command.name
-        : command.name + ".md";
+      const name = /\.(md|markdown)$/i.test(command.name) ? command.name : command.name + ".md";
       await fs.mkdir(path.join(root, "notes"), { recursive: true });
       const directory = await this.resolve(root, "notes");
       await fs.writeFile(path.join(directory, name), "", { flag: "wx" });
@@ -715,17 +612,17 @@ export class ProjectService {
       const candidateAsset = /^update-candidates\/([0-9a-f-]{36})\/(assets\/.+)$/.exec(command.path);
       if (candidateAsset) {
         const asset = await readUpdateCandidateAsset({
-          root, revisionId: candidateAsset[1], path: candidateAsset[2],
+          root,
+          revisionId: candidateAsset[1],
+          path: candidateAsset[2],
         });
         return { bytes: new Uint8Array(asset.bytes), mime: asset.mime ?? mime };
       }
       const file = await this.resolve(root, command.path);
       const stat = await fs.stat(file);
-      if (!stat.isFile() || stat.size > 20 * 1024 * 1024)
-        throw new Error("图片超过 20 MiB 或不是文件。");
+      if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error("图片超过 20 MiB 或不是文件。");
       const bytes = await fs.readFile(file);
-      if (bytes.length > 20 * 1024 * 1024)
-        throw new Error("图片超过读取预算。");
+      if (bytes.length > 20 * 1024 * 1024) throw new Error("图片超过读取预算。");
       return { bytes: new Uint8Array(bytes), mime };
     }
     if (command.type === "readPdf") {
@@ -733,13 +630,10 @@ export class ProjectService {
       const handle = await fs.open(file, "r");
       try {
         const stat = await handle.stat();
-        if (!stat.isFile() || !/\.pdf$/i.test(file))
-          throw new Error("请选择 PDF 文件。");
-        if (stat.size > 128 * 1024 * 1024)
-          throw new Error("PDF 超过 128 MiB 阅读预算，请在外部应用中打开。");
+        if (!stat.isFile() || !/\.pdf$/i.test(file)) throw new Error("请选择 PDF 文件。");
+        if (stat.size > 128 * 1024 * 1024) throw new Error("PDF 超过 128 MiB 阅读预算，请在外部应用中打开。");
         const bytes = await handle.readFile();
-        if (bytes.length > 128 * 1024 * 1024)
-          throw new Error("PDF 超过阅读预算。");
+        if (bytes.length > 128 * 1024 * 1024) throw new Error("PDF 超过阅读预算。");
         return {
           bytes: new Uint8Array(bytes),
           sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -759,16 +653,13 @@ export class ProjectService {
       const file = await this.resolve(root, command.path);
       if (!(await fs.stat(file)).isFile()) throw new Error("请选择文件。");
       if (command.type === "resolveFile") return file;
-      if (!/\.(md|txt|json|csv|tsv|py|js|ts|yaml|yml)$/i.test(file))
-        return null;
-      if ((await fs.stat(file)).size > 2 * 1024 * 1024)
-        throw new Error("文件过大，请在外部应用中打开。");
+      if (!/\.(md|txt|json|csv|tsv|py|js|ts|yaml|yml)$/i.test(file)) return null;
+      if ((await fs.stat(file)).size > 2 * 1024 * 1024) throw new Error("文件过大，请在外部应用中打开。");
       return fs.readFile(file, "utf8");
     }
     if (command.type === "move") {
       const source = await this.resolve(root, command.path);
-      if (!(await fs.stat(source)).isFile())
-        throw new Error("请选择需要改名或移动的文件。");
+      if (!(await fs.stat(source)).isFile()) throw new Error("请选择需要改名或移动的文件。");
       relativePath(command.destination);
       if (command.path === command.destination) return this.snapshot(root);
       // v2 受管正文与来源不可改名移动；revision 身份由 project-core 命令推进。

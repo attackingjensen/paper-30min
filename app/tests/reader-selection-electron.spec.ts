@@ -2,13 +2,7 @@
 // 真实 Electron DOM 选区 → 投影逻辑 range（UTF-16，atom 占一位，半开区间）；
 // KaTeX/MathML 辅助节点不破坏偏移；跨句/跨单元完整展开；
 // 解释/提问进入右侧持续对话草稿，不生成问答卡、不自动发送模型请求。
-import {
-  test,
-  expect,
-  _electron as electron,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -32,9 +26,7 @@ async function launch() {
   const visible = process.env.PAPER30MIN_TEST_WINDOW === "visible";
   const env: Record<string, string> = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
@@ -96,7 +88,8 @@ function selectionTree(paperId: string) {
     },
     sentences: {
       [sentenceA1]: {
-        id: sentenceA1, unitId: unitA,
+        id: sentenceA1,
+        unitId: unitA,
         content: [
           { kind: "text", text: "Energy " },
           { kind: "atom", atomId: mathAtom },
@@ -104,21 +97,34 @@ function selectionTree(paperId: string) {
         ],
       },
       [sentenceA2]: {
-        id: sentenceA2, unitId: unitA,
-        content: [{ kind: "text", text: "See " }, { kind: "atom", atomId: linkAtom }, { kind: "text", text: " now." }],
+        id: sentenceA2,
+        unitId: unitA,
+        content: [
+          { kind: "text", text: "See " },
+          { kind: "atom", atomId: linkAtom },
+          { kind: "text", text: " now." },
+        ],
       },
       [sentenceB1]: {
-        id: sentenceB1, unitId: unitB,
+        id: sentenceB1,
+        unitId: unitB,
         content: [{ kind: "text", text: "Café e\u0301 𝒜 tail." }],
       },
     },
     atoms: {
       [mathAtom]: {
-        id: mathAtom, unitId: unitA, kind: "math", text: "$E=mc^2$",
+        id: mathAtom,
+        unitId: unitA,
+        kind: "math",
+        text: "$E=mc^2$",
         source: { format: "latex", value: "E=mc^2" },
       },
       [linkAtom]: {
-        id: linkAtom, unitId: unitA, kind: "link", text: "主页", href: "https://example.org/",
+        id: linkAtom,
+        unitId: unitA,
+        kind: "link",
+        text: "主页",
+        href: "https://example.org/",
       },
     },
     blocks: [
@@ -129,24 +135,30 @@ function selectionTree(paperId: string) {
   return { tree, ids: { unitA, unitB, sentenceA1, sentenceA2, sentenceB1, mathAtom, linkAtom } };
 }
 
-async function publishTree(name: string, build: (paperId: string) => { tree: DocumentTree; ids: Record<string, string> }) {
+async function publishTree(
+  name: string,
+  build: (paperId: string) => { tree: DocumentTree; ids: Record<string, string> },
+) {
   const created = await invoke<ProjectCoreSnapshot>({ type: "coreCreate", parent: sandbox, name });
   const { tree, ids } = build(created.manifest.paper.id);
-  const source = await page.evaluate(({ root, files }) =>
-    window.desktop.invoke({ type: "corePublishSource", root, files }),
-  { root: created.root, files: { "document.html": json("<html>paper</html>") } }) as SourceSnapshotRecord;
-  const revision = await page.evaluate(({ root, sourceSnapshotId, files }) =>
-    window.desktop.invoke({ type: "coreCommit", root, baseRevision: null, sourceSnapshotId, files }),
-  {
-    root: created.root,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: {
-      "document.json": json(tree),
-      "source-base.json": json(tree),
-      "tombstones.json": json([]),
-      "changeset.json": json({ baseRevision: null }),
+  const source = (await page.evaluate(
+    ({ root, files }) => window.desktop.invoke({ type: "corePublishSource", root, files }),
+    { root: created.root, files: { "document.html": json("<html>paper</html>") } },
+  )) as SourceSnapshotRecord;
+  const revision = (await page.evaluate(
+    ({ root, sourceSnapshotId, files }) =>
+      window.desktop.invoke({ type: "coreCommit", root, baseRevision: null, sourceSnapshotId, files }),
+    {
+      root: created.root,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        "document.json": json(tree),
+        "source-base.json": json(tree),
+        "tombstones.json": json([]),
+        "changeset.json": json({ baseRevision: null }),
+      },
     },
-  }) as ProjectRevisionRecord;
+  )) as ProjectRevisionRecord;
   await desktop.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, created.root);
@@ -173,30 +185,33 @@ async function selectRange(
       if (attempt >= 2) throw error;
     }
   }
-  await page.evaluate(({ from, to }) => {
-    const locate = (point: { sentenceId: string; start: number; offset: number; insideAtom?: string }) => {
-      const sentence = document.querySelector(`[data-sentence-id="${point.sentenceId}"]`);
-      if (!sentence) throw new Error(`句子不存在：${point.sentenceId}`);
-      if (point.insideAtom) {
-        const atom = sentence.querySelector(`[data-atom-id="${point.insideAtom}"]`);
-        const target = atom?.querySelector("annotation") ?? atom?.querySelector(".mord");
-        if (!target?.firstChild) throw new Error("atom 内部节点不存在");
-        return { node: target.firstChild, offset: point.offset };
-      }
-      const span = sentence.querySelector(`[data-start="${point.start}"]`);
-      if (!span?.firstChild) throw new Error(`文本片段不存在：${point.start}`);
-      return { node: span.firstChild, offset: point.offset };
-    };
-    const start = locate(from);
-    const end = locate(to);
-    const range = document.createRange();
-    range.setStart(start.node, start.offset);
-    range.setEnd(end.node, end.offset);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.querySelector(".full-reader")!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  }, { from, to });
+  await page.evaluate(
+    ({ from, to }) => {
+      const locate = (point: { sentenceId: string; start: number; offset: number; insideAtom?: string }) => {
+        const sentence = document.querySelector(`[data-sentence-id="${point.sentenceId}"]`);
+        if (!sentence) throw new Error(`句子不存在：${point.sentenceId}`);
+        if (point.insideAtom) {
+          const atom = sentence.querySelector(`[data-atom-id="${point.insideAtom}"]`);
+          const target = atom?.querySelector("annotation") ?? atom?.querySelector(".mord");
+          if (!target?.firstChild) throw new Error("atom 内部节点不存在");
+          return { node: target.firstChild, offset: point.offset };
+        }
+        const span = sentence.querySelector(`[data-start="${point.start}"]`);
+        if (!span?.firstChild) throw new Error(`文本片段不存在：${point.start}`);
+        return { node: span.firstChild, offset: point.offset };
+      };
+      const start = locate(from);
+      const end = locate(to);
+      const range = document.createRange();
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.querySelector(".full-reader")!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    },
+    { from, to },
+  );
 }
 
 test("reader 原文选区按 UTF-16 半开区间映射，组合字符与代理对计数正确；工具条出现", async () => {

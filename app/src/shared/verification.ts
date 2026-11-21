@@ -22,66 +22,89 @@ const ValiditySchema = Type.Union([
   Type.Literal("historical-source"),
   Type.Literal("removed"),
 ]);
-const CoverageEntrySchema = Type.Object({
-  nodeType: NodeTypeSchema,
-  nodeId: IdSchema,
-  contentSha256: Sha256Schema,
-  quote: Type.String({ maxLength: 2000 }),
-  validity: ValiditySchema,
-  range: Type.Optional(Type.Object({
-    sentenceId: IdSchema,
-    start: Type.Integer({ minimum: 0 }),
-    end: Type.Integer({ minimum: 0 }),
-  }, { additionalProperties: false })),
-}, { additionalProperties: false });
+const CoverageEntrySchema = Type.Object(
+  {
+    nodeType: NodeTypeSchema,
+    nodeId: IdSchema,
+    contentSha256: Sha256Schema,
+    quote: Type.String({ maxLength: 2000 }),
+    validity: ValiditySchema,
+    range: Type.Optional(
+      Type.Object(
+        {
+          sentenceId: IdSchema,
+          start: Type.Integer({ minimum: 0 }),
+          end: Type.Integer({ minimum: 0 }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
 const ActorSchema = Type.Union([
-  Type.Object({
-    kind: Type.Literal("user"),
-    confirmed: Type.Literal(true),
-  }, { additionalProperties: false }),
-  Type.Object({
-    kind: Type.Literal("agent"),
+  Type.Object(
+    {
+      kind: Type.Literal("user"),
+      confirmed: Type.Literal(true),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("agent"),
+      sessionId: SessionFieldSchema,
+      taskId: SessionFieldSchema,
+      evidenceIds: Type.Array(IdSchema, { minItems: 1, maxItems: 1000, uniqueItems: true }),
+    },
+    { additionalProperties: false },
+  ),
+]);
+const VerificationRecordSchema = Type.Object(
+  {
+    verificationId: IdSchema,
+    verifiedRevisionId: IdSchema,
+    anchor: DocumentAnchorSchema,
+    coverage: Type.Array(CoverageEntrySchema, { minItems: 1, maxItems: 200_000 }),
+    pdfSnapshotId: IdSchema,
+    parseSnapshotId: Type.Union([IdSchema, Type.Null()]),
+    actor: ActorSchema,
+    createdAt: Type.String({ minLength: 1, maxLength: 40 }),
+    pdfSourceChanged: Type.Optional(Type.Literal(true)),
+  },
+  { additionalProperties: false },
+);
+const VerificationSidecarSchema = Type.Object(
+  {
+    formatVersion: Type.Literal(1),
+    revisionId: IdSchema,
+    records: Type.Array(VerificationRecordSchema),
+  },
+  { additionalProperties: false },
+);
+const PdfSourceEvidenceSchema = Type.Object(
+  {
+    formatVersion: Type.Literal(1),
+    evidenceId: IdSchema,
+    projectId: IdSchema,
+    paperId: IdSchema,
+    pdfSnapshotId: IdSchema,
+    pages: Type.Array(Type.Integer({ minimum: 1, maximum: 1000 }), {
+      minItems: 1,
+      maxItems: 1000,
+      uniqueItems: true,
+    }),
     sessionId: SessionFieldSchema,
     taskId: SessionFieldSchema,
-    evidenceIds: Type.Array(IdSchema, { minItems: 1, maxItems: 1000, uniqueItems: true }),
-  }, { additionalProperties: false }),
-]);
-const VerificationRecordSchema = Type.Object({
-  verificationId: IdSchema,
-  verifiedRevisionId: IdSchema,
-  anchor: DocumentAnchorSchema,
-  coverage: Type.Array(CoverageEntrySchema, { minItems: 1, maxItems: 200_000 }),
-  pdfSnapshotId: IdSchema,
-  parseSnapshotId: Type.Union([IdSchema, Type.Null()]),
-  actor: ActorSchema,
-  createdAt: Type.String({ minLength: 1, maxLength: 40 }),
-  pdfSourceChanged: Type.Optional(Type.Literal(true)),
-}, { additionalProperties: false });
-const VerificationSidecarSchema = Type.Object({
-  formatVersion: Type.Literal(1),
-  revisionId: IdSchema,
-  records: Type.Array(VerificationRecordSchema),
-}, { additionalProperties: false });
-const PdfSourceEvidenceSchema = Type.Object({
-  formatVersion: Type.Literal(1),
-  evidenceId: IdSchema,
-  projectId: IdSchema,
-  paperId: IdSchema,
-  pdfSnapshotId: IdSchema,
-  pages: Type.Array(Type.Integer({ minimum: 1, maximum: 1000 }), {
-    minItems: 1,
-    maxItems: 1000,
-    uniqueItems: true,
-  }),
-  sessionId: SessionFieldSchema,
-  taskId: SessionFieldSchema,
-  contentSha256: Sha256Schema,
-  /** 一次性消费凭据：只存在于受管证据文件，read_pdf 输出与核验记录都不携带；
-   * 核验成功后烧掉，同一证据不得再次用于建立核验（防重放）。 */
-  consumeNonce: Sha256Schema,
-  consumedAt: Type.Optional(Type.String({ minLength: 1, maxLength: 40 })),
-  createdAt: Type.String({ minLength: 1, maxLength: 40 }),
-}, { additionalProperties: false });
+    contentSha256: Sha256Schema,
+    /** 一次性消费凭据：只存在于受管证据文件，read_pdf 输出与核验记录都不携带；
+     * 核验成功后烧掉，同一证据不得再次用于建立核验（防重放）。 */
+    consumeNonce: Sha256Schema,
+    consumedAt: Type.Optional(Type.String({ minLength: 1, maxLength: 40 })),
+    createdAt: Type.String({ minLength: 1, maxLength: 40 }),
+  },
+  { additionalProperties: false },
+);
 
 export type VerificationNodeType = Type.Static<typeof NodeTypeSchema>;
 type VerificationValidity = Type.Static<typeof ValiditySchema>;
@@ -103,10 +126,7 @@ function invalid(message: string): never {
   throw new Error(`核验记录无效：${message}`);
 }
 
-export function parseVerificationSidecar(
-  value: unknown,
-  expectedRevisionId?: string,
-): VerificationSidecar {
+export function parseVerificationSidecar(value: unknown, expectedRevisionId?: string): VerificationSidecar {
   if (!sidecarSchema.Check(value)) invalid("不符合 verification formatVersion: 1 schema。");
   if (expectedRevisionId !== undefined && value.revisionId !== expectedRevisionId)
     invalid("侧车 revisionId 与所属 revision 不一致。");
@@ -139,8 +159,7 @@ export function inheritVerificationRecords(input: {
   const changeset = parseDocumentChangeset(input.changeset);
   const statuses = new Map(changeset.changes.map((entry) => [entry.nodeId, entry.status]));
   return input.records.map((record) => {
-    const samePdf = input.currentPdfSnapshotId !== null &&
-      record.pdfSnapshotId === input.currentPdfSnapshotId;
+    const samePdf = input.currentPdfSnapshotId !== null && record.pdfSnapshotId === input.currentPdfSnapshotId;
     const coverage = record.coverage.map((entry) => {
       if (entry.validity === "removed") return structuredClone(entry);
       const status = statuses.get(entry.nodeId);
@@ -162,11 +181,7 @@ export function inheritVerificationRecords(input: {
   });
 }
 
-type VerificationNodeStatus =
-  | "verified"
-  | "historical-source"
-  | "modified-unreviewed"
-  | "unrecorded";
+type VerificationNodeStatus = "verified" | "historical-source" | "modified-unreviewed" | "unrecorded";
 
 interface VerificationSummary {
   counts: Record<VerificationNodeStatus, number>;
@@ -180,10 +195,7 @@ interface VerificationSummary {
 
 /** 文档级摘要（SPEC-pdf-import §9.5、§11）：按节点取最新有效 coverage 状态聚合四态，
  * removed entry 不参与聚合；不合并为“全篇已审阅”，不产生任何主观质量分数。 */
-export function summarizeVerification(
-  tree: DocumentTree,
-  records: VerificationRecord[],
-): VerificationSummary {
+export function summarizeVerification(tree: DocumentTree, records: VerificationRecord[]): VerificationSummary {
   const effective = new Map<string, { entry: VerificationCoverageEntry; record: VerificationRecord }>();
   const ordered = [...records].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const record of ordered)
@@ -200,9 +212,7 @@ export function summarizeVerification(
   const nodes: VerificationSummary["nodes"] = [];
   const add = (nodeType: VerificationNodeType, nodeId: string) => {
     const found = effective.get(nodeId);
-    const status: VerificationNodeStatus = found
-      ? (found.entry.validity as VerificationNodeStatus)
-      : "unrecorded";
+    const status: VerificationNodeStatus = found ? (found.entry.validity as VerificationNodeStatus) : "unrecorded";
     counts[status] += 1;
     nodes.push({ nodeType, nodeId, status, verificationId: found?.record.verificationId ?? null });
   };

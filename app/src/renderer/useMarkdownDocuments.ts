@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { EditorState } from "@codemirror/state";
-import type {
-  DocumentTab,
-  MarkdownFile,
-  MarkdownSave,
-} from "../shared/contracts";
+import type { DocumentTab, MarkdownFile, MarkdownSave } from "../shared/contracts";
 
 export interface MarkdownDraft {
   path: string;
@@ -24,16 +20,10 @@ export interface MarkdownDraft {
   saveTimer?: ReturnType<typeof setTimeout>;
   pendingSave?: Promise<void>;
 }
-export const isMarkdown = (path?: string) =>
-  !!path && /\.(md|markdown)$/i.test(path);
-export const isDirty = (draft: MarkdownDraft) =>
-  !!draft.file && draft.text !== draft.file.text;
+export const isMarkdown = (path?: string) => !!path && /\.(md|markdown)$/i.test(path);
+export const isDirty = (draft: MarkdownDraft) => !!draft.file && draft.text !== draft.file.text;
 
-export function useMarkdownDocuments(
-  root: string | undefined,
-  tabs: DocumentTab[],
-  revision: unknown,
-) {
+export function useMarkdownDocuments(root: string | undefined, tabs: DocumentTab[], revision: unknown) {
   const [, render] = useReducer((n) => n + 1, 0);
   const store = useRef<{ root?: string; drafts: Map<string, MarkdownDraft> }>({
     drafts: new Map(),
@@ -45,41 +35,43 @@ export function useMarkdownDocuments(
     if (alive()) render();
   }, [alive]);
 
-  const sync = useCallback(async (draft: MarkdownDraft) => {
-    const baseline = draft.file;
-    try {
-      const file = await window.desktop.invoke<MarkdownFile>({
-        type: "readMarkdown",
-        root: root!,
-        path: draft.path,
-      });
-      if (!alive() || draft.file !== baseline || draft.saving) return;
-      if (!draft.file || !isDirty(draft) || draft.text === file.text) {
-        if (draft.text !== file.text) {
-          draft.text = file.text;
-          draft.editor = undefined;
-          draft.revision++;
+  const sync = useCallback(
+    async (draft: MarkdownDraft) => {
+      const baseline = draft.file;
+      try {
+        const file = await window.desktop.invoke<MarkdownFile>({
+          type: "readMarkdown",
+          root: root!,
+          path: draft.path,
+        });
+        if (!alive() || draft.file !== baseline || draft.saving) return;
+        if (!draft.file || !isDirty(draft) || draft.text === file.text) {
+          if (draft.text !== file.text) {
+            draft.text = file.text;
+            draft.editor = undefined;
+            draft.revision++;
+          }
+          draft.error = "";
+          draft.file = file;
+          draft.external = undefined;
+        } else draft.external = file.version === draft.file.version ? undefined : file;
+      } catch (error) {
+        if (!alive() || draft.file !== baseline || draft.saving) return;
+        draft.error = (error as Error).message;
+        if (draft.file && draft.error.includes("ENOENT")) {
+          draft.external = null;
+          draft.error = "文件已被删除或移动，你的内容仍保留在此标签中。";
         }
-        draft.error = "";
-        draft.file = file;
-        draft.external = undefined;
-      } else
-        draft.external = file.version === draft.file.version ? undefined : file;
-    } catch (error) {
-      if (!alive() || draft.file !== baseline || draft.saving) return;
-      draft.error = (error as Error).message;
-      if (draft.file && draft.error.includes("ENOENT")) {
-        draft.external = null;
-        draft.error = "文件已被删除或移动，你的内容仍保留在此标签中。";
+        // Keep the last loaded text and user's input even when the path disappeared.
+      } finally {
+        if (alive()) {
+          draft.loading = false;
+          notify();
+        }
       }
-      // Keep the last loaded text and user's input even when the path disappeared.
-    } finally {
-      if (alive()) {
-        draft.loading = false;
-        notify();
-      }
-    }
-  }, [alive, notify, root]);
+    },
+    [alive, notify, root],
+  );
   useEffect(() => {
     if (!root) return;
     for (const tab of tabs) {
@@ -112,7 +104,10 @@ export function useMarkdownDocuments(
   }
   async function save(draft: MarkdownDraft): Promise<void> {
     clearTimeout(draft.saveTimer);
-    if (draft.pendingSave) { await draft.pendingSave; return; }
+    if (draft.pendingSave) {
+      await draft.pendingSave;
+      return;
+    }
     if (!draft.file || draft.composing || draft.external !== undefined || !isDirty(draft)) return;
     draft.pendingSave = persist(draft);
     await draft.pendingSave;
@@ -147,7 +142,12 @@ export function useMarkdownDocuments(
       notify();
     }
   }
-  useEffect(() => () => { for (const draft of drafts.values()) clearTimeout(draft.saveTimer); }, [drafts]);
+  useEffect(
+    () => () => {
+      for (const draft of drafts.values()) clearTimeout(draft.saveTimer);
+    },
+    [drafts],
+  );
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if ([...drafts.values()].some((d) => isDirty(d) || d.saving)) {
@@ -161,24 +161,23 @@ export function useMarkdownDocuments(
 
   async function flush(path?: string) {
     const selected = path ? [drafts.get(path)].filter((d): d is MarkdownDraft => !!d) : [...drafts.values()];
-    await Promise.all(selected.map(async (draft) => {
-      do { await save(draft); } while (isDirty(draft) && !draft.error && draft.external === undefined && !draft.composing);
-    }));
+    await Promise.all(
+      selected.map(async (draft) => {
+        do {
+          await save(draft);
+        } while (isDirty(draft) && !draft.error && draft.external === undefined && !draft.composing);
+      }),
+    );
     return !selected.some((draft) => isDirty(draft) || draft.saving);
   }
   async function mayLeave(path?: string) {
     if (await flush(path)) return true;
-    const selected = path
-      ? [drafts.get(path)].filter((d): d is MarkdownDraft => !!d)
-      : [...drafts.values()];
+    const selected = path ? [drafts.get(path)].filter((d): d is MarkdownDraft => !!d) : [...drafts.values()];
     if (selected.some((d) => d.saving)) {
       window.alert("文档正在保存，请稍后再关闭。");
       return false;
     }
-    return (
-      !selected.some(isDirty) ||
-      window.confirm("有未保存的编辑。确定放弃这些编辑并离开吗？")
-    );
+    return !selected.some(isDirty) || window.confirm("有未保存的编辑。确定放弃这些编辑并离开吗？");
   }
   return {
     drafts,
@@ -187,7 +186,10 @@ export function useMarkdownDocuments(
     save,
     flush,
     mayLeave,
-    forget: (path: string) => { clearTimeout(drafts.get(path)?.saveTimer); drafts.delete(path); },
+    forget: (path: string) => {
+      clearTimeout(drafts.get(path)?.saveTimer);
+      drafts.delete(path);
+    },
     retarget: (from: string, to: string) => {
       const draft = drafts.get(from);
       if (draft) {

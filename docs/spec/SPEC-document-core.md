@@ -230,18 +230,18 @@ export type DocumentAnchor =
 
 首版不做词级或字符级自动合并。同一单元被双方改成不同内容时，整个单元是一项冲突；单元内容比较包含句子的阅读顺序——仅重排句子也是真实修改，不得被集合化比较抹平。章节顺序、阅读块和资产单独核对。
 
-| Base／Current／Candidate 状态 | 合并结果 |
-|---|---|
-| Current 等于 Base，Candidate 改变 | 采用 Candidate，并映射可靠 ID，标记 changed |
-| Candidate 等于 Base，Current 改变 | 保留 Current 的本地修正 |
-| Current 与 Candidate 做出相同改变 | 采用相同结果，不重复记冲突 |
-| Current 与 Candidate 对同一单元作出不同改变 | 生成 content 冲突 |
-| Candidate 删除未本地修改的单元 | 接受删除并建立 tombstone |
-| Candidate 删除已本地修改的单元 | 生成 deletion 冲突 |
-| Current 本地删除，Candidate 未变 | 保留本地删除 |
-| Current 本地删除，Candidate 修改该单元 | 生成 deletion 冲突 |
-| 双方以不同方式修改父级或阅读顺序 | 生成 order／structure 冲突 |
-| 双方替换为不同资产 | 生成 asset 冲突，不二进制自动合并 |
+| Base／Current／Candidate 状态               | 合并结果                                    |
+| ------------------------------------------- | ------------------------------------------- |
+| Current 等于 Base，Candidate 改变           | 采用 Candidate，并映射可靠 ID，标记 changed |
+| Candidate 等于 Base，Current 改变           | 保留 Current 的本地修正                     |
+| Current 与 Candidate 做出相同改变           | 采用相同结果，不重复记冲突                  |
+| Current 与 Candidate 对同一单元作出不同改变 | 生成 content 冲突                           |
+| Candidate 删除未本地修改的单元              | 接受删除并建立 tombstone                    |
+| Candidate 删除已本地修改的单元              | 生成 deletion 冲突                          |
+| Current 本地删除，Candidate 未变            | 保留本地删除                                |
+| Current 本地删除，Candidate 修改该单元      | 生成 deletion 冲突                          |
+| 双方以不同方式修改父级或阅读顺序            | 生成 order／structure 冲突                  |
+| 双方替换为不同资产                          | 生成 asset 冲突，不二进制自动合并           |
 
 其他规则：
 
@@ -284,14 +284,14 @@ export type DocumentAnchor =
 
 首版安全预算如下，来源模块可以采用更严格限制：
 
-| 项目 | 上限 |
-|---|---:|
-| `document.json` 或 `source-base.json` 单文件 | 64 MiB |
-| 单棵树节点总数 | 200,000 |
-| 章节嵌套深度 | 64 |
-| 单个 raw HTML block | 2 MiB |
-| 单个资产 | 32 MiB |
-| 单 revision 引用资产总量 | 512 MiB |
+| 项目                                         |    上限 |
+| -------------------------------------------- | ------: |
+| `document.json` 或 `source-base.json` 单文件 |  64 MiB |
+| 单棵树节点总数                               | 200,000 |
+| 章节嵌套深度                                 |      64 |
+| 单个 raw HTML block                          |   2 MiB |
+| 单个资产                                     |  32 MiB |
+| 单 revision 引用资产总量                     | 512 MiB |
 
 超预算时保留候选并报告具体项目，不截断正文或资产后报成功。预算调整属于契约变更，必须同步版本、测试和规格。
 

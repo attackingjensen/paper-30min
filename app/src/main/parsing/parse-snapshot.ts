@@ -3,10 +3,7 @@ import { PNG } from "pngjs";
 import { fetch, type Dispatcher } from "undici";
 import { parseFragment, serialize, type DefaultTreeAdapterMap } from "parse5";
 import { readDiagnosticArray, type ImportDiagnostic } from "../../shared/arxiv.js";
-import type {
-  ManagedFileContent,
-  PdfParseSourceSnapshotRecord,
-} from "../../shared/contracts.js";
+import type { ManagedFileContent, PdfParseSourceSnapshotRecord } from "../../shared/contracts.js";
 import type {
   PdfParseAssetFact,
   PdfParseBlockFact,
@@ -14,11 +11,7 @@ import type {
   PdfParsePageFact,
   PdfParseTaskRecord,
 } from "../../shared/parsing.js";
-import {
-  publishSourceSnapshot,
-  readSourceSnapshot,
-  type ProjectCommitHooks,
-} from "../project-core.js";
+import { publishSourceSnapshot, readSourceSnapshot, type ProjectCommitHooks } from "../project-core.js";
 import { findBatchParseSnapshot, resultResource, saveTask } from "./baidu-task.js";
 import { validateJpeg } from "./parse-image.js";
 
@@ -121,14 +114,12 @@ function hash(bytes: Uint8Array) {
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    fatal("parse-response-invalid");
+  if (!value || typeof value !== "object" || Array.isArray(value)) fatal("parse-response-invalid");
   return value as Record<string, unknown>;
 }
 
 function positiveDimension(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
-    fatal("parse-response-invalid");
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) fatal("parse-response-invalid");
   return value;
 }
 
@@ -180,11 +171,7 @@ function whitelistSettings(value: unknown, context: SanitizeContext) {
   const settings: Record<string, boolean | string[]> = {};
   for (const [key, entry] of Object.entries(record)) {
     if (BOOLEAN_SETTINGS.has(key) && typeof entry === "boolean") settings[key] = entry;
-    else if (
-      ARRAY_SETTINGS.has(key) &&
-      Array.isArray(entry) &&
-      entry.every((item) => typeof item === "string")
-    )
+    else if (ARRAY_SETTINGS.has(key) && Array.isArray(entry) && entry.every((item) => typeof item === "string"))
       settings[key] = [...(entry as string[])];
     else context.dropped += 1;
   }
@@ -219,8 +206,7 @@ function validateRows(
       fatal("parse-response-invalid");
     }
     const rowRecord = objectValue(value);
-    if (rowRecord.errorCode !== undefined && rowRecord.errorCode !== 0)
-      fatal("parse-response-invalid");
+    if (rowRecord.errorCode !== undefined && rowRecord.errorCode !== 0) fatal("parse-response-invalid");
     const result = objectValue(rowRecord.result);
     const info = objectValue(result.dataInfo);
     const list = result.layoutParsingResults;
@@ -246,17 +232,10 @@ function validateRows(
       const width = positiveDimension(data.width);
       const height = positiveDimension(data.height);
       const infoPage = objectValue(infoPages[index]);
-      if (infoPage.width !== width || infoPage.height !== height)
-        fatal("parse-response-invalid");
+      if (infoPage.width !== width || infoPage.height !== height) fatal("parse-response-invalid");
       context.dropped +=
-        unknownKeyCount(infoPage, ["width", "height"]) +
-        unknownKeyCount(pageRecord, ["prunedResult", "markdown"]);
-      context.dropped += unknownKeyCount(data, [
-        "width",
-        "height",
-        "model_settings",
-        "parsing_res_list",
-      ]);
+        unknownKeyCount(infoPage, ["width", "height"]) + unknownKeyCount(pageRecord, ["prunedResult", "markdown"]);
+      context.dropped += unknownKeyCount(data, ["width", "height", "model_settings", "parsing_res_list"]);
       const settings = whitelistSettings(data.model_settings, context);
       const rawBlocks = data.parsing_res_list;
       if (!Array.isArray(rawBlocks)) fatal("parse-response-invalid");
@@ -282,22 +261,14 @@ function validateRows(
         let order: number | null = null;
         if (record.block_order !== undefined && record.block_order !== null) {
           const candidate = record.block_order;
-          if (
-            typeof candidate !== "number" ||
-            !Number.isSafeInteger(candidate) ||
-            candidate <= previousOrder
-          )
+          if (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate <= previousOrder)
             fatal("parse-block-invalid");
           previousOrder = candidate;
           order = candidate;
         }
         let groupId: number | null = null;
         if (record.group_id !== undefined && record.group_id !== null) {
-          if (
-            typeof record.group_id === "number" &&
-            Number.isSafeInteger(record.group_id) &&
-            record.group_id >= 0
-          )
+          if (typeof record.group_id === "number" && Number.isSafeInteger(record.group_id) && record.group_id >= 0)
             groupId = record.group_id;
           else context.dropped += 1;
         }
@@ -357,21 +328,27 @@ function validateRows(
 
 /** 重复页判定在资源本地化之后：指纹纳入去敏正文、块事实与本地资产引用／占位，
  * 非空 = 存在块或资产；同文字不同图片可发布，重复纯视觉页仍拒绝。 */
-function assertDistinctPages(pages: Array<{
-  fact: PdfParsePageFact;
-  images: Record<string, string>;
-  contents: string[];
-}>): void {
+function assertDistinctPages(
+  pages: Array<{
+    fact: PdfParsePageFact;
+    images: Record<string, string>;
+    contents: string[];
+  }>,
+): void {
   const seen = new Set<string>();
   for (const { fact, images, contents } of pages) {
-    const canonical = hash(Buffer.from(JSON.stringify({
-      width: fact.width,
-      height: fact.height,
-      settings: fact.modelSettings,
-      blocks: fact.blocks,
-      contents,
-      images: Object.entries(images).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-    })));
+    const canonical = hash(
+      Buffer.from(
+        JSON.stringify({
+          width: fact.width,
+          height: fact.height,
+          settings: fact.modelSettings,
+          blocks: fact.blocks,
+          contents,
+          images: Object.entries(images).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        }),
+      ),
+    );
     const nonEmpty = fact.blocks.length > 0 || Object.keys(images).length > 0;
     if (seen.has(canonical) && nonEmpty) fatal("parse-page-duplicate");
     seen.add(canonical);
@@ -419,9 +396,7 @@ function missingResource(
   pageNumber: number,
 ): LocalizedResource {
   store.missing += 1;
-  context.warnings.push(
-    diagnostic("parse-asset-missing", "warning", "fetch", `page-${pageNumber}/${vendorPath}`),
-  );
+  context.warnings.push(diagnostic("parse-asset-missing", "warning", "fetch", `page-${pageNumber}/${vendorPath}`));
   return { reference: MISSING_ASSET_PLACEHOLDER, fact: null };
 }
 
@@ -439,8 +414,7 @@ function imageKind(bytes: Buffer): { ext: string; mime: string } | null {
   }
   if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
     const jpeg = validateJpeg(bytes);
-    if (jpeg.status === "pixel-budget-exceeded")
-      fatal("parse-asset-budget-exceeded", "fetch");
+    if (jpeg.status === "pixel-budget-exceeded") fatal("parse-asset-budget-exceeded", "fetch");
     if (jpeg.status === "ok") return { ext: "jpg", mime: "image/jpeg" };
   }
   return null;
@@ -471,8 +445,7 @@ function storeAsset(
       },
     };
   }
-  if (store.total + bytes.length > SNAPSHOT_ASSET_BUDGET)
-    fatal("parse-asset-budget-exceeded", "fetch");
+  if (store.total + bytes.length > SNAPSHOT_ASSET_BUDGET) fatal("parse-asset-budget-exceeded", "fetch");
   store.total += bytes.length;
   const stored: StoredAsset = {
     path: `assets/${sha256}.${kind.ext}`,
@@ -553,8 +526,7 @@ async function localizeValue(
   vendorPath: string,
   pageNumber: number,
 ): Promise<LocalizedResource> {
-  if (typeof value !== "string" || !value)
-    return missingResource(store, context, vendorPath, pageNumber);
+  if (typeof value !== "string" || !value) return missingResource(store, context, vendorPath, pageNumber);
   if (/^https?:\/\//i.test(value)) {
     let url: string;
     try {
@@ -586,13 +558,18 @@ async function localizeValue(
 /** 不可证明安全的元素：raw-text／可执行内容整体拒绝发布（SPEC §4.5），
  * 不做属性级消毒——script/style 正文与 template 内容无法保证不含签名资源。 */
 const UNSAFE_BLOCK_TAGS: Record<string, true> = {
-  script: true, style: true, noscript: true, iframe: true, object: true,
-  embed: true, template: true, link: true, meta: true, base: true,
+  script: true,
+  style: true,
+  noscript: true,
+  iframe: true,
+  object: true,
+  embed: true,
+  template: true,
+  link: true,
+  meta: true,
+  base: true,
 };
-const UNSAFE_BLOCK_PATTERN = new RegExp(
-  `<\\s*(?:${Object.keys(UNSAFE_BLOCK_TAGS).join("|")})(?=\\s|/?>)`,
-  "i",
-);
+const UNSAFE_BLOCK_PATTERN = new RegExp(`<\\s*(?:${Object.keys(UNSAFE_BLOCK_TAGS).join("|")})(?=\\s|/?>)`, "i");
 /** 资源元素识别：仅 img/image 触发 HTML 本地化路径；其余正文逐字保留。 */
 const RESOURCE_ELEMENT = /<\s*(?:img|image)\b/i;
 /** markdown 图片引用：正文可能不含 HTML 但含 ![alt](url) 资源。 */
@@ -622,8 +599,7 @@ async function localizeResourceValue(
     } catch {
       approved = false;
     }
-    if (!approved)
-      return missingResource(store, context, alias, locator.pageNumber).reference;
+    if (!approved) return missingResource(store, context, alias, locator.pageNumber).reference;
     const localized = await localizeValue(input, value, store, context, alias, locator.pageNumber);
     if (localized.fact) {
       locator.page.images[alias] = localized.reference;
@@ -639,8 +615,7 @@ async function localizeResourceValue(
     }
     return localized.reference;
   }
-  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.includes("://"))
-    fatal("parse-resource-url-rejected", "fetch");
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.includes("://")) fatal("parse-resource-url-rejected", "fetch");
   return missingResource(store, context, alias, locator.pageNumber).reference;
 }
 
@@ -655,8 +630,7 @@ async function localizeBlockResources(
   context: SanitizeContext,
   isTable: boolean,
 ): Promise<string> {
-  if (!isTable && UNSAFE_BLOCK_PATTERN.test(content))
-    fatal("parse-resource-url-rejected", "fetch");
+  if (!isTable && UNSAFE_BLOCK_PATTERN.test(content)) fatal("parse-resource-url-rejected", "fetch");
   const hasResourceElement = RESOURCE_ELEMENT.test(content);
   const markdownImages = [...content.matchAll(MARKDOWN_IMAGE)];
   if (!hasResourceElement && markdownImages.length === 0) return content;
@@ -678,15 +652,11 @@ async function localizeBlockResources(
     if ("tagName" in node) {
       const element = node;
       // 非表格正文最终作为纯文本落树：raw-text／可执行元素无法证明安全，整体拒绝。
-      if (!isTable && UNSAFE_BLOCK_TAGS[element.tagName])
-        fatal("parse-resource-url-rejected", "fetch");
+      if (!isTable && UNSAFE_BLOCK_TAGS[element.tagName]) fatal("parse-resource-url-rejected", "fetch");
       // 表格的 script/style/属性消毒由 parse-table 结构化路径负责；但 template 内容
       // 在 parse5 的 content 子树，结构化与消毒都不进入，签名资源会原样留在快照——拒绝。
-      if (isTable && element.tagName === "template")
-        fatal("parse-resource-url-rejected", "fetch");
-      const urlAttribute = element.tagName === "img" ? "src"
-        : element.tagName === "image" ? "href"
-        : undefined;
+      if (isTable && element.tagName === "template") fatal("parse-resource-url-rejected", "fetch");
+      const urlAttribute = element.tagName === "img" ? "src" : element.tagName === "image" ? "href" : undefined;
       if (urlAttribute !== undefined) {
         const attribute = element.attrs.find((entry) => entry.name === urlAttribute);
         const value = attribute?.value;
@@ -697,30 +667,32 @@ async function localizeBlockResources(
           touched = true;
         }
         // 资源元素除已本地化的 URL 属性外全部移除（可能携带签名参数或凭据）。
-        const kept = element.attrs.filter((entry) =>
-          entry.name === urlAttribute &&
-          (entry.value.startsWith("assets/") || entry.value === MISSING_ASSET_PLACEHOLDER));
+        const kept = element.attrs.filter(
+          (entry) =>
+            entry.name === urlAttribute &&
+            (entry.value.startsWith("assets/") || entry.value === MISSING_ASSET_PLACEHOLDER),
+        );
         if (kept.length !== element.attrs.length) {
           element.attrs = kept;
           touched = true;
         }
       } else if (isTable) {
         // 表格块：非资源元素属性移除，colspan/rowspan 正整数结构事实保留。
-        const kept = element.attrs.filter((entry) =>
-          (element.tagName === "td" || element.tagName === "th") &&
-          (entry.name === "colspan" || entry.name === "rowspan") &&
-          /^[0-9]+$/.test(entry.value.trim()));
+        const kept = element.attrs.filter(
+          (entry) =>
+            (element.tagName === "td" || element.tagName === "th") &&
+            (entry.name === "colspan" || entry.name === "rowspan") &&
+            /^[0-9]+$/.test(entry.value.trim()),
+        );
         if (kept.length !== element.attrs.length) {
           element.attrs = kept;
           touched = true;
         }
       }
     }
-    if ("childNodes" in node)
-      for (const child of node.childNodes) await visit(child);
+    if ("childNodes" in node) for (const child of node.childNodes) await visit(child);
     // parse5 将 template 内容挂在 content 子树：同样遍历，避免资源绕过本地化。
-    if ("content" in node && node.content)
-      await visit(node.content as DefaultTreeAdapterMap["node"]);
+    if ("content" in node && node.content) await visit(node.content as DefaultTreeAdapterMap["node"]);
   };
   await visit(fragment);
   if (!touched) return working;
@@ -728,8 +700,7 @@ async function localizeBlockResources(
     // 非表格正文最终作为纯文本进入文档树：只允许资源值的定点替换，
     // 不接受整块重序列化（会吞字/转义）。按「原值→本地引用」逐个替换原文。
     let output = working;
-    for (const { from, to } of replacements)
-      output = output.split(from).join(to);
+    for (const { from, to } of replacements) output = output.split(from).join(to);
     return output;
   }
   return serialize(fragment);
@@ -765,14 +736,7 @@ async function localizeRows(
       };
       if (page.images !== null) {
         for (const [vendorPath, value] of Object.entries(page.images)) {
-          const localized = await localizeValue(
-            input,
-            value,
-            store,
-            context,
-            vendorPath,
-            page.pageNumber,
-          );
+          const localized = await localizeValue(input, value, store, context, vendorPath, page.pageNumber);
           localizedPage.images[vendorPath] = localized.reference;
           if (localized.fact) localizedPage.facts.push(localized.fact);
         }
@@ -829,16 +793,18 @@ async function localizeRows(
       pageImages.push(localizedPage.images);
       pageContents.push(contents);
     }
-    appendManaged(JSON.stringify({
-      result: {
-        dataInfo: {
-          type: "pdf",
-          numPages: row.pages.length,
-          pages: row.pages.map((page) => ({ width: page.width, height: page.height })),
+    appendManaged(
+      JSON.stringify({
+        result: {
+          dataInfo: {
+            type: "pdf",
+            numPages: row.pages.length,
+            pages: row.pages.map((page) => ({ width: page.width, height: page.height })),
+          },
+          layoutParsingResults: sanitizedPages,
         },
-        layoutParsingResults: sanitizedPages,
-      },
-    }));
+      }),
+    );
   }
   return { resultText: chunks.join("\n") + "\n", factsPages, pageImages, pageContents, store };
 }
@@ -857,21 +823,15 @@ async function attachSnapshot(
 
 /** 去敏并本地化云端解析响应，发布不可变解析快照（SPEC-pdf-import §4）。
  * 含密原始响应只存在于内存；致命失败保留任务现场，不发布快照。 */
-export async function publishParseSnapshot(
-  input: PublishParseSnapshotInput,
-): Promise<ParseSnapshotResult> {
+export async function publishParseSnapshot(input: PublishParseSnapshotInput): Promise<ParseSnapshotResult> {
   const { task } = input;
   if (task.phase !== "downloaded" || task.jobId === undefined || task.responseSha256 === undefined)
     throw new Error("只有已下载且记录摘要的 PDF 解析任务可以发布解析快照。");
   try {
-    if (
-      hash(input.response.bytes) !== input.response.sha256 ||
-      input.response.sha256 !== task.responseSha256
-    )
+    if (hash(input.response.bytes) !== input.response.sha256 || input.response.sha256 !== task.responseSha256)
       fatal("parse-response-digest-mismatch");
     const existing = await findBatchParseSnapshot(input.root, task);
-    if (existing)
-      return attachSnapshot(input, existing, readDiagnosticArray(existing.diagnostics));
+    if (existing) return attachSnapshot(input, existing, readDiagnosticArray(existing.diagnostics));
     const parent = await readSourceSnapshot(input.root, task.parentSourceSnapshotId);
     if (
       parent.kind !== "pdf" ||
@@ -886,17 +846,21 @@ export async function publishParseSnapshot(
     const context: SanitizeContext = { dropped: 0, warnings: [] };
     const resultBudget = input.budgets?.managedResultBytes ?? MANAGED_RESULT_BUDGET;
     const factsBudget = input.budgets?.factsBytes ?? FACTS_BUDGET;
-    const rows = validateRows(
-      input.response.bytes, input.signal, context, parent.pageCount, resultBudget,
-    );
+    const rows = validateRows(input.response.bytes, input.signal, context, parent.pageCount, resultBudget);
     const pageCount = rows.reduce((total, row) => total + row.pages.length, 0);
-    const { resultText, factsPages, pageImages, pageContents, store } =
-      await localizeRows(input, rows, context, resultBudget);
-    assertDistinctPages(factsPages.map((fact, index) => ({
-      fact,
-      images: pageImages[index],
-      contents: pageContents[index],
-    })));
+    const { resultText, factsPages, pageImages, pageContents, store } = await localizeRows(
+      input,
+      rows,
+      context,
+      resultBudget,
+    );
+    assertDistinctPages(
+      factsPages.map((fact, index) => ({
+        fact,
+        images: pageImages[index],
+        contents: pageContents[index],
+      })),
+    );
     const resultBytes = Buffer.from(resultText);
     const facts: PdfParseFactsFile = { formatVersion: 1, pageCount, pages: factsPages };
     const factsBytes = Buffer.from(JSON.stringify(facts, null, 2) + "\n");
@@ -906,8 +870,7 @@ export async function publishParseSnapshot(
       "result.jsonl": { bytes: resultBytes, mime: "application/x-ndjson" },
       "facts.json": { bytes: factsBytes, mime: "application/json" },
     };
-    for (const asset of store.files.values())
-      files[asset.path] = { bytes: asset.bytes, mime: asset.mime };
+    for (const asset of store.files.values()) files[asset.path] = { bytes: asset.bytes, mime: asset.mime };
     const diagnostics =
       context.dropped > 0
         ? [...context.warnings, diagnostic("parse-response-fields-dropped", "warning", "snapshot")]
@@ -937,14 +900,9 @@ export async function publishParseSnapshot(
       },
       input.hooks ?? {},
     );
-    return attachSnapshot(
-      input,
-      published as PdfParseSourceSnapshotRecord,
-      diagnostics,
-    );
+    return attachSnapshot(input, published as PdfParseSourceSnapshotRecord, diagnostics);
   } catch (error) {
-    if (input.signal?.aborted)
-      return { ok: false, diagnostic: diagnostic("parse-stopped", "fatal", "snapshot"), task };
+    if (input.signal?.aborted) return { ok: false, diagnostic: diagnostic("parse-stopped", "fatal", "snapshot"), task };
     if (error instanceof ParseFatalError) {
       const failure = diagnostic(error.code, "fatal", error.stage);
       task.diagnostic = failure;

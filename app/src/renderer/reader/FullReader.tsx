@@ -19,20 +19,13 @@ import {
   type ReaderUnitContent,
 } from "../../shared/reader/projection";
 import { buildSelectionIndex, mapDomSelection, type SelectionIndex } from "../../shared/reader/selection";
-import {
-  resolveReadingPosition,
-  type ReadingPosition,
-  type ReadingPositionAnchor,
-} from "../../shared/reader/position";
+import { resolveReadingPosition, type ReadingPosition, type ReadingPositionAnchor } from "../../shared/reader/position";
 import { collectReaderDiagnostics, type ReaderDiagnostic } from "../../shared/reader/diagnostics";
 import { summarizeVerification, type VerificationRecord } from "../../shared/verification";
 import { SourcePanel, sourcePanelFacts } from "./SourcePanel";
 import { CorrectionHost } from "./CorrectionHost";
 import { ConflictHost } from "./ConflictHost";
-import type {
-  ArxivUpdateCandidateCommandResult,
-  ArxivUpdateCheckCommandResult,
-} from "../../shared/contracts";
+import type { ArxivUpdateCandidateCommandResult, ArxivUpdateCheckCommandResult } from "../../shared/contracts";
 import type { DocumentMergeResult } from "../../shared/document/merge";
 
 const desktop = window.desktop;
@@ -40,8 +33,26 @@ const desktop = window.desktop;
  * 不信任磁盘字节一定经过提交校验；只保留无属性结构标签，
  * 脚本、事件处理器、远端资源与样式一律不进入 DOM。 */
 const rawAllowedTags = new Set([
-  "blockquote", "br", "code", "em", "li", "ol", "p", "pre", "span", "strong",
-  "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+  "blockquote",
+  "br",
+  "code",
+  "em",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "ul",
 ]);
 
 function sanitizeRawHtml(html: string): string {
@@ -54,8 +65,7 @@ function sanitizeRawHtml(html: string): string {
         child.remove();
         continue;
       }
-      for (const attribute of Array.from(child.attributes))
-        child.removeAttribute(attribute.name);
+      for (const attribute of Array.from(child.attributes)) child.removeAttribute(attribute.name);
       walk(child);
     }
   };
@@ -92,31 +102,39 @@ interface PositionNotice {
 
 const positionAnchorSelector = (anchor: ReadingPositionAnchor): string => {
   switch (anchor.kind) {
-    case "section": return `[data-section-id="${anchor.sectionId}"]`;
-    case "unit": return `[data-unit-id="${anchor.unitId}"]`;
-    case "sentence": return `[data-sentence-id="${anchor.sentenceId}"]`;
-    case "atom": return `[data-atom-id="${anchor.atomId}"]`;
-    case "block": return `[data-block-id="${anchor.blockId}"]`;
+    case "section":
+      return `[data-section-id="${anchor.sectionId}"]`;
+    case "unit":
+      return `[data-unit-id="${anchor.unitId}"]`;
+    case "sentence":
+      return `[data-sentence-id="${anchor.sentenceId}"]`;
+    case "atom":
+      return `[data-atom-id="${anchor.atomId}"]`;
+    case "block":
+      return `[data-block-id="${anchor.blockId}"]`;
   }
 };
 
 /** 捕获时锚点所属父 section：removed 回退规则的唯一依据。 */
 function parentSectionOf(tree: DocumentTree, anchor: ReadingPositionAnchor): string | null {
   switch (anchor.kind) {
-    case "section": return tree.sections[anchor.sectionId]?.parentSectionId ?? null;
-    case "unit": return tree.units[anchor.unitId]?.sectionId ?? null;
-    case "sentence": return tree.units[tree.sentences[anchor.sentenceId]?.unitId ?? ""]?.sectionId ?? null;
-    case "atom": return tree.units[tree.atoms[anchor.atomId]?.unitId ?? ""]?.sectionId ?? null;
-    case "block": return tree.blocks.find((block) => block.id === anchor.blockId)?.sectionId ?? null;
+    case "section":
+      return tree.sections[anchor.sectionId]?.parentSectionId ?? null;
+    case "unit":
+      return tree.units[anchor.unitId]?.sectionId ?? null;
+    case "sentence":
+      return tree.units[tree.sentences[anchor.sentenceId]?.unitId ?? ""]?.sectionId ?? null;
+    case "atom":
+      return tree.units[tree.atoms[anchor.atomId]?.unitId ?? ""]?.sectionId ?? null;
+    case "block":
+      return tree.blocks.find((block) => block.id === anchor.blockId)?.sectionId ?? null;
   }
 }
 
 function sourceFacts(snapshot: Record<string, unknown>): ReaderSourceFacts {
   return {
     title: typeof snapshot.title === "string" && snapshot.title ? snapshot.title : null,
-    authors: Array.isArray(snapshot.authors)
-      ? snapshot.authors.filter((a): a is string => typeof a === "string")
-      : [],
+    authors: Array.isArray(snapshot.authors) ? snapshot.authors.filter((a): a is string => typeof a === "string") : [],
     canonicalId: typeof snapshot.canonicalId === "string" ? snapshot.canonicalId : null,
   };
 }
@@ -137,7 +155,9 @@ function SentenceBody({ sentence, onNavigate }: { sentence: ReaderSentence; onNa
     <span data-sentence-id={sentence.sentenceId}>
       {sentence.parts.map((part, index) =>
         part.kind === "text" ? (
-          <span key={index} data-start={part.start} data-end={part.end}>{part.text}</span>
+          <span key={index} data-start={part.start} data-end={part.end}>
+            {part.text}
+          </span>
         ) : (
           <AtomView key={part.atom.id} atom={part.atom} start={part.start} end={part.end} onNavigate={onNavigate} />
         ),
@@ -146,7 +166,17 @@ function SentenceBody({ sentence, onNavigate }: { sentence: ReaderSentence; onNa
   );
 }
 
-function AtomView({ atom, start, end, onNavigate }: { atom: ReaderAtom; start: number; end: number; onNavigate: (unitId: string) => void }) {
+function AtomView({
+  atom,
+  start,
+  end,
+  onNavigate,
+}: {
+  atom: ReaderAtom;
+  start: number;
+  end: number;
+  onNavigate: (unitId: string) => void;
+}) {
   const jump = (targetUnitId: string) => {
     if (!document.querySelector(`[data-unit-id="${targetUnitId}"]`)) return;
     onNavigate(targetUnitId);
@@ -172,7 +202,9 @@ function AtomView({ atom, start, end, onNavigate }: { atom: ReaderAtom; start: n
         return (
           <span className="reader-atom reader-math-failed" data-atom-id={atom.id} data-start={start} data-end={end}>
             <code>{atom.source.value}</code>
-            <span className="reader-warning" role="note">公式渲染失败，保留来源。</span>
+            <span className="reader-warning" role="note">
+              公式渲染失败，保留来源。
+            </span>
           </span>
         );
       }
@@ -189,14 +221,20 @@ function AtomView({ atom, start, end, onNavigate }: { atom: ReaderAtom; start: n
         />
       );
     }
-    return <span className="reader-atom" data-atom-id={atom.id} data-start={start} data-end={end}>{atom.text}</span>;
+    return (
+      <span className="reader-atom" data-atom-id={atom.id} data-start={start} data-end={end}>
+        {atom.text}
+      </span>
+    );
   }
   if (atom.kind === "link") {
     if (atom.href === null) {
       return (
         <span className="reader-atom reader-link-disabled" data-atom-id={atom.id} data-start={start} data-end={end}>
           {atom.text}
-          <span className="reader-warning" role="note">{atom.warning}</span>
+          <span className="reader-warning" role="note">
+            {atom.warning}
+          </span>
         </span>
       );
     }
@@ -249,7 +287,9 @@ function AtomView({ atom, start, end, onNavigate }: { atom: ReaderAtom; start: n
   return (
     <span className="reader-atom reader-ref-unresolved" data-atom-id={atom.id} data-start={start} data-end={end}>
       {atom.text}
-      <span className="reader-warning" role="note">{atom.warning}</span>
+      <span className="reader-warning" role="note">
+        {atom.warning}
+      </span>
     </span>
   );
 }
@@ -280,7 +320,9 @@ function FormulaView({ item }: { item: Extract<ReaderItem, { kind: "formula" }> 
         )}
       </div>
       {rendered === null && item.source.format === "latex" && (
-        <p className="reader-warning" role="note">公式渲染失败，保留来源表示与诊断。</p>
+        <p className="reader-warning" role="note">
+          公式渲染失败，保留来源表示与诊断。
+        </p>
       )}
       {item.text && <p className="reader-formula-text">{item.text}</p>}
     </div>
@@ -299,22 +341,16 @@ function FigureView({
   onNavigate: (unitId: string) => void;
 }) {
   const [failed, setFailed] = useState(false);
-  const captionText = item.caption?.sentences
-    .flatMap((s) => s.parts.map((p) => (p.kind === "text" ? p.text : p.atom.text)))
-    .join("") ?? "图片";
+  const captionText =
+    item.caption?.sentences.flatMap((s) => s.parts.map((p) => (p.kind === "text" ? p.text : p.atom.text))).join("") ??
+    "图片";
   const src = item.asset
-    ? "paper30min://project/image?" +
-      new URLSearchParams({ root, path: `${revisionPath}/${item.asset.path}` })
+    ? "paper30min://project/image?" + new URLSearchParams({ root, path: `${revisionPath}/${item.asset.path}` })
     : "";
   return (
     <figure className="reader-figure" data-block-id={item.blockId}>
       {item.asset && !failed ? (
-        <img
-          src={src}
-          alt={captionText}
-          loading="lazy"
-          onError={() => setFailed(true)}
-        />
+        <img src={src} alt={captionText} loading="lazy" onError={() => setFailed(true)} />
       ) : (
         <div className="reader-figure-missing" role="img" aria-label={captionText}>
           图片不可用
@@ -334,7 +370,13 @@ function FigureView({
   );
 }
 
-function TableView({ item, onNavigate }: { item: Extract<ReaderItem, { kind: "table" }>; onNavigate: (unitId: string) => void }) {
+function TableView({
+  item,
+  onNavigate,
+}: {
+  item: Extract<ReaderItem, { kind: "table" }>;
+  onNavigate: (unitId: string) => void;
+}) {
   return (
     <div className="reader-table-scroll" data-block-id={item.blockId}>
       <table className="reader-table">
@@ -372,25 +414,27 @@ function RawView({ item }: { item: Extract<ReaderItem, { kind: "raw" }> }) {
       <div className="reader-raw-html" dangerouslySetInnerHTML={{ __html: html }} />
       <ul className="reader-raw-limitations">
         {item.limitations.map((limitation, index) => (
-          <li key={index} className="reader-raw-limit">{limitation}</li>
+          <li key={index} className="reader-raw-limit">
+            {limitation}
+          </li>
         ))}
       </ul>
     </div>
   );
 }
 
-function UnitView({ item, onCorrect, onNavigate }: {
+function UnitView({
+  item,
+  onCorrect,
+  onNavigate,
+}: {
   item: Extract<ReaderItem, { kind: "unit" }>;
   onCorrect?: (unitId: string) => void;
   onNavigate: (unitId: string) => void;
 }) {
   const Tag = item.unitKind === "reference" || item.unitKind === "footnote" ? "div" : "p";
   return (
-    <Tag
-      className={`reader-unit reader-unit-${item.unitKind}`}
-      data-unit-id={item.unitId}
-      data-block-id={item.blockId}
-    >
+    <Tag className={`reader-unit reader-unit-${item.unitKind}`} data-unit-id={item.unitId} data-block-id={item.blockId}>
       <UnitBody unit={item} onNavigate={onNavigate} />
       {onCorrect && (
         <button
@@ -440,7 +484,9 @@ export function FullReader({
   // 修正宿主（SPEC-reader §8）：显式进入单元修正；发布成功后按新 revision 重读。
   const [correctingUnit, setCorrectingUnit] = useState<string | null>(null);
   // 来源候选冲突宿主（SPEC-reader §9）：候选与 current 明确区分，逐项解决后发布。
-  const [candidate, setCandidate] = useState<(DocumentMergeResult & { root: string; sourceSnapshotId: string }) | null>(null);
+  const [candidate, setCandidate] = useState<(DocumentMergeResult & { root: string; sourceSnapshotId: string }) | null>(
+    null,
+  );
   const [updateStatus, setUpdateStatus] = useState("");
   const [updateBusy, setUpdateBusy] = useState(false);
   const [localEpoch, setLocalEpoch] = useState(0);
@@ -512,14 +558,19 @@ export function FullReader({
           revisionId: revision.revisionId,
         }),
         // 核验记录缺失不影响阅读；读取失败如实标记，不冒充“无核验记录”。
-        desktop.invoke<VerificationRecord[]>({
-          type: "corePdfReadVerification",
-          root,
-          revisionId: revision.revisionId,
-        }).then(
-          (records) => ({ records, error: null as string | null }),
-          (error: Error) => ({ records: [] as VerificationRecord[], error: error.message.replace(/^Error invoking remote method '[^']+': Error: /, "") }),
-        ),
+        desktop
+          .invoke<VerificationRecord[]>({
+            type: "corePdfReadVerification",
+            root,
+            revisionId: revision.revisionId,
+          })
+          .then(
+            (records) => ({ records, error: null as string | null }),
+            (error: Error) => ({
+              records: [] as VerificationRecord[],
+              error: error.message.replace(/^Error invoking remote method '[^']+': Error: /, ""),
+            }),
+          ),
       ]);
       if (disposed || request !== requestRef.current) return;
       // 结构校验由主进程读取路径承担；渲染层对受损 current 仍按投影防御
@@ -608,9 +659,7 @@ export function FullReader({
     const container = article?.parentElement;
     if (!article || !current || !container) return null;
     const containerTop = container.getBoundingClientRect().top;
-    const candidates = article.querySelectorAll<HTMLElement>(
-      "[data-block-id], [data-section-id]",
-    );
+    const candidates = article.querySelectorAll<HTMLElement>("[data-block-id], [data-section-id]");
     let chosen: HTMLElement | null = null;
     let anchor: ReadingPositionAnchor | null = null;
     for (const element of candidates) {
@@ -661,8 +710,7 @@ export function FullReader({
       }, 200);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key))
-        cancelRestore();
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) cancelRestore();
     };
     container.addEventListener("scroll", onScroll, { passive: true });
     const onWheel = () => cancelRestore();
@@ -678,8 +726,7 @@ export function FullReader({
       // 仅在仍对应当前 revision 时落盘：revision 切换的清理不得把
       // 旧 DOM 的视口位置写成新 revision 的捕获（卸载/切 tab 仍会捕获）。
       const position = capturePosition();
-      if (position && position.revisionId === stateRef.current?.revisionId)
-        onPositionRef.current?.(position);
+      if (position && position.revisionId === stateRef.current?.revisionId) onPositionRef.current?.(position);
     };
   }, [status, capturePosition]);
 
@@ -709,9 +756,8 @@ export function FullReader({
         ? null
         : {
             text: resolution.notice,
-            excerpt: resolution.status === "removed"
-              ? resolution.tombstone?.excerpt || resolution.excerpt || null
-              : null,
+            excerpt:
+              resolution.status === "removed" ? resolution.tombstone?.excerpt || resolution.excerpt || null : null,
           },
     );
     const offset = resolution.status === "removed" ? 0 : resolution.offsetWithinAnchor;
@@ -722,9 +768,7 @@ export function FullReader({
     let interval: number | null = null;
     const align = () => {
       if (disposed || epochAtStart !== restoreEpoch.current || userScrolled.current) return;
-      const element = target
-        ? article.querySelector<HTMLElement>(positionAnchorSelector(target))
-        : null;
+      const element = target ? article.querySelector<HTMLElement>(positionAnchorSelector(target)) : null;
       if (target && !element) return;
       const top = Math.max(
         0,
@@ -743,19 +787,23 @@ export function FullReader({
     resizeObserver.observe(article);
     mutationObserver = new MutationObserver(align);
     mutationObserver.observe(article, { childList: true, subtree: true, characterData: true });
-    timers.push(window.setTimeout(() => {
-      resizeObserver?.disconnect();
-      resizeObserver = null;
-      mutationObserver?.disconnect();
-      mutationObserver = null;
-    }, 2000));
+    timers.push(
+      window.setTimeout(() => {
+        resizeObserver?.disconnect();
+        resizeObserver = null;
+        mutationObserver?.disconnect();
+        mutationObserver = null;
+      }, 2000),
+    );
     // 兜底核对：字体度量/懒加载可能在 observer 静默期后仍改变上方高度；
     // 周期性按同一锚点核对，仍受代际与用户滚动约束。
     interval = window.setInterval(align, 400);
-    timers.push(window.setTimeout(() => {
-      if (interval !== null) window.clearInterval(interval);
-      interval = null;
-    }, 8000));
+    timers.push(
+      window.setTimeout(() => {
+        if (interval !== null) window.clearInterval(interval);
+        interval = null;
+      }, 8000),
+    );
     return () => {
       disposed = true;
       for (const timer of timers) window.clearTimeout(timer);
@@ -781,8 +829,10 @@ export function FullReader({
         if (!element) return;
         const top = Math.max(
           0,
-          container.scrollTop + element.getBoundingClientRect().top -
-            container.getBoundingClientRect().top - position.offsetWithinAnchor,
+          container.scrollTop +
+            element.getBoundingClientRect().top -
+            container.getBoundingClientRect().top -
+            position.offsetWithinAnchor,
         );
         programmaticScrollTo(container, top);
       }, 150);
@@ -814,7 +864,12 @@ export function FullReader({
       for (const item of state.projection.items) {
         if (item.kind !== "formula" || item.source.format !== "latex") continue;
         try {
-          katex.renderToString(item.source.value, { throwOnError: true, trust: false, strict: "ignore", displayMode: true });
+          katex.renderToString(item.source.value, {
+            throwOnError: true,
+            trust: false,
+            strict: "ignore",
+            displayMode: true,
+          });
         } catch {
           collected.push({
             code: "formula-render-failed",
@@ -827,7 +882,7 @@ export function FullReader({
     return collected;
   }, [state, panelOpen]);
   const verificationSummary = useMemo(
-    () => state ? summarizeVerification(state.tree, state.verification) : null,
+    () => (state ? summarizeVerification(state.tree, state.verification) : null),
     [state],
   );
   function locateBlock(blockId: string) {
@@ -886,7 +941,9 @@ export function FullReader({
     }
     try {
       const check = await desktop.invoke<ArxivUpdateCheckCommandResult>({
-        type: "coreArxivCheckUpdate", root, operationId,
+        type: "coreArxivCheckUpdate",
+        root,
+        operationId,
         ...(baseUrl === undefined ? {} : { baseUrl }),
       });
       if (!check.ok) {
@@ -953,9 +1010,7 @@ export function FullReader({
     >
       <header className="reader-header">
         <h1>{facts.title ?? "未命名论文"}</h1>
-        {facts.authors.length > 0 && (
-          <p className="reader-authors">{facts.authors.join("、")}</p>
-        )}
+        {facts.authors.length > 0 && <p className="reader-authors">{facts.authors.join("、")}</p>}
         {facts.canonicalId && <p className="reader-source muted">arXiv {facts.canonicalId}</p>}
         <button
           type="button"
@@ -975,7 +1030,11 @@ export function FullReader({
             检查来源更新
           </button>
         )}
-        {updateStatus && <p className="reader-update-status" role="status">{updateStatus}</p>}
+        {updateStatus && (
+          <p className="reader-update-status" role="status">
+            {updateStatus}
+          </p>
+        )}
       </header>
       {panelOpen && (
         <SourcePanel
@@ -988,10 +1047,12 @@ export function FullReader({
               : [];
           })()}
           diagnostics={diagnostics}
-          verification={verificationSummary && {
-            counts: verificationSummary.counts,
-            records: state.verification,
-          }}
+          verification={
+            verificationSummary && {
+              counts: verificationSummary.counts,
+              records: state.verification,
+            }
+          }
           verificationError={state.verificationError}
           onLocate={locateBlock}
         />
@@ -1028,15 +1089,16 @@ export function FullReader({
         <div className="reader-position-notice" role="status">
           <p>{notice.text}</p>
           {notice.excerpt && <blockquote className="reader-position-excerpt">{notice.excerpt}</blockquote>}
-          <button type="button" onClick={() => setNotice(null)}>知道了</button>
+          <button type="button" onClick={() => setNotice(null)}>
+            知道了
+          </button>
         </div>
       )}
       {projection.items.map((item, index) => {
         switch (item.kind) {
           case "section": {
             if (!item.title) return null;
-            const Level = (item.depth <= 5 ? `h${item.depth + 1}` : "h6") as
-              "h2" | "h3" | "h4" | "h5" | "h6";
+            const Level = (item.depth <= 5 ? `h${item.depth + 1}` : "h6") as "h2" | "h3" | "h4" | "h5" | "h6";
             return (
               <Level key={`section-${item.sectionId}`} data-section-id={item.sectionId}>
                 {item.title}
@@ -1078,9 +1140,17 @@ export function FullReader({
           style={{ left: toolbar.x, top: toolbar.y }}
           onMouseDown={(event) => event.preventDefault()}
         >
-          {toolbar.degraded && <span className="reader-selection-degraded" role="note">含不可精确映射内容</span>}
-          <button type="button" onClick={() => ask("解释")}>解释</button>
-          <button type="button" onClick={() => ask("提问")}>提问</button>
+          {toolbar.degraded && (
+            <span className="reader-selection-degraded" role="note">
+              含不可精确映射内容
+            </span>
+          )}
+          <button type="button" onClick={() => ask("解释")}>
+            解释
+          </button>
+          <button type="button" onClick={() => ask("提问")}>
+            提问
+          </button>
         </div>
       )}
     </article>

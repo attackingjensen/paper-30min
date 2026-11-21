@@ -83,8 +83,7 @@ test("document-core 同一 unit 被双方不同修改时生成 content 冲突并
   expect(unresolved.conflicts[0].base).toBeDefined();
   expect(unresolved.conflicts[0].current).toBeDefined();
   expect(unresolved.conflicts[0].candidate).toBeDefined();
-  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision))
-    .toThrow(/未解决|冲突/);
+  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision)).toThrow(/未解决|冲突/);
 
   const resolved = resolveDocumentMergeConflict(unresolved, unresolved.conflicts[0].id, "current");
   expect(projectSentenceText(resolved.document, selectionIds.thirdSentence)).toBe("local edit");
@@ -101,11 +100,13 @@ test("document-core candidate 删除未本地修改 unit 时接受删除并建�
 
   expect(result.document.units[selectionIds.secondUnit]).toBeUndefined();
   expect(result.conflicts).toEqual([]);
-  expect(result.tombstones).toContainEqual(expect.objectContaining({
-    nodeType: "unit",
-    nodeId: selectionIds.secondUnit,
-    lastRevision: result.baseRevision,
-  }));
+  expect(result.tombstones).toContainEqual(
+    expect.objectContaining({
+      nodeType: "unit",
+      nodeId: selectionIds.secondUnit,
+      lastRevision: result.baseRevision,
+    }),
+  );
 });
 
 test("document-core candidate 删除已本地修改 unit 时生成 deletion 冲突，可采用删除", () => {
@@ -118,15 +119,16 @@ test("document-core candidate 删除已本地修改 unit 时生成 deletion 冲�
   const unresolved = merge(base, current, candidate);
   expect(unresolved.conflicts).toHaveLength(1);
   expect(unresolved.conflicts[0].type).toBe("deletion");
-  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision))
-    .toThrow(/未解决|冲突/);
+  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision)).toThrow(/未解决|冲突/);
 
   const resolved = resolveDocumentMergeConflict(unresolved, unresolved.conflicts[0].id, "candidate");
   expect(resolved.document.units[selectionIds.secondUnit]).toBeUndefined();
-  expect(resolved.tombstones).toContainEqual(expect.objectContaining({
-    nodeType: "unit",
-    nodeId: selectionIds.secondUnit,
-  }));
+  expect(resolved.tombstones).toContainEqual(
+    expect.objectContaining({
+      nodeType: "unit",
+      nodeId: selectionIds.secondUnit,
+    }),
+  );
   expect(() => assertDocumentMergePublishable(resolved, resolved.baseRevision)).not.toThrow();
 });
 
@@ -199,10 +201,12 @@ test("document-core 候选书目单元经 alias 对齐后 citation 目标随之�
   delete candidate.units[baseBibUnit];
   delete candidate.sentences[baseBibSentence];
   delete candidate.atoms[baseCiteAtom];
-  candidate.sections[selectionIds.section].unitIds =
-    candidate.sections[selectionIds.section].unitIds.map((id) => id === baseBibUnit ? newBibUnit : id);
+  candidate.sections[selectionIds.section].unitIds = candidate.sections[selectionIds.section].unitIds.map((id) =>
+    id === baseBibUnit ? newBibUnit : id,
+  );
   candidate.blocks = candidate.blocks.map((block) =>
-    block.kind === "unit" && block.unitId === baseBibUnit ? { ...block, unitId: newBibUnit } : block);
+    block.kind === "unit" && block.unitId === baseBibUnit ? { ...block, unitId: newBibUnit } : block,
+  );
   candidate.units[newBibUnit] = {
     id: newBibUnit,
     sectionId: selectionIds.section,
@@ -223,9 +227,9 @@ test("document-core 候选书目单元经 alias 对齐后 citation 目标随之�
     targetUnitId: newBibUnit,
     sourceAliases: ["bib.bib1"],
   };
-  candidate.sentences[selectionIds.sentence].content =
-    candidate.sentences[selectionIds.sentence].content.map((part) =>
-      part.kind === "atom" && part.atomId === baseCiteAtom ? { kind: "atom", atomId: newCiteAtom } : part);
+  candidate.sentences[selectionIds.sentence].content = candidate.sentences[selectionIds.sentence].content.map((part) =>
+    part.kind === "atom" && part.atomId === baseCiteAtom ? { kind: "atom", atomId: newCiteAtom } : part,
+  );
 
   const result = merge(base, current, candidate);
   expect(result.conflicts).toEqual([]);
@@ -263,11 +267,13 @@ test("document-core 重解析对齐 unit 后句子延续稳定 ID：来源修正
 
   expect(result.conflicts).toEqual([]);
   expect(projectSentenceText(result.document, selectionIds.thirdSentence)).toBe("Next unit revised.");
-  const sentenceChange = result.changeset.changes.find((entry) =>
-    entry.nodeType === "sentence" && entry.nodeId === selectionIds.thirdSentence);
+  const sentenceChange = result.changeset.changes.find(
+    (entry) => entry.nodeType === "sentence" && entry.nodeId === selectionIds.thirdSentence,
+  );
   expect(sentenceChange?.status).toBe("changed");
-  expect(result.changeset.changes.some((entry) =>
-    entry.nodeType === "sentence" && entry.status === "added")).toBe(false);
+  expect(result.changeset.changes.some((entry) => entry.nodeType === "sentence" && entry.status === "added")).toBe(
+    false,
+  );
 });
 
 /** 句子重排的候选：unit 经 alias 对齐，句子沿用同一 ID 但顺序颠倒。 */
@@ -289,18 +295,20 @@ test("document-core 来源重排 unit 内句子对三方合并可见：无本地
   const result = merge(base, current, candidate);
 
   expect(result.conflicts).toEqual([]);
-  expect(result.document.units[selectionIds.secondUnit].sentenceIds)
-    .toEqual(candidate.units[selectionIds.secondUnit].sentenceIds);
-  const unitChange = result.changeset.changes.find((entry) =>
-    entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit);
+  expect(result.document.units[selectionIds.secondUnit].sentenceIds).toEqual(
+    candidate.units[selectionIds.secondUnit].sentenceIds,
+  );
+  const unitChange = result.changeset.changes.find(
+    (entry) => entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit,
+  );
   expect(unitChange?.status).toBe("moved");
   // 换位的句子本身也记录 moved（阅读位置是结构事实），不得仍是 retained。
   for (const sentenceId of base.units[selectionIds.secondUnit].sentenceIds) {
-    expect(result.changeset.changes.find((entry) =>
-      entry.nodeType === "sentence" && entry.nodeId === sentenceId)?.status).toBe("moved");
+    expect(
+      result.changeset.changes.find((entry) => entry.nodeType === "sentence" && entry.nodeId === sentenceId)?.status,
+    ).toBe("moved");
   }
-  expect(result.changeset.changes.some((entry) =>
-    entry.status === "added" || entry.status === "removed")).toBe(false);
+  expect(result.changeset.changes.some((entry) => entry.status === "added" || entry.status === "removed")).toBe(false);
 });
 
 test("document-core 本地重排与来源重排方向不同时生成 unit 冲突，显式解决前不可发布", () => {
@@ -321,8 +329,7 @@ test("document-core 本地重排与来源重排方向不同时生成 unit 冲突
     type: "content",
     anchors: [{ kind: "unit", unitId: selectionIds.secondUnit }],
   });
-  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision))
-    .toThrow(/未解决|冲突/);
+  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision)).toThrow(/未解决|冲突/);
 
   const resolved = resolveDocumentMergeConflict(unresolved, unresolved.conflicts[0].id, "candidate");
   expect(resolved.document.units[selectionIds.secondUnit].sentenceIds).toEqual([c, b, a]);
@@ -353,13 +360,17 @@ test("document-core 重转换重发句子 UUID 且重排：对齐延续 ID，顺
 
   expect(result.conflicts).toEqual([]);
   // 文本证据延续稳定 ID：无 added/removed，阅读顺序采用来源新顺序。
-  expect(result.changeset.changes.some((entry) =>
-    entry.nodeType === "sentence" && (entry.status === "added" || entry.status === "removed"))).toBe(false);
+  expect(
+    result.changeset.changes.some(
+      (entry) => entry.nodeType === "sentence" && (entry.status === "added" || entry.status === "removed"),
+    ),
+  ).toBe(false);
   expect(result.document.units[selectionIds.secondUnit].sentenceIds).toEqual([c, a, b]);
   expect(projectSentenceText(result.document, c)).toBe("Gamma third.");
   expect(projectSentenceText(result.document, a)).toBe("Alpha first.");
-  const unitChange = result.changeset.changes.find((entry) =>
-    entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit);
+  const unitChange = result.changeset.changes.find(
+    (entry) => entry.nodeType === "unit" && entry.nodeId === selectionIds.secondUnit,
+  );
   expect(unitChange?.status).toBe("moved");
 });
 
@@ -406,11 +417,13 @@ test("document-core 重解析句子数量变化按拆分合并处理：旧句子
   const result = merge(base, current, candidate);
 
   expect(result.conflicts).toEqual([]);
-  const sentenceChange = result.changeset.changes.find((entry) =>
-    entry.nodeType === "sentence" && entry.nodeId === selectionIds.thirdSentence);
+  const sentenceChange = result.changeset.changes.find(
+    (entry) => entry.nodeType === "sentence" && entry.nodeId === selectionIds.thirdSentence,
+  );
   expect(sentenceChange?.status).toBe("removed");
-  expect(result.changeset.changes.filter((entry) =>
-    entry.nodeType === "sentence" && entry.status === "added")).toHaveLength(2);
+  expect(
+    result.changeset.changes.filter((entry) => entry.nodeType === "sentence" && entry.status === "added"),
+  ).toHaveLength(2);
 });
 
 /** 重建 unit 的句子列表为新 UUID 句子（确定性重转换形状）。 */
@@ -446,16 +459,16 @@ test("document-core 等长 split+merge 不串旧 ID：两句变两句但边界�
 
   const oldIds = base.units[selectionIds.secondUnit].sentenceIds;
   for (const oldId of oldIds) {
-    expect(result.changeset.changes.find((entry) =>
-      entry.nodeType === "sentence" && entry.nodeId === oldId)?.status).toBe("removed");
+    expect(
+      result.changeset.changes.find((entry) => entry.nodeType === "sentence" && entry.nodeId === oldId)?.status,
+    ).toBe("removed");
     expect(result.document.sentences[oldId]).toBeUndefined();
   }
-  expect(result.changeset.changes.filter((entry) =>
-    entry.nodeType === "sentence" && entry.status === "added")).toHaveLength(2);
-  for (const newId of newIds)
-    expect(result.document.sentences[newId]).toBeDefined();
-  expect(result.tombstones.some((entry) =>
-    entry.nodeType === "sentence" && oldIds.includes(entry.nodeId))).toBe(true);
+  expect(
+    result.changeset.changes.filter((entry) => entry.nodeType === "sentence" && entry.status === "added"),
+  ).toHaveLength(2);
+  for (const newId of newIds) expect(result.document.sentences[newId]).toBeDefined();
+  expect(result.tombstones.some((entry) => entry.nodeType === "sentence" && oldIds.includes(entry.nodeId))).toBe(true);
 });
 
 test("document-core 删除＋插入同数量不串旧 ID：无边界证据的位置延续被拒绝", () => {
@@ -467,20 +480,19 @@ test("document-core 删除＋插入同数量不串旧 ID：无边界证据的位
   candidate.units[selectionIds.secondUnit].sourceAliases = ["page-2/b0"];
   // 数量不变：删一句、插一句；保留句经内容证据延续，被删句 tombstone。
   const [keptOld, deletedOld] = base.units[selectionIds.secondUnit].sentenceIds;
-  const newIds = reissueSentences(candidate, selectionIds.secondUnit, [
-    "Keep me.",
-    "Inserted sentence.",
-  ]);
+  const newIds = reissueSentences(candidate, selectionIds.secondUnit, ["Keep me.", "Inserted sentence."]);
 
   const result = merge(base, current, candidate);
 
   expect(result.document.sentences[keptOld]).toBeDefined();
   expect(projectSentenceText(result.document, keptOld)).toBe("Keep me.");
-  expect(result.changeset.changes.find((entry) =>
-    entry.nodeType === "sentence" && entry.nodeId === deletedOld)?.status).toBe("removed");
+  expect(
+    result.changeset.changes.find((entry) => entry.nodeType === "sentence" && entry.nodeId === deletedOld)?.status,
+  ).toBe("removed");
   expect(result.document.sentences[deletedOld]).toBeUndefined();
-  expect(result.changeset.changes.filter((entry) =>
-    entry.nodeType === "sentence" && entry.status === "added")).toHaveLength(1);
+  expect(
+    result.changeset.changes.filter((entry) => entry.nodeType === "sentence" && entry.status === "added"),
+  ).toHaveLength(1);
   expect(result.document.sentences[newIds[1]]).toBeDefined();
   expect(projectSentenceText(result.document, newIds[1])).toBe("Inserted sentence.");
 });
@@ -507,10 +519,12 @@ test("document-core 相邻 unchanged anchor 证明的 1:1 位置延续仍然成�
 
   expect(result.conflicts).toEqual([]);
   expect(projectSentenceText(result.document, baseOrder[1])).toBe("Middle revised.");
-  expect(result.changeset.changes.find((entry) =>
-    entry.nodeType === "sentence" && entry.nodeId === baseOrder[1])?.status).toBe("changed");
-  expect(result.changeset.changes.some((entry) =>
-    entry.nodeType === "sentence" && entry.status === "added")).toBe(false);
+  expect(
+    result.changeset.changes.find((entry) => entry.nodeType === "sentence" && entry.nodeId === baseOrder[1])?.status,
+  ).toBe("changed");
+  expect(result.changeset.changes.some((entry) => entry.nodeType === "sentence" && entry.status === "added")).toBe(
+    false,
+  );
 });
 
 test("document-core 多个新增块共享同一锚点时按来源顺序确定插入，不依赖遍历顺序", () => {
@@ -538,11 +552,7 @@ test("document-core 多个新增块共享同一锚点时按来源顺序确定插
     };
   });
   // 直属单元顺序必须与阅读块顺序一致：新单元插在首个单元之后。
-  candidate.sections[selectionIds.section].unitIds = [
-    selectionIds.unit,
-    ...newUnitIds,
-    selectionIds.secondUnit,
-  ];
+  candidate.sections[selectionIds.section].unitIds = [selectionIds.unit, ...newUnitIds, selectionIds.secondUnit];
   const anchorIndex = candidate.blocks.findIndex((block) => block.id === anchorBlock);
   candidate.blocks.splice(
     anchorIndex + 1,
@@ -563,6 +573,10 @@ test("document-core 多个新增块共享同一锚点时按来源顺序确定插
   expect(order.indexOf(newBlockIds[0])).toBeGreaterThan(order.indexOf(anchorBlock));
   expect(order.indexOf(newBlockIds[1])).toBe(order.indexOf(newBlockIds[0]) + 1);
   expect(order.indexOf(newBlockIds[2])).toBe(order.indexOf(newBlockIds[1]) + 1);
-  expect(projectSentenceText(result.document, result.document.units[newUnitIds[0]].sentenceIds[0])).toBe("Inserted one.");
-  expect(projectSentenceText(result.document, result.document.units[newUnitIds[2]].sentenceIds[0])).toBe("Inserted three.");
+  expect(projectSentenceText(result.document, result.document.units[newUnitIds[0]].sentenceIds[0])).toBe(
+    "Inserted one.",
+  );
+  expect(projectSentenceText(result.document, result.document.units[newUnitIds[2]].sentenceIds[0])).toBe(
+    "Inserted three.",
+  );
 });

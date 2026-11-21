@@ -83,27 +83,22 @@ function splitSentences(parts: InlinePart[]): InlinePart[][] {
 function unitAtoms(tree: DocumentTree, unitId: string): string[] {
   const unit = tree.units[unitId];
   return unit.sentenceIds.flatMap((sentenceId) =>
-    tree.sentences[sentenceId].content.flatMap((part) =>
-      part.kind === "atom" ? [part.atomId] : []));
+    tree.sentences[sentenceId].content.flatMap((part) => (part.kind === "atom" ? [part.atomId] : [])),
+  );
 }
 
 /** 单元可编辑投影与占位令牌由共享契约提供（unitEditText/atomPlaceholderToken）。 */
 
 /** 把新文本与受保护 atom 序列重建为句子内容：按占位令牌定位 atom，
  * 令牌之间的文字原样保留；不猜测插入位置，不接受裸显示文本冒充占位。 */
-function rebuildParts(
-  tree: DocumentTree,
-  atomIds: string[],
-  text: string,
-): InlinePart[] {
+function rebuildParts(tree: DocumentTree, atomIds: string[], text: string): InlinePart[] {
   const parts: InlinePart[] = [];
   let cursor = 0;
   for (const atomId of atomIds) {
     const token = atomPlaceholderToken(atomId);
     const index = text.indexOf(token, cursor);
     if (index < 0) invalid(`修正文本必须按原顺序保留原子占位 ${token}。`);
-    if (text.indexOf(token, index + token.length) >= 0)
-      invalid(`原子占位 ${token} 重复出现，无法确定唯一位置。`);
+    if (text.indexOf(token, index + token.length) >= 0) invalid(`原子占位 ${token} 重复出现，无法确定唯一位置。`);
     if (index > cursor) parts.push({ kind: "text", text: text.slice(cursor, index) });
     parts.push({ kind: "atom", atomId });
     cursor = index + token.length;
@@ -116,11 +111,7 @@ function rebuildParts(
 /** 普通文字修正的保边界路径：按原句边界把新文本切回各句，逐句重建内容。
  * 句数与每句 atom 分布不变时保留全部句子 ID（内容变化记 changed）；
  * 用户真实增删句子终止符或移动 atom 时返回 false，交由重切分保守处理。 */
-function trySentencePreservingEdit(
-  tree: DocumentTree,
-  unitId: string,
-  text: string,
-): boolean {
+function trySentencePreservingEdit(tree: DocumentTree, unitId: string, text: string): boolean {
   const unit = tree.units[unitId];
   const atomIds = unitAtoms(tree, unitId);
   // 校验全部 atom 令牌按原顺序恰好出现一次。
@@ -138,7 +129,7 @@ function trySentencePreservingEdit(
   let searchFrom = 0;
   for (const [index, sentenceId] of unit.sentenceIds.entries()) {
     const sentence = tree.sentences[sentenceId];
-    const sentenceAtoms = sentence.content.flatMap((part) => part.kind === "atom" ? [part.atomId] : []);
+    const sentenceAtoms = sentence.content.flatMap((part) => (part.kind === "atom" ? [part.atomId] : []));
     const start = searchFrom;
     let end = text.length;
     if (index < unit.sentenceIds.length - 1) {
@@ -153,8 +144,9 @@ function trySentencePreservingEdit(
         const tail = text.slice(searchFrom);
         // 本句末终止符＝下一句首文字之前的最后一个「终止符＋空白」。
         // 下一句无 atom 时以其原投影首段定位边界，避免吞掉下一句的终止符。
-        const nextProjection = nextSentence.content.map((part) =>
-          part.kind === "text" ? part.text : atomPlaceholderToken(part.atomId)).join("");
+        const nextProjection = nextSentence.content
+          .map((part) => (part.kind === "text" ? part.text : atomPlaceholderToken(part.atomId)))
+          .join("");
         const nextStart = tail.indexOf(nextProjection.slice(0, Math.min(12, nextProjection.length)));
         const scope = nextStart >= 0 ? tail.slice(0, nextStart) : tail;
         const matches = [...scope.matchAll(/[.!?](?=\s)|[。！？](?=\s|$)/g)];
@@ -179,15 +171,18 @@ function trySentencePreservingEdit(
   }
   if (searchFrom > text.length) return false;
   // 逐句重建内容并校验终止符数量不变。
-  const terminatorCount = (value: string) =>
-    (value.match(/[.!?](?=\s|$)|[。！？]/g) ?? []).length;
+  const terminatorCount = (value: string) => (value.match(/[.!?](?=\s|$)|[。！？]/g) ?? []).length;
   for (const [index, sentenceId] of unit.sentenceIds.entries()) {
     const sentence = tree.sentences[sentenceId];
     const { start, end } = ranges[index];
     const slice = text.slice(start, end);
-    const parts = rebuildParts(tree, sentence.content.flatMap((part) => part.kind === "atom" ? [part.atomId] : []), slice);
-    const newText = parts.map((part) => part.kind === "text" ? part.text : "").join("");
-    const oldText = sentence.content.map((part) => part.kind === "text" ? part.text : "").join("");
+    const parts = rebuildParts(
+      tree,
+      sentence.content.flatMap((part) => (part.kind === "atom" ? [part.atomId] : [])),
+      slice,
+    );
+    const newText = parts.map((part) => (part.kind === "text" ? part.text : "")).join("");
+    const oldText = sentence.content.map((part) => (part.kind === "text" ? part.text : "")).join("");
     const normalizedNew = index < unit.sentenceIds.length - 1 ? `${newText} ` : newText;
     if (terminatorCount(normalizedNew) !== terminatorCount(oldText)) return false;
     tree.sentences[sentenceId] = { ...sentence, content: parts };
@@ -199,15 +194,18 @@ function replaceUnitSentences(
   tree: DocumentTree,
   unitId: string,
   parts: InlinePart[],
-  retired: Array<{ nodeType: "unit" | "sentence" | "atom" | "block" | "section"; nodeId: string; reason: Tombstone["reason"] }>,
+  retired: Array<{
+    nodeType: "unit" | "sentence" | "atom" | "block" | "section";
+    nodeId: string;
+    reason: Tombstone["reason"];
+  }>,
   nextId: (label: string) => string,
 ) {
   const unit = tree.units[unitId];
   const sentences = splitSentences(parts);
   if (!sentences.length) invalid("修正后的单元没有可读内容。");
   const oldIds = unit.sentenceIds;
-  const atomSentence = (content: InlinePart[]) =>
-    content.find((part) => part.kind === "atom")?.atomId ?? null;
+  const atomSentence = (content: InlinePart[]) => content.find((part) => part.kind === "atom")?.atomId ?? null;
   // 含 atom 的句子以 atom 为锚延续原 ID：atom 受保护且顺序不变，普通文字
   // 修正不改变句子边界，内容变化由 changeset 记为 changed，不退役句子锚点。
   const oldByAtom = new Map<string, string>();
@@ -264,15 +262,27 @@ function blockOfUnit(tree: DocumentTree, unitId: string): Block {
 }
 
 function unitBlockIds(tree: DocumentTree, unitId: string): string[] {
-  return tree.blocks.filter((block) =>
-    block.kind === "unit" ? block.unitId === unitId
-      : block.kind === "figure" || block.kind === "table"
-        ? (block.captionUnitId === unitId ||
-          (block.kind === "table" && block.rows.some((row) => row.some((cell) => cell.unitId === unitId))))
-        : false).map((block) => block.id);
+  return tree.blocks
+    .filter((block) =>
+      block.kind === "unit"
+        ? block.unitId === unitId
+        : block.kind === "figure" || block.kind === "table"
+          ? block.captionUnitId === unitId ||
+            (block.kind === "table" && block.rows.some((row) => row.some((cell) => cell.unitId === unitId)))
+          : false,
+    )
+    .map((block) => block.id);
 }
 
-function removeUnit(tree: DocumentTree, unitId: string, retired: Array<{ nodeType: "unit" | "sentence" | "atom" | "block" | "section"; nodeId: string; reason: Tombstone["reason"] }>) {
+function removeUnit(
+  tree: DocumentTree,
+  unitId: string,
+  retired: Array<{
+    nodeType: "unit" | "sentence" | "atom" | "block" | "section";
+    nodeId: string;
+    reason: Tombstone["reason"];
+  }>,
+) {
   const unit = tree.units[unitId];
   if (!unit) invalid(`修正目标单元不存在：${unitId}。`);
   for (const blockId of unitBlockIds(tree, unitId)) {
@@ -284,7 +294,8 @@ function removeUnit(tree: DocumentTree, unitId: string, retired: Array<{ nodeTyp
       block.captionUnitId = null;
     } else if (block.kind === "table") {
       if (block.captionUnitId === unitId) block.captionUnitId = null;
-      block.rows = block.rows.map((row) => row.filter((cell) => cell.unitId !== unitId))
+      block.rows = block.rows
+        .map((row) => row.filter((cell) => cell.unitId !== unitId))
         .filter((row) => row.length > 0);
       if (!block.rows.length) {
         tree.blocks = tree.blocks.filter((entry) => entry.id !== blockId);
@@ -317,11 +328,20 @@ function removeUnit(tree: DocumentTree, unitId: string, retired: Array<{ nodeTyp
 }
 
 /** 删除单元后清理空章节：没有任何阅读块的章节不能保留（树校验要求可读内容）。 */
-function pruneEmptySections(tree: DocumentTree, retired: Array<{ nodeType: "unit" | "sentence" | "atom" | "block" | "section"; nodeId: string; reason: Tombstone["reason"] }>) {
+function pruneEmptySections(
+  tree: DocumentTree,
+  retired: Array<{
+    nodeType: "unit" | "sentence" | "atom" | "block" | "section";
+    nodeId: string;
+    reason: Tombstone["reason"];
+  }>,
+) {
   for (;;) {
-    const empty = Object.values(tree.sections).filter((section) =>
-      !tree.blocks.some((block) => block.sectionId === section.id) &&
-      section.childSectionIds.every((childId) => !tree.sections[childId]));
+    const empty = Object.values(tree.sections).filter(
+      (section) =>
+        !tree.blocks.some((block) => block.sectionId === section.id) &&
+        section.childSectionIds.every((childId) => !tree.sections[childId]),
+    );
     if (!empty.length) return;
     for (const section of empty) {
       if (section.parentSectionId === null && Object.keys(tree.sections).length === 1)
@@ -337,7 +357,11 @@ function pruneEmptySections(tree: DocumentTree, retired: Array<{ nodeType: "unit
 function applyOne(
   tree: DocumentTree,
   edit: DocumentCorrection,
-  retired: Array<{ nodeType: "unit" | "sentence" | "atom" | "block" | "section"; nodeId: string; reason: Tombstone["reason"] }>,
+  retired: Array<{
+    nodeType: "unit" | "sentence" | "atom" | "block" | "section";
+    nodeId: string;
+    reason: Tombstone["reason"];
+  }>,
   assets: Record<string, { bytes: Uint8Array; mime: string }>,
   sha256: (bytes: Uint8Array) => string,
   nextId: (label: string) => string,
@@ -350,7 +374,13 @@ function applyOne(
         invalid("单元原内容与预期不符：基线可能已变化，请重新读取后再修正。");
       // 优先保边界路径：句内文字修正保留全部句子 ID；真实边界变化才重切分。
       if (!trySentencePreservingEdit(tree, edit.unitId, edit.text))
-        replaceUnitSentences(tree, edit.unitId, rebuildParts(tree, unitAtoms(tree, edit.unitId), edit.text), retired, nextId);
+        replaceUnitSentences(
+          tree,
+          edit.unitId,
+          rebuildParts(tree, unitAtoms(tree, edit.unitId), edit.text),
+          retired,
+          nextId,
+        );
       return;
     }
     case "atom": {
@@ -411,8 +441,7 @@ function applyOne(
         return unit;
       });
       const sectionId = units[0].sectionId;
-      if (units.some((unit) => unit.sectionId !== sectionId))
-        invalid("只能合并同一章节内的单元。");
+      if (units.some((unit) => unit.sectionId !== sectionId)) invalid("只能合并同一章节内的单元。");
       if (units.some((unit) => unitAtoms(tree, unit.id).length > 0))
         invalid("含原子的单元暂不支持合并；请先单独修正原子。");
       const positions = units.map((unit) => tree.sections[sectionId].unitIds.indexOf(unit.id));
@@ -484,13 +513,20 @@ function applyOne(
       const block = tree.blocks.find((entry) => entry.id === edit.blockId);
       if (!block || block.kind !== "figure") invalid(`资产替换目标不是图片块：${edit.blockId}。`);
       const hash = sha256(edit.bytes);
-      const extension = edit.mime === "image/png" ? "png"
-        : edit.mime === "image/jpeg" ? "jpg"
-        : edit.mime === "image/svg+xml" ? "svg"
-        : edit.mime === "image/webp" ? "webp"
-        : edit.mime === "image/gif" ? "gif"
-        : edit.mime === "image/avif" ? "avif"
-        : invalid(`不支持的资产 MIME：${edit.mime}。`);
+      const extension =
+        edit.mime === "image/png"
+          ? "png"
+          : edit.mime === "image/jpeg"
+            ? "jpg"
+            : edit.mime === "image/svg+xml"
+              ? "svg"
+              : edit.mime === "image/webp"
+                ? "webp"
+                : edit.mime === "image/gif"
+                  ? "gif"
+                  : edit.mime === "image/avif"
+                    ? "avif"
+                    : invalid(`不支持的资产 MIME：${edit.mime}。`);
       const path = `assets/${hash}.${extension}`;
       assets[path] = { bytes: edit.bytes, mime: edit.mime };
       block.asset = { path, sha256: hash, mime: edit.mime };
@@ -500,8 +536,7 @@ function applyOne(
     case "raw-text": {
       const block = tree.blocks.find((entry) => entry.id === edit.blockId);
       if (!block || block.kind !== "raw") invalid(`文本修正目标不是 raw block：${edit.blockId}。`);
-      if (block.text !== edit.expected)
-        invalid("raw block 原内容与预期不符：基线可能已变化，请重新读取后再修正。");
+      if (block.text !== edit.expected) invalid("raw block 原内容与预期不符：基线可能已变化，请重新读取后再修正。");
       // 受控文本投影：只允许替换可读文本，HTML 结构按纯文本段落重建，不接受任意源码。
       block.text = edit.text;
       block.html = `<p>${edit.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`;
@@ -522,7 +557,11 @@ export function applyDocumentCorrections(input: {
   const tree = parseDocumentTree(structuredClone(input.base));
   const edits = input.corrections.map(parseDocumentCorrection);
   if (!edits.length) invalid("修正请求不能为空。");
-  const retired: Array<{ nodeType: "unit" | "sentence" | "atom" | "block" | "section"; nodeId: string; reason: Tombstone["reason"] }> = [];
+  const retired: Array<{
+    nodeType: "unit" | "sentence" | "atom" | "block" | "section";
+    nodeId: string;
+    reason: Tombstone["reason"];
+  }> = [];
   const assets: Record<string, { bytes: Uint8Array; mime: string }> = {};
   const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
   for (const [index, edit] of edits.entries()) {
@@ -561,11 +600,17 @@ export function applyDocumentCorrections(input: {
 }
 
 function excerptOf(tree: DocumentTree, nodeType: string, nodeId: string): string {
-  const text = nodeType === "unit" ? unitLogicalText(tree, nodeId)
-    : nodeType === "sentence" ? tree.sentences[nodeId]?.content.map((part) =>
-      part.kind === "text" ? part.text : tree.atoms[part.atomId].text).join("") ?? ""
-    : nodeType === "atom" ? tree.atoms[nodeId]?.text ?? ""
-    : nodeType === "section" ? tree.sections[nodeId]?.title ?? ""
-    : "";
+  const text =
+    nodeType === "unit"
+      ? unitLogicalText(tree, nodeId)
+      : nodeType === "sentence"
+        ? (tree.sentences[nodeId]?.content
+            .map((part) => (part.kind === "text" ? part.text : tree.atoms[part.atomId].text))
+            .join("") ?? "")
+        : nodeType === "atom"
+          ? (tree.atoms[nodeId]?.text ?? "")
+          : nodeType === "section"
+            ? (tree.sections[nodeId]?.title ?? "")
+            : "";
   return Array.from(text).slice(0, 500).join("");
 }

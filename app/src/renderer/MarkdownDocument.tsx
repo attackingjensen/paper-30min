@@ -15,35 +15,22 @@ const restoreEndings = StateEffect.define<readonly string[]>();
 const lineEndings = StateField.define<readonly string[]>({
   create: () => [],
   update(value, transaction) {
-    const restored = transaction.effects
-      .filter((effect) => effect.is(restoreEndings))
-      .at(-1);
+    const restored = transaction.effects.filter((effect) => effect.is(restoreEndings)).at(-1);
     if (restored) return restored.value;
     if (!transaction.docChanged) return value;
     let next: string[] = [];
     let end = 0;
     transaction.changes.iterChanges((from, to, _newFrom, _newTo, inserted) => {
       const startLine = transaction.startState.doc.lineAt(from).number - 1;
-      next = next.concat(
-        value.slice(end, startLine),
-        Array<string>(inserted.lines - 1).fill(value[0] ?? "\n"),
-      );
+      next = next.concat(value.slice(end, startLine), Array<string>(inserted.lines - 1).fill(value[0] ?? "\n"));
       end = transaction.startState.doc.lineAt(to).number - 1;
     });
     return next.concat(value.slice(end));
   },
 });
 function localPath(documentPath: string, href: string): string | null {
-  if (
-    /^[a-z][a-z0-9+.-]*:/i.test(href) ||
-    href.startsWith("//") ||
-    href.includes("\\")
-  )
-    return null;
-  const base = new URL(
-    "https://project/" +
-      documentPath.split("/").map(encodeURIComponent).join("/"),
-  );
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//") || href.includes("\\")) return null;
+  const base = new URL("https://project/" + documentPath.split("/").map(encodeURIComponent).join("/"));
   const resolved = new URL(href, base);
   if (resolved.origin !== base.origin) return null;
   return decodeURIComponent(resolved.pathname.slice(1));
@@ -62,12 +49,7 @@ export function MarkdownDocument({
   onChange: () => void;
   onSave: () => void;
   onOpen: (path: string) => void;
-  onPosition: (position: {
-    mode: MarkdownDraft["mode"];
-    scroll: number;
-    readScroll: number;
-    cursor: number;
-  }) => void;
+  onPosition: (position: { mode: MarkdownDraft["mode"]; scroll: number; readScroll: number; cursor: number }) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const preview = useRef<HTMLElement>(null);
@@ -75,9 +57,7 @@ export function MarkdownDocument({
   const [linkError, setLinkError] = useState("");
   const callbacks = useRef({ onChange, onSave, onPosition });
   callbacks.current = { onChange, onSave, onPosition };
-  const positionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
-    undefined,
-  );
+  const positionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const recordPosition = useCallback(() => {
     clearTimeout(positionTimer.current);
     positionTimer.current = setTimeout(
@@ -106,15 +86,19 @@ export function MarkdownDocument({
           basicSetup,
           lineEndings.init(() => draft.text.match(/\r\n|\r|\n/g) ?? []),
           invertedEffects.of((transaction) =>
-            transaction.docChanged
-              ? [restoreEndings.of(transaction.startState.field(lineEndings))]
-              : [],
+            transaction.docChanged ? [restoreEndings.of(transaction.startState.field(lineEndings))] : [],
           ),
           markdown(),
           EditorView.lineWrapping,
           EditorView.domEventHandlers({
-            compositionstart() { draft.composing = true; callbacks.current.onChange(); },
-            compositionend() { draft.composing = false; callbacks.current.onChange(); },
+            compositionstart() {
+              draft.composing = true;
+              callbacks.current.onChange();
+            },
+            compositionend() {
+              draft.composing = false;
+              callbacks.current.onChange();
+            },
           }),
           EditorView.contentAttributes.of({
             "aria-label": "Markdown 源码",
@@ -136,16 +120,15 @@ export function MarkdownDocument({
               fontFamily: "Consolas, 'Microsoft YaHei', monospace",
             },
             ".cm-content": { padding: "18px 0" },
-            "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection":
-              { backgroundColor: "#dcd8ef !important" },
+            "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
+              backgroundColor: "#dcd8ef !important",
+            },
           }),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               const endings = update.state.field(lineEndings);
               let index = 0;
-              draft.text = update.state.doc
-                .toString()
-                .replace(/\n/g, () => endings[index++]);
+              draft.text = update.state.doc.toString().replace(/\n/g, () => endings[index++]);
               callbacks.current.onChange();
             }
             draft.editor = update.state;
@@ -170,7 +153,10 @@ export function MarkdownDocument({
       });
       view.scrollDOM.removeEventListener("scroll", scrolled);
       view.destroy();
-      if (draft.composing) { draft.composing = false; callbacks.current.onChange(); }
+      if (draft.composing) {
+        draft.composing = false;
+        callbacks.current.onChange();
+      }
     };
   }, [draft, editing, draft.loading, draft.revision, recordPosition]);
   useEffect(() => {
@@ -203,16 +189,9 @@ export function MarkdownDocument({
             const relative = localPath(draft.path, source);
             token.attrSet(
               "src",
-              relative
-                ? "paper30min://project/image?" +
-                    new URLSearchParams({ root, path: relative })
-                : "",
+              relative ? "paper30min://project/image?" + new URLSearchParams({ root, path: relative }) : "",
             );
-            if (!relative)
-              token.attrSet(
-                "alt",
-                (token.content || "图片") + "（请使用工程内图片）",
-              );
+            if (!relative) token.attrSet("alt", (token.content || "图片") + "（请使用工程内图片）");
           } catch {
             token.attrSet("src", "");
           }
@@ -265,16 +244,17 @@ export function MarkdownDocument({
       {(draft.error || linkError) && (
         <div className="notice error" role="alert">
           {draft.error || linkError}
-          {draft.error && draft.external === undefined && isDirty(draft) && <button onClick={onSave} disabled={draft.saving}>重试自动保存</button>}
+          {draft.error && draft.external === undefined && isDirty(draft) && (
+            <button onClick={onSave} disabled={draft.saving}>
+              重试自动保存
+            </button>
+          )}
         </div>
       )}
       {draft.external !== undefined && (
         <div className="markdown-conflict" role="alert">
           <span>文档已在外部修改。你的编辑已保留，尚未覆盖磁盘文件。</span>
-          <button
-            className="borderbtn"
-            onClick={() => setShowConflict(!showConflict)}
-          >
+          <button className="borderbtn" onClick={() => setShowConflict(!showConflict)}>
             查看双方内容
           </button>
           <small>Agent 整合将在后续接入。</small>
@@ -288,11 +268,7 @@ export function MarkdownDocument({
           </label>
           <label>
             当前磁盘内容
-            <textarea
-              aria-label="当前磁盘内容"
-              readOnly
-              value={draft.external?.text ?? "文件已不存在"}
-            />
+            <textarea aria-label="当前磁盘内容" readOnly value={draft.external?.text ?? "文件已不存在"} />
           </label>
         </div>
       )}
@@ -314,9 +290,7 @@ export function MarkdownDocument({
               setLinkError("");
               const href = anchor.getAttribute("href") ?? "";
               if (/^https?:\/\//i.test(href)) {
-                void window.desktop
-                  .openLink(href)
-                  .catch((error) => setLinkError(error.message));
+                void window.desktop.openLink(href).catch((error) => setLinkError(error.message));
                 return;
               }
               if (href.startsWith("#")) return;

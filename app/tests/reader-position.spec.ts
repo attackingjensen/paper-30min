@@ -24,7 +24,10 @@ function revise(base: DocumentTree, mutate: (tree: DocumentTree) => void) {
   const next = parseDocumentTree(structuredClone(base), paperId);
   mutate(next);
   const changeset = createDocumentChangeset({
-    base, current: next, baseRevision: revisionA, revisionId: revisionB,
+    base,
+    current: next,
+    baseRevision: revisionA,
+    revisionId: revisionB,
   });
   const tombstones = appendRemovedTombstones(base, changeset);
   return { next, changeset, tombstones };
@@ -46,12 +49,17 @@ function positionAt(unitId: string, tree: DocumentTree): ReadingPosition {
 
 function resolve(base: DocumentTree, next: DocumentTree, position: ReadingPosition) {
   const changeset = createDocumentChangeset({
-    base, current: next, baseRevision: revisionA, revisionId: revisionB,
+    base,
+    current: next,
+    baseRevision: revisionA,
+    revisionId: revisionB,
   });
-  return resolveReadingPosition(
-    position,
-    { tree: next, projection: buildReaderProjection(next), changeset, tombstones: appendRemovedTombstones(base, changeset) },
-  );
+  return resolveReadingPosition(position, {
+    tree: next,
+    projection: buildReaderProjection(next),
+    changeset,
+    tombstones: appendRemovedTombstones(base, changeset),
+  });
 }
 
 test("reader 位置解析 retained/moved 恢复原锚点并保留锚内相对偏移，不复用旧 scrollTop", () => {
@@ -67,7 +75,11 @@ test("reader 位置解析 retained/moved 恢复原锚点并保留锚内相对偏
     t.blocks.unshift({ id: randomUUID(), sectionId: ids.body, kind: "unit", unitId });
   });
   const result = resolve(tree, next, position);
-  expect(result).toEqual({ status: "restored", anchor: { kind: "unit", unitId: ids.reference }, offsetWithinAnchor: 12 });
+  expect(result).toEqual({
+    status: "restored",
+    anchor: { kind: "unit", unitId: ids.reference },
+    offsetWithinAnchor: 12,
+  });
 });
 
 test("reader 位置解析 changed 定位原节点并携带内容已变化提示", () => {
@@ -132,10 +144,12 @@ test("reader 位置解析跨 revision 链：changeset 与目标 revision 不一�
   const { next, changeset } = revise(tree, () => {});
   // 伪造 revisionId 的 changeset：解析不得因链缺口崩溃，按存在性恢复。
   const foreign = { ...changeset, revisionId: randomUUID() };
-  const result = resolveReadingPosition(
-    position,
-    { tree: next, projection: buildReaderProjection(next), changeset: foreign, tombstones: [] },
-  );
+  const result = resolveReadingPosition(position, {
+    tree: next,
+    projection: buildReaderProjection(next),
+    changeset: foreign,
+    tombstones: [],
+  });
   expect(result.status).toBe("restored");
 });
 

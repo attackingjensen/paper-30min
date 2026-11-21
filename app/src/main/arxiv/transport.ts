@@ -1,13 +1,8 @@
 import { request } from "undici";
 import { setTimeout as delay } from "node:timers/promises";
 import { isIP } from "node:net";
-import {
-  ArxivFetchError,
-  type ArxivFetchOptions,
-  type ArxivFetchResponse,
-} from "./fetch.js";
+import { ArxivFetchError, type ArxivFetchOptions, type ArxivFetchResponse } from "./fetch.js";
 import { isAllowedSourceHost } from "./reference.js";
-
 
 export { ArxivFetchError } from "./fetch.js";
 const DEFAULT_STALL_MS = 30_000;
@@ -21,16 +16,18 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 function privateOrLocalTarget(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") ||
-      host.endsWith(".internal")) return true;
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal"))
+    return true;
   const version = isIP(host);
   if (version === 4) {
     const parts = host.split(".").map(Number);
-    return parts[0] === 10 ||
+    return (
+      parts[0] === 10 ||
       (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
       (parts[0] === 192 && parts[1] === 168) ||
       (parts[0] === 169 && parts[1] === 254) ||
-      parts[0] === 0;
+      parts[0] === 0
+    );
   }
   if (version === 6) {
     return host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80");
@@ -48,23 +45,19 @@ function validateHop(rawUrl: string, kind: "start" | "redirect", allowFixtureLoo
   } catch {
     throw new ArxivFetchError(invalidCode, rawUrl);
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:")
-    throw new ArxivFetchError(invalidCode, rawUrl);
-  if (url.username !== "" || url.password !== "")
-    throw new ArxivFetchError(invalidCode, rawUrl);
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new ArxivFetchError(invalidCode, rawUrl);
+  if (url.username !== "" || url.password !== "") throw new ArxivFetchError(invalidCode, rawUrl);
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (!isAllowedSourceHost(host))
     throw new ArxivFetchError(kind === "start" ? "arxiv-fetch-host-rejected" : invalidCode, rawUrl);
   const loopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
   // 生产起始跳不允许 http 明文访问 arXiv：访问网络前规范化为 HTTPS。
-  if (!allowFixtureLoopback && url.protocol === "http:" && host === "arxiv.org")
-    url.protocol = "https:";
+  if (!allowFixtureLoopback && url.protocol === "http:" && host === "arxiv.org") url.protocol = "https:";
   if (loopback) {
     if (!allowFixtureLoopback) throw new ArxivFetchError(invalidCode, rawUrl);
     return url;
   }
-  if (privateOrLocalTarget(host))
-    throw new ArxivFetchError(invalidCode, rawUrl);
+  if (privateOrLocalTarget(host)) throw new ArxivFetchError(invalidCode, rawUrl);
   return url;
 }
 
@@ -136,10 +129,7 @@ function discardBody(body: NodeJS.ReadableStream & { destroy: (error?: Error) =>
   body.destroy();
 }
 
-async function attempt(
-  startUrl: string,
-  options: ArxivFetchOptions,
-): Promise<ArxivFetchResponse> {
+async function attempt(startUrl: string, options: ArxivFetchOptions): Promise<ArxivFetchResponse> {
   const stallMs = options.stallTimeoutMs ?? DEFAULT_STALL_MS;
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const signal = options.signal;
@@ -164,8 +154,7 @@ async function attempt(
     } catch (error) {
       if (signal?.aborted) throw new ArxivFetchError("arxiv-fetch-cancelled", current.href);
       const code = (error as NodeJS.ErrnoException | undefined)?.code ?? "";
-      if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT" ||
-          code === "UND_ERR_CONNECT_TIMEOUT")
+      if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT" || code === "UND_ERR_CONNECT_TIMEOUT")
         throw new ArxivFetchError("arxiv-fetch-stalled", current.href);
       throw new ArxivFetchError(networkErrorCode(error), current.href);
     }
@@ -176,12 +165,10 @@ async function attempt(
       discardBody(response.body);
       if (typeof location !== "string" || location === "")
         throw new ArxivFetchError("arxiv-fetch-redirect-invalid", current.href);
-      if (hop >= maxRedirects)
-        throw new ArxivFetchError("arxiv-fetch-redirect-limit", current.href);
+      if (hop >= maxRedirects) throw new ArxivFetchError("arxiv-fetch-redirect-limit", current.href);
       const next = validateHop(new URL(location, current).href, "redirect", allowFixtureLoopback);
       // HTTP 只能规范化为 HTTPS（真实 arXiv host）；回环 fixture 保持 http。
-      if (next.protocol === "http:" && next.hostname.toLowerCase() === "arxiv.org")
-        next.protocol = "https:";
+      if (next.protocol === "http:" && next.hostname.toLowerCase() === "arxiv.org") next.protocol = "https:";
       current = next;
       continue;
     }
@@ -192,9 +179,7 @@ async function attempt(
         current.href,
         status,
         retryAfterMs(
-          typeof response.headers["retry-after"] === "string"
-            ? response.headers["retry-after"]
-            : undefined,
+          typeof response.headers["retry-after"] === "string" ? response.headers["retry-after"] : undefined,
           options.retryAfterCapMs ?? DEFAULT_RETRY_AFTER_CAP_MS,
         ),
       );
@@ -220,10 +205,7 @@ async function attempt(
  * 默认最多两次额外重试；404/403/TLS/预算错误不重试；尊重有界 Retry-After；
  * 用户取消立即生效。不放宽生产 TLS 校验。
  */
-export async function arxivFetch(
-  url: string,
-  options: ArxivFetchOptions,
-): Promise<ArxivFetchResponse> {
+export async function arxivFetch(url: string, options: ArxivFetchOptions): Promise<ArxivFetchResponse> {
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const sleep = options.sleep ?? ((ms, signal) => delay(ms, undefined, { signal }));
   let lastError: ArxivFetchError | undefined;
@@ -240,8 +222,7 @@ export async function arxivFetch(
         error.code === "arxiv-fetch-stalled" ||
         (error.code === "arxiv-fetch-status" &&
           error.status !== undefined &&
-          (error.status === 429 ||
-            (error.status >= 500 && error.status <= 599 && error.status !== 501)));
+          (error.status === 429 || (error.status >= 500 && error.status <= 599 && error.status !== 501)));
       if (!retryable || attemptIndex === maxRetries) throw error;
       try {
         await sleep(error.retryAfterMs ?? 0, options.signal);

@@ -44,12 +44,21 @@ function parseResponse(): Buffer {
       parsing_res_list: [block(0, text)],
     },
   });
-  return Buffer.from(JSON.stringify({
-    result: {
-      dataInfo: { type: "pdf", numPages: 2, pages: [{ width: 1191, height: 1684 }, { width: 1191, height: 1684 }] },
-      layoutParsingResults: [page("Fallback contract text"), page("Fallback second page")],
-    },
-  }) + "\n");
+  return Buffer.from(
+    JSON.stringify({
+      result: {
+        dataInfo: {
+          type: "pdf",
+          numPages: 2,
+          pages: [
+            { width: 1191, height: 1684 },
+            { width: 1191, height: 1684 },
+          ],
+        },
+        layoutParsingResults: [page("Fallback contract text"), page("Fallback second page")],
+      },
+    }) + "\n",
+  );
 }
 
 async function startBaidu() {
@@ -57,16 +66,20 @@ async function startBaidu() {
   baidu = createServer((request, response) => {
     void (async () => {
       if (request.method === "POST") {
-        for await (const _chunk of request) { /* 消费受控上传 */ }
+        for await (const _chunk of request) {
+          /* 消费受控上传 */
+        }
         posts += 1;
         response.end(JSON.stringify({ code: 0, data: { jobId: "job-contract-0" } }));
         return;
       }
       if (request.url === "/jobs/job-contract-0") {
-        response.end(JSON.stringify({
-          code: 0,
-          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
-        }));
+        response.end(
+          JSON.stringify({
+            code: 0,
+            data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
+          }),
+        );
         return;
       }
       if (request.url === "/jobs/result") {
@@ -98,8 +111,7 @@ test.afterEach(async () => {
 function pdfTransport(pdfBytes: Buffer, requested: string[]): ArxivTransport {
   return async (url) => {
     requested.push(url);
-    if (url !== `https://arxiv.org/pdf/${ID}v1`)
-      throw new Error(`非预期 URL：${url}`);
+    if (url !== `https://arxiv.org/pdf/${ID}v1`) throw new Error(`非预期 URL：${url}`);
     return {
       status: 200,
       url,
@@ -119,17 +131,20 @@ async function fallbackProject(name: string) {
   const created = await createProject({ parent: sandbox, name });
   const imports = path.join(created.root, ".paper30min", "imports");
   await fs.mkdir(imports, { recursive: true });
-  await fs.writeFile(path.join(imports, "initial.json"), JSON.stringify({
-    formatVersion: 1,
-    id: randomUUID(),
-    projectId: created.manifest.id,
-    paperId: created.manifest.paper.id,
-    arxiv: {
-      reference: { baseId: ID, version: 1, canonicalId: `${ID}v1` },
-      stage: "resolve",
-      nextAction: "pdf-fallback",
-    },
-  }) + "\n");
+  await fs.writeFile(
+    path.join(imports, "initial.json"),
+    JSON.stringify({
+      formatVersion: 1,
+      id: randomUUID(),
+      projectId: created.manifest.id,
+      paperId: created.manifest.paper.id,
+      arxiv: {
+        reference: { baseId: ID, version: 1, canonicalId: `${ID}v1` },
+        stage: "resolve",
+        nextAction: "pdf-fallback",
+      },
+    }) + "\n",
+  );
   const opened = await openProject(created.root);
   const handoff = await prepareArxivPdfFallback(opened, {
     code: "arxiv-html-fetch-failed",
@@ -206,26 +221,30 @@ test("pdf-fallback 组合：交接与工程谱系不符在网络前拒绝", asyn
   const requested: string[] = [];
   const pdfBytes = await fs.readFile(SAMPLE);
   const tampered: PdfFallbackRequest = { ...request, version: 2 };
-  await expect(importArxivPdfFallback({
-    root,
-    request: tampered,
-    transport: pdfTransport(pdfBytes, requested),
-    config: config(),
-    confirmUpload: async () => true,
-    signal: new AbortController().signal,
-  })).rejects.toThrow(/现场不符/);
+  await expect(
+    importArxivPdfFallback({
+      root,
+      request: tampered,
+      transport: pdfTransport(pdfBytes, requested),
+      config: config(),
+      confirmUpload: async () => true,
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/现场不符/);
   expect(requested).toHaveLength(0);
   expect(posts).toBe(0);
   // current 已存在时首次导入交接（baseRevision=null）同样拒绝。
   const created = await createProject({ parent: sandbox, name: "已有正文" });
-  await expect(importArxivPdfFallback({
-    root: created.root,
-    request,
-    transport: pdfTransport(pdfBytes, requested),
-    config: config(),
-    confirmUpload: async () => true,
-    signal: new AbortController().signal,
-  })).rejects.toThrow(/现场不符/);
+  await expect(
+    importArxivPdfFallback({
+      root: created.root,
+      request,
+      transport: pdfTransport(pdfBytes, requested),
+      config: config(),
+      confirmUpload: async () => true,
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/现场不符/);
   expect(requested).toHaveLength(0);
 });
 
@@ -270,26 +289,33 @@ test("pdf-fallback 组合：回退发布后的更新交接按谱系回溯，候�
   // 更新交接（7uo 移交项 4）：current 来源是 pdf-parse（父为 arXiv PDF），
   // 谱系回溯得到同一 baseId+vN，prepare 不再把回退工程误判为无 arXiv 来源。
   const opened = await openProject(root);
-  const handoff = await prepareArxivPdfFallback(opened, {
-    code: "arxiv-update-requested",
-    severity: "fatal",
-    stage: "resolve",
-    messageKey: "arxiv.update.requested",
-  }, undefined, current);
+  const handoff = await prepareArxivPdfFallback(
+    opened,
+    {
+      code: "arxiv-update-requested",
+      severity: "fatal",
+      stage: "resolve",
+      messageKey: "arxiv.update.requested",
+    },
+    undefined,
+    current,
+  );
   expect(handoff.ok).toBe(true);
   if (!handoff.ok) return;
   expect(handoff.request).toMatchObject({ baseId: ID, version: 1, baseRevision: current });
 
   // 谱系版本与交接不符在网络前拒绝：不下载其他版本，也不产生新任务。
   const tampered: PdfFallbackRequest = { ...handoff.request, version: 2 };
-  await expect(importArxivPdfFallback({
-    root,
-    request: tampered,
-    transport: pdfTransport(pdfBytes, requested),
-    config: config(),
-    confirmUpload: async () => true,
-    signal: new AbortController().signal,
-  })).rejects.toThrow(/现场不符/);
+  await expect(
+    importArxivPdfFallback({
+      root,
+      request: tampered,
+      transport: pdfTransport(pdfBytes, requested),
+      config: config(),
+      confirmUpload: async () => true,
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/现场不符/);
   expect(posts).toBe(1);
   expect(requested).toHaveLength(1);
   expect((await openProject(root)).manifest.paper.currentRevision).toBe(current);
@@ -310,12 +336,17 @@ test("pdf-fallback 组合：谱系一致的更新交接复用 PDF 快照，重�
   expect(first.outcome).toBe("published");
   if (first.outcome !== "published") return;
   const current = first.revision.revisionId;
-  const handoff = await prepareArxivPdfFallback(await openProject(root), {
-    code: "arxiv-update-requested",
-    severity: "fatal",
-    stage: "resolve",
-    messageKey: "arxiv.update.requested",
-  }, undefined, current);
+  const handoff = await prepareArxivPdfFallback(
+    await openProject(root),
+    {
+      code: "arxiv-update-requested",
+      severity: "fatal",
+      stage: "resolve",
+      messageKey: "arxiv.update.requested",
+    },
+    undefined,
+    current,
+  );
   expect(handoff.ok).toBe(true);
   if (!handoff.ok) return;
   // 同谱系 PDF 快照直接复用：transport 一旦被调用即失败，证明零重复下载；
@@ -358,26 +389,39 @@ test("pdf-fallback 组合：本地 PDF 来源无 arXiv 谱系，更新交接被�
   expect(imported.outcome).toBe("published");
   if (imported.outcome !== "published") return;
   const opened = await openProject(created.root);
-  const handoff = await prepareArxivPdfFallback(opened, {
-    code: "arxiv-update-requested",
-    severity: "fatal",
-    stage: "resolve",
-    messageKey: "arxiv.update.requested",
-  }, undefined, imported.revision.revisionId);
+  const handoff = await prepareArxivPdfFallback(
+    opened,
+    {
+      code: "arxiv-update-requested",
+      severity: "fatal",
+      stage: "resolve",
+      messageKey: "arxiv.update.requested",
+    },
+    undefined,
+    imported.revision.revisionId,
+  );
   expect(handoff.ok).toBe(false);
   if (!handoff.ok) expect(handoff.diagnostic.code).toBe("arxiv-fallback-source-invalid");
   // 伪造交接直接进组合入口同样在谱系核验处拒绝，零新增下载与 POST。
   const postsBefore = posts;
   const requested: string[] = [];
   const pdfBytes = await fs.readFile(SAMPLE);
-  await expect(importArxivPdfFallback({
-    root: created.root,
-    request: { kind: "arxiv-pdf", baseId: ID, version: 1, reasonCode: "arxiv-update-requested", baseRevision: imported.revision.revisionId },
-    transport: pdfTransport(pdfBytes, requested),
-    config: config(),
-    confirmUpload: async () => true,
-    signal: new AbortController().signal,
-  })).rejects.toThrow(/现场不符/);
+  await expect(
+    importArxivPdfFallback({
+      root: created.root,
+      request: {
+        kind: "arxiv-pdf",
+        baseId: ID,
+        version: 1,
+        reasonCode: "arxiv-update-requested",
+        baseRevision: imported.revision.revisionId,
+      },
+      transport: pdfTransport(pdfBytes, requested),
+      config: config(),
+      confirmUpload: async () => true,
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/现场不符/);
   expect(requested).toHaveLength(0);
   expect(posts).toBe(postsBefore);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);

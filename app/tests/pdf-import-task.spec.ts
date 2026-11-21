@@ -3,12 +3,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { ProxyAgent } from "undici";
 import { createProject } from "../src/main/project-core";
@@ -26,10 +21,7 @@ const TOKEN = "test-baidu-token-never-persist";
 const SIGNED_URL_MARKER = "signature-never-persist";
 const MODEL = "PaddleOCR-VL-1.6" as const;
 
-type Handler = (
-  request: IncomingMessage,
-  response: ServerResponse,
-) => void | Promise<void>;
+type Handler = (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;
 
 let sandbox: string;
 let root: string;
@@ -49,9 +41,7 @@ async function controlledServer(handler: Handler) {
       response.destroy();
     });
   });
-  await new Promise<void>((resolve) =>
-    server.listen(0, "127.0.0.1", resolve),
-  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   servers.push(server);
   const { port } = server.address() as AddressInfo;
   return `http://127.0.0.1:${port}/jobs`;
@@ -78,8 +68,7 @@ async function filesUnder(directory: string): Promise<string[]> {
 async function expectProjectDoesNotContain(...secrets: string[]) {
   for (const file of await filesUnder(root)) {
     const bytes = await fs.readFile(file);
-    for (const secret of secrets)
-      expect(bytes.includes(secret), `${path.basename(file)} leaked a secret`).toBe(false);
+    for (const secret of secrets) expect(bytes.includes(secret), `${path.basename(file)} leaked a secret`).toBe(false);
   }
 }
 
@@ -98,9 +87,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
   await fs.rm(sandbox, { recursive: true, force: true });
 });
@@ -149,13 +136,15 @@ test("pdf-import 提交查询下载复用任务号，Token 与签名 URL 不进�
     }
     if (request.url === "/jobs/job-original") {
       queries += 1;
-      response.end(JSON.stringify({
-        code: 0,
-        data: {
-          state: "done",
-          resultUrl: { jsonUrl: `${endpoint}/result?${SIGNED_URL_MARKER}` },
-        },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: {
+            state: "done",
+            resultUrl: { jsonUrl: `${endpoint}/result?${SIGNED_URL_MARKER}` },
+          },
+        }),
+      );
       return;
     }
     if (request.url === `/jobs/result?${SIGNED_URL_MARKER}`) {
@@ -213,10 +202,12 @@ test("pdf-import 无效提交回执进入不确定，人工关联恢复且绝不
       return;
     }
     if (request.url === "/jobs/manual-job") {
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result") {
@@ -238,21 +229,25 @@ test("pdf-import 无效提交回执进入不确定，人工关联恢复且绝不
   expect(started.task.diagnostic?.code).toBe("baidu-submit-receipt-invalid");
 
   let extraConfirmations = 0;
-  await expect(startBaiduPdfParse({
-    root,
-    sourceSnapshotId,
-    config: config(endpoint),
-    confirmUpload: async () => {
-      extraConfirmations += 1;
-      return true;
-    },
-  })).rejects.toThrow("先恢复原任务");
+  await expect(
+    startBaiduPdfParse({
+      root,
+      sourceSnapshotId,
+      config: config(endpoint),
+      confirmUpload: async () => {
+        extraConfirmations += 1;
+        return true;
+      },
+    }),
+  ).rejects.toThrow("先恢复原任务");
   expect(extraConfirmations).toBe(0);
-  await expect(resumeBaiduPdfParse({
-    root,
-    parseBatchId: started.task.parseBatchId,
-    config: config(endpoint),
-  })).rejects.toThrow("任务号");
+  await expect(
+    resumeBaiduPdfParse({
+      root,
+      parseBatchId: started.task.parseBatchId,
+      config: config(endpoint),
+    }),
+  ).rejects.toThrow("任务号");
   expect(posts).toBe(1);
 
   const resumed = await resumeBaiduPdfParse({
@@ -278,10 +273,12 @@ test("pdf-import 首次 POST 前崩溃留下不确定记录，重开不自动上
       return;
     }
     if (request.url === "/jobs/manual-after-crash") {
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result") {
@@ -290,26 +287,30 @@ test("pdf-import 首次 POST 前崩溃留下不确定记录，重开不自动上
     }
     response.writeHead(404).end();
   });
-  await expect(startBaiduPdfParse({
-    root,
-    sourceSnapshotId,
-    config: config(endpoint),
-    confirmUpload: async () => true,
-    hooks: {
-      onPoint: (point) => {
-        if (point === "submitting-persisted") throw new Error("injected crash before POST");
+  await expect(
+    startBaiduPdfParse({
+      root,
+      sourceSnapshotId,
+      config: config(endpoint),
+      confirmUpload: async () => true,
+      hooks: {
+        onPoint: (point) => {
+          if (point === "submitting-persisted") throw new Error("injected crash before POST");
+        },
       },
-    },
-  })).rejects.toThrow("injected crash before POST");
+    }),
+  ).rejects.toThrow("injected crash before POST");
   expect(posts).toBe(0);
   const [task] = await listBaiduPdfParseTasks(root);
   expect(task.phase).toBe("unknown");
-  await expect(startBaiduPdfParse({
-    root,
-    sourceSnapshotId,
-    config: config(endpoint),
-    confirmUpload: async () => true,
-  })).rejects.toThrow("先恢复原任务");
+  await expect(
+    startBaiduPdfParse({
+      root,
+      sourceSnapshotId,
+      config: config(endpoint),
+      confirmUpload: async () => true,
+    }),
+  ).rejects.toThrow("先恢复原任务");
 
   const resumed = await resumeBaiduPdfParse({
     root,
@@ -331,10 +332,12 @@ test("pdf-import 合法任务号先持久化再查询，崩溃恢复不重传", 
       return;
     }
     if (request.url === "/jobs/persisted-job") {
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result") {
@@ -343,17 +346,19 @@ test("pdf-import 合法任务号先持久化再查询，崩溃恢复不重传", 
     }
     response.writeHead(404).end();
   });
-  await expect(startBaiduPdfParse({
-    root,
-    sourceSnapshotId,
-    config: config(endpoint),
-    confirmUpload: async () => true,
-    hooks: {
-      onPoint: (point) => {
-        if (point === "job-persisted") throw new Error("injected crash before query");
+  await expect(
+    startBaiduPdfParse({
+      root,
+      sourceSnapshotId,
+      config: config(endpoint),
+      confirmUpload: async () => true,
+      hooks: {
+        onPoint: (point) => {
+          if (point === "job-persisted") throw new Error("injected crash before query");
+        },
       },
-    },
-  })).rejects.toThrow("injected crash before query");
+    }),
+  ).rejects.toThrow("injected crash before query");
   expect(posts).toBe(1);
   const [task] = await listBaiduPdfParseTasks(root);
   expect(task).toMatchObject({ phase: "querying", jobId: "persisted-job" });
@@ -410,12 +415,14 @@ test("pdf-import 只有明确拒绝可结束提交，5xx 保持不确定并阻�
   expect(uncertain.task.diagnostic?.code).toBe("baidu-submit-unknown");
   expect(confirmations).toBe(2);
   expect(posts).toBe(2);
-  await expect(startBaiduPdfParse({
-    root,
-    sourceSnapshotId,
-    config: config(endpoint),
-    confirmUpload: async () => true,
-  })).rejects.toThrow("先恢复原任务");
+  await expect(
+    startBaiduPdfParse({
+      root,
+      sourceSnapshotId,
+      config: config(endpoint),
+      confirmUpload: async () => true,
+    }),
+  ).rejects.toThrow("先恢复原任务");
   expect(posts).toBe(2);
   await expectProjectDoesNotContain(TOKEN, SIGNED_URL_MARKER);
 });
@@ -431,12 +438,12 @@ test("pdf-import 单轮查询超时保留原任务，恢复不新建云端任务
       return;
     }
     if (request.url === "/jobs/slow-job") {
-      response.end(JSON.stringify({
-        code: 0,
-        data: remoteDone
-          ? { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } }
-          : { state: "running" },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: remoteDone ? { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } } : { state: "running" },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result") {
@@ -493,12 +500,12 @@ test("pdf-import 停止只停止本机等待，恢复继续原任务", async () 
         const [task] = await listBaiduPdfParseTasks(root);
         expect(stopBaiduPdfParse(root, task.parseBatchId)).toBe(true);
       }
-      response.end(JSON.stringify({
-        code: 0,
-        data: remoteDone
-          ? { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } }
-          : { state: "running" },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: remoteDone ? { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } } : { state: "running" },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result") {
@@ -540,10 +547,12 @@ test("pdf-import 重下结果摘要不符时保留现场，不采用另一份响
       return;
     }
     if (request.url === "/jobs/digest-job") {
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result") {
@@ -633,11 +642,13 @@ test("pdf-import 远端明确失败保留诊断，只有用户再次确认才能
   expect(failed.task).toMatchObject({ phase: "remote-failed", jobId: "remote-failed-job" });
   expect(failed.task.diagnostic?.code).toBe("baidu-remote-failed");
   expect(posts).toBe(1);
-  await expect(resumeBaiduPdfParse({
-    root,
-    parseBatchId: failed.task.parseBatchId,
-    config: config(endpoint),
-  })).rejects.toThrow("已结束");
+  await expect(
+    resumeBaiduPdfParse({
+      root,
+      parseBatchId: failed.task.parseBatchId,
+      config: config(endpoint),
+    }),
+  ).rejects.toThrow("已结束");
   expect(posts).toBe(1);
 
   const rejected = await startBaiduPdfParse({
@@ -670,16 +681,17 @@ test("pdf-import 状态与 JSONL 响应超预算时不读取为成功结果", as
         response.writeHead(200, { "content-length": String(1024 * 1024 + 1) });
         response.end();
       } else {
-        response.end(JSON.stringify({
-          code: 0,
-          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
-        }));
+        response.end(
+          JSON.stringify({
+            code: 0,
+            data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
+          }),
+        );
       }
       return;
     }
     if (request.url === "/jobs/result") {
-      if (oversizedResult)
-        response.writeHead(200, { "content-length": String(256 * 1024 * 1024 + 1) });
+      if (oversizedResult) response.writeHead(200, { "content-length": String(256 * 1024 * 1024 + 1) });
       response.end();
       return;
     }
@@ -722,10 +734,12 @@ test("pdf-import 非允许资源地址不访问且不泄露签名 URL", async ()
     }
     if (request.url === "/jobs/url-job") {
       queries += 1;
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: signedUrl } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: signedUrl } },
+        }),
+      );
       return;
     }
     response.writeHead(404).end();
@@ -752,10 +766,12 @@ test("pdf-import 完成状态的损坏结果信封保持可恢复诊断", async 
       return;
     }
     if (request.url === "/jobs/envelope-job") {
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: null },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: null },
+        }),
+      );
       return;
     }
     response.writeHead(404).end();
@@ -798,20 +814,24 @@ test("pdf-import 恢复配置或 PDF 摘要变化时拒绝混合任务且不新�
   });
   expect(waiting.outcome).toBe("incomplete");
   if (waiting.outcome !== "incomplete") throw new Error("running task unexpectedly succeeded");
-  await expect(resumeBaiduPdfParse({
-    root,
-    parseBatchId: waiting.task.parseBatchId,
-    config: config(`${endpoint}-changed`),
-  })).rejects.toThrow("原 endpoint");
+  await expect(
+    resumeBaiduPdfParse({
+      root,
+      parseBatchId: waiting.task.parseBatchId,
+      config: config(`${endpoint}-changed`),
+    }),
+  ).rejects.toThrow("原 endpoint");
   expect(posts).toBe(1);
   expect(queries).toBe(1);
 
   await fs.writeFile(path.join(root, "sources", sourceSnapshotId, "paper.pdf"), "changed");
-  await expect(resumeBaiduPdfParse({
-    root,
-    parseBatchId: waiting.task.parseBatchId,
-    config: config(endpoint),
-  })).rejects.toThrow(/摘要|完整性/);
+  await expect(
+    resumeBaiduPdfParse({
+      root,
+      parseBatchId: waiting.task.parseBatchId,
+      config: config(endpoint),
+    }),
+  ).rejects.toThrow(/摘要|完整性/);
   expect(posts).toBe(1);
   expect(queries).toBe(1);
 });

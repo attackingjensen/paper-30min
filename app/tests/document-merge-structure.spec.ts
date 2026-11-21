@@ -71,8 +71,9 @@ function remapSecondUnit(tree: DocumentTree, newUnitId: string) {
   delete tree.units[selectionIds.secondUnit];
   unit.id = newUnitId;
   tree.units[newUnitId] = unit;
-  tree.sections[selectionIds.section].unitIds = tree.sections[selectionIds.section].unitIds
-    .map((id) => id === selectionIds.secondUnit ? newUnitId : id);
+  tree.sections[selectionIds.section].unitIds = tree.sections[selectionIds.section].unitIds.map((id) =>
+    id === selectionIds.secondUnit ? newUnitId : id,
+  );
   tree.sentences[selectionIds.thirdSentence].unitId = newUnitId;
   const block = tree.blocks.find((candidate) => candidate.id === selectionIds.secondBlock);
   if (block?.kind !== "unit") throw new Error("fixture 阅读块类型错误");
@@ -88,17 +89,17 @@ test("document-core 双方以不同方式重排时产生 structure/order 冲突�
   reorderUnits(candidate, [selectionIds.unit, extraIds.unit, selectionIds.secondUnit]);
 
   const unresolved = merge(base, current, candidate);
-  expect(unresolved.conflicts.map((conflict) => conflict.type)).toEqual(
-    expect.arrayContaining(["structure", "order"]),
-  );
-  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision))
-    .toThrow(/未解决|冲突/);
+  expect(unresolved.conflicts.map((conflict) => conflict.type)).toEqual(expect.arrayContaining(["structure", "order"]));
+  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision)).toThrow(/未解决|冲突/);
 
   let resolved = unresolved;
   for (const conflict of unresolved.conflicts)
     resolved = resolveDocumentMergeConflict(resolved, conflict.id, "candidate");
-  expect(resolved.document.sections[selectionIds.section].unitIds)
-    .toEqual([selectionIds.unit, extraIds.unit, selectionIds.secondUnit]);
+  expect(resolved.document.sections[selectionIds.section].unitIds).toEqual([
+    selectionIds.unit,
+    extraIds.unit,
+    selectionIds.secondUnit,
+  ]);
   expect(() => assertDocumentMergePublishable(resolved, resolved.baseRevision)).not.toThrow();
 });
 
@@ -118,8 +119,7 @@ test("document-core 双方替换不同资产时产生 asset 冲突，不做二�
   const candidateHash = "3".repeat(64);
   const currentFigure = current.blocks.find((block) => block.id === extraIds.figureBlock);
   const candidateFigure = candidate.blocks.find((block) => block.id === extraIds.figureBlock);
-  if (currentFigure?.kind !== "figure" || candidateFigure?.kind !== "figure")
-    throw new Error("fixture 图片块类型错误");
+  if (currentFigure?.kind !== "figure" || candidateFigure?.kind !== "figure") throw new Error("fixture 图片块类型错误");
   currentFigure.asset = { path: `assets/${currentHash}.png`, sha256: currentHash, mime: "image/png" };
   candidateFigure.asset = { path: `assets/${candidateHash}.png`, sha256: candidateHash, mime: "image/png" };
 
@@ -147,11 +147,9 @@ test("document-core 对齐使用一致 source alias，并在来源更新时保�
 
   expect(result.conflicts).toEqual([]);
   expect(result.document.units[candidateUnitId]).toBeUndefined();
-  expect(projectSentenceText(result.document, selectionIds.sentence))
-    .toBe("Dr. 3.14 source edit");
+  expect(projectSentenceText(result.document, selectionIds.sentence)).toBe("Dr. 3.14 source edit");
   expect(projectSentenceText(result.document, selectionIds.thirdSentence)).toBe("local edit");
-  expect(projectSentenceText(result.sourceBase, selectionIds.sentence))
-    .toBe("Dr. 3.14 source edit");
+  expect(projectSentenceText(result.sourceBase, selectionIds.sentence)).toBe("Dr. 3.14 source edit");
   expect(projectSentenceText(result.sourceBase, selectionIds.thirdSentence)).toBe("Next unit.");
   expect(result.sourceBase.units[candidateUnitId]).toBeUndefined();
 });
@@ -180,9 +178,9 @@ test("document-core 唯一规范内容结合父级上下文可以对齐，重复
   third.id = thirdUnitId;
   duplicateCandidate.units[thirdUnitId] = third;
   duplicateCandidate.sentences[extraIds.sentence].unitId = thirdUnitId;
-  duplicateCandidate.sections[selectionIds.section].unitIds =
-    duplicateCandidate.sections[selectionIds.section].unitIds
-      .map((id) => id === extraIds.unit ? thirdUnitId : id);
+  duplicateCandidate.sections[selectionIds.section].unitIds = duplicateCandidate.sections[
+    selectionIds.section
+  ].unitIds.map((id) => (id === extraIds.unit ? thirdUnitId : id));
   const thirdBlock = duplicateCandidate.blocks.find((block) => block.id === extraIds.block);
   if (thirdBlock?.kind !== "unit") throw new Error("fixture 阅读块类型错误");
   thirdBlock.unitId = thirdUnitId;
@@ -212,11 +210,15 @@ test("document-core 多轮来源更新后本地修正仍能与新 source-base �
   });
 
   expect(second.conflicts).toEqual([]);
-  expect(second.document.sentences[selectionIds.sentence].content.at(-1))
-    .toEqual({ kind: "text", text: " local edit" });
+  expect(second.document.sentences[selectionIds.sentence].content.at(-1)).toEqual({
+    kind: "text",
+    text: " local edit",
+  });
   expect(projectSentenceText(second.document, selectionIds.thirdSentence)).toBe("source v3");
-  expect(second.sourceBase.sentences[selectionIds.sentence].content.at(-1))
-    .not.toEqual({ kind: "text", text: " local edit" });
+  expect(second.sourceBase.sentences[selectionIds.sentence].content.at(-1)).not.toEqual({
+    kind: "text",
+    text: " local edit",
+  });
   expect(projectSentenceText(second.sourceBase, selectionIds.thirdSentence)).toBe("source v3");
 });
 
@@ -224,6 +226,5 @@ test("document-core 合并候选基线已变化时禁止发布", () => {
   const base = testSelectionTree(randomUUID());
   const result = merge(base, structuredClone(base), structuredClone(base));
 
-  expect(() => assertDocumentMergePublishable(result, randomUUID()))
-    .toThrow(/baseRevision|current/);
+  expect(() => assertDocumentMergePublishable(result, randomUUID())).toThrow(/baseRevision|current/);
 });

@@ -12,13 +12,13 @@
 
 首次启动书库内置一份「使用说明」。使用前打开右上角「设置」，填入任意 **OpenAI 兼容** 的大模型接口并「连接测试」：
 
-| 提供商 | Base URL | 模型示例 |
-|---|---|---|
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| Moonshot | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| 阿里云百炼（通义） | `https://dashscope.aliyuncs.com/compatible-mode/v1`（直接填裸域名 `https://dashscope.aliyuncs.com` 也可以，会自动改写） | `qwen-max` |
-| Ollama（本地） | `http://127.0.0.1:11434/v1` | `qwen2.5:14b` |
+| 提供商             | Base URL                                                                                                                | 模型示例         |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| DeepSeek           | `https://api.deepseek.com/v1`                                                                                           | `deepseek-chat`  |
+| OpenAI             | `https://api.openai.com/v1`                                                                                             | `gpt-4o-mini`    |
+| Moonshot           | `https://api.moonshot.cn/v1`                                                                                            | `moonshot-v1-8k` |
+| 阿里云百炼（通义） | `https://dashscope.aliyuncs.com/compatible-mode/v1`（直接填裸域名 `https://dashscope.aliyuncs.com` 也可以，会自动改写） | `qwen-max`       |
+| Ollama（本地）     | `http://127.0.0.1:11434/v1`                                                                                             | `qwen2.5:14b`    |
 
 配置解析服务后，导入论文（本地 PDF / arXiv 编号 / 示例论文），解析与视觉资源准备会自动在后台完成，点「开始建图」即可开始精读。云端结果发布后可离线阅读原文与来源资源；更改默认解析服务不改写已有论文，需主动重新解析。
 

@@ -10,11 +10,7 @@ import type {
   PdfParseSourceSnapshotRecord,
   ProjectRevisionRecord,
 } from "../../shared/contracts.js";
-import type {
-  PdfParseAssetFact,
-  PdfParseFactsFile,
-  PdfParseTaskRecord,
-} from "../../shared/parsing.js";
+import type { PdfParseAssetFact, PdfParseFactsFile, PdfParseTaskRecord } from "../../shared/parsing.js";
 import {
   commitRevision,
   completePublishedRevision,
@@ -168,8 +164,7 @@ function hash(bytes: Uint8Array) {
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    fatal("pdf-convert-snapshot-invalid");
+  if (!value || typeof value !== "object" || Array.isArray(value)) fatal("pdf-convert-snapshot-invalid");
   return value as Record<string, unknown>;
 }
 
@@ -200,8 +195,7 @@ interface ConvertedPage {
 
 function nullableNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
-  if (typeof value !== "number" || !Number.isSafeInteger(value))
-    fatal("pdf-convert-snapshot-invalid");
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) fatal("pdf-convert-snapshot-invalid");
   return value;
 }
 
@@ -218,8 +212,7 @@ function nullableBbox(value: unknown): [number, number, number, number] | null {
 
 function validateFacts(value: unknown): PdfParseFactsFile {
   const record = objectValue(value);
-  if (record.formatVersion !== 1 || !Array.isArray(record.pages))
-    fatal("pdf-convert-snapshot-invalid");
+  if (record.formatVersion !== 1 || !Array.isArray(record.pages)) fatal("pdf-convert-snapshot-invalid");
   const pageCount = record.pageCount;
   if (
     typeof pageCount !== "number" ||
@@ -232,17 +225,19 @@ function validateFacts(value: unknown): PdfParseFactsFile {
     const page = objectValue(entry);
     if (page.page !== index + 1) fatal("pdf-convert-snapshot-invalid");
     if (
-      typeof page.width !== "number" || !Number.isFinite(page.width) || page.width <= 0 ||
-      typeof page.height !== "number" || !Number.isFinite(page.height) || page.height <= 0 ||
-      !Array.isArray(page.blocks) || !Array.isArray(page.assets)
+      typeof page.width !== "number" ||
+      !Number.isFinite(page.width) ||
+      page.width <= 0 ||
+      typeof page.height !== "number" ||
+      !Number.isFinite(page.height) ||
+      page.height <= 0 ||
+      !Array.isArray(page.blocks) ||
+      !Array.isArray(page.assets)
     )
       fatal("pdf-convert-snapshot-invalid");
     for (const block of page.blocks as unknown[]) {
       const fact = objectValue(block);
-      if (
-        typeof fact.blockId !== "number" || !Number.isSafeInteger(fact.blockId) ||
-        typeof fact.label !== "string"
-      )
+      if (typeof fact.blockId !== "number" || !Number.isSafeInteger(fact.blockId) || typeof fact.label !== "string")
         fatal("pdf-convert-snapshot-invalid");
       nullableNumber(fact.order);
       nullableNumber(fact.groupId);
@@ -292,8 +287,12 @@ function parseSanitizedRows(bytes: Uint8Array, facts: PdfParseFactsFile): Conver
       const width = data.width;
       const height = data.height;
       if (
-        typeof width !== "number" || !Number.isFinite(width) || width <= 0 ||
-        typeof height !== "number" || !Number.isFinite(height) || height <= 0 ||
+        typeof width !== "number" ||
+        !Number.isFinite(width) ||
+        width <= 0 ||
+        typeof height !== "number" ||
+        !Number.isFinite(height) ||
+        height <= 0 ||
         !Array.isArray(data.parsing_res_list)
       )
         fatal("pdf-convert-snapshot-invalid");
@@ -301,7 +300,8 @@ function parseSanitizedRows(bytes: Uint8Array, facts: PdfParseFactsFile): Conver
       for (const item of data.parsing_res_list as unknown[]) {
         const record = objectValue(item);
         if (
-          typeof record.block_id !== "number" || !Number.isSafeInteger(record.block_id) ||
+          typeof record.block_id !== "number" ||
+          !Number.isSafeInteger(record.block_id) ||
           typeof record.block_label !== "string" ||
           typeof record.block_content !== "string"
         )
@@ -327,7 +327,9 @@ function parseSanitizedRows(bytes: Uint8Array, facts: PdfParseFactsFile): Conver
         }
       }
       const settings = data.model_settings;
-      const preprocessed = settings !== null && typeof settings === "object" &&
+      const preprocessed =
+        settings !== null &&
+        typeof settings === "object" &&
         (settings as Record<string, unknown>).use_doc_preprocessor === true;
       pages.push({ page: pages.length + 1, width, height, blocks, images, assets: [], preprocessed });
     }
@@ -335,8 +337,7 @@ function parseSanitizedRows(bytes: Uint8Array, facts: PdfParseFactsFile): Conver
   if (pages.length !== facts.pageCount) fatal("pdf-convert-snapshot-invalid");
   for (const [index, page] of pages.entries()) {
     const fact = facts.pages[index];
-    if (page.width !== fact.width || page.height !== fact.height)
-      fatal("pdf-convert-snapshot-invalid");
+    if (page.width !== fact.width || page.height !== fact.height) fatal("pdf-convert-snapshot-invalid");
     if (page.blocks.length !== fact.blocks.length) fatal("pdf-convert-snapshot-invalid");
     for (const [blockIndex, block] of page.blocks.entries()) {
       const blockFact = fact.blocks[blockIndex];
@@ -428,16 +429,15 @@ interface PageContext {
 /** 无云端资产的视觉块登记原页裁切请求（SPEC §6.7）：预处理页区域映射不可靠，
  * 只声明页级来源并记录 warning，不入队必然失败的裁切请求；
  * 几何是否可校准由裁切模块按 PDF 事实判定。 */
-function requestCrop(
-  context: PageContext,
-  aliases: string[],
-  bbox: [number, number, number, number] | null,
-): void {
+function requestCrop(context: PageContext, aliases: string[], bbox: [number, number, number, number] | null): void {
   const key = aliases[0];
   if (context.cropAssets.has(key)) return;
   if (context.page.preprocessed) {
-    if (!context.builder.warnings.some((entry) =>
-      entry.code === "pdf-crop-region-uncalibrated" && entry.sourceAlias === key)) {
+    if (
+      !context.builder.warnings.some(
+        (entry) => entry.code === "pdf-crop-region-uncalibrated" && entry.sourceAlias === key,
+      )
+    ) {
       context.builder.warnings.push({
         code: "pdf-crop-region-uncalibrated",
         severity: "warning",
@@ -481,12 +481,7 @@ function flushPendingTitleAsText(builder: TreeBuilder, state: ConversionState): 
   builder.addUnit("paragraph", textSentences(title, unitId, builder), aliases);
 }
 
-function addParagraph(
-  context: PageContext,
-  text: string,
-  aliases: string[],
-  kind: UnitKind = "paragraph",
-): void {
+function addParagraph(context: PageContext, text: string, aliases: string[], kind: UnitKind = "paragraph"): void {
   if (!text.trim()) return;
   fulfillTitle(context);
   for (const paragraph of text.split(/\n{2,}/)) {
@@ -506,11 +501,8 @@ function figureFromReference(
   const aliases = group.aliases;
   fulfillTitle(context);
   const builder = context.builder;
-  const fact = context.page.assets.find(
-    (asset) => asset.vendorPath === vendorPath || asset.path === vendorPath,
-  );
-  const reference = context.page.images[vendorPath] ??
-    (fact ? context.page.images[fact.vendorPath] : undefined);
+  const fact = context.page.assets.find((asset) => asset.vendorPath === vendorPath || asset.path === vendorPath);
+  const reference = context.page.images[vendorPath] ?? (fact ? context.page.images[fact.vendorPath] : undefined);
   let asset: AssetReference = null;
   if (reference !== undefined && reference !== MISSING_ASSET_PLACEHOLDER && fact) {
     context.referenced.add(fact.path);
@@ -541,11 +533,7 @@ function figureFromReference(
 }
 
 /** 文本组：图片引用拆分为 figure 块，其余按段落落树；未知引用逐字保留。 */
-function convertTextGroup(
-  group: BlockGroup,
-  context: PageContext,
-  kind: UnitKind = "paragraph",
-): void {
+function convertTextGroup(group: BlockGroup, context: PageContext, kind: UnitKind = "paragraph"): void {
   const content = group.content;
   if (!content.trim()) return;
   let cursor = 0;
@@ -553,8 +541,8 @@ function convertTextGroup(
     const before = content.slice(cursor, match.index);
     if (before.trim()) addParagraph(context, before, group.aliases, kind);
     const vendorPath = match[2] ?? match[3] ?? match[4] ?? match[5];
-    const known = context.page.images[vendorPath] !== undefined ||
-      Object.values(context.page.images).includes(vendorPath);
+    const known =
+      context.page.images[vendorPath] !== undefined || Object.values(context.page.images).includes(vendorPath);
     if (!known) {
       warn(context.builder, "pdf-convert-image-unresolved", group.aliases[0]);
       addParagraph(context, match[0], group.aliases, kind);
@@ -567,11 +555,7 @@ function convertTextGroup(
   if (rest.trim()) addParagraph(context, rest, group.aliases, kind);
 }
 
-function convertVisualGroup(
-  group: BlockGroup,
-  caption: CaptionInput | null,
-  context: PageContext,
-): void {
+function convertVisualGroup(group: BlockGroup, caption: CaptionInput | null, context: PageContext): void {
   const builder = context.builder;
   const content = group.content.trim();
   const placeholder = (): FigureBlock => {
@@ -632,9 +616,7 @@ function convertFormulaGroup(group: BlockGroup, context: PageContext): void {
   }
   fulfillTitle(context);
   const delimited = /^\s*(?:\$\$([\s\S]*)\$\$|\$([^$]*)\$|\\\[([\s\S]*)\\\]|\\\(([\s\S]*)\\\))\s*$/.exec(content);
-  const inner = delimited
-    ? (delimited[1] ?? delimited[2] ?? delimited[3] ?? delimited[4] ?? "").trim()
-    : "";
+  const inner = delimited ? (delimited[1] ?? delimited[2] ?? delimited[3] ?? delimited[4] ?? "").trim() : "";
   requestCrop(context, group.aliases, group.blocks[0]?.bbox ?? null);
   builder.addFormula(
     inner ? { format: "latex", value: inner } : { format: "text", value: content },
@@ -648,18 +630,17 @@ function convertReferenceGroup(group: BlockGroup, context: PageContext): void {
   const content = group.content.trim();
   if (!content) return;
   fulfillTitle(context);
-  const entries = content.split(/(?=\[\d+\])/).map((entry) => entry.trim()).filter(Boolean);
+  const entries = content
+    .split(/(?=\[\d+\])/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   for (const entry of entries.length ? entries : [content]) {
     const unitId = context.builder.reserveUnit();
     context.builder.addUnit("reference", textSentences(entry, unitId, context.builder), group.aliases);
   }
 }
 
-function convertGroup(
-  group: BlockGroup,
-  caption: CaptionInput | null,
-  context: PageContext,
-): void {
+function convertGroup(group: BlockGroup, caption: CaptionInput | null, context: PageContext): void {
   const builder = context.builder;
   const label = group.label;
   const content = group.content.trim();
@@ -743,8 +724,7 @@ function convertGroup(
     convertVisualGroup(group, null, context);
     return;
   }
-  if (label !== "text" && label !== "aside_text")
-    warn(builder, "pdf-convert-label-downgraded", group.aliases[0]);
+  if (label !== "text" && label !== "aside_text") warn(builder, "pdf-convert-label-downgraded", group.aliases[0]);
   convertTextGroup(group, context);
 }
 
@@ -767,8 +747,7 @@ export function convertParseResult(input: ConvertParseInput): ConvertParseResult
         cropRequests,
         cropAssets,
       };
-      if (page.blocks.length === 0)
-        warn(builder, "pdf-convert-page-empty", `page-${page.page}`);
+      if (page.blocks.length === 0) warn(builder, "pdf-convert-page-empty", `page-${page.page}`);
       if (page.blocks.some((block) => block.order === null))
         warn(builder, "pdf-convert-order-degraded", `page-${page.page}`);
       const groups = groupBlocks(page);
@@ -778,10 +757,7 @@ export function convertParseResult(input: ConvertParseInput): ConvertParseResult
       for (const [index, group] of groups.entries()) {
         if (group.label !== "figure_title" || index === 0) continue;
         const previous = groups[index - 1];
-        if (
-          (VISUAL_LABELS.has(previous.label) || previous.label === "table") &&
-          !claimed.has(index - 1)
-        ) {
+        if ((VISUAL_LABELS.has(previous.label) || previous.label === "table") && !claimed.has(index - 1)) {
           captions.set(index, index - 1);
           claimed.add(index - 1);
         }
@@ -824,8 +800,7 @@ export function convertParseResult(input: ConvertParseInput): ConvertParseResult
     }
     return { ok: true, tree: builder.tree, warnings: builder.warnings, cropRequests };
   } catch (error) {
-    if (input.signal?.aborted)
-      return { ok: false, diagnostic: diagnostic("pdf-convert-stopped", "fatal", "convert") };
+    if (input.signal?.aborted) return { ok: false, diagnostic: diagnostic("pdf-convert-stopped", "fatal", "convert") };
     if (error instanceof ConvertFatalError)
       return { ok: false, diagnostic: diagnostic(error.code, "fatal", error.stage) };
     throw error;
@@ -843,8 +818,8 @@ interface PdfParseRevisionMetadata {
 
 function readPdfParseMetadata(revision: ProjectRevisionRecord): PdfParseRevisionMetadata {
   const value = revision.pdfParse;
-  const record: Record<string, unknown> = value !== null && typeof value === "object"
-    ? { ...(value as Record<string, unknown>) } : {};
+  const record: Record<string, unknown> =
+    value !== null && typeof value === "object" ? { ...(value as Record<string, unknown>) } : {};
   if (
     typeof record.converterVersion !== "number" ||
     !Number.isInteger(record.converterVersion) ||
@@ -865,14 +840,11 @@ function readPdfParseMetadata(revision: ProjectRevisionRecord): PdfParseRevision
 
 /** 转换解析快照并首次发布 current（SPEC §7）：全部页面转换与全量验证通过后才提交。
  * 任务记录由调用方拥有；本模块不写 task.json，也不发起任何网络访问。 */
-export async function publishParseDocument(
-  input: PublishParseDocumentInput,
-): Promise<PublishParseDocumentResult> {
+export async function publishParseDocument(input: PublishParseDocumentInput): Promise<PublishParseDocumentResult> {
   const { task, snapshot } = input;
   if (task.phase !== "downloaded" && task.phase !== "converting")
     throw new Error("只有已下载或转换中的 PDF 解析任务可以发布文档。");
-  if (task.parseSourceSnapshotId !== snapshot.sourceSnapshotId)
-    throw new Error("任务未关联该解析快照，不能发布文档。");
+  if (task.parseSourceSnapshotId !== snapshot.sourceSnapshotId) throw new Error("任务未关联该解析快照，不能发布文档。");
   try {
     const opened = await openProject(input.root);
     const current = opened.manifest.paper.currentRevision;
@@ -880,8 +852,7 @@ export async function publishParseDocument(
       // current 已推进但任务记录未落盘：幂等补齐，不重新转换。
       if (current === task.candidateRevisionId) {
         const revision = await readRevision(input.root, current);
-        if (revision.sourceSnapshotId !== snapshot.sourceSnapshotId)
-          fatal("pdf-convert-snapshot-invalid");
+        if (revision.sourceSnapshotId !== snapshot.sourceSnapshotId) fatal("pdf-convert-snapshot-invalid");
         const metadata = readPdfParseMetadata(revision);
         return { ok: true, revision, ...metadata };
       }
@@ -902,10 +873,12 @@ export async function publishParseDocument(
         };
         try {
           const revision = await completePublishedRevision(
-            input.root, revisionId, input.hooks?.commitHooks ?? {}, validateMetadata,
+            input.root,
+            revisionId,
+            input.hooks?.commitHooks ?? {},
+            validateMetadata,
           );
-          if (validated.value === null)
-            fatal("pdf-convert-version-missing");
+          if (validated.value === null) fatal("pdf-convert-version-missing");
           return { ok: true, revision, ...validated.value };
         } catch (error) {
           if (error instanceof ConvertMetadataError) throw error;
@@ -997,8 +970,7 @@ export async function publishParseDocument(
       converterVersion: PDF_CONVERTER_VERSION,
     };
   } catch (error) {
-    if (input.signal?.aborted)
-      return { ok: false, diagnostic: diagnostic("pdf-convert-stopped", "fatal", "convert") };
+    if (input.signal?.aborted) return { ok: false, diagnostic: diagnostic("pdf-convert-stopped", "fatal", "convert") };
     if (error instanceof ConvertFatalError)
       return { ok: false, diagnostic: diagnostic(error.code, "fatal", error.stage) };
     if (error instanceof ConvertMetadataError)
@@ -1072,10 +1044,7 @@ async function convertSnapshotTree(input: {
 }
 
 /** 读取父 PDF 快照字节并核验摘要与页数；缺失或摘要不符立即拒绝，不重猜来源。 */
-async function loadParentPdf(
-  root: string,
-  task: PdfParseTaskRecord,
-): Promise<{ bytes: Buffer; pageCount: number }> {
+async function loadParentPdf(root: string, task: PdfParseTaskRecord): Promise<{ bytes: Buffer; pageCount: number }> {
   const source = await readSourceSnapshot(root, task.parentSourceSnapshotId);
   if (
     source.kind !== "pdf" ||
@@ -1088,8 +1057,7 @@ async function loadParentPdf(
   const file = source.files.find((entry) => entry.path === "paper.pdf");
   if (!file || file.sha256 !== source.sha256) fatal("pdf-convert-snapshot-invalid");
   const bytes = await fs.readFile(path.join(root, source.path, "paper.pdf"));
-  if (bytes.byteLength !== file.size || hash(bytes) !== source.sha256)
-    fatal("pdf-convert-snapshot-digest");
+  if (bytes.byteLength !== file.size || hash(bytes) !== source.sha256) fatal("pdf-convert-snapshot-digest");
   return { bytes, pageCount: source.pageCount };
 }
 
@@ -1102,8 +1070,7 @@ async function readSnapshotFile(
   const record = snapshot.files.find((file) => file.path === relative);
   if (!record) fatal("pdf-convert-snapshot-invalid");
   const bytes = await fs.readFile(path.join(root, snapshot.path, relative));
-  if (bytes.byteLength !== record.size || hash(bytes) !== record.sha256)
-    fatal("pdf-convert-snapshot-digest");
+  if (bytes.byteLength !== record.size || hash(bytes) !== record.sha256) fatal("pdf-convert-snapshot-digest");
   return bytes;
 }
 
@@ -1127,8 +1094,7 @@ export async function createParseMergeCandidate(input: {
 }): Promise<ParseMergeConversion> {
   const opened = await openProject(input.root);
   const current = opened.manifest.paper.currentRevision;
-  if (current === null)
-    throw new Error("首次正文尚未发布，不能形成重解析合并候选。");
+  if (current === null) throw new Error("首次正文尚未发布，不能形成重解析合并候选。");
   if (current !== input.baseRevision)
     throw new Error(`baseRevision 已变化：候选基线为 ${input.baseRevision}，current 为 ${current}。`);
   let converted: ConvertParseResult;
@@ -1141,8 +1107,7 @@ export async function createParseMergeCandidate(input: {
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
   } catch (error) {
-    if (error instanceof ConvertFatalError)
-      throw new Error(MESSAGE_KEYS[error.code] ?? error.code);
+    if (error instanceof ConvertFatalError) throw new Error(MESSAGE_KEYS[error.code] ?? error.code);
     throw error;
   }
   if (!converted.ok) throw new Error(converted.diagnostic.messageKey);
@@ -1152,10 +1117,13 @@ export async function createParseMergeCandidate(input: {
     sourceSnapshotId: input.snapshot.sourceSnapshotId,
     candidate: converted.tree,
     ...(input.revisionId === undefined ? {} : { revisionId: input.revisionId }),
-    ...(converted.cropAssets === undefined ? {} : {
-      derivedAssets: Object.fromEntries([...converted.cropAssets].map(([relative, asset]) =>
-        [relative, { bytes: asset.bytes, mime: asset.mime }])),
-    }),
+    ...(converted.cropAssets === undefined
+      ? {}
+      : {
+          derivedAssets: Object.fromEntries(
+            [...converted.cropAssets].map(([relative, asset]) => [relative, { bytes: asset.bytes, mime: asset.mime }]),
+          ),
+        }),
   });
   // 与 arXiv 更新候选同一受管存储：冲突宿主按身份重载同一份字节，
   // 解决状态落盘；发布不重新转换（新增节点 UUID 不可重放）。

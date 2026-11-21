@@ -13,7 +13,7 @@ export class ProductSkills {
   constructor(private directory?: string) {}
 
   async read(id: string): Promise<ProductSkill> {
-    const info = productSkillCatalog.find(skill => skill.id === id);
+    const info = productSkillCatalog.find((skill) => skill.id === id);
     if (!info) throw new Error("未知的产品 Skill。");
     let content: string;
     try {
@@ -27,7 +27,7 @@ export class ProductSkills {
   }
 
   async list() {
-    return Promise.all(productSkillCatalog.map(skill => this.read(skill.id)));
+    return Promise.all(productSkillCatalog.map((skill) => this.read(skill.id)));
   }
 
   save(id: string, content: string, version: string): Promise<ProductSkill> {
@@ -35,19 +35,23 @@ export class ProductSkills {
       if (!this.directory) throw new Error("产品 Skill 保存位置未配置。");
       if (!content.trim() || Buffer.byteLength(content) > 100_000)
         throw new Error("Skill 提示词不能为空或超过 100,000 字节。");
-      if ((await this.read(id)).version !== version)
-        throw new Error("Skill 已变化，请保留编辑内容并重新载入后整合。");
+      if ((await this.read(id)).version !== version) throw new Error("Skill 已变化，请保留编辑内容并重新载入后整合。");
       await fs.mkdir(this.directory, { recursive: true });
       const file = path.join(this.directory, id);
       const temporary = path.join(this.directory, `.skill-${randomUUID()}.tmp`);
       try {
         const handle = await fs.open(temporary, "wx");
-        try { await handle.writeFile(content, "utf8"); await handle.sync(); }
-        finally { await handle.close(); }
-        if ((await this.read(id)).version !== version)
-          throw new Error("Skill 已变化，本次未覆盖原内容。");
+        try {
+          await handle.writeFile(content, "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        if ((await this.read(id)).version !== version) throw new Error("Skill 已变化，本次未覆盖原内容。");
         await renameManaged(temporary, file);
-      } finally { await fs.rm(temporary, { force: true }); }
+      } finally {
+        await fs.rm(temporary, { force: true });
+      }
       return this.read(id);
     });
     this.queue = operation.catch(() => undefined);

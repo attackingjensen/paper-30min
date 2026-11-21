@@ -22,10 +22,14 @@ function arxivReferenceOf(snapshot: SourceSnapshotRecord): ArxivReference | null
   if (snapshot.kind === "pdf") {
     const arxiv = snapshot.arxiv;
     if (
-      typeof arxiv !== "object" || arxiv === null ||
-      !("baseId" in arxiv) || typeof arxiv.baseId !== "string" ||
-      !("version" in arxiv) || !validVersion(arxiv.version)
-    ) return null;
+      typeof arxiv !== "object" ||
+      arxiv === null ||
+      !("baseId" in arxiv) ||
+      typeof arxiv.baseId !== "string" ||
+      !("version" in arxiv) ||
+      !validVersion(arxiv.version)
+    )
+      return null;
     return {
       baseId: arxiv.baseId,
       version: arxiv.version,
@@ -39,10 +43,7 @@ function arxivReferenceOf(snapshot: SourceSnapshotRecord): ArxivReference | null
  * pdf-parse 只沿父级 PDF 快照回溯一跳（契约形状 pdf-parse → pdf → arXiv 事实）。
  * 本地 PDF、无谱系或父级类型不符返回 null，不猜测身份；快照缺失/损坏由
  * readSourceSnapshot 抛错，调用方转换为结构化诊断。 */
-export async function arxivLineageReference(
-  root: string,
-  sourceSnapshotId: string,
-): Promise<ArxivReference | null> {
+export async function arxivLineageReference(root: string, sourceSnapshotId: string): Promise<ArxivReference | null> {
   const snapshot = await readSourceSnapshot(root, sourceSnapshotId);
   if (snapshot.kind === "pdf-parse") {
     const parentId = snapshot.parentSourceSnapshotId;

@@ -32,8 +32,7 @@ const DIAGNOSTIC_STAGES = ["resolve", "fetch", "snapshot", "convert", "validate"
 
 /** 受管记录中诊断的完整运行时校验（唯一权威规则，主进程与共享层共用）。 */
 export function parseImportDiagnostic(value: unknown): ImportDiagnostic {
-  if (value === null || typeof value !== "object")
-    throw new Error("诊断记录无效。");
+  if (value === null || typeof value !== "object") throw new Error("诊断记录无效。");
   const record: Record<string, unknown> = { ...value };
   if (
     typeof record.code !== "string" ||

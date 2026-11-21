@@ -5,27 +5,14 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dispatchCoreCommand, isCoreCommand } from "../src/main/core-commands";
-import {
-  createProject,
-  openProject,
-  readRevisionDocument,
-} from "../src/main/project-core";
+import { createProject, openProject, readRevisionDocument } from "../src/main/project-core";
 import { snapshotLocalPdf } from "../src/main/pdf/snapshot";
 import { importPdfToCurrent } from "../src/main/parsing/pdf-import";
 import type { BaiduPdfParseConfig } from "../src/main/parsing/baidu-task";
-import type {
-  PdfReparseCommandResult,
-  PdfSourceSnapshotRecord,
-  ProjectRevisionRecord,
-} from "../src/shared/contracts";
+import type { PdfReparseCommandResult, PdfSourceSnapshotRecord, ProjectRevisionRecord } from "../src/shared/contracts";
 import type { PdfParseTaskRecord } from "../src/shared/parsing";
 import type { VerificationRecord } from "../src/shared/verification";
 import type { DocumentTree } from "../src/shared/document/tree";
@@ -45,9 +32,7 @@ async function drain(request: IncomingMessage) {
   }
 }
 
-async function controlledServer(
-  handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
-) {
+async function controlledServer(handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>) {
   const server = createServer((request, response) => {
     void Promise.resolve(handler(request, response)).catch(() => {
       response.destroy();
@@ -112,10 +97,7 @@ interface ControlledCounts {
   downloads: number;
 }
 
-async function controlledParseService(
-  results: Array<() => Buffer>,
-  counts: ControlledCounts,
-): Promise<string> {
+async function controlledParseService(results: Array<() => Buffer>, counts: ControlledCounts): Promise<string> {
   let endpoint = "";
   endpoint = await controlledServer(async (request, response) => {
     if (request.method === "POST") {
@@ -132,10 +114,12 @@ async function controlledParseService(
     const query = /^\/jobs\/(job-core-\d+)$/.exec(request.url ?? "");
     if (query) {
       counts.queries += 1;
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/${query[1]}` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/${query[1]}` } },
+        }),
+      );
       return;
     }
     const download = /^\/jobs\/result\/(job-core-\d+)$/.exec(request.url ?? "");
@@ -166,11 +150,12 @@ async function seedPublished() {
 }
 
 function firstSentence(tree: DocumentTree): string {
-  const unit = Object.values(tree.units).find((entry) =>
-    entry.kind === "paragraph" &&
-    entry.sentenceIds.length === 1 &&
-    projectSentenceText(tree, entry.sentenceIds[0]).replace(/\s+/g, " ").trim() ===
-      "First page paragraph");
+  const unit = Object.values(tree.units).find(
+    (entry) =>
+      entry.kind === "paragraph" &&
+      entry.sentenceIds.length === 1 &&
+      projectSentenceText(tree, entry.sentenceIds[0]).replace(/\s+/g, " ").trim() === "First page paragraph",
+  );
   if (!unit) throw new Error("fixture sentence not found");
   return unit.sentenceIds[0];
 }
@@ -185,30 +170,34 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
   await fs.rm(sandbox, { recursive: true, force: true });
 });
 
 test("pdf-import corePdfSnapshot：本地 PDF 形成来源快照，同字节复用不新增", async () => {
-  const first = await dispatchCoreCommand({ type: "corePdfSnapshot", root, source: SAMPLE }) as
-    { ok: true; reused: boolean; snapshot: PdfSourceSnapshotRecord };
+  const first = (await dispatchCoreCommand({ type: "corePdfSnapshot", root, source: SAMPLE })) as {
+    ok: true;
+    reused: boolean;
+    snapshot: PdfSourceSnapshotRecord;
+  };
   expect(first.ok).toBe(true);
   expect(first.reused).toBe(false);
   expect(first.snapshot.kind).toBe("pdf");
   expect(first.snapshot.pageCount).toBe(2);
 
-  const second = await dispatchCoreCommand({ type: "corePdfSnapshot", root, source: SAMPLE }) as
-    { ok: true; reused: boolean; snapshot: PdfSourceSnapshotRecord };
+  const second = (await dispatchCoreCommand({ type: "corePdfSnapshot", root, source: SAMPLE })) as {
+    ok: true;
+    reused: boolean;
+    snapshot: PdfSourceSnapshotRecord;
+  };
   expect(second.reused).toBe(true);
   expect(second.snapshot.sourceSnapshotId).toBe(first.snapshot.sourceSnapshotId);
 });
 
 test("pdf-import corePdfTasks：导入后列出任务记录，含解析快照与候选身份", async () => {
   const { imported } = await seedPublished();
-  const tasks = await dispatchCoreCommand({ type: "corePdfTasks", root }) as PdfParseTaskRecord[];
+  const tasks = (await dispatchCoreCommand({ type: "corePdfTasks", root })) as PdfParseTaskRecord[];
   expect(tasks).toHaveLength(1);
   expect(tasks[0].parseBatchId).toBe(imported.task.parseBatchId);
   expect(tasks[0].phase).toBe("candidate-complete");
@@ -219,12 +208,12 @@ test("pdf-import corePdfTasks：导入后列出任务记录，含解析快照与
 
 test("pdf-import corePdfReconvert + corePdfPublishCandidate：离线候选按同一身份发布", async () => {
   const { imported, counts } = await seedPublished();
-  const summary = await dispatchCoreCommand({
+  const summary = (await dispatchCoreCommand({
     type: "corePdfReconvert",
     root,
     parseBatchId: imported.task.parseBatchId,
     baseRevision: imported.revision.revisionId,
-  }) as PdfReparseCommandResult;
+  })) as PdfReparseCommandResult;
   expect(summary.outcome).toBe("candidate");
   if (summary.outcome !== "candidate") throw new Error("reconvert did not form candidate");
   expect(summary.candidate.conflicts).toHaveLength(0);
@@ -232,12 +221,12 @@ test("pdf-import corePdfReconvert + corePdfPublishCandidate：离线候选按同
   expect(summary.candidate.revisionId).not.toBe(imported.revision.revisionId);
   expect(JSON.stringify(summary)).not.toContain(TOKEN);
 
-  const published = await dispatchCoreCommand({
+  const published = (await dispatchCoreCommand({
     type: "corePdfPublishCandidate",
     root,
     parseBatchId: imported.task.parseBatchId,
     baseRevision: imported.revision.revisionId,
-  }) as ProjectRevisionRecord;
+  })) as ProjectRevisionRecord;
   expect(published.revisionId).toBe(summary.candidate.revisionId);
   expect((await openProject(root)).manifest.paper.currentRevision).toBe(published.revisionId);
   const tree = await readRevisionDocument(root, published.revisionId, "document");
@@ -247,14 +236,15 @@ test("pdf-import corePdfReconvert + corePdfPublishCandidate：离线候选按同
 
 test("pdf-import corePdfReconvert：基线过期时拒绝，current 不变", async () => {
   const { imported } = await seedPublished();
-  await expect(dispatchCoreCommand({
-    type: "corePdfReconvert",
-    root,
-    parseBatchId: imported.task.parseBatchId,
-    baseRevision: randomUUID(),
-  })).rejects.toThrow(/baseRevision/);
-  expect((await openProject(root)).manifest.paper.currentRevision)
-    .toBe(imported.revision.revisionId);
+  await expect(
+    dispatchCoreCommand({
+      type: "corePdfReconvert",
+      root,
+      parseBatchId: imported.task.parseBatchId,
+      baseRevision: randomUUID(),
+    }),
+  ).rejects.toThrow(/baseRevision/);
+  expect((await openProject(root)).manifest.paper.currentRevision).toBe(imported.revision.revisionId);
 });
 
 test("pdf-import corePdfVerify / corePdfReadVerification：显式确认建立核验，未确认拒绝", async () => {
@@ -266,33 +256,37 @@ test("pdf-import corePdfVerify / corePdfReadVerification：显式确认建立核
     unitId: tree.sentences[sentenceId].unitId,
     sentenceId,
   };
-  await expect(dispatchCoreCommand({
-    type: "corePdfVerify",
-    root,
-    expectedRevisionId: imported.revision.revisionId,
-    anchor,
-    actor: { kind: "user", confirmed: false },
-  })).rejects.toThrow(/确认/);
-  expect(await dispatchCoreCommand({
-    type: "corePdfReadVerification",
-    root,
-    revisionId: imported.revision.revisionId,
-  })).toEqual([]);
+  await expect(
+    dispatchCoreCommand({
+      type: "corePdfVerify",
+      root,
+      expectedRevisionId: imported.revision.revisionId,
+      anchor,
+      actor: { kind: "user", confirmed: false },
+    }),
+  ).rejects.toThrow(/确认/);
+  expect(
+    await dispatchCoreCommand({
+      type: "corePdfReadVerification",
+      root,
+      revisionId: imported.revision.revisionId,
+    }),
+  ).toEqual([]);
 
-  const record = await dispatchCoreCommand({
+  const record = (await dispatchCoreCommand({
     type: "corePdfVerify",
     root,
     expectedRevisionId: imported.revision.revisionId,
     anchor,
     actor: { kind: "user", confirmed: true },
-  }) as VerificationRecord;
+  })) as VerificationRecord;
   expect(record.coverage.every((entry) => entry.validity === "verified")).toBe(true);
   expect(record.pdfSnapshotId).toBeDefined();
-  const records = await dispatchCoreCommand({
+  const records = (await dispatchCoreCommand({
     type: "corePdfReadVerification",
     root,
     revisionId: imported.revision.revisionId,
-  }) as VerificationRecord[];
+  })) as VerificationRecord[];
   expect(records).toHaveLength(1);
   expect(records[0].verificationId).toBe(record.verificationId);
 });
@@ -320,23 +314,25 @@ test("pdf-import 命令面不再接受来源证据登记：corePdfEvidence 被�
 
 test("pdf-import corePdfStop：无活动任务时返回 false，不触碰任务记录", async () => {
   const { imported } = await seedPublished();
-  const stopped = await dispatchCoreCommand({
+  const stopped = (await dispatchCoreCommand({
     type: "corePdfStop",
     root,
     parseBatchId: imported.task.parseBatchId,
-  }) as { stopped: boolean };
+  })) as { stopped: boolean };
   expect(stopped.stopped).toBe(false);
-  const tasks = await dispatchCoreCommand({ type: "corePdfTasks", root }) as PdfParseTaskRecord[];
+  const tasks = (await dispatchCoreCommand({ type: "corePdfTasks", root })) as PdfParseTaskRecord[];
   expect(tasks[0].phase).toBe("candidate-complete");
 });
 
 test("pdf-import corePdfImport 缺少本机配置时明确拒绝，不发起上传", async () => {
   const snapshot = await snapshotLocalPdf({ root, source: SAMPLE });
   if (!snapshot.ok) throw new Error("fixture PDF snapshot failed");
-  await expect(dispatchCoreCommand({
-    type: "corePdfImport",
-    root,
-    sourceSnapshotId: snapshot.snapshot.sourceSnapshotId,
-    operationId: "op-no-config",
-  })).rejects.toThrow(/配置/);
+  await expect(
+    dispatchCoreCommand({
+      type: "corePdfImport",
+      root,
+      sourceSnapshotId: snapshot.snapshot.sourceSnapshotId,
+      operationId: "op-no-config",
+    }),
+  ).rejects.toThrow(/配置/);
 });

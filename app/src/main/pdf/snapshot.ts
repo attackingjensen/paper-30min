@@ -3,20 +3,9 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { PNG } from "pngjs";
 import type { ImportDiagnostic, PdfFallbackRequest } from "../../shared/arxiv.js";
-import type {
-  ManagedFileContent,
-  PdfSourceSnapshotRecord,
-} from "../../shared/contracts.js";
-import {
-  listSourceSnapshots,
-  publishSourceSnapshot,
-  type ProjectCommitHooks,
-} from "../project-core.js";
-import {
-  ArxivFetchError,
-  fetchDiagnostic,
-  type ArxivTransport,
-} from "../arxiv/fetch.js";
+import type { ManagedFileContent, PdfSourceSnapshotRecord } from "../../shared/contracts.js";
+import { listSourceSnapshots, publishSourceSnapshot, type ProjectCommitHooks } from "../project-core.js";
+import { ArxivFetchError, fetchDiagnostic, type ArxivTransport } from "../arxiv/fetch.js";
 import { assertArxivVersionConsistent } from "../arxiv/version.js";
 
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
@@ -52,7 +41,10 @@ export type PdfSnapshotResult =
   | { ok: false; diagnostic: ImportDiagnostic };
 
 class PdfInspectionError extends Error {
-  constructor(readonly code: string, readonly messageKey: string) {
+  constructor(
+    readonly code: string,
+    readonly messageKey: string,
+  ) {
     super(code);
     this.name = "PdfInspectionError";
   }
@@ -77,14 +69,12 @@ function failure(
 }
 
 function inspectionFailure(error: unknown): PdfSnapshotResult {
-  if (error instanceof PdfInspectionError)
-    return failure(error.code, error.messageKey);
+  if (error instanceof PdfInspectionError) return failure(error.code, error.messageKey);
   return failure("pdf-inspection-failed", "pdf.inspection.failed");
 }
 
 async function inspectPdf(bytes: Uint8Array): Promise<number> {
-  if (bytes.byteLength > MAX_PDF_BYTES)
-    throw new PdfInspectionError("pdf-budget-exceeded", "pdf.budget.exceeded");
+  if (bytes.byteLength > MAX_PDF_BYTES) throw new PdfInspectionError("pdf-budget-exceeded", "pdf.budget.exceeded");
   if (bytes.byteLength < 5 || String.fromCharCode(...bytes.subarray(0, 5)) !== "%PDF-")
     throw new PdfInspectionError("pdf-invalid", "pdf.invalid");
 
@@ -92,9 +82,7 @@ async function inspectPdf(bytes: Uint8Array): Promise<number> {
     import("@embedpdf/pdfium"),
     import("@embedpdf/engines/pdfium"),
   ]);
-  const wasmBinary = await fs.readFile(
-    new URL(import.meta.resolve("@embedpdf/pdfium/pdfium.wasm")),
-  );
+  const wasmBinary = await fs.readFile(new URL(import.meta.resolve("@embedpdf/pdfium/pdfium.wasm")));
   const engine = new PdfEngine(new PdfiumNative(await init({ wasmBinary })), {
     imageConverter: async (getImage) => {
       const image = getImage();
@@ -118,18 +106,10 @@ async function inspectPdf(bytes: Uint8Array): Promise<number> {
     return document.pages.length;
   } catch (error) {
     if (error instanceof PdfInspectionError) throw error;
-    const reason =
-      typeof error === "object" && error !== null && "reason" in error
-        ? error.reason
-        : undefined;
-    const code =
-      typeof reason === "object" && reason !== null && "code" in reason
-        ? reason.code
-        : undefined;
+    const reason = typeof error === "object" && error !== null && "reason" in error ? error.reason : undefined;
+    const code = typeof reason === "object" && reason !== null && "code" in reason ? reason.code : undefined;
     const reasonMessage =
-      typeof reason === "object" && reason !== null && "message" in reason
-        ? reason.message
-        : undefined;
+      typeof reason === "object" && reason !== null && "message" in reason ? reason.message : undefined;
     const message = `${error instanceof Error ? error.message : String(error)} ${typeof reasonMessage === "string" ? reasonMessage : ""}`;
     if (code === 4 || /password|encrypted/i.test(message))
       throw new PdfInspectionError("pdf-encrypted", "pdf.encrypted");
@@ -139,18 +119,12 @@ async function inspectPdf(bytes: Uint8Array): Promise<number> {
   }
 }
 
-function sameProvenance(
-  existing: Record<string, unknown>,
-  arxiv: PdfArxivFacts | undefined,
-): boolean {
+function sameProvenance(existing: Record<string, unknown>, arxiv: PdfArxivFacts | undefined): boolean {
   const current = existing.arxiv;
   if (arxiv === undefined) return current === undefined;
   if (typeof current !== "object" || current === null) return false;
   return (
-    "baseId" in current &&
-    current.baseId === arxiv.baseId &&
-    "version" in current &&
-    current.version === arxiv.version
+    "baseId" in current && current.baseId === arxiv.baseId && "version" in current && current.version === arxiv.version
   );
 }
 
@@ -173,12 +147,7 @@ async function publishPdf(input: {
   };
   try {
     for (const existing of await listSourceSnapshots(input.root)) {
-      if (
-        existing.kind !== "pdf" ||
-        existing.sha256 !== sha256 ||
-        !sameProvenance(existing, input.arxiv)
-      )
-        continue;
+      if (existing.kind !== "pdf" || existing.sha256 !== sha256 || !sameProvenance(existing, input.arxiv)) continue;
       const [file, ...rest] = existing.files;
       if (
         rest.length !== 0 ||
@@ -216,28 +185,19 @@ async function publishPdf(input: {
       bodyReadable: false,
     };
   } catch {
-    return failure(
-      "pdf-snapshot-publish-failed",
-      "pdf.snapshot.publishFailed",
-      "snapshot",
-    );
+    return failure("pdf-snapshot-publish-failed", "pdf.snapshot.publishFailed", "snapshot");
   }
 }
 
-export async function snapshotLocalPdf(
-  input: SnapshotLocalPdfInput,
-): Promise<PdfSnapshotResult> {
-  if (!path.isAbsolute(input.source))
-    return failure("pdf-read-failed", "pdf.read.failed", "snapshot");
+export async function snapshotLocalPdf(input: SnapshotLocalPdfInput): Promise<PdfSnapshotResult> {
+  if (!path.isAbsolute(input.source)) return failure("pdf-read-failed", "pdf.read.failed", "snapshot");
   let bytes: Buffer;
   try {
     const handle = await fs.open(input.source, "r");
     try {
       const stat = await handle.stat();
-      if (!stat.isFile())
-        return failure("pdf-read-failed", "pdf.read.failed", "snapshot");
-      if (stat.size > MAX_PDF_BYTES)
-        return failure("pdf-budget-exceeded", "pdf.budget.exceeded");
+      if (!stat.isFile()) return failure("pdf-read-failed", "pdf.read.failed", "snapshot");
+      if (stat.size > MAX_PDF_BYTES) return failure("pdf-budget-exceeded", "pdf.budget.exceeded");
       bytes = await handle.readFile();
     } finally {
       await handle.close();
@@ -254,12 +214,9 @@ export async function snapshotLocalPdf(
   });
 }
 
-export async function snapshotArxivPdf(
-  input: SnapshotArxivPdfInput,
-): Promise<PdfSnapshotResult> {
+export async function snapshotArxivPdf(input: SnapshotArxivPdfInput): Promise<PdfSnapshotResult> {
   const { request } = input;
-  if (request.kind !== "arxiv-pdf")
-    return failure("pdf-fallback-invalid", "pdf.fallback.invalid", "resolve");
+  if (request.kind !== "arxiv-pdf") return failure("pdf-fallback-invalid", "pdf.fallback.invalid", "resolve");
   if (!Number.isInteger(request.version) || request.version < 1)
     return failure("arxiv-version-unpinned", "arxiv.version.unpinned", "resolve");
   const pinned = {
@@ -275,11 +232,7 @@ export async function snapshotArxivPdf(
   if (input.signal?.aborted) {
     return {
       ok: false,
-      diagnostic: fetchDiagnostic(
-        new ArxivFetchError("arxiv-fetch-cancelled", pdfUrl),
-        pdfUrl,
-        "pdf",
-      ),
+      diagnostic: fetchDiagnostic(new ArxivFetchError("arxiv-fetch-cancelled", pdfUrl), pdfUrl, "pdf"),
     };
   }
 

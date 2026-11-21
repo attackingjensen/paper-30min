@@ -1,8 +1,5 @@
 import { test, expect } from "@playwright/test";
-import {
-  arxivEndpointUrl,
-  parseArxivReference,
-} from "../src/main/arxiv/reference";
+import { arxivEndpointUrl, parseArxivReference } from "../src/main/arxiv/reference";
 
 test("arxiv-import 解析新式裸 ID（4 位与 5 位序号、可选版本）", () => {
   expect(parseArxivReference("2401.01234")).toEqual({

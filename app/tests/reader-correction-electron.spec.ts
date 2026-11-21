@@ -1,13 +1,7 @@
 // 原文修正宿主真实 Electron 回归（SPEC-reader §8，paper-30min-qa3.4）：
 // 默认只读、显式单元修正、atom 受保护占位、changeset 预览、草稿取消与基线保护；
 // 发布经生产 IPC 重放同一命令，current 原子推进，source-base 不含本地修正。
-import {
-  test,
-  expect,
-  _electron as electron,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -32,9 +26,7 @@ async function launch() {
   const visible = process.env.PAPER30MIN_TEST_WINDOW === "visible";
   const env: Record<string, string> = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
@@ -53,18 +45,12 @@ async function launch() {
 }
 
 async function closeDesktopForCleanup() {
-  if (
-    !desktopProcess ||
-    desktopProcess.exitCode !== null ||
-    desktopProcess.signalCode !== null
-  ) return;
+  if (!desktopProcess || desktopProcess.exitCode !== null || desktopProcess.signalCode !== null) return;
   await desktop.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = (...args: unknown[]) => {
       const options = args.at(-1) as Electron.MessageBoxSyncOptions;
-      if (
-        options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" ||
-        options.buttons?.[1] !== "放弃并关闭"
-      ) throw new Error("测试清理遇到非预期的原生确认框。");
+      if (options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" || options.buttons?.[1] !== "放弃并关闭")
+        throw new Error("测试清理遇到非预期的原生确认框。");
       return 1;
     };
   });
@@ -114,7 +100,8 @@ function correctionTree(paperId: string) {
     },
     sentences: {
       [sentenceA]: {
-        id: sentenceA, unitId: unitA,
+        id: sentenceA,
+        unitId: unitA,
         content: [
           { kind: "text", text: "Energy equals " },
           { kind: "atom", atomId: atom },
@@ -122,7 +109,8 @@ function correctionTree(paperId: string) {
         ],
       },
       [sentenceB]: {
-        id: sentenceB, unitId: unitB,
+        id: sentenceB,
+        unitId: unitB,
         content: [{ kind: "text", text: "Second paragraph stays plain." }],
       },
     },
@@ -140,26 +128,34 @@ function correctionTree(paperId: string) {
 async function correctionProject(name: string) {
   const created = await invoke<ProjectCoreSnapshot>({ type: "coreCreate", parent: sandbox, name });
   const { tree, ids } = correctionTree(created.manifest.paper.id);
-  const source = await page.evaluate<SourceSnapshotRecord, { root: string }>(({ root }) =>
-    window.desktop.invoke({
-      type: "corePublishSource",
-      root,
-      files: { "document.html": new TextEncoder().encode("<html>paper</html>") },
-      metadata: { kind: "arxiv", canonicalId: "2401.00002v1", title: "Correction Study" },
-    }), { root: created.root });
+  const source = await page.evaluate<SourceSnapshotRecord, { root: string }>(
+    ({ root }) =>
+      window.desktop.invoke({
+        type: "corePublishSource",
+        root,
+        files: { "document.html": new TextEncoder().encode("<html>paper</html>") },
+        metadata: { kind: "arxiv", canonicalId: "2401.00002v1", title: "Correction Study" },
+      }),
+    { root: created.root },
+  );
   const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-  const revision = await page.evaluate<ProjectRevisionRecord, { root: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }>(({ root, sourceSnapshotId, files }) =>
-    window.desktop.invoke({ type: "coreCommit", root, baseRevision: null, sourceSnapshotId, files }),
-  {
-    root: created.root,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: {
-      "document.json": json(tree),
-      "source-base.json": json(tree),
-      "tombstones.json": json([]),
-      "changeset.json": json({ baseRevision: null }),
+  const revision = await page.evaluate<
+    ProjectRevisionRecord,
+    { root: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }
+  >(
+    ({ root, sourceSnapshotId, files }) =>
+      window.desktop.invoke({ type: "coreCommit", root, baseRevision: null, sourceSnapshotId, files }),
+    {
+      root: created.root,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        "document.json": json(tree),
+        "source-base.json": json(tree),
+        "tombstones.json": json([]),
+        "changeset.json": json({ baseRevision: null }),
+      },
     },
-  });
+  );
   return { created, revision, tree, ids, source };
 }
 
@@ -202,8 +198,10 @@ test("reader 默认只读：显式修正入口编辑单元，预览 changeset �
   await expect(reader.locator(`[data-atom-id="${ids.atom}"] .katex`)).toBeVisible();
   // source-base 不含本地修正。
   const sourceBase = await invoke<DocumentTree>({
-    type: "coreReadDocument", root: created.root,
-    revisionId: after.currentRevision!.revisionId, tree: "source-base",
+    type: "coreReadDocument",
+    root: created.root,
+    revisionId: after.currentRevision!.revisionId,
+    tree: "source-base",
   });
   expect(unitEditText(sourceBase, ids.unitA)).toBe(original);
   await page.screenshot({ path: "test-results/reader-correction-published.png", fullPage: false });
@@ -234,7 +232,10 @@ test("reader atom 单独修正入口：同类型内容修正保留 ID，类型�
   const { created, ids } = await correctionProject("原子修正");
   await openFolder(created.root);
   const reader = page.locator(".full-reader");
-  await reader.locator(`[data-unit-id="${ids.unitA}"]`).getByRole("button", { name: /修正单元/ }).click();
+  await reader
+    .locator(`[data-unit-id="${ids.unitA}"]`)
+    .getByRole("button", { name: /修正单元/ })
+    .click();
   const host = reader.locator(".correction-host");
   await host.locator(".correction-atom-row").getByRole("button", { name: "修正原子" }).click();
   const editor = host.locator(".correction-atom-editor");
@@ -250,11 +251,14 @@ test("reader atom 单独修正入口：同类型内容修正保留 ID，类型�
   await expect(atom).toBeVisible();
   const current = await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root: created.root });
   const document = await invoke<DocumentTree>({
-    type: "coreReadDocument", root: created.root,
-    revisionId: current.currentRevision!.revisionId, tree: "document",
+    type: "coreReadDocument",
+    root: created.root,
+    revisionId: current.currentRevision!.revisionId,
+    tree: "document",
   });
   expect(document.atoms[ids.atom]).toMatchObject({
-    kind: "math", source: { format: "latex", value: "E=mc^3" },
+    kind: "math",
+    source: { format: "latex", value: "E=mc^3" },
   });
 });
 
@@ -262,26 +266,34 @@ test("reader 基线被外部推进后修正发布被拒绝，草稿保留且正�
   const { created, ids, revision, source, tree } = await correctionProject("基线竞争");
   await openFolder(created.root);
   const reader = page.locator(".full-reader");
-  await reader.locator(`[data-unit-id="${ids.unitB}"]`).getByRole("button", { name: /修正单元/ }).click();
+  await reader
+    .locator(`[data-unit-id="${ids.unitB}"]`)
+    .getByRole("button", { name: /修正单元/ })
+    .click();
   const host = reader.locator(".correction-host");
   await host.locator(".correction-text").fill("Second paragraph edited locally.");
   await host.getByRole("button", { name: "预览 changeset" }).click();
   await expect(host.locator(".correction-preview")).toBeVisible();
   // 另一操作经 IPC 推进 current（模拟外部更新）。
   const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-  const advanced = await page.evaluate<ProjectRevisionRecord, { root: string; baseRevision: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }>(({ root, baseRevision, sourceSnapshotId, files }) =>
-    window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
-  {
-    root: created.root,
-    baseRevision: revision.revisionId,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: {
-      "document.json": json(tree),
-      "source-base.json": json(tree),
-      "tombstones.json": json([]),
-      "changeset.json": json({ baseRevision: revision.revisionId }),
+  const advanced = await page.evaluate<
+    ProjectRevisionRecord,
+    { root: string; baseRevision: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }
+  >(
+    ({ root, baseRevision, sourceSnapshotId, files }) =>
+      window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
+    {
+      root: created.root,
+      baseRevision: revision.revisionId,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        "document.json": json(tree),
+        "source-base.json": json(tree),
+        "tombstones.json": json([]),
+        "changeset.json": json({ baseRevision: revision.revisionId }),
+      },
     },
-  });
+  );
   // 等待 reader 按新 current 完成重读（watchProject → epoch 刷新）：
   // 修正宿主检测到基线变化后主动禁止发布并保留草稿（SPEC §8.6）。
   await expect(reader).toHaveAttribute("data-revision-id", advanced.revisionId, { timeout: 15000 });
@@ -298,7 +310,10 @@ test("reader 删除单元经预览发布：旧锚点退役，正文其余单元�
   const { created, ids } = await correctionProject("删除单元");
   await openFolder(created.root);
   const reader = page.locator(".full-reader");
-  await reader.locator(`[data-unit-id="${ids.unitB}"]`).getByRole("button", { name: /修正单元/ }).click();
+  await reader
+    .locator(`[data-unit-id="${ids.unitB}"]`)
+    .getByRole("button", { name: /修正单元/ })
+    .click();
   const host = reader.locator(".correction-host");
   await host.getByRole("button", { name: "删除该单元" }).click();
   await expect(host.locator(".correction-pending")).toContainText("unit-delete");
@@ -311,7 +326,9 @@ test("reader 删除单元经预览发布：旧锚点退役，正文其余单元�
   await expect(reader.locator(`[data-unit-id="${ids.unitA}"]`)).toContainText("Energy equals");
   const current = await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root: created.root });
   const context = await invoke<{ tombstones: Array<{ nodeId: string }> }>({
-    type: "coreReadRevisionContext", root: created.root, revisionId: current.currentRevision!.revisionId,
+    type: "coreReadRevisionContext",
+    root: created.root,
+    revisionId: current.currentRevision!.revisionId,
   });
   expect(context.tombstones.some((entry) => entry.nodeId === ids.unitB)).toBe(true);
 });
@@ -321,11 +338,17 @@ test("reader 切换修正目标不串草稿：B 单元不会收到 A 的编辑",
   await openFolder(created.root);
   const reader = page.locator(".full-reader");
   // 在 A 上编辑但不发布。
-  await reader.locator(`[data-unit-id="${ids.unitA}"]`).getByRole("button", { name: /修正单元/ }).click();
+  await reader
+    .locator(`[data-unit-id="${ids.unitA}"]`)
+    .getByRole("button", { name: /修正单元/ })
+    .click();
   const host = reader.locator(".correction-host");
   await host.locator(".correction-text").fill("Draft meant for unit A only.");
   // 直接切换到 B：宿主按目标重挂载，B 显示自己的原文而非 A 的草稿。
-  await reader.locator(`[data-unit-id="${ids.unitB}"]`).getByRole("button", { name: /修正单元/ }).click();
+  await reader
+    .locator(`[data-unit-id="${ids.unitB}"]`)
+    .getByRole("button", { name: /修正单元/ })
+    .click();
   await expect(host.locator(".correction-text")).toHaveValue("Second paragraph stays plain.");
   await expect(host.locator(".correction-text")).not.toHaveValue("Draft meant for unit A only.");
 });
@@ -334,7 +357,10 @@ test("reader 先改字再拆分/删除可预览发布：结构命令以中间文
   const { created, ids } = await correctionProject("改字再拆分");
   await openFolder(created.root);
   const reader = page.locator(".full-reader");
-  await reader.locator(`[data-unit-id="${ids.unitB}"]`).getByRole("button", { name: /修正单元/ }).click();
+  await reader
+    .locator(`[data-unit-id="${ids.unitB}"]`)
+    .getByRole("button", { name: /修正单元/ })
+    .click();
   const host = reader.locator(".correction-host");
   // 先编辑文字，再用空行拆成两段。
   await host.locator(".correction-text").fill("First edited part.\n\nSecond edited part.");
@@ -353,20 +379,32 @@ test("reader 外部推进发生在预览之前：草稿仍保留，基线变化�
   const { created, ids, revision, source, tree } = await correctionProject("预览前推进");
   await openFolder(created.root);
   const reader = page.locator(".full-reader");
-  await reader.locator(`[data-unit-id="${ids.unitB}"]`).getByRole("button", { name: /修正单元/ }).click();
+  await reader
+    .locator(`[data-unit-id="${ids.unitB}"]`)
+    .getByRole("button", { name: /修正单元/ })
+    .click();
   const host = reader.locator(".correction-host");
   // 只编辑、不预览。
   await host.locator(".correction-text").fill("Edited before any preview.");
   const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-  const advanced = await page.evaluate<ProjectRevisionRecord, { root: string; baseRevision: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }>(({ root, baseRevision, sourceSnapshotId, files }) =>
-    window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
-  {
-    root: created.root, baseRevision: revision.revisionId, sourceSnapshotId: source.sourceSnapshotId,
-    files: {
-      "document.json": json(tree), "source-base.json": json(tree),
-      "tombstones.json": json([]), "changeset.json": json({ baseRevision: revision.revisionId }),
+  const advanced = await page.evaluate<
+    ProjectRevisionRecord,
+    { root: string; baseRevision: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }
+  >(
+    ({ root, baseRevision, sourceSnapshotId, files }) =>
+      window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
+    {
+      root: created.root,
+      baseRevision: revision.revisionId,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        "document.json": json(tree),
+        "source-base.json": json(tree),
+        "tombstones.json": json([]),
+        "changeset.json": json({ baseRevision: revision.revisionId }),
+      },
     },
-  });
+  );
   await expect(reader).toHaveAttribute("data-revision-id", advanced.revisionId, { timeout: 15000 });
   // 草稿文本保留，发布被禁止。
   await expect(host.locator(".correction-text")).toHaveValue("Edited before any preview.");

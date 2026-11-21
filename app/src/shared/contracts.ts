@@ -370,10 +370,7 @@ export type PdfImportMachineConfig = {
   endpoint: string;
   model: "PaddleOCR-VL-1.6";
   apiKey: string;
-} & (
-  | { proxy?: "direct" | "environment"; proxyUrl?: never }
-  | { proxy: "custom"; proxyUrl: string }
-);
+} & ({ proxy?: "direct" | "environment"; proxyUrl?: never } | { proxy: "custom"; proxyUrl: string });
 
 /** worker 命令包装：与 agent／parsing 先例一致，config 由主进程附加。 */
 export type PdfImportWorkerCommand = {
@@ -467,9 +464,7 @@ export interface MarkdownFile {
   text: string;
   version: string;
 }
-export type MarkdownSave =
-  | { saved: true; file: MarkdownFile }
-  | { saved: false; file: MarkdownFile | null };
+export type MarkdownSave = { saved: true; file: MarkdownFile } | { saved: false; file: MarkdownFile | null };
 export interface ProjectAsset {
   bytes: Uint8Array;
   mime: string;
@@ -553,20 +548,9 @@ export interface Desktop {
   replyPdfUploadConfirm(reply: PdfUploadConfirmationReply): Promise<void>;
 }
 
-export type AgentApi =
-  "openai-completions" | "openai-responses" | "anthropic-messages";
-export type ThinkingLevel =
-  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
-export const thinkingLevels: ThinkingLevel[] = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "ultra",
-];
+export type AgentApi = "openai-completions" | "openai-responses" | "anthropic-messages";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export const thinkingLevels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 interface AgentServiceSettings {
   id: string;
   name: string;

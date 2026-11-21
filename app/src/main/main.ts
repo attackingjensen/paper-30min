@@ -1,14 +1,4 @@
-import {
-  app,
-  BrowserWindow,
-  dialog,
-  ipcMain,
-  Menu,
-  net,
-  protocol,
-  shell,
-  utilityProcess,
-} from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell, utilityProcess } from "electron";
 import path from "node:path";
 import { watch, type FSWatcher } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -39,16 +29,9 @@ let window: BrowserWindow;
 let worker: Electron.UtilityProcess;
 let workerExited = false;
 let nextId = 0;
-const pending = new Map<
-  number,
-  { resolve: (value: unknown) => void; reject: (error: Error) => void }
->();
+const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 function request(
-  command:
-    | Command
-    | { type: "agent"; command: AgentCommand; config: ModelConfig }
-    | PdfImportWorkerCommand
-    | null,
+  command: Command | { type: "agent"; command: AgentCommand; config: ModelConfig } | PdfImportWorkerCommand | null,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (workerExited || !worker?.pid) {
@@ -75,8 +58,7 @@ async function start() {
         return new Response(new Uint8Array(asset.bytes).buffer, {
           headers: {
             "Content-Type": asset.mime,
-            "Content-Security-Policy":
-              "default-src 'none'; style-src 'unsafe-inline'",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
             "Cache-Control": "no-store",
           },
         });
@@ -86,25 +68,18 @@ async function start() {
     }
     const base = path.resolve(here, "../renderer");
     const file = path.resolve(base, "." + decodeURIComponent(url.pathname));
-    if (url.hostname !== "app" || !file.startsWith(base + path.sep))
-      return new Response("Not found", { status: 404 });
+    if (url.hostname !== "app" || !file.startsWith(base + path.sep)) return new Response("Not found", { status: 404 });
     return net.fetch(pathToFileURL(file).href);
   });
   Menu.setApplicationMenu(null);
-  const agentSettings = new AgentSettingsStore(
-    path.join(app.getPath("userData"), "agent-settings.json"),
-  );
-  const parsingSettings = new ParsingSettingsStore(
-    path.join(app.getPath("userData"), "parsing-settings.json"),
-  );
+  const agentSettings = new AgentSettingsStore(path.join(app.getPath("userData"), "agent-settings.json"));
+  const parsingSettings = new ParsingSettingsStore(path.join(app.getPath("userData"), "parsing-settings.json"));
   let parsingSettingsWrite: Promise<unknown> = Promise.resolve();
   let settingsWrite: Promise<unknown> = Promise.resolve();
   const running = new Map<string, ChatSession>();
-  worker = utilityProcess.fork(
-    path.join(here, "worker.js"),
-    [path.join(app.getPath("userData"), "preferences.json")],
-    { serviceName: "Paper30Min Project" },
-  );
+  worker = utilityProcess.fork(path.join(here, "worker.js"), [path.join(app.getPath("userData"), "preferences.json")], {
+    serviceName: "Paper30Min Project",
+  });
   /** 未决上传确认：confirmationId → 请求。renderer 重载／窗口关闭时按拒绝应答
    * 全部未决项，避免 worker 等待确认永久挂起。 */
   const pendingUploadConfirms = new Map<string, { operationId: string }>();
@@ -121,10 +96,7 @@ async function start() {
     });
   };
   const ready = new Promise<void>((resolve, reject) => {
-    const deadline = setTimeout(
-      () => reject(new Error("工程进程启动超时。")),
-      10000,
-    );
+    const deadline = setTimeout(() => reject(new Error("工程进程启动超时。")), 10000);
     worker.once("exit", () => {
       clearTimeout(deadline);
       reject(new Error("工程进程启动失败。"));
@@ -143,8 +115,7 @@ async function start() {
       const key = state.root + "\0" + state.id;
       if (state.busy) running.set(key, state);
       else running.delete(key);
-      if (window && !window.isDestroyed())
-        window.webContents.send("agent:changed", message.agentState);
+      if (window && !window.isDestroyed()) window.webContents.send("agent:changed", message.agentState);
       return;
     }
     if (message.pdfUploadConfirm) {
@@ -155,8 +126,7 @@ async function start() {
       pendingUploadConfirms.set(confirmation.confirmationId, {
         operationId: confirmation.operationId,
       });
-      if (window && !window.isDestroyed())
-        window.webContents.send("pdf:uploadConfirm", message.pdfUploadConfirm);
+      if (window && !window.isDestroyed()) window.webContents.send("pdf:uploadConfirm", message.pdfUploadConfirm);
       else rejectUploadConfirm(confirmation.confirmationId);
       return;
     }
@@ -179,16 +149,12 @@ async function start() {
         });
     }
     running.clear();
-    for (const p of pending.values())
-      p.reject(new Error("工程进程已退出，请重启应用。"));
+    for (const p of pending.values()) p.reject(new Error("工程进程已退出，请重启应用。"));
     pending.clear();
   });
 
   const trusted = (event: Electron.IpcMainInvokeEvent) => {
-    if (
-      event.sender !== window.webContents ||
-      event.senderFrame !== window.webContents.mainFrame
-    )
+    if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame)
       throw new Error("无效的窗口请求。");
   };
   let watcher: FSWatcher | undefined;
@@ -217,24 +183,17 @@ async function start() {
         return;
       clearTimeout(watchTimer);
       watchTimer = setTimeout(() => {
-        if (!window.isDestroyed())
-          window.webContents.send("project:changed", root);
+        if (!window.isDestroyed()) window.webContents.send("project:changed", root);
       }, 120);
     });
     window.webContents.send("project:changed", root);
     watcher.on("error", (error) => {
-      if (!window.isDestroyed())
-        window.webContents.send(
-          "project:changed",
-          root,
-          "文件监听失败：" + error.message,
-        );
+      if (!window.isDestroyed()) window.webContents.send("project:changed", root, "文件监听失败：" + error.message);
     });
   });
   ipcMain.handle("project:openLink", async (event, url: string) => {
     trusted(event);
-    if (!/^https?:\/\//i.test(url))
-      throw new Error("仅支持打开 HTTP/HTTPS 链接。");
+    if (!/^https?:\/\//i.test(url)) throw new Error("仅支持打开 HTTP/HTTPS 链接。");
     await shell.openExternal(url);
   });
   const pdfCloudTypes: Partial<Record<Command["type"], true>> = {
@@ -265,33 +224,26 @@ async function start() {
     }
     return request(command);
   });
-  ipcMain.handle(
-    "pdf:uploadConfirmReply",
-    (event, reply: PdfUploadConfirmationReply) => {
-      trusted(event);
-      // 应答须同时匹配未决确认的 confirmationId 与 operationId；错配不得
-      // 消费表项（否则正确应答随后被当迟到丢弃，操作挂到超时）。
-      const entry = pendingUploadConfirms.get(reply.confirmationId);
-      if (!entry) return;
-      if (entry.operationId !== reply.operationId) {
-        worker.postMessage({
-          pdfUploadConfirmReply: { ...reply, confirmed: false },
-        });
-        return;
-      }
-      pendingUploadConfirms.delete(reply.confirmationId);
-      worker.postMessage({ pdfUploadConfirmReply: reply });
-    },
-  );
+  ipcMain.handle("pdf:uploadConfirmReply", (event, reply: PdfUploadConfirmationReply) => {
+    trusted(event);
+    // 应答须同时匹配未决确认的 confirmationId 与 operationId；错配不得
+    // 消费表项（否则正确应答随后被当迟到丢弃，操作挂到超时）。
+    const entry = pendingUploadConfirms.get(reply.confirmationId);
+    if (!entry) return;
+    if (entry.operationId !== reply.operationId) {
+      worker.postMessage({
+        pdfUploadConfirmReply: { ...reply, confirmed: false },
+      });
+      return;
+    }
+    pendingUploadConfirms.delete(reply.confirmationId);
+    worker.postMessage({ pdfUploadConfirmReply: reply });
+  });
   ipcMain.handle("parsing:command", async (event, command: ParsingCommand) => {
     trusted(event);
     if (command.type === "saveSettings") {
       const result = parsingSettingsWrite.then(() =>
-        parsingSettings.save(
-          command.settings,
-          command.apiKey,
-          command.clearKey,
-        ),
+        parsingSettings.save(command.settings, command.apiKey, command.clearKey),
       );
       parsingSettingsWrite = result.catch(() => undefined);
       return result;
@@ -306,8 +258,7 @@ async function start() {
       const result = settingsWrite.then(() =>
         agentSettings.save(
           command.settings,
-          command.apiKeys ??
-            (command.apiKey ? { default: command.apiKey } : {}),
+          command.apiKeys ?? (command.apiKey ? { default: command.apiKey } : {}),
           command.clearKeyIds ?? (command.clearKey ? ["default"] : []),
           command.exaApiKey,
           command.clearExaKey,
@@ -317,14 +268,11 @@ async function start() {
       return result;
     }
     if (command.type === "selectModel") {
-      const result = settingsWrite.then(() =>
-        agentSettings.select(command.modelId, command.thinking),
-      );
+      const result = settingsWrite.then(() => agentSettings.select(command.modelId, command.thinking));
       settingsWrite = result.catch(() => undefined);
       return result;
     }
-    if (command.type === "settings" || command.type === "send")
-      await settingsWrite;
+    if (command.type === "settings" || command.type === "send") await settingsWrite;
     if (command.type === "settings") return agentSettings.publicSettings();
     return request({
       type: "agent",
@@ -337,39 +285,34 @@ async function start() {
   });
   ipcMain.handle("project:choose", async (event, kind: string) => {
     trusted(event);
-    if (!["folder", "pdf"].includes(kind))
-      throw new Error("无效的选择类型。");
+    if (!["folder", "pdf"].includes(kind)) throw new Error("无效的选择类型。");
     const result = await dialog.showOpenDialog(window, {
       properties: kind === "folder" ? ["openDirectory"] : ["openFile"],
-      filters:
-        kind === "pdf" ? [{ name: "PDF", extensions: ["pdf"] }] : undefined,
+      filters: kind === "pdf" ? [{ name: "PDF", extensions: ["pdf"] }] : undefined,
     });
     return result.canceled ? null : result.filePaths[0];
   });
-  ipcMain.handle(
-    "project:openFile",
-    async (event, root: string, relative: string) => {
-      trusted(event);
-      const file = (await request({
-        type: "resolveFile",
-        root,
-        path: relative,
-      })) as string;
-      if (/\.(exe|com|bat|cmd|ps1|msi|vbs|js|lnk|url|scr)$/i.test(file)) {
-        const choice = await dialog.showMessageBox(window, {
-          type: "warning",
-          message: "此文件可能执行程序，是否继续打开？",
-          detail: file,
-          buttons: ["取消", "打开"],
-          defaultId: 0,
-          cancelId: 0,
-        });
-        if (choice.response !== 1) return;
-      }
-      const error = await shell.openPath(file);
-      if (error) throw new Error(error);
-    },
-  );
+  ipcMain.handle("project:openFile", async (event, root: string, relative: string) => {
+    trusted(event);
+    const file = (await request({
+      type: "resolveFile",
+      root,
+      path: relative,
+    })) as string;
+    if (/\.(exe|com|bat|cmd|ps1|msi|vbs|js|lnk|url|scr)$/i.test(file)) {
+      const choice = await dialog.showMessageBox(window, {
+        type: "warning",
+        message: "此文件可能执行程序，是否继续打开？",
+        detail: file,
+        buttons: ["取消", "打开"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (choice.response !== 1) return;
+    }
+    const error = await shell.openPath(file);
+    if (error) throw new Error(error);
+  });
 
   function createWindow() {
     const hidden = process.env.PAPER30MIN_TEST_WINDOW === "hidden";
@@ -404,37 +347,25 @@ async function start() {
     // renderer 重载或窗口关闭都会丢失未应答的确认对话框：按拒绝应答，操作不挂起。
     window.webContents.on("did-start-navigation", (_event, _url, _inPlace, isMainFrame) => {
       if (!isMainFrame) return;
-      for (const confirmationId of Array.from(pendingUploadConfirms.keys()))
-        rejectUploadConfirm(confirmationId);
+      for (const confirmationId of Array.from(pendingUploadConfirms.keys())) rejectUploadConfirm(confirmationId);
     });
     window.on("closed", () => {
       ++watchGeneration;
       stopWatching();
-      for (const confirmationId of Array.from(pendingUploadConfirms.keys()))
-        rejectUploadConfirm(confirmationId);
+      for (const confirmationId of Array.from(pendingUploadConfirms.keys())) rejectUploadConfirm(confirmationId);
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());
     const devUrl = process.env.PAPER30MIN_DEV_URL;
     const appUrl = devUrl ?? "paper30min://app/index.html";
     // The native Viewer copies selections through the browser clipboard API.
-    const canWriteClipboard = (
-      contents: Electron.WebContents | null,
-      permission: string,
-      url: string,
-    ) =>
-      contents === window.webContents &&
-      permission === "clipboard-sanitized-write" &&
-      url === appUrl;
-    window.webContents.session.setPermissionRequestHandler(
-      (contents, permission, callback, details) =>
-        callback(
-          canWriteClipboard(contents, permission, details.requestingUrl),
-        ),
+    const canWriteClipboard = (contents: Electron.WebContents | null, permission: string, url: string) =>
+      contents === window.webContents && permission === "clipboard-sanitized-write" && url === appUrl;
+    window.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) =>
+      callback(canWriteClipboard(contents, permission, details.requestingUrl)),
     );
-    window.webContents.session.setPermissionCheckHandler(
-      (contents, permission, _origin, details) =>
-        canWriteClipboard(contents, permission, details.requestingUrl ?? ""),
+    window.webContents.session.setPermissionCheckHandler((contents, permission, _origin, details) =>
+      canWriteClipboard(contents, permission, details.requestingUrl ?? ""),
     );
     if (devUrl) void window.loadURL(devUrl);
     else void window.loadURL("paper30min://app/index.html");

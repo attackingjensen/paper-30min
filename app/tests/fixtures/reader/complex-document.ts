@@ -53,12 +53,7 @@ export function complexReaderTree(paperId: string) {
     atoms: {},
     blocks: [],
   };
-  const section = (
-    id: string,
-    parentSectionId: string | null,
-    title: string,
-    childSectionIds: string[] = [],
-  ) => {
+  const section = (id: string, parentSectionId: string | null, title: string, childSectionIds: string[] = []) => {
     tree.sections[id] = { id, parentSectionId, title, childSectionIds, unitIds: [] };
   };
   section(ids.body, null, "", [ids.method, ids.appendix]);
@@ -89,23 +84,36 @@ export function complexReaderTree(paperId: string) {
   };
 
   // 摘要与引言（含行内公式、引文、脚注引用、已解析/未解析交叉引用、外链）。
-  ids.abstract = unit(ids.body, "abstract", [[
-    { kind: "text", text: "We study reading. Energy stays " },
-    { kind: "atom", atomId: ids.inlineMath },
-    { kind: "text", text: " throughout." },
-  ]]);
+  ids.abstract = unit(ids.body, "abstract", [
+    [
+      { kind: "text", text: "We study reading. Energy stays " },
+      { kind: "atom", atomId: ids.inlineMath },
+      { kind: "text", text: " throughout." },
+    ],
+  ]);
   tree.atoms[ids.inlineMath] = {
-    id: ids.inlineMath, unitId: ids.abstract, kind: "math",
-    text: "$E=mc^2$", source: { format: "latex", value: "E=mc^2" },
+    id: ids.inlineMath,
+    unitId: ids.abstract,
+    kind: "math",
+    text: "$E=mc^2$",
+    source: { format: "latex", value: "E=mc^2" },
   };
   ids.inlineMathSentence = tree.units[ids.abstract].sentenceIds[0];
 
   tree.atoms[ids.unresolvedRef] = {
-    id: ids.unresolvedRef, unitId: "", kind: "cross-reference", text: "Eq. (9)",
-    targetUnitId: null, sourceTarget: "S3.E9",
+    id: ids.unresolvedRef,
+    unitId: "",
+    kind: "cross-reference",
+    text: "Eq. (9)",
+    targetUnitId: null,
+    sourceTarget: "S3.E9",
   };
   tree.atoms[ids.safeLink] = {
-    id: ids.safeLink, unitId: "", kind: "link", text: "项目主页", href: "https://example.org/project",
+    id: ids.safeLink,
+    unitId: "",
+    kind: "link",
+    text: "项目主页",
+    href: "https://example.org/project",
   };
   ids.intro = unit(ids.body, "paragraph", [
     [
@@ -128,17 +136,23 @@ export function complexReaderTree(paperId: string) {
 
   // 独立公式：编号文本、失败 LaTeX、MathML。
   ids.displayFormula = block({
-    id: randomUUID(), sectionId: ids.body, kind: "formula",
+    id: randomUUID(),
+    sectionId: ids.body,
+    kind: "formula",
     source: { format: "latex", value: "\\int_0^1 x^2 \\, dx = \\frac{1}{3}" },
     text: "(1)  ∫₀¹ x² dx = 1/3",
   });
   ids.failedFormula = block({
-    id: randomUUID(), sectionId: ids.body, kind: "formula",
+    id: randomUUID(),
+    sectionId: ids.body,
+    kind: "formula",
     source: { format: "latex", value: "\\frac{1{" },
     text: "(2)  \\frac{1{",
   });
   ids.mathmlFormula = block({
-    id: randomUUID(), sectionId: ids.body, kind: "formula",
+    id: randomUUID(),
+    sectionId: ids.body,
+    kind: "formula",
     source: {
       format: "mathml",
       value: "<math><mrow><mi>a</mi><mo>+</mo><mn>1</mn></mrow></math>",
@@ -147,91 +161,110 @@ export function complexReaderTree(paperId: string) {
   });
 
   // 方法章节：目标段落＋跨行列表格。
-  ids.target = unit(ids.method, "paragraph", [
-    [{ kind: "text", text: "This is the jump target paragraph." }],
-  ]);
-  ids.tableCaption = unit(ids.method, "caption", [
-    [{ kind: "text", text: "Table 1: results with spans." }],
-  ]);
+  ids.target = unit(ids.method, "paragraph", [[{ kind: "text", text: "This is the jump target paragraph." }]]);
+  ids.tableCaption = unit(ids.method, "caption", [[{ kind: "text", text: "Table 1: results with spans." }]]);
   ids.cellHeaderA = unit(ids.method, "table-cell", [[{ kind: "text", text: "Metric" }]]);
   ids.cellHeaderB = unit(ids.method, "table-cell", [[{ kind: "text", text: "Value" }]]);
   ids.cellSpan = unit(ids.method, "table-cell", [[{ kind: "text", text: "merged across rows" }]]);
   ids.cellValue = unit(ids.method, "table-cell", [[{ kind: "text", text: "0.98" }]]);
   // 表格单元统一随表格块进入阅读流，不作为独立 unit 块重复出现。
-  tree.blocks = tree.blocks.filter((entry) =>
-    entry.kind !== "unit" || ![
-      ids.tableCaption, ids.cellHeaderA, ids.cellHeaderB, ids.cellSpan, ids.cellValue,
-    ].includes(entry.unitId));
+  tree.blocks = tree.blocks.filter(
+    (entry) =>
+      entry.kind !== "unit" ||
+      ![ids.tableCaption, ids.cellHeaderA, ids.cellHeaderB, ids.cellSpan, ids.cellValue].includes(entry.unitId),
+  );
   ids.table = block({
-    id: randomUUID(), sectionId: ids.method, kind: "table", captionUnitId: ids.tableCaption,
+    id: randomUUID(),
+    sectionId: ids.method,
+    kind: "table",
+    captionUnitId: ids.tableCaption,
     rows: [
       [
         { unitId: ids.cellHeaderA, rowSpan: 1, columnSpan: 1 },
         { unitId: ids.cellHeaderB, rowSpan: 1, columnSpan: 1 },
         { unitId: ids.cellSpan, rowSpan: 2, columnSpan: 1 },
       ],
-      [
-        { unitId: ids.cellValue, rowSpan: 1, columnSpan: 2 },
-      ],
+      [{ unitId: ids.cellValue, rowSpan: 1, columnSpan: 2 }],
     ],
   });
 
   // 图片：位图＋caption、SVG、缺图警告。资产路径按树契约以 SHA-256 命名；
   // 测试登记真实字节后把 sha256 回填为实际摘要。
-  ids.figureCaption = unit(ids.method, "caption", [
-    [{ kind: "text", text: "Figure 1: architecture overview." }],
-  ]);
-  tree.blocks = tree.blocks.filter((entry) =>
-    entry.kind !== "unit" || entry.unitId !== ids.figureCaption);
+  ids.figureCaption = unit(ids.method, "caption", [[{ kind: "text", text: "Figure 1: architecture overview." }]]);
+  tree.blocks = tree.blocks.filter((entry) => entry.kind !== "unit" || entry.unitId !== ids.figureCaption);
   ids.figure = block({
-    id: randomUUID(), sectionId: ids.method, kind: "figure",
+    id: randomUUID(),
+    sectionId: ids.method,
+    kind: "figure",
     asset: { path: `assets/${"a".repeat(64)}.png`, sha256: "a".repeat(64), mime: "image/png" },
     captionUnitId: ids.figureCaption,
   });
   ids.svgFigure = block({
-    id: randomUUID(), sectionId: ids.method, kind: "figure",
+    id: randomUUID(),
+    sectionId: ids.method,
+    kind: "figure",
     asset: { path: `assets/${"b".repeat(64)}.svg`, sha256: "b".repeat(64), mime: "image/svg+xml" },
     captionUnitId: null,
   });
   ids.missingFigure = block({
-    id: randomUUID(), sectionId: ids.method, kind: "figure",
-    asset: null, captionUnitId: null, warning: "来源图片未随快照保存。",
+    id: randomUUID(),
+    sectionId: ids.method,
+    kind: "figure",
+    asset: null,
+    captionUnitId: null,
+    warning: "来源图片未随快照保存。",
   });
 
   // raw block：代码样受控文本与结构限制说明。
   ids.codeRaw = block({
-    id: randomUUID(), sectionId: ids.method, kind: "raw",
+    id: randomUUID(),
+    sectionId: ids.method,
+    kind: "raw",
     html: "<pre><code>def f(x):\n    return x + 1</code></pre>",
     text: "def f(x):\n    return x + 1",
     limitations: ["来源为代码摘录，仅保留受控文本投影。"],
   });
   ids.rawBlock = block({
-    id: randomUUID(), sectionId: ids.method, kind: "raw",
+    id: randomUUID(),
+    sectionId: ids.method,
+    kind: "raw",
     html: "<blockquote><p>Quoted <strong>source</strong> line.</p></blockquote>",
     text: "Quoted source line.",
     limitations: ["复杂排版按白名单投影，交互结构未保留。"],
   });
 
   // 附录：脚注、参考文献、超长不可断行内容。
-  ids.footnote = unit(ids.appendix, "footnote", [
-    [{ kind: "text", text: "Footnote body explains the caveat." }],
-  ]);
+  ids.footnote = unit(ids.appendix, "footnote", [[{ kind: "text", text: "Footnote body explains the caveat." }]]);
   ids.reference = unit(ids.appendix, "reference", [
     [{ kind: "text", text: "[7] Author, A. (2024). A cited paper. Journal of Reading." }],
   ]);
-  ids.longUnit = unit(ids.appendix, "paragraph", [[
-    { kind: "text", text: "Supercalifragilisticexpialidocious".repeat(8) },
-    { kind: "text", text: " 这是一段用于验证窄窗格换行的中文正文，包含标点、组合字符 e\u0301 与代理对 𝒜。" },
-  ]]);
+  ids.longUnit = unit(ids.appendix, "paragraph", [
+    [
+      { kind: "text", text: "Supercalifragilisticexpialidocious".repeat(8) },
+      { kind: "text", text: " 这是一段用于验证窄窗格换行的中文正文，包含标点、组合字符 e\u0301 与代理对 𝒜。" },
+    ],
+  ]);
   // 目标单元全部创建后再登记引用原子，保证树校验时目标已存在。
   tree.atoms[ids.citation] = {
-    id: ids.citation, unitId: ids.intro, kind: "citation", text: "[7]", targetUnitId: ids.reference,
+    id: ids.citation,
+    unitId: ids.intro,
+    kind: "citation",
+    text: "[7]",
+    targetUnitId: ids.reference,
   };
   tree.atoms[ids.footnoteRef] = {
-    id: ids.footnoteRef, unitId: ids.intro, kind: "footnote-reference", text: "1", targetUnitId: ids.footnote,
+    id: ids.footnoteRef,
+    unitId: ids.intro,
+    kind: "footnote-reference",
+    text: "1",
+    targetUnitId: ids.footnote,
   };
   tree.atoms[ids.resolvedRef] = {
-    id: ids.resolvedRef, unitId: ids.intro, kind: "cross-reference", text: "Section 2", targetUnitId: ids.target,
+    id: ids.resolvedRef,
+    unitId: ids.intro,
+    kind: "cross-reference",
+    text: "Section 2",
+    targetUnitId: ids.target,
   };
 
   return { tree, ids };
@@ -254,8 +287,12 @@ export function dangerousLinkTree(paperId: string): DocumentTree {
     },
     sentences: {
       [sentenceId]: {
-        id: sentenceId, unitId,
-        content: [{ kind: "text", text: "click " }, { kind: "atom", atomId }],
+        id: sentenceId,
+        unitId,
+        content: [
+          { kind: "text", text: "click " },
+          { kind: "atom", atomId },
+        ],
       },
     },
     atoms: {

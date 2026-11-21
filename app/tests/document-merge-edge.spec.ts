@@ -1,10 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { projectSentenceText } from "../src/shared/document/anchor";
-import {
-  appendRemovedTombstones,
-  createDocumentChangeset,
-} from "../src/shared/document/changeset";
+import { appendRemovedTombstones, createDocumentChangeset } from "../src/shared/document/changeset";
 import {
   assertDocumentMergePublishable,
   mergeDocumentTrees,
@@ -29,10 +26,7 @@ function locallyDeletedFixture() {
   const current = structuredClone(base);
   removeSecondUnit(current);
   const ids = revisions();
-  const previousTombstones = appendRemovedTombstones(
-    base,
-    createDocumentChangeset({ base, current, ...ids }),
-  );
+  const previousTombstones = appendRemovedTombstones(base, createDocumentChangeset({ base, current, ...ids }));
   return { base, current, previousTombstones };
 }
 
@@ -124,12 +118,13 @@ test("document-core 父章节删除与子单元保留产生 structure 冲突，�
   delete candidate.sections[secondSection];
 
   const unresolved = mergeDocumentTrees({ base, current, candidate, ...revisions() });
-  expect(unresolved.conflicts).toEqual(expect.arrayContaining([
-    expect.objectContaining({ type: "deletion" }),
-    expect.objectContaining({ type: "structure" }),
-  ]));
-  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision))
-    .toThrow(/未解决|冲突/);
+  expect(unresolved.conflicts).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: "deletion" }),
+      expect.objectContaining({ type: "structure" }),
+    ]),
+  );
+  expect(() => assertDocumentMergePublishable(unresolved, unresolved.baseRevision)).toThrow(/未解决|冲突/);
 
   let resolved = resolveDocumentMergeConflict(unresolved, `unit:${selectionIds.secondUnit}`, "current");
   resolved = resolveDocumentMergeConflict(resolved, `unit-parent:${selectionIds.secondUnit}`, "current");
@@ -186,10 +181,7 @@ test("document-core 唯一内容跨节可靠移动保留稳定 ID 与本地修�
   if (block?.kind !== "unit") throw new Error("fixture 阅读块类型错误");
   block.unitId = newUnitId;
   candidate.sections[selectionIds.section].unitIds = [selectionIds.unit];
-  candidate.sections[secondSection].unitIds = [
-    newUnitId,
-    ...candidate.sections[secondSection].unitIds,
-  ];
+  candidate.sections[secondSection].unitIds = [newUnitId, ...candidate.sections[secondSection].unitIds];
   unit.sectionId = secondSection;
   block.sectionId = secondSection;
 

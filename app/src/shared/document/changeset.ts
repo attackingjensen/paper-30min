@@ -21,34 +21,50 @@ const ChangeStatusSchema = Type.Union([
   Type.Literal("added"),
   Type.Literal("conflicted"),
 ]);
-const AnchorChangeSchema = Type.Object({
-  nodeType: NodeTypeSchema,
-  nodeId: IdSchema,
-  status: ChangeStatusSchema,
-}, { additionalProperties: false });
-const DocumentChangesetSchema = Type.Object({
-  changesetFormatVersion: Type.Literal(1),
-  baseRevision: Type.Union([IdSchema, Type.Null()]),
-  revisionId: IdSchema,
-  changes: Type.Array(AnchorChangeSchema),
-}, { additionalProperties: false });
-const TombstoneSchema = Type.Object({
-  nodeType: NodeTypeSchema,
-  nodeId: IdSchema,
-  lastRevision: IdSchema,
-  excerpt: Type.String(),
-  reason: Type.Union([
-    Type.Literal("removed"),
-    Type.Literal("split"),
-    Type.Literal("merged"),
-    Type.Literal("retyped"),
-    Type.Literal("unresolved"),
-  ]),
-  referenceCandidates: Type.Optional(Type.Array(Type.Object({
+const AnchorChangeSchema = Type.Object(
+  {
     nodeType: NodeTypeSchema,
     nodeId: IdSchema,
-  }, { additionalProperties: false }))),
-}, { additionalProperties: false });
+    status: ChangeStatusSchema,
+  },
+  { additionalProperties: false },
+);
+const DocumentChangesetSchema = Type.Object(
+  {
+    changesetFormatVersion: Type.Literal(1),
+    baseRevision: Type.Union([IdSchema, Type.Null()]),
+    revisionId: IdSchema,
+    changes: Type.Array(AnchorChangeSchema),
+  },
+  { additionalProperties: false },
+);
+const TombstoneSchema = Type.Object(
+  {
+    nodeType: NodeTypeSchema,
+    nodeId: IdSchema,
+    lastRevision: IdSchema,
+    excerpt: Type.String(),
+    reason: Type.Union([
+      Type.Literal("removed"),
+      Type.Literal("split"),
+      Type.Literal("merged"),
+      Type.Literal("retyped"),
+      Type.Literal("unresolved"),
+    ]),
+    referenceCandidates: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            nodeType: NodeTypeSchema,
+            nodeId: IdSchema,
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
 const TombstonesSchema = Type.Array(TombstoneSchema);
 
 export type DocumentChangeset = Type.Static<typeof DocumentChangesetSchema>;
@@ -91,10 +107,7 @@ function currentNodeIds(tree: DocumentTree) {
   ]);
 }
 
-export function parseDocumentTombstones(
-  value: unknown,
-  current?: DocumentTree,
-): Tombstone[] {
+export function parseDocumentTombstones(value: unknown, current?: DocumentTree): Tombstone[] {
   if (!tombstonesSchema.Check(value)) invalid("tombstones 不符合运行时 schema。");
   const retired = uniqueNodeIds(value, "tombstones");
   if (current) {
@@ -109,19 +122,26 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`)
+      .join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
 }
 
 function nodes(tree: DocumentTree, nodeType: NodeType): DocumentNode[] {
   switch (nodeType) {
-    case "section": return Object.values(tree.sections);
-    case "unit": return Object.values(tree.units);
-    case "sentence": return Object.values(tree.sentences);
-    case "atom": return Object.values(tree.atoms);
-    case "block": return tree.blocks;
+    case "section":
+      return Object.values(tree.sections);
+    case "unit":
+      return Object.values(tree.units);
+    case "sentence":
+      return Object.values(tree.sentences);
+    case "atom":
+      return Object.values(tree.atoms);
+    case "block":
+      return tree.blocks;
   }
 }
 
@@ -136,26 +156,21 @@ function contentFingerprint(node: DocumentNode, nodeType: NodeType) {
     excluded.add("sentenceIds");
   } else if (nodeType === "sentence" || nodeType === "atom") excluded.add("unitId");
   else excluded.add("sectionId");
-  return canonical(Object.fromEntries(
-    Object.entries(node).filter(([key]) => !excluded.has(key)),
-  ));
+  return canonical(Object.fromEntries(Object.entries(node).filter(([key]) => !excluded.has(key))));
 }
 
-function structureFingerprint(
-  node: DocumentNode,
-  nodeType: NodeType,
-  blockIndex: number,
-  sentenceIndex: number,
-) {
-  if (nodeType === "section") return canonical({
-    parentSectionId: node.parentSectionId,
-    childSectionIds: node.childSectionIds,
-    unitIds: node.unitIds,
-  });
-  if (nodeType === "unit") return canonical({
-    sectionId: node.sectionId,
-    sentenceIds: node.sentenceIds,
-  });
+function structureFingerprint(node: DocumentNode, nodeType: NodeType, blockIndex: number, sentenceIndex: number) {
+  if (nodeType === "section")
+    return canonical({
+      parentSectionId: node.parentSectionId,
+      childSectionIds: node.childSectionIds,
+      unitIds: node.unitIds,
+    });
+  if (nodeType === "unit")
+    return canonical({
+      sectionId: node.sectionId,
+      sentenceIds: node.sentenceIds,
+    });
   // 句子在父 unit 内的阅读位置属于结构事实：仅重排也应记录 moved（SPEC §9）。
   if (nodeType === "sentence") return canonical({ unitId: node.unitId, index: sentenceIndex });
   if (nodeType === "atom") return canonical({ unitId: node.unitId });
@@ -180,8 +195,8 @@ function sameMembers(base: unknown, current: unknown) {
 }
 
 function membershipChanged(base: DocumentNode, current: DocumentNode, nodeType: NodeType) {
-  if (nodeType === "section") return !sameMembers(base.childSectionIds, current.childSectionIds) ||
-    !sameMembers(base.unitIds, current.unitIds);
+  if (nodeType === "section")
+    return !sameMembers(base.childSectionIds, current.childSectionIds) || !sameMembers(base.unitIds, current.unitIds);
   if (nodeType === "unit") return !sameMembers(base.sentenceIds, current.sentenceIds);
   return false;
 }
@@ -199,8 +214,10 @@ function changeStatus(
   if (base && !current) return "removed";
   if (!base || !current) throw new Error("变化节点必须至少出现在一棵树中。");
   if (contentFingerprint(base, nodeType) !== contentFingerprint(current, nodeType)) return "changed";
-  if (structureFingerprint(base, nodeType, baseBlockIndex, baseSentenceIndex) !==
-    structureFingerprint(current, nodeType, currentBlockIndex, currentSentenceIndex))
+  if (
+    structureFingerprint(base, nodeType, baseBlockIndex, baseSentenceIndex) !==
+    structureFingerprint(current, nodeType, currentBlockIndex, currentSentenceIndex)
+  )
     return membershipChanged(base, current, nodeType) ? "changed" : "moved";
   return "retained";
 }
@@ -213,8 +230,7 @@ export function createDocumentChangeset(input: {
 }): DocumentChangeset {
   if ((input.base === null) !== (input.baseRevision === null))
     invalid("base 树与 baseRevision 必须同时为空或同时提供。");
-  if (input.base && input.base.paperId !== input.current.paperId)
-    invalid("base 与 current 的 paperId 不一致。");
+  if (input.base && input.base.paperId !== input.current.paperId) invalid("base 与 current 的 paperId 不一致。");
   const changes: DocumentChangeset["changes"] = [];
   const baseBlockIndexes = new Map(input.base?.blocks.map((block, index) => [block.id, index]));
   const currentBlockIndexes = new Map(input.current.blocks.map((block, index) => [block.id, index]));
@@ -262,7 +278,7 @@ function nodeExcerpt(tree: DocumentTree, nodeType: NodeType, nodeId: string) {
   if (!block) return "";
   if (block.kind === "unit") return unitExcerpt(tree, block.unitId);
   if (block.kind === "figure")
-    return block.captionUnitId ? unitExcerpt(tree, block.captionUnitId) : block.warning ?? block.asset?.path ?? "";
+    return block.captionUnitId ? unitExcerpt(tree, block.captionUnitId) : (block.warning ?? block.asset?.path ?? "");
   if (block.kind === "table") {
     const unitIds = [
       ...(block.captionUnitId ? [block.captionUnitId] : []),
@@ -278,22 +294,15 @@ function excerpt(text: string) {
 }
 
 /** 节点内容指纹（与 changeset changed 判定同一口径）：排除结构引用，只含内容字段。 */
-export function documentNodeContentFingerprint(
-  tree: DocumentTree,
-  nodeType: NodeType,
-  nodeId: string,
-): string {
-  const node = nodes(tree, nodeType).find((candidate) => candidate.id === nodeId)
-    ?? invalid(`节点不存在：${nodeType}/${nodeId}。`);
+export function documentNodeContentFingerprint(tree: DocumentTree, nodeType: NodeType, nodeId: string): string {
+  const node =
+    nodes(tree, nodeType).find((candidate) => candidate.id === nodeId) ??
+    invalid(`节点不存在：${nodeType}/${nodeId}。`);
   return contentFingerprint(node, nodeType);
 }
 
 /** 节点可读文本摘录（上限 500 码点），供核验 quote 与 tombstone 共用口径。 */
-export function documentNodeExcerpt(
-  tree: DocumentTree,
-  nodeType: NodeType,
-  nodeId: string,
-): string {
+export function documentNodeExcerpt(tree: DocumentTree, nodeType: NodeType, nodeId: string): string {
   return excerpt(nodeExcerpt(tree, nodeType, nodeId));
 }
 
@@ -304,15 +313,13 @@ export function appendRemovedTombstones(
 ): Tombstone[] {
   const changeset = parseDocumentChangeset(value);
   const tombstones = [...parseDocumentTombstones(previous)];
-  const baseNodes = new Map(nodeTypes.map((nodeType) => [
-    nodeType,
-    new Map(nodes(base, nodeType).map((node) => [node.id, node])),
-  ]));
+  const baseNodes = new Map(
+    nodeTypes.map((nodeType) => [nodeType, new Map(nodes(base, nodeType).map((node) => [node.id, node]))]),
+  );
   for (const entry of changeset.changes) {
     if (entry.status !== "removed") continue;
     if (!changeset.baseRevision) invalid("removed 记录需要非空 baseRevision 以标记最后出现 revision。");
-    if (!baseNodes.get(entry.nodeType)?.has(entry.nodeId))
-      invalid(`removed 节点不在 base 树中：${entry.nodeId}。`);
+    if (!baseNodes.get(entry.nodeType)?.has(entry.nodeId)) invalid(`removed 节点不在 base 树中：${entry.nodeId}。`);
     tombstones.push({
       nodeType: entry.nodeType,
       nodeId: entry.nodeId,

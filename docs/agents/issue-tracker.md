@@ -31,11 +31,11 @@ v0.1.0 收口 (milestone)        ← 被各 phase 阻塞
 
 ## 边
 
-| 边 | 表达 | 方向 |
-|---|---|---|
-| parent-child | 组成 | 子 → 父 |
-| blocks | 调度顺序 | 被阻塞者 → 阻塞者 |
-| provenance | 来源 | 新票 → 来源票 |
+| 边           | 表达     | 方向              |
+| ------------ | -------- | ----------------- |
+| parent-child | 组成     | 子 → 父           |
+| blocks       | 调度顺序 | 被阻塞者 → 阻塞者 |
+| provenance   | 来源     | 新票 → 来源票     |
 
 只有 `blocks` 影响 ready。
 
@@ -71,13 +71,13 @@ v0.1.0 收口 (milestone)        ← 被各 phase 阻塞
 
 ## 换 tracker
 
-| 概念 | beads | Linear | GitHub |
-|---|---|---|---|
-| 工作单元 | epic | project / parent issue | parent issue |
-| 组成 | parent-child | sub-issue | sub-issue |
-| 先后 | `blocks` | blocked-by | issue dependency |
-| 来源 | `discovered-from` | related + 正文注明 | 正文注明 + `from:x` label |
-| 收口 | milestone issue | milestone | milestone |
+| 概念     | beads             | Linear                 | GitHub                    |
+| -------- | ----------------- | ---------------------- | ------------------------- |
+| 工作单元 | epic              | project / parent issue | parent issue              |
+| 组成     | parent-child      | sub-issue              | sub-issue                 |
+| 先后     | `blocks`          | blocked-by             | issue dependency          |
+| 来源     | `discovered-from` | related + 正文注明     | 正文注明 + `from:x` label |
+| 收口     | milestone issue   | milestone              | milestone                 |
 
 最少要有：一层嵌套、blocked-by、label、来源可追溯。
 

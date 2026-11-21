@@ -49,8 +49,10 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`)
+      .join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
 }
@@ -85,13 +87,14 @@ function unitSnapshot(tree: DocumentTree, unitId: string) {
 
 function blockUnits(block: DocumentTree["blocks"][number]) {
   switch (block.kind) {
-    case "unit": return [block.unitId];
-    case "figure": return block.captionUnitId ? [block.captionUnitId] : [];
-    case "table": return [
-      ...(block.captionUnitId ? [block.captionUnitId] : []),
-      ...block.rows.flat().map((cell) => cell.unitId),
-    ];
-    default: return [];
+    case "unit":
+      return [block.unitId];
+    case "figure":
+      return block.captionUnitId ? [block.captionUnitId] : [];
+    case "table":
+      return [...(block.captionUnitId ? [block.captionUnitId] : []), ...block.rows.flat().map((cell) => cell.unitId)];
+    default:
+      return [];
   }
 }
 
@@ -132,11 +135,16 @@ type DocumentNode = { id: string; sourceAliases?: string[] } & Record<string, un
 
 function nodes(tree: DocumentTree, kind: NodeKind): DocumentNode[] {
   switch (kind) {
-    case "section": return Object.values(tree.sections);
-    case "unit": return Object.values(tree.units);
-    case "sentence": return Object.values(tree.sentences);
-    case "atom": return Object.values(tree.atoms);
-    case "block": return tree.blocks;
+    case "section":
+      return Object.values(tree.sections);
+    case "unit":
+      return Object.values(tree.units);
+    case "sentence":
+      return Object.values(tree.sentences);
+    case "atom":
+      return Object.values(tree.atoms);
+    case "block":
+      return tree.blocks;
   }
 }
 
@@ -147,9 +155,9 @@ function atomContent(atom: DocumentTree["atoms"][string]) {
 
 function sentenceContent(tree: DocumentTree, sentenceId: string): unknown {
   const sentence = tree.sentences[sentenceId];
-  return sentence.content.map((part) => part.kind === "text"
-    ? part
-    : { kind: "atom", content: atomContent(tree.atoms[part.atomId]) });
+  return sentence.content.map((part) =>
+    part.kind === "text" ? part : { kind: "atom", content: atomContent(tree.atoms[part.atomId]) },
+  );
 }
 
 function unitContent(tree: DocumentTree, unitId: string): unknown {
@@ -167,21 +175,25 @@ function alignmentContent(tree: DocumentTree, kind: NodeKind, node: DocumentNode
   if (kind === "atom") return atomContent(tree.atoms[node.id]);
   const block = tree.blocks.find((candidate) => candidate.id === node.id)!;
   if (block.kind === "unit") return { kind: block.kind, content: unitContent(tree, block.unitId) };
-  if (block.kind === "figure") return {
-    kind: block.kind,
-    asset: block.asset,
-    warning: block.warning,
-    caption: block.captionUnitId ? unitContent(tree, block.captionUnitId) : null,
-  };
-  if (block.kind === "table") return {
-    kind: block.kind,
-    caption: block.captionUnitId ? unitContent(tree, block.captionUnitId) : null,
-    rows: block.rows.map((row) => row.map((cell) => ({
-      rowSpan: cell.rowSpan,
-      columnSpan: cell.columnSpan,
-      content: unitContent(tree, cell.unitId),
-    }))),
-  };
+  if (block.kind === "figure")
+    return {
+      kind: block.kind,
+      asset: block.asset,
+      warning: block.warning,
+      caption: block.captionUnitId ? unitContent(tree, block.captionUnitId) : null,
+    };
+  if (block.kind === "table")
+    return {
+      kind: block.kind,
+      caption: block.captionUnitId ? unitContent(tree, block.captionUnitId) : null,
+      rows: block.rows.map((row) =>
+        row.map((cell) => ({
+          rowSpan: cell.rowSpan,
+          columnSpan: cell.columnSpan,
+          content: unitContent(tree, cell.unitId),
+        })),
+      ),
+    };
   const { id: _id, sectionId: _sectionId, sourceAliases: _aliases, ...content } = block;
   return content;
 }
@@ -195,8 +207,10 @@ function parentId(node: DocumentNode, kind: NodeKind) {
 function orderedIds(tree: DocumentTree, kind: NodeKind, parent: string): string[] {
   if (kind === "unit") return tree.sections[parent]?.unitIds ?? [];
   if (kind === "sentence") return tree.units[parent]?.sentenceIds ?? [];
-  if (kind === "atom") return (tree.units[parent]?.sentenceIds ?? []).flatMap((sentenceId) =>
-    tree.sentences[sentenceId].content.flatMap((part) => part.kind === "atom" ? [part.atomId] : []));
+  if (kind === "atom")
+    return (tree.units[parent]?.sentenceIds ?? []).flatMap((sentenceId) =>
+      tree.sentences[sentenceId].content.flatMap((part) => (part.kind === "atom" ? [part.atomId] : [])),
+    );
   if (kind === "block") return tree.blocks.filter((block) => block.sectionId === parent).map((block) => block.id);
   return [];
 }
@@ -204,52 +218,66 @@ function orderedIds(tree: DocumentTree, kind: NodeKind, parent: string): string[
 function remapCandidateIds(candidate: DocumentTree, mapping: Map<string, string>) {
   const mapped = structuredClone(candidate);
   const id = (value: string) => mapping.get(value) ?? value;
-  const nullableId = (value: string | null) => value === null ? null : id(value);
-  mapped.sections = Object.fromEntries(Object.values(candidate.sections).map((section) => {
-    const next = {
-      ...structuredClone(section),
-      id: id(section.id),
-      parentSectionId: nullableId(section.parentSectionId),
-      childSectionIds: section.childSectionIds.map(id),
-      unitIds: section.unitIds.map(id),
-    };
-    return [next.id, next];
-  }));
-  mapped.units = Object.fromEntries(Object.values(candidate.units).map((unit) => {
-    const next = {
-      ...structuredClone(unit),
-      id: id(unit.id),
-      sectionId: id(unit.sectionId),
-      sentenceIds: unit.sentenceIds.map(id),
-    };
-    return [next.id, next];
-  }));
-  mapped.sentences = Object.fromEntries(Object.values(candidate.sentences).map((sentence) => {
-    const next = {
-      ...structuredClone(sentence),
-      id: id(sentence.id),
-      unitId: id(sentence.unitId),
-      content: sentence.content.map((part) => part.kind === "text"
-        ? structuredClone(part)
-        : { kind: "atom" as const, atomId: id(part.atomId) }),
-    };
-    return [next.id, next];
-  }));
-  mapped.atoms = Object.fromEntries(Object.values(candidate.atoms).map((atom) => {
-    const next = { ...structuredClone(atom), id: id(atom.id), unitId: id(atom.unitId) };
-    if ((next.kind === "cross-reference" || next.kind === "footnote-reference" || next.kind === "citation") && next.targetUnitId)
-      next.targetUnitId = id(next.targetUnitId);
-    return [next.id, next];
-  }));
+  const nullableId = (value: string | null) => (value === null ? null : id(value));
+  mapped.sections = Object.fromEntries(
+    Object.values(candidate.sections).map((section) => {
+      const next = {
+        ...structuredClone(section),
+        id: id(section.id),
+        parentSectionId: nullableId(section.parentSectionId),
+        childSectionIds: section.childSectionIds.map(id),
+        unitIds: section.unitIds.map(id),
+      };
+      return [next.id, next];
+    }),
+  );
+  mapped.units = Object.fromEntries(
+    Object.values(candidate.units).map((unit) => {
+      const next = {
+        ...structuredClone(unit),
+        id: id(unit.id),
+        sectionId: id(unit.sectionId),
+        sentenceIds: unit.sentenceIds.map(id),
+      };
+      return [next.id, next];
+    }),
+  );
+  mapped.sentences = Object.fromEntries(
+    Object.values(candidate.sentences).map((sentence) => {
+      const next = {
+        ...structuredClone(sentence),
+        id: id(sentence.id),
+        unitId: id(sentence.unitId),
+        content: sentence.content.map((part) =>
+          part.kind === "text" ? structuredClone(part) : { kind: "atom" as const, atomId: id(part.atomId) },
+        ),
+      };
+      return [next.id, next];
+    }),
+  );
+  mapped.atoms = Object.fromEntries(
+    Object.values(candidate.atoms).map((atom) => {
+      const next = { ...structuredClone(atom), id: id(atom.id), unitId: id(atom.unitId) };
+      if (
+        (next.kind === "cross-reference" || next.kind === "footnote-reference" || next.kind === "citation") &&
+        next.targetUnitId
+      )
+        next.targetUnitId = id(next.targetUnitId);
+      return [next.id, next];
+    }),
+  );
   mapped.blocks = candidate.blocks.map((block) => {
     const next = { ...structuredClone(block), id: id(block.id), sectionId: id(block.sectionId) };
     if (next.kind === "unit") next.unitId = id(next.unitId);
     if ((next.kind === "figure" || next.kind === "table") && next.captionUnitId)
       next.captionUnitId = id(next.captionUnitId);
-    if (next.kind === "table") next.rows = next.rows.map((row) => row.map((cell) => ({
-      ...cell,
-      unitId: id(cell.unitId),
-    })));
+    if (next.kind === "table")
+      next.rows = next.rows.map((row) =>
+        row.map((cell) => ({
+          ...cell,
+          unitId: id(cell.unitId),
+        })),
+      );
     return next;
   });
   return mapped;
@@ -300,11 +328,12 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
         const aliases = new Set(candidateNode.sourceAliases ?? []);
         if (!aliases.size) continue;
         const matches = baseNodes.filter((baseNode) =>
-          (baseNode.sourceAliases ?? []).some((alias) => aliases.has(alias)));
+          (baseNode.sourceAliases ?? []).some((alias) => aliases.has(alias)),
+        );
         if (matches.length === 1) {
           const reverseMatches = candidateNodes.filter((other) =>
-            (other.sourceAliases ?? []).some((alias) =>
-              (matches[0].sourceAliases ?? []).includes(alias)));
+            (other.sourceAliases ?? []).some((alias) => (matches[0].sourceAliases ?? []).includes(alias)),
+          );
           if (reverseMatches.length === 1 && tryMap(matches[0], candidateNode) && kind === "sentence")
             structuralSentencePairs.add(candidateNode.id);
         }
@@ -325,8 +354,7 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
       for (const node of remainingBase) add("base", node, base);
       for (const node of remainingCandidate) add("candidate", node, candidate);
       for (const group of groups.values()) {
-        if (group.base.length === 1 && group.candidate.length === 1)
-          tryMap(group.base[0], group.candidate[0]);
+        if (group.base.length === 1 && group.candidate.length === 1) tryMap(group.base[0], group.candidate[0]);
       }
 
       const globalGroups = new Map<string, { base: DocumentNode[]; candidate: DocumentNode[] }>();
@@ -358,11 +386,10 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
       // 串 ID」。无 anchor 时仅整 unit 单句对单句延续；拼接／划分／无证据的等长重排
       // 不延续，交由 tombstone 规则处理。
       if (kind === "sentence") {
-        const anchored = (baseId: string, candidateId: string) =>
-          sentenceAnchorsAtStart.get(candidateId) === baseId;
+        const anchored = (baseId: string, candidateId: string) => sentenceAnchorsAtStart.get(candidateId) === baseId;
         const sentenceProjection = (tree: DocumentTree, sentenceId: string) =>
           tree.sentences[sentenceId].content
-            .map((part) => part.kind === "text" ? part.text : tree.atoms[part.atomId].text)
+            .map((part) => (part.kind === "text" ? part.text : tree.atoms[part.atomId].text))
             .join("");
         const boundaryKept = (
           baseOrder: string[],
@@ -372,12 +399,14 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
           candidateStart: number,
           candidateEnd: number,
         ) => {
-          const leftOk = baseStart === 0
-            ? candidateStart === 0
-            : candidateStart > 0 && anchored(baseOrder[baseStart - 1], candidateOrder[candidateStart - 1]);
-          const rightOk = baseEnd === baseOrder.length
-            ? candidateEnd === candidateOrder.length
-            : candidateEnd < candidateOrder.length && anchored(baseOrder[baseEnd], candidateOrder[candidateEnd]);
+          const leftOk =
+            baseStart === 0
+              ? candidateStart === 0
+              : candidateStart > 0 && anchored(baseOrder[baseStart - 1], candidateOrder[candidateStart - 1]);
+          const rightOk =
+            baseEnd === baseOrder.length
+              ? candidateEnd === candidateOrder.length
+              : candidateEnd < candidateOrder.length && anchored(baseOrder[baseEnd], candidateOrder[candidateEnd]);
           return leftOk && rightOk;
         };
         // 边界重组检测：候选句投影等于多个 base 句投影拼接（合并），或多个候选句
@@ -448,8 +477,10 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
           const hasAnchor = baseOrder.some((baseId, index) => anchoredAtStart(baseId, candidateOrder[index]));
           if (!hasAnchor) {
             if (
-              baseOrder.length === 1 && candidateOrder.length === 1 &&
-              !usedBaseIds.has(baseOrder[0]) && !mapping.has(candidateOrder[0]) &&
+              baseOrder.length === 1 &&
+              candidateOrder.length === 1 &&
+              !usedBaseIds.has(baseOrder[0]) &&
+              !mapping.has(candidateOrder[0]) &&
               !boundaryRestructured(baseOrder, candidateOrder)
             )
               pair(baseOrder[0], candidateOrder[0]);
@@ -459,7 +490,8 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
           let candidateStart = 0;
           while (baseStart < baseOrder.length || candidateStart < candidateOrder.length) {
             if (
-              baseStart < baseOrder.length && candidateStart < candidateOrder.length &&
+              baseStart < baseOrder.length &&
+              candidateStart < candidateOrder.length &&
               anchoredAtStart(baseOrder[baseStart], candidateOrder[candidateStart])
             ) {
               baseStart += 1;
@@ -467,17 +499,25 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
               continue;
             }
             let baseEnd = baseStart;
-            while (baseEnd < baseOrder.length &&
-              !(candidateStart < candidateOrder.length && anchoredAtStart(baseOrder[baseEnd], candidateOrder[candidateStart])))
+            while (
+              baseEnd < baseOrder.length &&
+              !(
+                candidateStart < candidateOrder.length &&
+                anchoredAtStart(baseOrder[baseEnd], candidateOrder[candidateStart])
+              )
+            )
               baseEnd += 1;
             let candidateEnd = candidateStart;
-            while (candidateEnd < candidateOrder.length &&
-              !(baseEnd < baseOrder.length && anchoredAtStart(baseOrder[baseEnd], candidateOrder[candidateEnd])))
+            while (
+              candidateEnd < candidateOrder.length &&
+              !(baseEnd < baseOrder.length && anchoredAtStart(baseOrder[baseEnd], candidateOrder[candidateEnd]))
+            )
               candidateEnd += 1;
             const baseCount = baseEnd - baseStart;
             const candidateCount = candidateEnd - candidateStart;
             if (
-              baseCount > 0 && baseCount === candidateCount &&
+              baseCount > 0 &&
+              baseCount === candidateCount &&
               boundaryKept(baseOrder, candidateOrder, baseStart, baseEnd, candidateStart, candidateEnd) &&
               !boundaryRestructured(
                 baseOrder.slice(baseStart, baseEnd),
@@ -499,7 +539,10 @@ function alignCandidateTree(base: DocumentTree, value: DocumentTree) {
         }
       }
 
-      for (const baseParent of nodes(base, kind === "section" ? "section" : kind === "unit" || kind === "block" ? "section" : "unit")) {
+      for (const baseParent of nodes(
+        base,
+        kind === "section" ? "section" : kind === "unit" || kind === "block" ? "section" : "unit",
+      )) {
         const candidateParentId = reverse.get(baseParent.id);
         if (!candidateParentId) continue;
         const baseOrder = orderedIds(base, kind, baseParent.id);
@@ -574,8 +617,7 @@ function chooseThreeWay<T>(input: {
     }
     return { side: null, value: null };
   }
-  if (current !== null && candidate !== null && !equal(current, candidate))
-    return resolve(input.conflictType);
+  if (current !== null && candidate !== null && !equal(current, candidate)) return resolve(input.conflictType);
   if (current !== null) return { side: "current", value: current };
   if (candidate !== null) return { side: "candidate", value: candidate };
   return { side: null, value: null };
@@ -596,8 +638,7 @@ function removeCopiedUnit(target: DocumentTree, unitId: string) {
   const unit = target.units[unitId];
   if (!unit) return;
   for (const sentenceId of unit.sentenceIds) delete target.sentences[sentenceId];
-  for (const atom of Object.values(target.atoms))
-    if (atom.unitId === unitId) delete target.atoms[atom.id];
+  for (const atom of Object.values(target.atoms)) if (atom.unitId === unitId) delete target.atoms[atom.id];
   delete target.units[unitId];
 }
 
@@ -611,8 +652,7 @@ function restoreSection(
   if (target.sections[sectionId]) return;
   const section = source.sections[sectionId];
   if (!section) return;
-  if (section.parentSectionId)
-    restoreSection(source, section.parentSectionId, side, target, selections);
+  if (section.parentSectionId) restoreSection(source, section.parentSectionId, side, target, selections);
   selections.set(sectionId, { side, value: structuredClone(section) });
   target.sections[sectionId] = {
     ...structuredClone(section),
@@ -621,10 +661,7 @@ function restoreSection(
   };
 }
 
-function relatedConflictIds(
-  conflict: MergeConflict,
-  trees: DocumentTree[],
-) {
+function relatedConflictIds(conflict: MergeConflict, trees: DocumentTree[]) {
   const ids = new Set<string>();
   for (const anchor of conflict.anchors) {
     if (anchor.kind === "section") ids.add(anchor.sectionId);
@@ -635,11 +672,9 @@ function relatedConflictIds(
         if (!unit) continue;
         for (const sentenceId of unit.sentenceIds) {
           ids.add(sentenceId);
-          for (const part of tree.sentences[sentenceId].content)
-            if (part.kind === "atom") ids.add(part.atomId);
+          for (const part of tree.sentences[sentenceId].content) if (part.kind === "atom") ids.add(part.atomId);
         }
-        for (const block of tree.blocks)
-          if (blockUnits(block).includes(anchor.unitId)) ids.add(block.id);
+        for (const block of tree.blocks) if (blockUnits(block).includes(anchor.unitId)) ids.add(block.id);
       }
     }
     if (anchor.kind === "sentence") ids.add(anchor.sentenceId);
@@ -666,11 +701,7 @@ function buildMergedTree(
     blocks: [],
   };
   const unitSelections = new Map<string, UnitSelection>();
-  const unitIds = new Set([
-    ...Object.keys(base.units),
-    ...Object.keys(current.units),
-    ...Object.keys(candidate.units),
-  ]);
+  const unitIds = new Set([...Object.keys(base.units), ...Object.keys(current.units), ...Object.keys(candidate.units)]);
   for (const unitId of [...unitIds].sort()) {
     const selected = chooseThreeWay({
       base: unitSnapshot(base, unitId),
@@ -839,11 +870,12 @@ function buildMergedTree(
     const required = selected.value.kind === "unit" ? [selected.value.unitId] : [];
     if (required.some((unitId) => !merged.units[unitId])) blockSelections.delete(blockId);
   }
-  for (const [blockId, selected] of blockSelections) insertByOrder(
-    blockOrder,
-    blockId,
-    (selected.side === "current" ? current : candidate).blocks.map((block) => block.id),
-  );
+  for (const [blockId, selected] of blockSelections)
+    insertByOrder(
+      blockOrder,
+      blockId,
+      (selected.side === "current" ? current : candidate).blocks.map((block) => block.id),
+    );
 
   for (const blockId of blockOrder) {
     const selected = blockSelections.get(blockId);
@@ -853,8 +885,7 @@ function buildMergedTree(
     if (block.kind === "figure" && block.captionUnitId && !merged.units[block.captionUnitId])
       block.captionUnitId = null;
     if (block.kind === "table") {
-      block.rows = block.rows.map((row) => row.filter((cell) => merged.units[cell.unitId]))
-        .filter((row) => row.length);
+      block.rows = block.rows.map((row) => row.filter((cell) => merged.units[cell.unitId])).filter((row) => row.length);
     }
     block.sectionId = units.length
       ? merged.units[units[0]].sectionId
@@ -903,13 +934,16 @@ export function mergeDocumentTrees(input: {
   for (const conflict of conflicts) {
     if (resolutions[conflict.id]) continue;
     const ids = relatedConflictIds(conflict, [base, current, sourceBase]);
-    for (const entry of changeset.changes)
-      if (ids.has(entry.nodeId)) entry.status = "conflicted";
+    for (const entry of changeset.changes) if (ids.has(entry.nodeId)) entry.status = "conflicted";
   }
   const restored = new Set<string>();
   for (const conflict of conflicts) {
-    if (conflict.type === "deletion" && resolutions[conflict.id] === "candidate" &&
-      conflict.current === null && conflict.candidate !== null) {
+    if (
+      conflict.type === "deletion" &&
+      resolutions[conflict.id] === "candidate" &&
+      conflict.current === null &&
+      conflict.candidate !== null
+    ) {
       for (const id of relatedConflictIds(conflict, [base, current, sourceBase])) restored.add(id);
     }
   }
@@ -939,8 +973,7 @@ export function resolveDocumentMergeConflict(
   conflictId: string,
   choice: MergeChoice,
 ): DocumentMergeResult {
-  if (!result.conflicts.some((conflict) => conflict.id === conflictId))
-    invalid(`合并冲突不存在：${conflictId}。`);
+  if (!result.conflicts.some((conflict) => conflict.id === conflictId)) invalid(`合并冲突不存在：${conflictId}。`);
   if (choice !== "current" && choice !== "candidate") invalid("冲突解决必须显式选择 current 或 candidate。");
   return mergeDocumentTrees({
     base: result.base,
@@ -953,15 +986,14 @@ export function resolveDocumentMergeConflict(
   });
 }
 
-export function assertDocumentMergePublishable(
-  result: DocumentMergeResult,
-  currentRevision: string,
-) {
+export function assertDocumentMergePublishable(result: DocumentMergeResult, currentRevision: string) {
   if (result.baseRevision !== currentRevision)
     invalid(`baseRevision 已变化：候选基线为 ${result.baseRevision}，current 为 ${currentRevision}。`);
   const unresolved = result.conflicts.filter((conflict) => !result.resolutions[conflict.id]);
   if (unresolved.length)
-    invalid(`仍有 ${unresolved.length} 个未解决冲突，不能发布：${unresolved.map((conflict) => `${conflict.id}（${conflict.type}）`).join("、")}。`);
+    invalid(
+      `仍有 ${unresolved.length} 个未解决冲突，不能发布：${unresolved.map((conflict) => `${conflict.id}（${conflict.type}）`).join("、")}。`,
+    );
   if (result.changeset.changes.some((entry) => entry.status === "conflicted"))
     invalid("changeset 仍包含 conflicted 节点，不能发布。");
   parseDocumentTree(result.document);

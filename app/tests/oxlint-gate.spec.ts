@@ -56,8 +56,8 @@ export function Bad({ flag }: { flag: boolean }) {
   const result = runGate(config);
   const lines = diagnostics(result);
   expect(result.status).toBe(1);
-  expect(lines.some(line => line.includes("eslint(no-unused-vars)"))).toBe(true);
-  expect(lines.some(line => line.includes("react-hooks(rules-of-hooks)"))).toBe(true);
+  expect(lines.some((line) => line.includes("eslint(no-unused-vars)"))).toBe(true);
+  expect(lines.some((line) => line.includes("react-hooks(rules-of-hooks)"))).toBe(true);
 });
 
 test("Oxlint 空扫描按检查不可用阻断", async () => {

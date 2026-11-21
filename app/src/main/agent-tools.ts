@@ -9,27 +9,17 @@ import {
   generateUnifiedPatch,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import {
-  ProjectService,
-  type AgentFile,
-} from "./project-service.js";
+import { ProjectService, type AgentFile } from "./project-service.js";
 
 export function redact(value: string, secrets: string[]) {
-  for (const secret of secrets.filter(Boolean))
-    value = value.split(secret).join("[已隐藏凭据]");
+  for (const secret of secrets.filter(Boolean)) value = value.split(secret).join("[已隐藏凭据]");
   return value;
 }
 export function redactData<T>(value: T, secrets: string[]): T {
   if (typeof value === "string") return redact(value, secrets) as T;
-  if (Array.isArray(value))
-    return value.map((item) => redactData(item, secrets)) as T;
+  if (Array.isArray(value)) return value.map((item) => redactData(item, secrets)) as T;
   if (value && typeof value === "object")
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        redactData(item, secrets),
-      ]),
-    ) as T;
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactData(item, secrets)])) as T;
   return value;
 }
 
@@ -87,17 +77,9 @@ export function createProjectTools(
   const write = async (file: string, content: string, signal: AbortSignal) => {
     check(signal);
     const baseline = baselines.get(key(file));
-    const saved = await service.writeAgentFile(
-      root,
-      file,
-      content,
-      baseline?.version ?? null,
-      signal,
-    );
+    const saved = await service.writeAgentFile(root, file, content, baseline?.version ?? null, signal);
     if (!saved.saved) {
-      const error = new Error(
-        "文件基线已改变，必须先 read 重读；本次内容未覆盖磁盘。",
-      );
+      const error = new Error("文件基线已改变，必须先 read 重读；本次内容未覆盖磁盘。");
       Object.assign(error, {
         conflict: {
           path: path.relative(root, file).split(path.sep).join("/"),
@@ -132,18 +114,9 @@ export function createProjectTools(
   reader.description =
     "Read a UTF-8 text file within the current project (maximum 2 MiB). Supports offset and limit; output is truncated by Pi. PDF/image tools are delivered separately.";
   // Each invocation carries its own cancellation signal and write callback.
-  const mutations = [
-    createWriteToolDefinition(root),
-    createEditToolDefinition(root),
-  ].map((definition) => ({
+  const mutations = [createWriteToolDefinition(root), createEditToolDefinition(root)].map((definition) => ({
     ...definition,
-    async execute(
-      id: string,
-      args: any,
-      signal: AbortSignal | undefined,
-      update: any,
-      context: any,
-    ) {
+    async execute(id: string, args: any, signal: AbortSignal | undefined, update: any, context: any) {
       let change: { path: string; patch: string } | undefined;
       try {
         check(signal);
@@ -173,10 +146,7 @@ export function createProjectTools(
                 },
               });
         const result = await native.execute(id, args, signal, update, context);
-        return redactData(
-          { ...result, details: { ...result.details, change } },
-          secrets,
-        );
+        return redactData({ ...result, details: { ...result.details, change } }, secrets);
       } catch (error) {
         const conflict = (error as Error & { conflict?: unknown }).conflict;
         return {
@@ -203,8 +173,7 @@ export function createProjectTools(
     operations: {
       exec: async (command, cwd, options) => {
         check(options.signal);
-        if (process.platform !== "win32")
-          throw new Error("Shell 当前仅支持 Windows。");
+        if (process.platform !== "win32") throw new Error("Shell 当前仅支持 Windows。");
         const env = Object.fromEntries(
           Object.entries(process.env).filter(([name]) =>
             /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|COMSPEC|PSMODULEPATH|USERPROFILE|LOCALAPPDATA|APPDATA)$/i.test(
@@ -219,9 +188,7 @@ export function createProjectTools(
           // a secret may itself end with its prefix (for example, abcab).
           let offset = 0;
           let text = "";
-          const keys = secrets
-            .filter(Boolean)
-            .sort((a, b) => b.length - a.length);
+          const keys = secrets.filter(Boolean).sort((a, b) => b.length - a.length);
           while (offset < pending.length) {
             const match = keys.find((key) => pending.startsWith(key, offset));
             if (match) {
@@ -229,11 +196,7 @@ export function createProjectTools(
               offset += match.length;
             } else if (
               !final &&
-              keys.some(
-                (key) =>
-                  key.length > pending.length - offset &&
-                  key.startsWith(pending.slice(offset)),
-              )
+              keys.some((key) => key.length > pending.length - offset && key.startsWith(pending.slice(offset)))
             )
               break;
             else text += pending[offset++];
@@ -242,19 +205,15 @@ export function createProjectTools(
           if (text) options.onData(Buffer.from(text));
         };
         try {
-          return await nativeShell.exec(
-            `$ErrorActionPreference = 'Stop'\n${jobBootstrap}\n${command}`,
-            cwd,
-            {
-              ...options,
-              env,
-              timeout: options.timeout ?? 120,
-              onData: (data) => {
-                pending += decoder.write(data);
-                flush();
-              },
+          return await nativeShell.exec(`$ErrorActionPreference = 'Stop'\n${jobBootstrap}\n${command}`, cwd, {
+            ...options,
+            env,
+            timeout: options.timeout ?? 120,
+            onData: (data) => {
+              pending += decoder.write(data);
+              flush();
             },
-          );
+          });
         } finally {
           pending += decoder.end();
           flush(true);
@@ -266,18 +225,10 @@ export function createProjectTools(
     shell.description.replace("bash", "Windows PowerShell") +
     " Trusted host execution, no filesystem sandbox. Use scripts only for the user's explicit task. Do not overwrite protected text/, sources/, PDFs or internal files; use write/edit for document mutations. Keep subprocesses in the foreground. No credentials are provided.";
   shell.promptSnippet = "Run a Windows PowerShell command";
-  shell.promptGuidelines = [
-    "Commands use PowerShell syntax, not Bash. Working directory is the current project.",
-  ];
+  shell.promptGuidelines = ["Commands use PowerShell syntax, not Bash. Working directory is the current project."];
   return [reader, ...mutations, shell].map((definition) => ({
     ...definition,
-    async execute(
-      id: string,
-      args: any,
-      signal: AbortSignal | undefined,
-      update: any,
-      context: any,
-    ) {
+    async execute(id: string, args: any, signal: AbortSignal | undefined, update: any, context: any) {
       check(signal);
       const before =
         definition.name === "bash"
@@ -306,9 +257,7 @@ export function createProjectTools(
             ...result,
             details: {
               ...result.details,
-              artifacts: after.files
-                .filter((file) => !file.directory && !old.has(file.path))
-                .map((file) => file.path),
+              artifacts: after.files.filter((file) => !file.directory && !old.has(file.path)).map((file) => file.path),
             },
           },
           secrets,

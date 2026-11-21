@@ -50,8 +50,7 @@ function fakeTransport(routes: Record<string, FakeRoute>) {
     if (!route) throw new ArxivFetchError("arxiv-fetch-status", url, 404);
     if (route.error) throw route.error;
     const bytes = route.bytes ?? Buffer.from("");
-    if (bytes.byteLength > options.budgetBytes)
-      throw new ArxivFetchError("arxiv-fetch-budget", url);
+    if (bytes.byteLength > options.budgetBytes) throw new ArxivFetchError("arxiv-fetch-budget", url);
     const response: ArxivFetchResponse = {
       status: route.status ?? 200,
       url: route.finalUrl ?? url,
@@ -125,7 +124,11 @@ test("arxiv-import 快照发布：abs/HTML/资产原始字节、来源事实与�
     expect(file.size).toBeGreaterThan(0);
   }
   const assets = snapshot.assets as Record<string, { originalUrl: string; path: string }>;
-  expect(Object.values(assets).map((a) => a.originalUrl).sort()).toEqual([FIG1_URL, FIG2_URL]);
+  expect(
+    Object.values(assets)
+      .map((a) => a.originalUrl)
+      .sort(),
+  ).toEqual([FIG1_URL, FIG2_URL]);
 
   // 先 abs 后 HTML；资产相对固定版本 HTML URL 解析。
   expect(calls.slice(0, 2)).toEqual([ABS_URL, HTML_URL]);
@@ -149,10 +152,20 @@ test("arxiv-import 快照发布：abs/HTML/资产原始字节、来源事实与�
 });
 
 test("arxiv-import 快照不可变：发布后目录内容摘要可复核，重复发布同字节复用既有快照", async () => {
-  const first = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  const first = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(defaultRoutes()).transport,
+  });
   expect(first.ok).toBe(true);
   if (!first.ok) return;
-  const second = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  const second = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(defaultRoutes()).transport,
+  });
   expect(second.ok).toBe(true);
   if (!second.ok) return;
   expect(second.reused).toBe(true);
@@ -164,7 +177,12 @@ test("arxiv-import 快照不可变：发布后目录内容摘要可复核，重�
 });
 
 test("arxiv-import 同版重取得到不同字节时建立新快照，不覆盖旧快照", async () => {
-  const first = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  const first = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(defaultRoutes()).transport,
+  });
   expect(first.ok).toBe(true);
   if (!first.ok) return;
   const changed = defaultRoutes();
@@ -172,7 +190,12 @@ test("arxiv-import 同版重取得到不同字节时建立新快照，不覆盖�
     bytes: Buffer.from(latexmlHtml(["figures/fig1.png"]).replace("Body text.", "Revised body.")),
     headers: { "content-type": "text/html" },
   };
-  const second = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(changed).transport });
+  const second = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(changed).transport,
+  });
   expect(second.ok).toBe(true);
   if (!second.ok) return;
   expect(second.reused).toBe(false);
@@ -186,7 +209,12 @@ test("arxiv-import 同版重取得到不同字节时建立新快照，不覆盖�
 test("arxiv-import 版本混杂：HTML 最终 URL 指向其他版本时拒绝发布", async () => {
   const routes = defaultRoutes();
   routes[HTML_URL] = { ...routes[HTML_URL], finalUrl: `${BASE}/html/2401.01234v2` };
-  const result = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(routes).transport });
+  const result = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(routes).transport,
+  });
   expect(result.ok).toBe(false);
   if (result.ok) return;
   expect(result.diagnostic.code).toBe("arxiv-version-mixed");
@@ -199,7 +227,12 @@ test("arxiv-import HTML 元数据版本与固定版本不一致时拒绝发布",
     bytes: Buffer.from(latexmlHtml([]).replace('content="2401.01234v1"', 'content="2401.01234v2"')),
     headers: { "content-type": "text/html" },
   };
-  const result = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(routes).transport });
+  const result = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(routes).transport,
+  });
   expect(result.ok).toBe(false);
   if (result.ok) return;
   expect(result.diagnostic.code).toBe("arxiv-version-mixed");
@@ -211,7 +244,12 @@ test("arxiv-import abs 页面冒充 full-text HTML 时拒绝发布", async () =>
     bytes: Buffer.from(absHtml({ id: "2401.01234", versions: [1] })),
     headers: { "content-type": "text/html" },
   };
-  const result = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(routes).transport });
+  const result = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(routes).transport,
+  });
   expect(result.ok).toBe(false);
   if (result.ok) return;
   expect(result.diagnostic.code).toBe("arxiv-html-not-fulltext");
@@ -221,7 +259,12 @@ test("arxiv-import abs 页面冒充 full-text HTML 时拒绝发布", async () =>
 test("arxiv-import HTML 404 与网络失败区分诊断，不发布快照", async () => {
   const routes = defaultRoutes();
   delete routes[HTML_URL];
-  const missing = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(routes).transport });
+  const missing = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(routes).transport,
+  });
   expect(missing.ok).toBe(false);
   if (!missing.ok) {
     expect(missing.diagnostic.code).toBe("arxiv-html-fetch-failed");
@@ -229,7 +272,12 @@ test("arxiv-import HTML 404 与网络失败区分诊断，不发布快照", asyn
   }
   const broken = defaultRoutes();
   broken[HTML_URL] = { error: new ArxivFetchError("arxiv-fetch-network", HTML_URL) };
-  const failed = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(broken).transport });
+  const failed = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(broken).transport,
+  });
   expect(failed.ok).toBe(false);
   if (!failed.ok) {
     expect(failed.diagnostic.code).toBe("arxiv-html-fetch-failed");
@@ -258,7 +306,12 @@ test("arxiv-import 外部图片不抓取，记录 warning 并照常发布快照"
 test("arxiv-import 单个非核心资产失败记录 warning，快照仍可发布", async () => {
   const routes = defaultRoutes();
   delete routes[FIG2_URL];
-  const result = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(routes).transport });
+  const result = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(routes).transport,
+  });
   expect(result.ok).toBe(true);
   if (!result.ok) return;
   expect(result.warnings).toHaveLength(1);
@@ -308,13 +361,26 @@ test("arxiv-import 用户取消保留工程与现场，不发布快照", async (
 });
 
 test("arxiv-import 同版重取：HTML 不变但资产字节变化时建立新快照，不静默丢弃", async () => {
-  const first = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  const first = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(defaultRoutes()).transport,
+  });
   expect(first.ok).toBe(true);
   if (!first.ok) return;
   // abs/HTML 字节完全不变，仅 fig1 图片字节变化。
   const changed = defaultRoutes();
-  changed[FIG1_URL] = { bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]), headers: { "content-type": "image/png" } };
-  const second = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(changed).transport });
+  changed[FIG1_URL] = {
+    bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]),
+    headers: { "content-type": "image/png" },
+  };
+  const second = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(changed).transport,
+  });
   expect(second.ok).toBe(true);
   if (!second.ok) return;
   expect(second.reused).toBe(false);
@@ -322,7 +388,12 @@ test("arxiv-import 同版重取：HTML 不变但资产字节变化时建立新�
   expect(await fs.readdir(path.join(root, "sources"))).toHaveLength(2);
 
   // 资产恢复原字节后复用第一个快照（全量摘要集合一致）。
-  const restored = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  const restored = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(defaultRoutes()).transport,
+  });
   expect(restored.ok).toBe(true);
   if (!restored.ok) return;
   expect(restored.reused).toBe(true);
@@ -330,13 +401,23 @@ test("arxiv-import 同版重取：HTML 不变但资产字节变化时建立新�
 });
 
 test("arxiv-import 同版重取：资产新增或消失也建立新快照", async () => {
-  const first = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  const first = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(defaultRoutes()).transport,
+  });
   expect(first.ok).toBe(true);
   if (!first.ok) return;
   // HTML 引用少一张图：资产集合变化，即使 abs/HTML 摘要相同也不复用。
   const fewer = defaultRoutes();
   fewer[HTML_URL] = { bytes: Buffer.from(latexmlHtml(["figures/fig1.png"])), headers: { "content-type": "text/html" } };
-  const second = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(fewer).transport });
+  const second = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(fewer).transport,
+  });
   expect(second.ok).toBe(true);
   if (!second.ok) return;
   expect(second.reused).toBe(false);
@@ -349,8 +430,14 @@ test("arxiv-import PDF 与 SVG 不作为图片资产下载或进入 revision 资
     bytes: Buffer.from(latexmlHtml(["figures/fig1.png", "figures/paper.pdf", "figures/plot.svg"])),
     headers: { "content-type": "text/html" },
   };
-  routes[`${BASE}/html/figures/paper.pdf`] = { bytes: Buffer.from("%PDF-1.4"), headers: { "content-type": "application/pdf" } };
-  routes[`${BASE}/html/figures/plot.svg`] = { bytes: Buffer.from("<svg><script>alert(1)</script></svg>"), headers: { "content-type": "image/svg+xml" } };
+  routes[`${BASE}/html/figures/paper.pdf`] = {
+    bytes: Buffer.from("%PDF-1.4"),
+    headers: { "content-type": "application/pdf" },
+  };
+  routes[`${BASE}/html/figures/plot.svg`] = {
+    bytes: Buffer.from("<svg><script>alert(1)</script></svg>"),
+    headers: { "content-type": "image/svg+xml" },
+  };
   const { transport, calls } = fakeTransport(routes);
   const result = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport });
   expect(result.ok).toBe(true);
@@ -367,17 +454,30 @@ test("arxiv-import PDF 与 SVG 不作为图片资产下载或进入 revision 资
   const reread = await readSourceSnapshot(root, result.snapshot.sourceSnapshotId);
   expect(Array.isArray(reread.warnings)).toBe(true);
   const persisted = reread.warnings;
-  expect(Array.isArray(persisted) && persisted.some((w) => typeof w === "object" && w !== null && "code" in w && w.code === "arxiv-asset-pdf-blocked")).toBe(true);
+  expect(
+    Array.isArray(persisted) &&
+      persisted.some((w) => typeof w === "object" && w !== null && "code" in w && w.code === "arxiv-asset-pdf-blocked"),
+  ).toBe(true);
 });
 
 test("arxiv-import 同版重取：HTML 完全不变，仅资产获取失败导致集合变化也不复用", async () => {
-  const first = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(defaultRoutes()).transport });
+  const first = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(defaultRoutes()).transport,
+  });
   expect(first.ok).toBe(true);
   if (!first.ok) return;
   // abs/HTML 字节与第一次完全相同；fig2 本次 404，资产集合缩小。
   const missing = defaultRoutes();
   delete missing[FIG2_URL];
-  const second = await fetchArxivSnapshot({ root, baseUrl: BASE, reference: pinned(), transport: fakeTransport(missing).transport });
+  const second = await fetchArxivSnapshot({
+    root,
+    baseUrl: BASE,
+    reference: pinned(),
+    transport: fakeTransport(missing).transport,
+  });
   expect(second.ok).toBe(true);
   if (!second.ok) return;
   expect(second.reused).toBe(false);
@@ -393,7 +493,10 @@ test("arxiv-import SVG 原件计入快照原始资产总预算，超限即中止
   };
   const svgBytes = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>");
   routes[`${BASE}/html/figures/a.svg`] = { bytes: svgBytes, headers: { "content-type": "image/svg+xml" } };
-  routes[`${BASE}/html/figures/b.svg`] = { bytes: Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><circle/></svg>"), headers: { "content-type": "image/svg+xml" } };
+  routes[`${BASE}/html/figures/b.svg`] = {
+    bytes: Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><circle/></svg>"),
+    headers: { "content-type": "image/svg+xml" },
+  };
   const result = await fetchArxivSnapshot({
     root,
     baseUrl: BASE,

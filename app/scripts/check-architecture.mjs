@@ -13,14 +13,7 @@ rmSync(report, { force: true });
 
 const scan = spawnSync(
   process.execPath,
-  [
-    cli,
-    "--validate",
-    ".dependency-cruiser.cjs",
-    "--output-type=json",
-    `--output-to=${report}`,
-    "src",
-  ],
+  [cli, "--validate", ".dependency-cruiser.cjs", "--output-type=json", `--output-to=${report}`, "src"],
   { stdio: "inherit" },
 );
 if (scan.error) {
@@ -36,11 +29,7 @@ if (!existsSync(report)) {
   process.exit(2);
 }
 
-const gate = spawnSync(
-  process.execPath,
-  ["scripts/quality-gate.mjs", "depcruise", report],
-  { stdio: "inherit" },
-);
+const gate = spawnSync(process.execPath, ["scripts/quality-gate.mjs", "depcruise", report], { stdio: "inherit" });
 if (gate.error) {
   console.error(`check-architecture: could not start quality gate: ${gate.error.message}`);
   process.exit(2);

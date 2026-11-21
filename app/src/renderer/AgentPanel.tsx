@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -23,13 +17,7 @@ import {
 import { AgentMessage } from "./AgentMessage";
 import type { ChatAttachment } from "../shared/chat-input";
 import "./agent.css";
-import type {
-  AgentCommand,
-  AgentSettings,
-  ChatSession,
-  ThinkingLevel,
-  ChatTool,
-} from "../shared/contracts";
+import type { AgentCommand, AgentSettings, ChatSession, ThinkingLevel, ChatTool } from "../shared/contracts";
 
 export function AgentPanel({
   root,
@@ -56,14 +44,21 @@ export function AgentPanel({
   const [choice, setChoice] = useState(0);
   const [preview, setPreview] = useState<{ title: string; text: string }>();
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const choices = materials.filter(item => `${item.label} ${item.value}`.toLowerCase().includes(mention?.query.toLowerCase() ?? ""));
+  const choices = materials.filter((item) =>
+    `${item.label} ${item.value}`.toLowerCase().includes(mention?.query.toLowerCase() ?? ""),
+  );
   function addAttachments(items: ChatAttachment[]) {
-    setAttachments(old => [...old, ...items.filter(item => !old.some(value => value.kind === item.kind && value.value === item.value))]);
+    setAttachments((old) => [
+      ...old,
+      ...items.filter((item) => !old.some((value) => value.kind === item.kind && value.value === item.value)),
+    ]);
   }
   function choose(item: ChatAttachment) {
     if (!mention) return;
     setText(text.slice(0, mention.from) + text.slice(mention.to));
-    addAttachments([item]); setMention(undefined); inputRef.current?.focus();
+    addAttachments([item]);
+    setMention(undefined);
+    inputRef.current?.focus();
   }
   function updateMention(input: HTMLTextAreaElement) {
     const end = input.selectionStart;
@@ -75,8 +70,17 @@ export function AgentPanel({
   useEffect(() => {
     if (!mentionOpen) return;
     let disposed = false;
-    void window.desktop.agent<ChatAttachment[]>({ type: "materials", root }).then(items => { if (!disposed) setMaterials(items); }).catch(error => { if (!disposed) setError(error.message); });
-    return () => { disposed = true; };
+    void window.desktop
+      .agent<ChatAttachment[]>({ type: "materials", root })
+      .then((items) => {
+        if (!disposed) setMaterials(items);
+      })
+      .catch((error) => {
+        if (!disposed) setError(error.message);
+      });
+    return () => {
+      disposed = true;
+    };
   }, [root, mentionOpen]);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -103,9 +107,7 @@ export function AgentPanel({
       setSessions((old) => {
         const previous = old.find((s) => s.id === state.id);
         if (previous && previous.revision > state.revision) return old;
-        return previous
-          ? old.map((s) => (s.id === state.id ? state : s))
-          : [...old, state];
+        return previous ? old.map((s) => (s.id === state.id ? state : s)) : [...old, state];
       });
     },
     [root],
@@ -145,9 +147,7 @@ export function AgentPanel({
     };
   }, []);
   const current = sessions.find((s) => s.id === active);
-  const selectedModel = catalog?.models.find(
-    (model) => model.id === catalog.selectedModelId,
-  );
+  const selectedModel = catalog?.models.find((model) => model.id === catalog.selectedModelId);
   async function selectModel(modelId: string, thinking?: ThinkingLevel) {
     try {
       setCatalog(
@@ -180,12 +180,7 @@ export function AgentPanel({
       }
       return state;
     } catch (e) {
-      setError(
-        (e as Error).message.replace(
-          /^Error invoking remote method '[^']+': Error: /,
-          "",
-        ),
-      );
+      setError((e as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
     } finally {
       setPending(false);
     }
@@ -194,8 +189,7 @@ export function AgentPanel({
     if ((!text.trim() && !attachments.length) || pending) return;
     follow.current = true;
     setAwayFromBottom(false);
-    const conversation =
-      current ?? (await command({ type: "create", root }, true));
+    const conversation = current ?? (await command({ type: "create", root }, true));
     if (!conversation) return;
     if (
       await command({
@@ -205,8 +199,11 @@ export function AgentPanel({
         text,
         attachments,
       })
-    )
-      { setText(""); setAttachments([]); setPreview(undefined); }
+    ) {
+      setText("");
+      setAttachments([]);
+      setPreview(undefined);
+    }
   }
   return (
     <aside className="right">
@@ -224,7 +221,9 @@ export function AgentPanel({
                   setAwayFromBottom(false);
                   setActive(e.target.value);
                   setText("");
-                  setAttachments([]); setPreview(undefined); setMention(undefined);
+                  setAttachments([]);
+                  setPreview(undefined);
+                  setMention(undefined);
                   setError("");
                 }}
               >
@@ -247,7 +246,9 @@ export function AgentPanel({
           disabled={pending}
           onClick={() => {
             setText("");
-            setAttachments([]); setPreview(undefined); setMention(undefined);
+            setAttachments([]);
+            setPreview(undefined);
+            setMention(undefined);
             void command({ type: "create", root }, true);
           }}
         >
@@ -260,8 +261,7 @@ export function AgentPanel({
         onScroll={() => {
           const el = scroll.current;
           if (!el) return;
-          follow.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+          follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
           setAwayFromBottom(!follow.current);
         }}
       >
@@ -277,10 +277,7 @@ export function AgentPanel({
         {/* A conversation is append-only. Keep each row mounted when its provisional
             message ID is replaced by Pi's persisted ID (including open details). */}
         {current?.messages.map((m, index) => (
-          <div
-            className={`chat-message ${m.role}`}
-            key={`${current.id}:${index}`}
-          >
+          <div className={`chat-message ${m.role}`} key={`${current.id}:${index}`}>
             <div className="message-head">
               <span>
                 {m.role === "user" ? (
@@ -291,29 +288,27 @@ export function AgentPanel({
                   </>
                 )}
               </span>
-              {m.id !== "streaming" &&
-                m.id !== "pending-user" &&
-                !current.busy && (
-                  <button
-                    className="icon"
-                    title="从此消息分支"
-                    aria-label="从此消息分支"
-                    disabled={pending}
-                    onClick={() =>
-                      void command(
-                        {
-                          type: "branch",
-                          root,
-                          id: current.id,
-                          messageId: m.id,
-                        },
-                        true,
-                      )
-                    }
-                  >
-                    <GitBranch />
-                  </button>
-                )}
+              {m.id !== "streaming" && m.id !== "pending-user" && !current.busy && (
+                <button
+                  className="icon"
+                  title="从此消息分支"
+                  aria-label="从此消息分支"
+                  disabled={pending}
+                  onClick={() =>
+                    void command(
+                      {
+                        type: "branch",
+                        root,
+                        id: current.id,
+                        messageId: m.id,
+                      },
+                      true,
+                    )
+                  }
+                >
+                  <GitBranch />
+                </button>
+              )}
             </div>
             {m.role === "assistant" && m.thinking && (
               <details className="process-card thinking-card">
@@ -329,14 +324,13 @@ export function AgentPanel({
             {m.tools?.map((tool) => (
               <ToolProcess key={tool.id} tool={tool} onOpenFile={onOpenFile} />
             ))}
-            {m.status && (
-              <small>{m.status === "aborted" ? "已停止" : "请求失败"}</small>
-            )}
+            {m.status && <small>{m.status === "aborted" ? "已停止" : "请求失败"}</small>}
           </div>
         ))}
         {current?.queued.map((message, i) => (
           <div className="queued-message" key={i}>
-            待补充：<AgentMessage text={message} role="user" onError={setError} />
+            待补充：
+            <AgentMessage text={message} role="user" onError={setError} />
           </div>
         ))}
         {(error || current?.error) && (
@@ -352,17 +346,13 @@ export function AgentPanel({
             onClick={() => {
               follow.current = true;
               setAwayFromBottom(false);
-              if (scroll.current)
-                scroll.current.scrollTop = scroll.current.scrollHeight;
+              if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
             }}
           >
             <ArrowDown /> 回到最新消息
           </button>
         )}
-        <div
-          className={`agent-activity ${current?.busy ? "active" : ""}`}
-          role={current?.busy ? "status" : undefined}
-        >
+        <div className={`agent-activity ${current?.busy ? "active" : ""}`} role={current?.busy ? "status" : undefined}>
           {current?.busy ? (
             <>
               <span />
@@ -374,18 +364,53 @@ export function AgentPanel({
         </div>
         <div className="composer">
           <div className="chat-attachments">
-            {attachments.map((item) => <span key={`${item.kind}:${item.value}`}>
-              <button title={item.value} onClick={() => setPreview({ title: item.label, text: item.value })}>{item.kind === "skill" ? "Skill" : "文档"} · {item.label}</button>
-              <button aria-label={`移除 ${item.label}`} onClick={() => { setAttachments(old => old.filter(value => value !== item)); setPreview(undefined); }}>×</button>
-            </span>)}
+            {attachments.map((item) => (
+              <span key={`${item.kind}:${item.value}`}>
+                <button title={item.value} onClick={() => setPreview({ title: item.label, text: item.value })}>
+                  {item.kind === "skill" ? "Skill" : "文档"} · {item.label}
+                </button>
+                <button
+                  aria-label={`移除 ${item.label}`}
+                  onClick={() => {
+                    setAttachments((old) => old.filter((value) => value !== item));
+                    setPreview(undefined);
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
           </div>
-          {preview && <section className="chat-source-preview" aria-label="附件预览"><button onClick={() => setPreview(undefined)}>关闭预览</button><pre>{preview.text}</pre></section>}
-          {mention && <div className="mention-menu" role="listbox" aria-label="选择文档或 Skill">
-            {(["document", "skill"] as const).map(kind => <section key={kind}><strong>{kind === "document" ? "工程文档" : "产品 Skills"}</strong>
-              {choices.filter(item => item.kind === kind).map(item => <button role="option" aria-selected={choices.indexOf(item) === choice} key={item.value} onMouseDown={event => event.preventDefault()} onClick={() => choose(item)}>{item.label}<small>{item.value}</small></button>)}
-            </section>)}
-            {!choices.length && <p>没有匹配材料</p>}
-          </div>}
+          {preview && (
+            <section className="chat-source-preview" aria-label="附件预览">
+              <button onClick={() => setPreview(undefined)}>关闭预览</button>
+              <pre>{preview.text}</pre>
+            </section>
+          )}
+          {mention && (
+            <div className="mention-menu" role="listbox" aria-label="选择文档或 Skill">
+              {(["document", "skill"] as const).map((kind) => (
+                <section key={kind}>
+                  <strong>{kind === "document" ? "工程文档" : "产品 Skills"}</strong>
+                  {choices
+                    .filter((item) => item.kind === kind)
+                    .map((item) => (
+                      <button
+                        role="option"
+                        aria-selected={choices.indexOf(item) === choice}
+                        key={item.value}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => choose(item)}
+                      >
+                        {item.label}
+                        <small>{item.value}</small>
+                      </button>
+                    ))}
+                </section>
+              ))}
+              {!choices.length && <p>没有匹配材料</p>}
+            </div>
+          )}
           <textarea
             ref={inputRef}
             aria-label="Agent 消息"
@@ -397,28 +422,33 @@ export function AgentPanel({
               setText(e.target.value);
               updateMention(e.target);
             }}
-            onSelect={event => updateMention(event.currentTarget)}
+            onSelect={(event) => updateMention(event.currentTarget)}
             onKeyDown={(event) => {
               if (mention && !event.nativeEvent.isComposing) {
-                if (event.key === "Escape") { event.preventDefault(); setMention(undefined); return; }
-                if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setChoice(value => (value + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % Math.max(1, choices.length)); return; }
-                if ((event.key === "Enter" || event.key === "Tab") && choices[choice]) { event.preventDefault(); choose(choices[choice]); return; }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setMention(undefined);
+                  return;
+                }
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setChoice(
+                    (value) =>
+                      (value + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % Math.max(1, choices.length),
+                  );
+                  return;
+                }
+                if ((event.key === "Enter" || event.key === "Tab") && choices[choice]) {
+                  event.preventDefault();
+                  choose(choices[choice]);
+                  return;
+                }
               }
-              if (
-                event.key !== "Enter" ||
-                event.nativeEvent.isComposing ||
-                event.nativeEvent.keyCode === 229
-              )
-                return;
+              if (event.key !== "Enter" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
               event.preventDefault();
               if (event.ctrlKey) {
                 const input = event.currentTarget;
-                input.setRangeText(
-                  "\n",
-                  input.selectionStart,
-                  input.selectionEnd,
-                  "end",
-                );
+                input.setRangeText("\n", input.selectionStart, input.selectionEnd, "end");
                 setText(input.value);
               } else if (!event.repeat) {
                 void send();
@@ -431,8 +461,7 @@ export function AgentPanel({
               <div
                 className="model-picker"
                 onBlur={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget))
-                    setModelOpen(false);
+                  if (!event.currentTarget.contains(event.relatedTarget)) setModelOpen(false);
                 }}
               >
                 <button
@@ -446,9 +475,7 @@ export function AgentPanel({
                     setModelQuery("");
                   }}
                 >
-                  <span>
-                    {selectedModel?.name || selectedModel?.model || "选择模型"}
-                  </span>
+                  <span>{selectedModel?.name || selectedModel?.model || "选择模型"}</span>
                   <ChevronDown />
                 </button>
                 {modelOpen && (
@@ -466,31 +493,21 @@ export function AgentPanel({
                     <div className="model-picker-options">
                       {catalog?.models
                         .filter((model) => {
-                          const service = catalog.services.find(
-                            (item) => item.id === model.serviceId,
-                          );
+                          const service = catalog.services.find((item) => item.id === model.serviceId);
                           return `${model.name} ${model.model} ${service?.name}`
                             .toLowerCase()
                             .includes(modelQuery.toLowerCase());
                         })
                         .map((model) => {
-                          const service = catalog.services.find(
-                            (item) => item.id === model.serviceId,
-                          );
+                          const service = catalog.services.find((item) => item.id === model.serviceId);
                           return (
                             <button
                               type="button"
                               key={model.id}
-                              className={
-                                model.id === catalog.selectedModelId
-                                  ? "active"
-                                  : ""
-                              }
+                              className={model.id === catalog.selectedModelId ? "active" : ""}
                               onClick={() => void selectModel(model.id)}
                             >
-                              <span>
-                                {model.name || model.model || "未命名模型"}
-                              </span>
+                              <span>{model.name || model.model || "未命名模型"}</span>
                               <small>{service?.name}</small>
                             </button>
                           );
@@ -503,12 +520,7 @@ export function AgentPanel({
                 <select
                   aria-label="思考等级"
                   value={selectedModel.thinking}
-                  onChange={(e) =>
-                    void selectModel(
-                      selectedModel.id,
-                      e.target.value as ThinkingLevel,
-                    )
-                  }
+                  onChange={(e) => void selectModel(selectedModel.id, e.target.value as ThinkingLevel)}
                 >
                   {selectedModel.availableThinking.map((level) => (
                     <option key={level} value={level}>
@@ -517,12 +529,7 @@ export function AgentPanel({
                   ))}
                 </select>
               )}
-              <button
-                className="model-settings-link"
-                onClick={onSettings}
-                title="Agent 模型设置"
-                aria-label="模型设置"
-              >
+              <button className="model-settings-link" onClick={onSettings} title="Agent 模型设置" aria-label="模型设置">
                 <Settings2 />
               </button>
             </div>
@@ -533,9 +540,7 @@ export function AgentPanel({
                   title="停止回复"
                   aria-label="停止回复"
                   disabled={current.stopping}
-                  onClick={() =>
-                    void command({ type: "stop", root, id: current.id })
-                  }
+                  onClick={() => void command({ type: "stop", root, id: current.id })}
                 >
                   <Square />
                 </button>
@@ -557,13 +562,7 @@ export function AgentPanel({
   );
 }
 
-function ToolProcess({
-  tool,
-  onOpenFile,
-}: {
-  tool: ChatTool;
-  onOpenFile: (path: string) => void;
-}) {
+function ToolProcess({ tool, onOpenFile }: { tool: ChatTool; onOpenFile: (path: string) => void }) {
   const details = tool.details as
     | {
         artifacts?: string[];
@@ -585,15 +584,9 @@ function ToolProcess({
       }
     | undefined;
   return (
-    <details
-      className="process-card tool-process"
-      data-tool={tool.name}
-      data-status={tool.status}
-    >
+    <details className="process-card tool-process" data-tool={tool.name} data-status={tool.status}>
       <summary>
-        {["web_search", "fetch_content", "get_search_content"].includes(
-          tool.name,
-        ) ? (
+        {["web_search", "fetch_content", "get_search_content"].includes(tool.name) ? (
           <Globe />
         ) : tool.name === "bash" ? (
           <Terminal />
@@ -613,10 +606,7 @@ function ToolProcess({
               get_search_content: "继续查阅",
             }[tool.name] ?? tool.name}
           </span>
-          <span
-            className="process-subject"
-            title={args?.path ?? args?.query ?? args?.url ?? args?.responseId}
-          >
+          <span className="process-subject" title={args?.path ?? args?.query ?? args?.url ?? args?.responseId}>
             {args?.query ??
               args?.url ??
               args?.path?.replace(/\\/g, "/").split("/").at(-1) ??
@@ -637,9 +627,7 @@ function ToolProcess({
       </summary>
       <div className="process-body">
         <div className="process-label">参数 · {tool.name}</div>
-        <pre className="tool-arguments">
-          {args?.command ?? JSON.stringify(tool.arguments, null, 2)}
-        </pre>
+        <pre className="tool-arguments">{args?.command ?? JSON.stringify(tool.arguments, null, 2)}</pre>
         {tool.output && (
           <>
             <div className="process-label">结果</div>
@@ -648,24 +636,15 @@ function ToolProcess({
         )}
         {details?.change && (
           <>
-            <button
-              className="tool-file"
-              onClick={() => onOpenFile(details.change!.path)}
-            >
+            <button className="tool-file" onClick={() => onOpenFile(details.change!.path)}>
               <FileOutput />
               {details.change.path}
             </button>
-            <pre className="tool-diff">
-              {details.change.patch || "内容未改变"}
-            </pre>
+            <pre className="tool-diff">{details.change.patch || "内容未改变"}</pre>
           </>
         )}
         {details?.artifacts?.map((file) => (
-          <button
-            key={file}
-            className="tool-file"
-            onClick={() => onOpenFile(file)}
-          >
+          <button key={file} className="tool-file" onClick={() => onOpenFile(file)}>
             <FileOutput />
             {file}
           </button>

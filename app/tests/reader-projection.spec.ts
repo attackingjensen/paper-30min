@@ -20,10 +20,10 @@ test("reader 投影按 blocks 真实顺序输出全部阅读块，含摘要、�
   const projection = buildReaderProjection(tree);
 
   // 章节标题条目附着于触发块；内容块本身必须与 blocks 顺序一一对应。
-  expect(projection.items.filter((item) => item.kind !== "section").map((item) => item.blockId))
-    .toEqual(tree.blocks.map((block) => block.id));
-  const units = projection.items.flatMap((item) =>
-    item.kind === "unit" ? [item.unitId] : []);
+  expect(projection.items.filter((item) => item.kind !== "section").map((item) => item.blockId)).toEqual(
+    tree.blocks.map((block) => block.id),
+  );
+  const units = projection.items.flatMap((item) => (item.kind === "unit" ? [item.unitId] : []));
   expect(units).toContain(ids.abstract);
   expect(units).toContain(ids.footnote);
   expect(units).toContain(ids.reference);
@@ -36,9 +36,7 @@ test("reader 投影章节标题按嵌套深度输出，正文块携带所属章�
   const projection = buildReaderProjection(tree);
 
   const headings = projection.items.filter((item) => item.kind === "section");
-  expect(headings.map((item) => item.kind === "section" && item.title)).toEqual([
-    "", "2 方法", "附录 A 证明",
-  ]);
+  expect(headings.map((item) => item.kind === "section" && item.title)).toEqual(["", "2 方法", "附录 A 证明"]);
   expect(headings.map((item) => item.kind === "section" && item.depth)).toEqual([1, 2, 2]);
   const table = projection.items.find((item) => item.blockId === ids.table);
   expect(table?.kind === "table" && table.sectionId).toBe(ids.method);
@@ -48,16 +46,13 @@ test("reader 投影文本片段携带句子 ID 与 UTF-16 逻辑偏移，atom �
   const { tree, ids } = projected();
   const projection = buildReaderProjection(tree);
 
-  const abstract = projection.items.find(
-    (item) => item.kind === "unit" && item.unitId === ids.abstract,
-  );
+  const abstract = projection.items.find((item) => item.kind === "unit" && item.unitId === ids.abstract);
   if (abstract?.kind !== "unit") throw new Error("摘要单元未投影");
   const sentence = abstract.sentences.find((s) => s.sentenceId === ids.inlineMathSentence)!;
   const atomPart = sentence.parts.find((part) => part.kind === "atom")!;
   expect(atomPart.kind === "atom" && atomPart.start).toBe("We study reading. Energy stays ".length);
   expect(atomPart.kind === "atom" && atomPart.end).toBe(atomPart.start + 1);
-  const whole = sentence.parts.map((part) =>
-    part.kind === "text" ? part.text : part.atom.text).join("");
+  const whole = sentence.parts.map((part) => (part.kind === "text" ? part.text : part.atom.text)).join("");
   expect(whole).toBe(projectSentenceText(tree, ids.inlineMathSentence));
 });
 
@@ -67,16 +62,19 @@ test("reader 投影行内公式保留 atom ID 与来源 LaTeX，交叉引用区�
 
   const intro = projection.items.find((item) => item.kind === "unit" && item.unitId === ids.intro);
   if (intro?.kind !== "unit") throw new Error("引言单元未投影");
-  const atoms = intro.sentences.flatMap((s) => s.parts)
+  const atoms = intro.sentences
+    .flatMap((s) => s.parts)
     .filter((part) => part.kind === "atom")
     .map((part) => part.kind === "atom" && part.atom);
-  const abstractItem = projection.items.find(
-    (item) => item.kind === "unit" && item.unitId === ids.abstract);
+  const abstractItem = projection.items.find((item) => item.kind === "unit" && item.unitId === ids.abstract);
   if (abstractItem?.kind !== "unit") throw new Error("摘要单元未投影");
-  const math = abstractItem.sentences.flatMap((s) => s.parts)
+  const math = abstractItem.sentences
+    .flatMap((s) => s.parts)
     .find((part) => part.kind === "atom" && part.atom.id === ids.inlineMath);
-  expect(math?.kind === "atom" && math.atom.kind === "math" && math.atom.source)
-    .toEqual({ format: "latex", value: "E=mc^2" });
+  expect(math?.kind === "atom" && math.atom.kind === "math" && math.atom.source).toEqual({
+    format: "latex",
+    value: "E=mc^2",
+  });
   const resolved = atoms.find((atom) => atom && atom.id === ids.resolvedRef);
   expect(resolved && resolved.kind === "cross-reference" && resolved.targetUnitId).toBe(ids.target);
   const unresolved = atoms.find((atom) => atom && atom.id === ids.unresolvedRef);
@@ -91,8 +89,7 @@ test("reader 投影危险协议链接降级为不可点击文本并保留警告"
   const projection = buildReaderProjection(tree);
   const unit = projection.items.find((item) => item.kind === "unit");
   if (unit?.kind !== "unit") throw new Error("单元未投影");
-  const link = unit.sentences.flatMap((s) => s.parts)
-    .find((part) => part.kind === "atom");
+  const link = unit.sentences.flatMap((s) => s.parts).find((part) => part.kind === "atom");
   if (link?.kind !== "atom" || link.atom.kind !== "link") throw new Error("链接原子未投影");
   expect(link.atom.href).toBeNull();
   expect(link.atom.warning).toBeTruthy();

@@ -2,13 +2,7 @@
 // 生产 preload、project:command IPC、Node utility process 与真实临时 v2 工程；
 // 正文只来自 current revision 的 document.json，资产经 paper30min 协议受管读取。
 // 恶意内容用例记录全部网络请求与 pageerror，断言零远端副作用。
-import {
-  test,
-  expect,
-  _electron as electron,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -34,9 +28,7 @@ async function launch() {
   const visible = process.env.PAPER30MIN_TEST_WINDOW === "visible";
   const env: Record<string, string> = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
@@ -55,18 +47,12 @@ async function launch() {
 }
 
 async function closeDesktopForCleanup() {
-  if (
-    !desktopProcess ||
-    desktopProcess.exitCode !== null ||
-    desktopProcess.signalCode !== null
-  ) return;
+  if (!desktopProcess || desktopProcess.exitCode !== null || desktopProcess.signalCode !== null) return;
   await desktop.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = (...args: unknown[]) => {
       const options = args.at(-1) as Electron.MessageBoxSyncOptions;
-      if (
-        options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" ||
-        options.buttons?.[1] !== "放弃并关闭"
-      ) throw new Error("测试清理遇到非预期的原生确认框。");
+      if (options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" || options.buttons?.[1] !== "放弃并关闭")
+        throw new Error("测试清理遇到非预期的原生确认框。");
       return 1;
     };
   });
@@ -94,13 +80,13 @@ function invoke<T>(command: CoreCommand): Promise<T> {
   return page.evaluate((c) => window.desktop.invoke(c), command) as Promise<T>;
 }
 
-const create = (name: string) =>
-  invoke<ProjectCoreSnapshot>({ type: "coreCreate", parent: sandbox, name });
+const create = (name: string) => invoke<ProjectCoreSnapshot>({ type: "coreCreate", parent: sandbox, name });
 
 async function publishSource(root: string, files: Record<string, Uint8Array>, metadata?: Record<string, unknown>) {
-  return page.evaluate(({ root, files, metadata }) =>
-    window.desktop.invoke({ type: "corePublishSource", root, files, metadata }),
-  { root, files, metadata }) as Promise<SourceSnapshotRecord>;
+  return page.evaluate(
+    ({ root, files, metadata }) => window.desktop.invoke({ type: "corePublishSource", root, files, metadata }),
+    { root, files, metadata },
+  ) as Promise<SourceSnapshotRecord>;
 }
 
 async function commit(
@@ -109,9 +95,11 @@ async function commit(
   sourceSnapshotId: string,
   files: Record<string, Uint8Array>,
 ) {
-  return page.evaluate(({ root, baseRevision, sourceSnapshotId, files }) =>
-    window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
-  { root, baseRevision, sourceSnapshotId, files }) as Promise<ProjectRevisionRecord>;
+  return page.evaluate(
+    ({ root, baseRevision, sourceSnapshotId, files }) =>
+      window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
+    { root, baseRevision, sourceSnapshotId, files },
+  ) as Promise<ProjectRevisionRecord>;
 }
 
 // 真实可解码 PNG：隐藏窗口下 naturalWidth>0 才是资产真实加载的证据。
@@ -149,9 +137,13 @@ function complexFiles(paperId: string) {
 async function complexProject(name: string) {
   const created = await create(name);
   const paperId = created.manifest.paper.id;
-  const source = await publishSource(created.root, {
-    "document.html": new TextEncoder().encode("<html>paper</html>"),
-  }, { kind: "arxiv", canonicalId: "2401.00001v1", title: "Reading Energy", authors: ["Author, A."] });
+  const source = await publishSource(
+    created.root,
+    {
+      "document.html": new TextEncoder().encode("<html>paper</html>"),
+    },
+    { kind: "arxiv", canonicalId: "2401.00001v1", title: "Reading Energy", authors: ["Author, A."] },
+  );
   const { tree, ids, files } = complexFiles(paperId);
   const revision = await commit(created.root, null, source.sourceSnapshotId, files);
   return { created, revision, tree, ids };
@@ -198,8 +190,9 @@ test("reader Full 正文经真实 Electron 渲染全部章节、公式、表格�
   await expect(figure).toBeVisible();
   await expect.poll(() => figure.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
   await expect(reader.locator(`[data-block-id="${ids.figure}"] figcaption`)).toContainText("Figure 1");
-  await expect(reader.locator(`[data-block-id="${ids.missingFigure}"] .reader-warning`))
-    .toContainText("来源图片未随快照保存");
+  await expect(reader.locator(`[data-block-id="${ids.missingFigure}"] .reader-warning`)).toContainText(
+    "来源图片未随快照保存",
+  );
   // raw block：消毒 HTML、文本与结构限制可见。
   const raw = reader.locator(`[data-block-id="${ids.rawBlock}"]`);
   await expect(raw.locator("blockquote")).toContainText("Quoted source line.");
@@ -233,10 +226,12 @@ test("reader 内部引用点击定位目标并聚焦；未解析引用保留文�
   // 外链：受控系统打开入口，不在正文内嵌网页。
   let opened = "";
   await desktop.evaluate(({ shell }) => {
-    shell.openExternal = async (url: string) => { (globalThis as Record<string, unknown>).__opened = url; };
+    shell.openExternal = async (url: string) => {
+      (globalThis as Record<string, unknown>).__opened = url;
+    };
   });
   await reader.locator(`[data-atom-id="${ids.safeLink}"]`).click();
-  opened = await desktop.evaluate(() => (globalThis as Record<string, unknown>).__opened as string ?? "");
+  opened = await desktop.evaluate(() => ((globalThis as Record<string, unknown>).__opened as string) ?? "");
   expect(opened).toBe("https://example.org/project");
 });
 
@@ -262,8 +257,12 @@ test("reader 恶意内容零网络零脚本：危险链接、raw 注入与远端
     units: { [unitId]: { id: unitId, sectionId, kind: "paragraph", sentenceIds: [sentenceId] } },
     sentences: {
       [sentenceId]: {
-        id: sentenceId, unitId,
-        content: [{ kind: "text", text: "危险 " }, { kind: "atom", atomId: linkAtom }],
+        id: sentenceId,
+        unitId,
+        content: [
+          { kind: "text", text: "危险 " },
+          { kind: "atom", atomId: linkAtom },
+        ],
       },
     },
     atoms: {
@@ -272,7 +271,9 @@ test("reader 恶意内容零网络零脚本：危险链接、raw 注入与远端
     blocks: [
       { id: randomUUID(), sectionId, kind: "unit", unitId },
       {
-        id: rawBlock, sectionId, kind: "raw",
+        id: rawBlock,
+        sectionId,
+        kind: "raw",
         html: "<p>safe</p>",
         text: "safe",
         limitations: ["受控投影"],
@@ -319,7 +320,7 @@ test("reader 受损 raw HTML 不渲染不执行：白名单拒绝后显示恢复
   const raw = tree.blocks.find((block) => block.id === ids.rawBlock);
   if (raw?.kind !== "raw") throw new Error("fixture raw 块缺失");
   raw.html =
-    '<p>safe</p><script>window.__pwned=1</script>' +
+    "<p>safe</p><script>window.__pwned=1</script>" +
     '<img src="https://evil.example.org/track.png">' +
     '<iframe src="https://evil.example.org/frame"></iframe>' +
     '<p onclick="window.__pwned=2">click</p>';
@@ -352,8 +353,7 @@ test("reader 宽表与长公式在自身容器滚动，窄窗格不产生整页�
   await desktop.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0].setBounds({ width: 560, height: 780 }),
   );
-  await expect.poll(() => page.evaluate(() =>
-    document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   const mainOverflow = await page.locator(".main").evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
   expect(mainOverflow).toBe(true);
   // 长英文/CJK/组合字符段落完整可见（换行而非裁切）。

@@ -8,15 +8,16 @@ const SUPPORTED_SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc9, 0xca, 0xcb]);
 
 function unsupportedSof(marker: number): boolean {
   return (
-    (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) &&
+    marker >= 0xc0 &&
+    marker <= 0xcf &&
+    marker !== 0xc4 &&
+    marker !== 0xc8 &&
+    marker !== 0xcc &&
     !SUPPORTED_SOF.has(marker)
   );
 }
 
-export type JpegValidation =
-  | { status: "ok" }
-  | { status: "invalid" }
-  | { status: "pixel-budget-exceeded" };
+export type JpegValidation = { status: "ok" } | { status: "invalid" } | { status: "pixel-budget-exceeded" };
 
 /** 校验实际 JPEG 字节：段边界完整、SOF 尺寸受预算约束、扫描以 EOI 结束。 */
 export function validateJpeg(bytes: Buffer): JpegValidation {
@@ -33,8 +34,7 @@ export function validateJpeg(bytes: Buffer): JpegValidation {
     const marker = bytes[offset];
     offset += 1;
     if (marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
-    if (marker === 0xd9)
-      return sawSos && components > 0 ? { status: "ok" } : { status: "invalid" };
+    if (marker === 0xd9) return sawSos && components > 0 ? { status: "ok" } : { status: "invalid" };
     if (marker === 0xd8 || offset + 2 > bytes.length) return { status: "invalid" };
     const length = bytes.readUInt16BE(offset);
     if (length < 2 || offset + length > bytes.length) return { status: "invalid" };
@@ -59,11 +59,7 @@ export function validateJpeg(bytes: Buffer): JpegValidation {
       // SOS 头之后是熵编码数据：跳过 stuffed 0xFF00 与 RSTn，直到真实 EOI。
       if (components === 0 || length < 6) return { status: "invalid" };
       const scanComponents = bytes[payload];
-      if (
-        scanComponents < 1 ||
-        scanComponents > components ||
-        length !== 6 + 2 * scanComponents
-      )
+      if (scanComponents < 1 || scanComponents > components || length !== 6 + 2 * scanComponents)
         return { status: "invalid" };
       sawSos = true;
       offset = end;

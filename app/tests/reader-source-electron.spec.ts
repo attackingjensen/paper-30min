@@ -1,12 +1,6 @@
 // 来源诊断面板真实 Electron 回归（SPEC-reader §7，paper-30min-qa3.4）：
 // 非评分化事实、锚定诊断筛选与定位、核验四态；诊断不阻塞阅读与选区入口。
-import {
-  test,
-  expect,
-  _electron as electron,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -31,9 +25,7 @@ async function launch() {
   const visible = process.env.PAPER30MIN_TEST_WINDOW === "visible";
   const env: Record<string, string> = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
@@ -52,18 +44,12 @@ async function launch() {
 }
 
 async function closeDesktopForCleanup() {
-  if (
-    !desktopProcess ||
-    desktopProcess.exitCode !== null ||
-    desktopProcess.signalCode !== null
-  ) return;
+  if (!desktopProcess || desktopProcess.exitCode !== null || desktopProcess.signalCode !== null) return;
   await desktop.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = (...args: unknown[]) => {
       const options = args.at(-1) as Electron.MessageBoxSyncOptions;
-      if (
-        options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" ||
-        options.buttons?.[1] !== "放弃并关闭"
-      ) throw new Error("测试清理遇到非预期的原生确认框。");
+      if (options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" || options.buttons?.[1] !== "放弃并关闭")
+        throw new Error("测试清理遇到非预期的原生确认框。");
       return 1;
     };
   });
@@ -102,28 +88,33 @@ const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex
 async function complexProject(name: string) {
   const created = await invoke<ProjectCoreSnapshot>({ type: "coreCreate", parent: sandbox, name });
   const paperId = created.manifest.paper.id;
-  const source = await page.evaluate<SourceSnapshotRecord, { root: string }>(({ root }) =>
-    window.desktop.invoke({
-      type: "corePublishSource",
-      root,
-      files: { "document.html": new TextEncoder().encode("<html>paper</html>") },
-      metadata: {
-        kind: "arxiv",
-        baseId: "2401.00001",
-        version: 1,
-        canonicalId: "2401.00001v1",
-        title: "Reading Energy",
-        authors: ["Author, A."],
-        fetchedAt: "2026-11-01T00:00:00.000Z",
-        warnings: [{
-          code: "arxiv-asset-missing",
-          severity: "warning",
-          stage: "fetch",
-          messageKey: "arxiv.fetch.assetMissing",
-          sourceAlias: "S2.F3",
-        }],
-      },
-    }), { root: created.root });
+  const source = await page.evaluate<SourceSnapshotRecord, { root: string }>(
+    ({ root }) =>
+      window.desktop.invoke({
+        type: "corePublishSource",
+        root,
+        files: { "document.html": new TextEncoder().encode("<html>paper</html>") },
+        metadata: {
+          kind: "arxiv",
+          baseId: "2401.00001",
+          version: 1,
+          canonicalId: "2401.00001v1",
+          title: "Reading Energy",
+          authors: ["Author, A."],
+          fetchedAt: "2026-11-01T00:00:00.000Z",
+          warnings: [
+            {
+              code: "arxiv-asset-missing",
+              severity: "warning",
+              stage: "fetch",
+              messageKey: "arxiv.fetch.assetMissing",
+              sourceAlias: "S2.F3",
+            },
+          ],
+        },
+      }),
+    { root: created.root },
+  );
   const { tree, ids } = complexReaderTree(paperId);
   const pngHash = sha256(PNG);
   const svgHash = sha256(SVG);
@@ -134,20 +125,25 @@ async function complexProject(name: string) {
     block.asset = { path: `assets/${hash}.${mime === "image/png" ? "png" : "svg"}`, sha256: hash, mime };
   }
   const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-  const revision = await page.evaluate<ProjectRevisionRecord, { root: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }>(({ root, sourceSnapshotId, files }) =>
-    window.desktop.invoke({ type: "coreCommit", root, baseRevision: null, sourceSnapshotId, files }),
-  {
-    root: created.root,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: {
-      "document.json": json(tree),
-      "source-base.json": json(tree),
-      "tombstones.json": json([]),
-      "changeset.json": json({ baseRevision: null }),
-      [`assets/${pngHash}.png`]: new Uint8Array(PNG),
-      [`assets/${svgHash}.svg`]: new Uint8Array(SVG),
+  const revision = await page.evaluate<
+    ProjectRevisionRecord,
+    { root: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }
+  >(
+    ({ root, sourceSnapshotId, files }) =>
+      window.desktop.invoke({ type: "coreCommit", root, baseRevision: null, sourceSnapshotId, files }),
+    {
+      root: created.root,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        "document.json": json(tree),
+        "source-base.json": json(tree),
+        "tombstones.json": json([]),
+        "changeset.json": json({ baseRevision: null }),
+        [`assets/${pngHash}.png`]: new Uint8Array(PNG),
+        [`assets/${svgHash}.svg`]: new Uint8Array(SVG),
+      },
     },
-  });
+  );
   return { created, revision, tree, ids };
 }
 
@@ -189,7 +185,10 @@ test("reader 正文诊断按代码筛选并定位受影响块；阅读与选区�
   await expect(panel).toContainText("raw-limited");
   await expect(panel).toContainText("formula-render-failed");
   // 筛选缺图诊断：只剩受影响块条目。
-  await panel.locator(".source-filter").getByRole("button", { name: /figure-missing/ }).click();
+  await panel
+    .locator(".source-filter")
+    .getByRole("button", { name: /figure-missing/ })
+    .click();
   const items = panel.locator(".source-diagnostics li");
   await expect(items).toHaveCount(1);
   await expect(items.first()).toContainText("来源图片未随快照保存");

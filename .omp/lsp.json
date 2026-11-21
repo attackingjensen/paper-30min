@@ -6,6 +6,15 @@
       "fileTypes": [".ts", ".tsx", ".cts", ".mts", ".js", ".jsx", ".mjs", ".cjs"],
       "rootMarkers": [".oxlintrc.json"],
       "isLinter": true
+    },
+    "oxfmt": {
+      "command": "node",
+      "args": ["app/node_modules/oxfmt/bin/oxfmt", "--lsp"],
+      "fileTypes": [
+        ".ts", ".tsx", ".cts", ".mts", ".js", ".jsx", ".mjs", ".cjs",
+        ".json", ".jsonc", ".css", ".scss", ".less", ".html", ".md", ".yaml", ".yml", ".toml"
+      ],
+      "rootMarkers": [".oxfmtrc.json"]
     }
   }
 }

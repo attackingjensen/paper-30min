@@ -32,15 +32,19 @@ test("document-core 普通文字修正只让对应章节派生内容 stale", () 
 
   expect(change(changeset, "section", selectionIds.section).status).toBe("changed");
   expect(change(changeset, "sentence", selectionIds.sentence).status).toBe("retained");
-  expect(deriveAnchorState(base, changeset, {
-    kind: "section",
-    sectionId: selectionIds.section,
-  })).toBe("stale");
-  expect(deriveAnchorState(base, changeset, {
-    kind: "sentence",
-    unitId: selectionIds.unit,
-    sentenceId: selectionIds.sentence,
-  })).toBe("fresh");
+  expect(
+    deriveAnchorState(base, changeset, {
+      kind: "section",
+      sectionId: selectionIds.section,
+    }),
+  ).toBe("stale");
+  expect(
+    deriveAnchorState(base, changeset, {
+      kind: "sentence",
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.sentence,
+    }),
+  ).toBe("fresh");
   expect(parseDocumentChangeset(JSON.parse(JSON.stringify(changeset)))).toEqual(changeset);
 });
 
@@ -58,10 +62,12 @@ test("document-core 内容不变的可靠移动保留文本派生关系", () => 
   expect(change(changeset, "section", selectionIds.section).status).toBe("moved");
   expect(change(changeset, "block", selectionIds.block).status).toBe("moved");
   expect(change(changeset, "unit", selectionIds.secondUnit).status).toBe("retained");
-  expect(deriveAnchorState(base, changeset, {
-    kind: "unit",
-    unitId: selectionIds.secondUnit,
-  })).toBe("fresh");
+  expect(
+    deriveAnchorState(base, changeset, {
+      kind: "unit",
+      unitId: selectionIds.secondUnit,
+    }),
+  ).toBe("fresh");
 });
 
 test("document-core atom 修正只让引用该 atom 的精确选区 stale", () => {
@@ -76,18 +82,22 @@ test("document-core atom 修正只让引用该 atom 的精确选区 stale", () =
     current,
     ...revisions(),
   });
-  const atomRange = createRangeAnchor(base, [{
-    unitId: selectionIds.unit,
-    sentenceId: selectionIds.sentence,
-    start: 4,
-    end: 5,
-  }]);
-  const textRange = createRangeAnchor(base, [{
-    unitId: selectionIds.unit,
-    sentenceId: selectionIds.sentence,
-    start: 5,
-    end: 8,
-  }]);
+  const atomRange = createRangeAnchor(base, [
+    {
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.sentence,
+      start: 4,
+      end: 5,
+    },
+  ]);
+  const textRange = createRangeAnchor(base, [
+    {
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.sentence,
+      start: 5,
+      end: 8,
+    },
+  ]);
 
   expect(change(changeset, "atom", selectionIds.atom).status).toBe("changed");
   expect(change(changeset, "sentence", selectionIds.sentence).status).toBe("retained");
@@ -111,31 +121,31 @@ test("document-core 重新分段只失效受影响句子并保留 tombstone 摘�
     unitId: selectionIds.unit,
     content: [{ kind: "text", text: "😀 é sentence." }],
   };
-  current.units[selectionIds.unit].sentenceIds = [
-    selectionIds.sentence,
-    firstNewSentence,
-    secondNewSentence,
-  ];
+  current.units[selectionIds.unit].sentenceIds = [selectionIds.sentence, firstNewSentence, secondNewSentence];
   const ids = revisions();
   const changeset = createDocumentChangeset({ base, current, ...ids });
   const tombstones = appendRemovedTombstones(base, changeset);
-  const oldRange = createRangeAnchor(base, [{
-    unitId: selectionIds.unit,
-    sentenceId: selectionIds.secondSentence,
-    start: 0,
-    end: 6,
-  }]);
+  const oldRange = createRangeAnchor(base, [
+    {
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.secondSentence,
+      start: 0,
+      end: 6,
+    },
+  ]);
 
   expect(change(changeset, "unit", selectionIds.unit).status).toBe("changed");
   expect(change(changeset, "sentence", selectionIds.secondSentence).status).toBe("removed");
   expect(change(changeset, "sentence", firstNewSentence).status).toBe("added");
   expect(change(changeset, "sentence", secondNewSentence).status).toBe("added");
   expect(deriveAnchorState(base, changeset, oldRange)).toBe("invalid");
-  expect(deriveAnchorState(base, changeset, {
-    kind: "sentence",
-    unitId: selectionIds.unit,
-    sentenceId: selectionIds.sentence,
-  })).toBe("fresh");
+  expect(
+    deriveAnchorState(base, changeset, {
+      kind: "sentence",
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.sentence,
+    }),
+  ).toBe("fresh");
   expect(tombstones).toHaveLength(1);
   expect(tombstones[0]).toMatchObject({
     nodeType: "sentence",
@@ -143,8 +153,7 @@ test("document-core 重新分段只失效受影响句子并保留 tombstone 摘�
     lastRevision: ids.baseRevision,
     excerpt: "Second 😀 é sentence.",
   });
-  expect(parseDocumentTombstones(JSON.parse(JSON.stringify(tombstones)), current))
-    .toEqual(tombstones);
+  expect(parseDocumentTombstones(JSON.parse(JSON.stringify(tombstones)), current)).toEqual(tombstones);
 });
 
 test("document-core 拆分单元不默认继承旧身份，tombstones 累积且禁止复用", () => {
@@ -174,11 +183,7 @@ test("document-core 拆分单元不默认继承旧身份，tombstones 累积且�
     unitId: secondNewUnit,
     content: [{ kind: "text", text: "Additional sentence." }],
   };
-  current.sections[selectionIds.section].unitIds = [
-    selectionIds.unit,
-    firstNewUnit,
-    secondNewUnit,
-  ];
+  current.sections[selectionIds.section].unitIds = [selectionIds.unit, firstNewUnit, secondNewUnit];
   current.blocks = current.blocks.filter((block) => block.id !== selectionIds.secondBlock);
   current.blocks.push(
     {
@@ -195,13 +200,15 @@ test("document-core 拆分单元不默认继承旧身份，tombstones 累积且�
     },
   );
   const changeset = createDocumentChangeset({ base, current, ...revisions() });
-  const previous = [{
-    nodeType: "sentence" as const,
-    nodeId: randomUUID(),
-    lastRevision: randomUUID(),
-    excerpt: " Earlier tombstone. ",
-    reason: "removed" as const,
-  }];
+  const previous = [
+    {
+      nodeType: "sentence" as const,
+      nodeId: randomUUID(),
+      lastRevision: randomUUID(),
+      excerpt: " Earlier tombstone. ",
+      reason: "removed" as const,
+    },
+  ];
   const tombstones = appendRemovedTombstones(base, changeset, previous);
 
   expect(previous).toHaveLength(1);
@@ -231,9 +238,11 @@ test("document-core conflicted 变化不得向下游投影为有效内容", () =
   });
   change(changeset, "sentence", selectionIds.sentence).status = "conflicted";
 
-  expect(deriveAnchorState(base, changeset, {
-    kind: "sentence",
-    unitId: selectionIds.unit,
-    sentenceId: selectionIds.sentence,
-  })).toBe("invalid");
+  expect(
+    deriveAnchorState(base, changeset, {
+      kind: "sentence",
+      unitId: selectionIds.unit,
+      sentenceId: selectionIds.sentence,
+    }),
+  ).toBe("invalid");
 });

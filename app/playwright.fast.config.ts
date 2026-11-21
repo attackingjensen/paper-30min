@@ -5,9 +5,6 @@ export default defineConfig({
   ...baseConfig,
   testIgnore: [/.*-electron\.spec\.ts$/, /.*desktop\.spec\.ts$/],
   workers: 4,
-  reporter: [
-    ["list"],
-    ["json", { outputFile: `${testOutputRoot}/timing/non-electron.json` }],
-  ],
+  reporter: [["list"], ["json", { outputFile: `${testOutputRoot}/timing/non-electron.json` }]],
   outputDir: `${testOutputRoot}/non-electron`,
 });
