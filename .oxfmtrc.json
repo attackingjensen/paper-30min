@@ -4,5 +4,5 @@
   "embeddedLanguageFormatting": "off",
   "sortImports": false,
   "sortPackageJson": false,
-  "ignorePatterns": [".beads/", ".agents/", ".claude/", ".omp/", "skills/"]
+  "ignorePatterns": [".beads/", ".agents/", ".claude/", ".codegraph/", ".omp/", "skills/"]
 }

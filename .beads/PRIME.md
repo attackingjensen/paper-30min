@@ -5,7 +5,6 @@
 ## Core Rules
 
 - **Task tracking**: Use beads for ALL task tracking (`bd create`, `bd ready`, `bd update`, `bd close`).
-- **Local checklists**: Agent built-in todo tools may track execution steps within the current task; beads stays the durable project tracker. Do not use markdown TODO files as project task state.
 - **Memory**: Do NOT use `bd remember` or `bd memories`. Persistent knowledge belongs to OpenViking; review and memory revision are triggered by the user, not by routine task completion.
 - **Workflow**: Create or claim a beads issue BEFORE writing code; mark `in_progress` when starting.
 
