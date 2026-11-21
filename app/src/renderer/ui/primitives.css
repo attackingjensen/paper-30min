@@ -303,7 +303,7 @@
   .ui-input {
     transition: none;
   }
-  .modal,
+  .modal[open],
   .modal::backdrop {
     animation: none;
   }

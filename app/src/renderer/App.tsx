@@ -879,7 +879,7 @@ export function App() {
         >
           {dialog.type === "create" ? (
             <>
-              <Field.Root>
+              <Field.Root validationMode="onBlur">
                 <Field.Label>工程名称</Field.Label>
                 <Field.Control
                   id="project-name"
@@ -889,6 +889,7 @@ export function App() {
                   onChange={(e) => setDialog({ ...dialog, name: e.target.value })}
                   required
                 />
+                <Field.Error match="valueMissing">请输入工程名称。</Field.Error>
               </Field.Root>
               <label>原始 PDF</label>
               <div className="path source-path">{dialog.source}</div>
@@ -922,7 +923,7 @@ export function App() {
               </label>
             </>
           ) : dialog.type === "note" ? (
-            <Field.Root>
+            <Field.Root validationMode="onBlur">
               <Field.Label>笔记名称</Field.Label>
               <Field.Control
                 id="note-name"
@@ -932,9 +933,10 @@ export function App() {
                 required
                 disabled={busy}
               />
+              <Field.Error match="valueMissing">请输入笔记名称。</Field.Error>
             </Field.Root>
           ) : (
-            <Field.Root>
+            <Field.Root validationMode="onBlur">
               <Field.Label>工程内相对路径</Field.Label>
               <Field.Control
                 id="destination"
@@ -944,6 +946,7 @@ export function App() {
                 onChange={(e) => setDialog({ ...dialog, destination: e.target.value })}
                 required
               />
+              <Field.Error match="valueMissing">请输入工程内相对路径。</Field.Error>
             </Field.Root>
           )}
           {error && (

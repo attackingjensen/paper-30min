@@ -3313,3 +3313,50 @@ test("UI Select 键盘选择与统一浮层语义色", async () => {
   await page.screenshot({ path: "test-results/ou7-agent-settings-narrow.png", animations: "disabled" });
   await page.setViewportSize({ width: 1440, height: 960 });
 });
+
+test("UI Field 原生校验错误与控件关联", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "新建笔记", exact: true }).click();
+  const name = page.getByLabel("笔记名称", { exact: true });
+  await expect(name).toBeFocused();
+  await name.fill("");
+  await page.getByRole("button", { name: "创建笔记", exact: true }).click();
+
+  const error = page.getByText("请输入笔记名称。", { exact: true });
+  await expect(error).toBeVisible();
+  await expect(name).toHaveAttribute("aria-invalid", "true");
+  const errorId = await error.getAttribute("id");
+  expect(errorId).not.toBeNull();
+  await expect(name).toHaveAttribute("aria-describedby", new RegExp(errorId!));
+  await name.fill("修正名称");
+  await expect(error).toBeHidden();
+});
+
+test("UI reduced-motion 与三种窗口宽度保持焦点和布局", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await choose(fixture);
+  const trigger = page.getByRole("button", { name: "从 PDF 新建工程", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "新建工程", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveCSS("animation-name", "none");
+  await expect(dialog.getByRole("button", { name: "创建工程", exact: true })).toHaveCSS("transition-property", "none");
+  await expect(page.locator(".sidebar-slot")).toHaveCSS("transition-property", "none");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  for (const [width, height] of [
+    [1440, 960],
+    [1000, 780],
+    [560, 780],
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    await expectPdfRendered();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(page.locator(".main")).toBeVisible();
+    await page.screenshot({ path: `test-results/ou7-workbench-${width}.png`, animations: "disabled" });
+  }
+});
