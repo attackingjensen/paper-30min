@@ -7,7 +7,7 @@ interface DialogProps {
   description?: ReactNode;
   ariaLabel?: string;
   className?: string;
-  children: ReactNode;
+  children?: ReactNode;
   footer?: ReactNode;
   onSubmit?: FormEventHandler<HTMLFormElement>;
   onClose?: () => void;

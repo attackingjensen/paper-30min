@@ -39,6 +39,7 @@ import { ParsingSettingsForm } from "./ParsingSettingsForm";
 import { useMarkdownDocuments, isMarkdown, isDirty } from "./useMarkdownDocuments";
 import { Button, IconButton } from "./ui/Button";
 import { Dialog as Modal } from "./ui/Dialog";
+import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { Field } from "./ui/Field";
 import { EmptyState, InlineMessage } from "./ui/Feedback";
 
@@ -55,6 +56,12 @@ type Dialog =
   | { type: "note"; name: string }
   | { type: "move"; path: string; destination: string };
 
+interface ConfirmationRequest {
+  title: string;
+  description: string;
+  confirmLabel: string;
+}
+
 export function App() {
   const [preferences, setPreferences] = useState<Preferences>({
     defaultFolder: null,
@@ -70,19 +77,35 @@ export function App() {
   const [settings, setSettingsState] = useState<string | null>(null);
   const skillDirty = useRef(false);
   const navigationRequest = useRef(0);
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
+  const confirmationReply = useRef<((confirmed: boolean) => void) | null>(null);
   // Full 阅读器按工程刷新代际重读 current；revision 切换以代际为边界。
   const projectEpoch = useRef(0);
   // Full 阅读器选区提问：进入右侧持续对话草稿，不自动发送。
   const [askDraft, setAskDraft] = useState<{ id: number; text: string } | null>(null);
   const askDraftId = useRef(0);
+  function confirmAction(request: ConfirmationRequest): Promise<boolean> {
+    if (confirmationReply.current) return Promise.resolve(false);
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    confirmationReply.current = resolve;
+    setConfirmation(request);
+    return promise;
+  }
+  function replyConfirmation(confirmed: boolean) {
+    setConfirmation(null);
+    const reply = confirmationReply.current;
+    confirmationReply.current = null;
+    reply?.(confirmed);
+  }
   async function setSettings(value: string | null) {
-    if (
-      settings === "skills" &&
-      value !== settings &&
-      skillDirty.current &&
-      !window.confirm("放弃尚未保存的提示词编辑并离开？")
-    )
-      return;
+    if (settings === "skills" && value !== settings && skillDirty.current) {
+      const confirmed = await confirmAction({
+        title: "未保存的提示词",
+        description: "放弃尚未保存的提示词编辑并离开？",
+        confirmLabel: "放弃并离开",
+      });
+      if (!confirmed) return;
+    }
     const request = ++navigationRequest.current;
     if (request === navigationRequest.current) setSettingsState(value);
   }
@@ -119,7 +142,18 @@ export function App() {
   const root = project?.root;
   const activeRoot = useRef(root);
   activeRoot.current = root;
-  const documents = useMarkdownDocuments(root, tabs, project);
+  const documents = useMarkdownDocuments(
+    root,
+    tabs,
+    project,
+    () =>
+      confirmAction({
+        title: "放弃未保存的编辑",
+        description: "有未保存的编辑。确定放弃这些编辑并离开吗？",
+        confirmLabel: "放弃并离开",
+      }),
+    setError,
+  );
   const positions = useRef<Record<string, Record<string, PdfPosition>>>({});
   const agentViews = useRef<Record<string, { active: string; text: string; attachments?: ChatAttachment[] }>>({});
   // Full 阅读器逻辑位置：按工程 root 隔离（tab key 固定为 paper），
@@ -435,13 +469,9 @@ export function App() {
           {content !== null ? (
             <pre className="file-content">{content}</pre>
           ) : (
-            <button
-              className="borderbtn"
-              disabled={busy}
-              onClick={() => void run(() => desktop.openFile(root!, current.path!))}
-            >
+            <Button disabled={busy} onClick={() => void run(() => desktop.openFile(root!, current.path!))}>
               <FolderOpen /> 在外部应用中打开
-            </button>
+            </Button>
           )}
         </article>
       );
@@ -457,7 +487,7 @@ export function App() {
             </button>
           ))
         ) : (
-          <div className="empty">尚无{current.title}</div>
+          <EmptyState>尚无{current.title}</EmptyState>
         )}
       </article>
     );
@@ -528,8 +558,7 @@ export function App() {
                   <label>默认工程文件夹</label>
                   <div className="setting-value path">{preferences.defaultFolder ?? "尚未设置"}</div>
                   <div className="row">
-                    <button
-                      className="borderbtn"
+                    <Button
                       disabled={busy}
                       onClick={() =>
                         void run(async () => {
@@ -545,9 +574,9 @@ export function App() {
                       }
                     >
                       <FolderOpen /> 选择文件夹
-                    </button>
+                    </Button>
                     {preferences.defaultFolder && (
-                      <button
+                      <Button
                         disabled={busy}
                         onClick={() =>
                           void run(async () =>
@@ -561,7 +590,7 @@ export function App() {
                         }
                       >
                         清除默认位置
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </>
@@ -576,7 +605,7 @@ export function App() {
               ) : settings === "parsing" ? (
                 <ParsingSettingsForm />
               ) : (
-                <p className="empty">尚未接入</p>
+                <EmptyState>尚未接入</EmptyState>
               )}
             </article>
           </main>
@@ -591,12 +620,12 @@ export function App() {
             </IconButton>
           </div>
           <div className="row start-actions">
-            <button className="primary" disabled={busy} onClick={() => void newProject()}>
+            <Button variant="primary" disabled={busy} onClick={() => void newProject()}>
               <Plus /> 从 PDF 新建工程
-            </button>
-            <button className="borderbtn" disabled={busy} onClick={() => void openProject()}>
+            </Button>
+            <Button disabled={busy} onClick={() => void openProject()}>
               <FolderOpen /> 打开工程文件夹
-            </button>
+            </Button>
           </div>
           <h2>最近工程</h2>
           {preferences.recent.length ? (
@@ -717,9 +746,9 @@ export function App() {
                   </div>
                   <div className="toolbar-actions">
                     {current?.key === "notes" && (
-                      <button onClick={() => setDialog({ type: "note", name: "新笔记.md" })}>
+                      <Button onClick={() => setDialog({ type: "note", name: "新笔记.md" })}>
                         <Plus /> 新建笔记
-                      </button>
+                      </Button>
                     )}
                     {current?.path && !missingCurrent && (
                       <>
@@ -766,6 +795,16 @@ export function App() {
             </div>
           </div>
         </div>
+      )}
+      {confirmation && (
+        <ConfirmDialog
+          title={confirmation.title}
+          description={confirmation.description}
+          confirmLabel={confirmation.confirmLabel}
+          cancelLabel="继续编辑"
+          onConfirm={() => replyConfirmation(true)}
+          onClose={() => replyConfirmation(false)}
+        />
       )}
       {dialog && (
         <Modal

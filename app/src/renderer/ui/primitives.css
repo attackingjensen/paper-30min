@@ -160,21 +160,22 @@
 @keyframes dialog-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.99);
+    transform: scale(0.99);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -50%);
+    transform: scale(1);
   }
 }
 .modal {
   position: fixed;
   z-index: 101;
-  top: 50%;
-  left: 50%;
+  inset: 0;
+  margin: auto;
   display: flex;
   flex-direction: column;
   width: 510px;
+  height: fit-content;
   max-width: calc(100vw - 32px);
   max-height: calc(100dvh - 48px);
   padding: 0;
@@ -184,10 +185,6 @@
   background: var(--surface);
   color: var(--text);
   box-shadow: var(--overlay-shadow);
-  transform: translate(-50%, -50%);
-  transition:
-    transform var(--popup-transition),
-    opacity var(--popup-transition);
 }
 .ui-dialog-heading {
   display: flex;
@@ -222,9 +219,47 @@
 .modal-form > .ui-field {
   margin-bottom: 1px;
 }
+.modal-form > label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+.source-path {
+  color: var(--muted);
+}
+.location {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.location span {
+  flex: 1;
+  min-width: 0;
+}
+.location button {
+  flex-shrink: 0;
+}
+.preview {
+  display: block;
+  padding: 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface-hover);
+}
+.modal .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.modal input[type="checkbox"] {
+  accent-color: var(--accent);
+}
 .modal > p {
   margin: 0;
   padding: 16px 20px 0;
+  font-size: 12px;
+  line-height: 1.9;
 }
 .modal > dl {
   margin: 14px 20px 0;
@@ -247,10 +282,25 @@
 .modal .form-error {
   margin: 0;
 }
+.pdf-upload-confirm dl {
+  font-size: 12px;
+  line-height: 1.8;
+  margin: 12px 0;
+}
+.pdf-upload-confirm dt {
+  color: var(--muted);
+  margin-top: 8px;
+}
+.pdf-upload-confirm dd {
+  margin: 2px 0 0;
+}
+.pdf-upload-hash {
+  font-family: monospace;
+  word-break: break-all;
+}
 @media (prefers-reduced-motion: reduce) {
   .button,
-  .ui-input,
-  .modal {
+  .ui-input {
     transition: none;
   }
   .modal,

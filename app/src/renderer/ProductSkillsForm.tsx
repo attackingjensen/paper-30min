@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { Save, RotateCcw } from "lucide-react";
 import type { ProductSkill } from "../shared/product-skills";
+import { Button, IconButton } from "./ui/Button";
+import { ConfirmDialog } from "./ui/ConfirmDialog";
+import { InlineMessage } from "./ui/Feedback";
 
 export function ProductSkillsForm({ onDirty }: { onDirty: (dirty: boolean) => void }) {
   const [skills, setSkills] = useState<ProductSkill[]>([]);
@@ -9,6 +12,7 @@ export function ProductSkillsForm({ onDirty }: { onDirty: (dirty: boolean) => vo
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmReload, setConfirmReload] = useState(false);
   const current = skills.find((skill) => skill.id === active);
   useEffect(() => {
     let disposed = false;
@@ -60,6 +64,20 @@ export function ProductSkillsForm({ onDirty }: { onDirty: (dirty: boolean) => vo
       setBusy(false);
     }
   }
+  async function reload() {
+    setBusy(true);
+    try {
+      const items = await window.desktop.agent<ProductSkill[]>({ type: "listSkills" });
+      setSkills(items);
+      setContent(items.find((item) => item.id === active)!.content);
+      setError("");
+      setStatus("");
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <div className="product-skills-form">
       <label htmlFor="product-skill">产品 Skill</label>
@@ -93,37 +111,38 @@ export function ProductSkillsForm({ onDirty }: { onDirty: (dirty: boolean) => vo
         }}
       />
       <div className="row">
-        <button className="primary" disabled={busy || !dirty} onClick={() => void save()}>
+        <Button variant="primary" disabled={busy || !dirty} onClick={() => void save()}>
           <Save /> 保存提示词
-        </button>
-        <button
-          className="icon"
-          title="重新载入提示词"
-          aria-label="重新载入提示词"
+        </Button>
+        <IconButton
+          label="重新载入提示词"
           disabled={busy || !current}
           onClick={() => {
-            if (dirty && !window.confirm("放弃尚未保存的提示词编辑并重新载入？")) return;
-            setBusy(true);
-            void window.desktop
-              .agent<ProductSkill[]>({ type: "listSkills" })
-              .then((items) => {
-                setSkills(items);
-                setContent(items.find((item) => item.id === active)!.content);
-                setError("");
-                setStatus("");
-              })
-              .catch((error) => setError(error.message))
-              .finally(() => setBusy(false));
+            if (dirty) setConfirmReload(true);
+            else void reload();
           }}
         >
           <RotateCcw />
-        </button>
-        {status && <span role="status">{status}</span>}
+        </IconButton>
+        {status && <InlineMessage variant="success">{status}</InlineMessage>}
       </div>
       {error && (
-        <p role="alert" className="form-error">
+        <InlineMessage variant="error" className="form-error">
           {error}
-        </p>
+        </InlineMessage>
+      )}
+      {confirmReload && (
+        <ConfirmDialog
+          title="未保存的提示词"
+          description="放弃尚未保存的提示词编辑并重新载入？"
+          confirmLabel="放弃并重新载入"
+          cancelLabel="继续编辑"
+          onClose={() => setConfirmReload(false)}
+          onConfirm={() => {
+            setConfirmReload(false);
+            void reload();
+          }}
+        />
       )}
     </div>
   );

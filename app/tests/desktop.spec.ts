@@ -3038,12 +3038,13 @@ test("Markdown 外部变更自动同步，冲突与文件消失保留用户输�
   await expect(page.getByRole("button", { name: "外部改名.md", exact: true })).toBeVisible();
   await expect(editor).toContainText("用户未保存内容");
   await expect(page.getByRole("alert").first()).toContainText("文件已被删除或移动");
-  page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "关闭 协作.md", exact: true }).click();
+  const discard = page.getByRole("dialog", { name: "放弃未保存的编辑", exact: true });
+  await discard.getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(editor).toBeVisible();
   // Clear the draft through the explicit discard confirmation for test shutdown.
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "关闭 协作.md", exact: true }).click();
+  await discard.getByRole("button", { name: "放弃并离开", exact: true }).click();
 });
 
 test("Markdown 组合输入、撤销与保存失败不破坏原文件", async () => {
@@ -3131,6 +3132,11 @@ test("UI 创建工程弹窗圈定焦点并在 Escape 后恢复触发按钮", asy
   const dialog = page.getByRole("dialog", { name: "新建工程", exact: true });
   await expect(dialog).toBeVisible();
   await expect(page.getByLabel("工程名称", { exact: true })).toBeFocused();
+  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  const box = await dialog.boundingBox();
+  expect(box).not.toBeNull();
+  expect(Math.abs(box!.x + box!.width / 2 - viewport.width / 2)).toBeLessThan(2);
+  expect(Math.abs(box!.y + box!.height / 2 - viewport.height / 2)).toBeLessThan(2);
   await page.screenshot({ path: "test-results/ou7-create-dialog.png" });
   for (let index = 0; index < 12; index++) {
     await page.keyboard.press("Tab");
@@ -3146,4 +3152,61 @@ test("UI 创建工程弹窗圈定焦点并在 Escape 后恢复触发按钮", asy
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
+});
+
+test("UI 未保存 Markdown 关闭标签经 renderer 确认", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  const root = path.join(sandbox, "projects/研究工程");
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "新建笔记", exact: true }).click();
+  await page.getByLabel("笔记名称").fill("确认.md");
+  await page.getByRole("button", { name: "创建笔记", exact: true }).click();
+  const note = path.join(root, "notes/确认.md");
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
+  await editor.press("Control+End");
+  await editor.pressSequentially("未保存草稿");
+  await fs.writeFile(note, "# 外部版本\n");
+  await expect(page.getByText("文档已在外部修改。你的编辑已保留，尚未覆盖磁盘文件。")).toBeVisible();
+
+  const close = page.getByRole("button", { name: "关闭 确认.md", exact: true });
+  const dialog = page.getByRole("dialog", { name: "放弃未保存的编辑", exact: true });
+  await close.click();
+  await expect(dialog).toBeVisible();
+  await page.screenshot({ path: "test-results/ou7-unsaved-confirm.png" });
+  await dialog.getByRole("button", { name: "继续编辑", exact: true }).click();
+  await expect(editor).toContainText("未保存草稿");
+  await close.click();
+  await dialog.getByRole("button", { name: "放弃并离开", exact: true }).click();
+  await expect(close).toHaveCount(0);
+});
+
+test("UI 未保存提示词重新载入与离开经 renderer 确认", async () => {
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "产品 Skill", exact: true }).click();
+  const skill = page.getByLabel("提示词", { exact: true });
+  await expect(skill).toBeEnabled();
+  const original = await skill.inputValue();
+  const edited = original + "\n临时修改";
+  await skill.fill(edited);
+
+  const reload = page.getByRole("button", { name: "重新载入提示词", exact: true });
+  const dialog = page.getByRole("dialog", { name: "未保存的提示词", exact: true });
+  await reload.click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "继续编辑", exact: true }).click();
+  await expect(skill).toHaveValue(edited);
+  await reload.click();
+  await dialog.getByRole("button", { name: "放弃并重新载入", exact: true }).click();
+  await expect(skill).toHaveValue(original);
+
+  await skill.fill(edited);
+  const parsing = page.getByRole("button", { name: "解析模型", exact: true });
+  await parsing.click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "继续编辑", exact: true }).click();
+  await expect(skill).toHaveValue(edited);
+  await parsing.click();
+  await dialog.getByRole("button", { name: "放弃并离开", exact: true }).click();
+  await expect(page.getByLabel("百度任务地址", { exact: true })).toBeVisible();
 });
