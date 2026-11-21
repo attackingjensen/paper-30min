@@ -7,6 +7,8 @@ import os from "node:os";
 const GUARD = path.resolve("scripts/floor-guard.mjs");
 // 守卫检测字面量只在运行时拼装，避免测试源码本身触发 suppression 扫描。
 const SUPPRESSION = "@ts-" + "ignore";
+const EXPECT = "ex" + "pect";
+const SKIP = ".s" + "kip";
 
 let sandbox: string;
 
@@ -20,8 +22,7 @@ test.afterEach(async () => {
 
 function git(dir: string, ...args: string[]) {
   const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
-  if (result.status !== 0)
-    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
   return result.stdout;
 }
 
@@ -136,24 +137,15 @@ test("floor-guard 拦截 Oxlint 抑制注释", async () => {
 test("floor-guard 已登记退役例外按文件豁免删除测试与移除断言", async () => {
   await fixtureRepo();
   await fs.mkdir(path.join(sandbox, "tests"), { recursive: true });
-  await fs.writeFile(
-    path.join(sandbox, "tests/old.spec.ts"),
-    'test("old", () => { expect(1).toBe(1); });\n',
-  );
-  await fs.writeFile(
-    path.join(sandbox, "tests/old2.spec.ts"),
-    'test("old2", () => { expect(2).toBe(2); });\n',
-  );
+  await fs.writeFile(path.join(sandbox, "tests/old.spec.ts"), 'test("old", () => { ' + EXPECT + "(1).toBe(1); });\n");
+  await fs.writeFile(path.join(sandbox, "tests/old2.spec.ts"), 'test("old2", () => { ' + EXPECT + "(2).toBe(2); });\n");
   git(sandbox, "add", "-A");
   git(sandbox, "commit", "-qm", "tests");
   await appendException(
     `| W4 | 旧解析退役删除测试与断言 | \`tests/old.spec.ts\`、\`tests/old2.spec.ts\` | 被新链路取代 | @attackingjensen | ${futureDate(30)} |`,
   );
   await fs.rm(path.join(sandbox, "tests/old.spec.ts"));
-  await fs.writeFile(
-    path.join(sandbox, "tests/old2.spec.ts"),
-    'test("old2", () => { /* 断言随旧实现退役 */ });\n',
-  );
+  await fs.writeFile(path.join(sandbox, "tests/old2.spec.ts"), 'test("old2", () => { /* 断言随旧实现退役 */ });\n');
   const result = runGuard();
   expect(result.status).toBe(0);
   expect(result.stdout).toContain("clean");
@@ -162,10 +154,7 @@ test("floor-guard 已登记退役例外按文件豁免删除测试与移除断�
 test("floor-guard 未登记或过期的退役例外不豁免删除测试", async () => {
   await fixtureRepo();
   await fs.mkdir(path.join(sandbox, "tests"), { recursive: true });
-  await fs.writeFile(
-    path.join(sandbox, "tests/old.spec.ts"),
-    'test("old", () => { expect(1).toBe(1); });\n',
-  );
+  await fs.writeFile(path.join(sandbox, "tests/old.spec.ts"), 'test("old", () => { ' + EXPECT + "(1).toBe(1); });\n");
   git(sandbox, "add", "-A");
   git(sandbox, "commit", "-qm", "tests");
   await appendException(
@@ -193,4 +182,37 @@ test("floor-guard 棘轮收紧放行而放宽仍拦截", async () => {
   const result = runGuard();
   expect(result.status).toBe(1);
   expect(result.stderr).toContain("threshold");
+});
+
+test("floor-guard 整文件纯重排不报断言移除，混入真实删除仍拦截", async () => {
+  await fixtureRepo();
+  const spec = path.join(sandbox, "sample.spec.ts");
+  const original = `test("a", () => {\n  ${EXPECT}(1).toBe(1);\n});\ntest("b", () => {\n  ${EXPECT}(2).toBe(2);\n});\n`;
+  await fs.writeFile(spec, original);
+  git(sandbox, "add", "-A");
+  git(sandbox, "commit", "-qm", "tests");
+  // 纯重排：单行化，断言原样保留。
+  await fs.writeFile(
+    spec,
+    `test("a", () => { ${EXPECT}(1).toBe(1); });\ntest("b", () => { ${EXPECT}(2).toBe(2); });\n`,
+  );
+  expect(runGuard().status).toBe(0);
+  // 混入真实断言删除：整文件 canon 不再相等，必须拦截。
+  await fs.writeFile(spec, `test("a", () => { ${EXPECT}(1).toBe(1); });\ntest("b", () => {});\n`);
+  const result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("assertion-removed");
+});
+
+test("floor-guard 重排豁免不掩盖同文件新增的抑制与跳过", async () => {
+  await fixtureRepo();
+  const spec = path.join(sandbox, "sample.spec.ts");
+  await fs.writeFile(spec, `test("a", () => {\n  ${EXPECT}(1).toBe(1);\n});\n`);
+  git(sandbox, "add", "-A");
+  git(sandbox, "commit", "-qm", "tests");
+  // 重排的同时新增跳过：canon 不相等，跳过仍被拦截。
+  await fs.writeFile(spec, `test${SKIP}("a", () => { ${EXPECT}(1).toBe(1); });\n`);
+  const result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("test-made-easier");
 });
