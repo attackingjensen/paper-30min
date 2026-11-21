@@ -26,6 +26,7 @@
     "check:dependencies": "node scripts/check-dependencies.mjs"
   },
   "dependencies": {
+    "@base-ui/react": "1.9.0",
     "@codemirror/commands": "6.11.1",
     "@codemirror/lang-markdown": "6.5.2",
     "@codemirror/state": "6.7.6",

@@ -1,14 +1,11 @@
 :root {
-  font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
-  color: #24252a;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--text);
   font-size: 13px;
   font-synthesis: none;
-  --muted: #85868e;
-  --border: #e7e7eb;
-  --accent: #6865d8;
   --sidebar: 232px;
   --aside: 336px;
-  --radius: 10px;
+  --radius: var(--radius-panel);
   --panel-motion: 350ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 * {

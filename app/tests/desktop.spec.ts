@@ -3123,3 +3123,27 @@ test("Markdown 长文视图往返和两个工程的同路径位置独立", async
   await page.getByRole("button", { name: /工程乙/ }).click();
   await expect.poll(() => previewPane.evaluate((e) => e.scrollTop)).toBe(0);
 });
+
+test("UI 创建工程弹窗圈定焦点并在 Escape 后恢复触发按钮", async () => {
+  const trigger = page.getByRole("button", { name: "从 PDF 新建工程", exact: true });
+  await choose(fixture);
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "新建工程", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByLabel("工程名称", { exact: true })).toBeFocused();
+  await page.screenshot({ path: "test-results/ou7-create-dialog.png" });
+  for (let index = 0; index < 12; index++) {
+    await page.keyboard.press("Tab");
+    expect(
+      await page.evaluate(() => {
+        const current = document.querySelector('dialog, [role="dialog"]');
+        const active = document.activeElement;
+        // Chromium 原生 dialog 循环焦点会经过 body；背景可交互控件仍不得获得焦点。
+        return active === document.body || (!!current && current.contains(active));
+      }),
+    ).toBe(true);
+  }
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});

@@ -37,6 +37,10 @@ import { AgentSettingsForm } from "./AgentSettingsForm";
 import { ProductSkillsForm } from "./ProductSkillsForm";
 import { ParsingSettingsForm } from "./ParsingSettingsForm";
 import { useMarkdownDocuments, isMarkdown, isDirty } from "./useMarkdownDocuments";
+import { Button, IconButton } from "./ui/Button";
+import { Dialog as Modal } from "./ui/Dialog";
+import { Field } from "./ui/Field";
+import { EmptyState, InlineMessage } from "./ui/Feedback";
 
 const desktop = window.desktop;
 type Tab = DocumentTab;
@@ -50,24 +54,6 @@ type Dialog =
     }
   | { type: "note"; name: string }
   | { type: "move"; path: string; destination: string };
-
-function IconButton({
-  label,
-  children,
-  onClick,
-  disabled = false,
-}: {
-  label: string;
-  children: ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button className="icon" title={label} aria-label={label} onClick={onClick} disabled={disabled}>
-      {children}
-    </button>
-  );
-}
 
 export function App() {
   const [preferences, setPreferences] = useState<Preferences>({
@@ -101,6 +87,8 @@ export function App() {
     if (request === navigationRequest.current) setSettingsState(value);
   }
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const dialogInput = useRef<HTMLInputElement>(null);
+  const dialogReturnFocus = useRef<HTMLElement | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
@@ -301,6 +289,7 @@ export function App() {
     });
   }
   async function newProject() {
+    dialogReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (!(await documents.mayLeave())) return;
     await run(async () => {
       const source = await desktop.choose("pdf");
@@ -367,7 +356,7 @@ export function App() {
     );
   }
   function contentView() {
-    if (!current) return <div className="empty">尚未打开文档</div>;
+    if (!current) return <EmptyState>尚未打开文档</EmptyState>;
     if (!current.path && current.key === "paper" && root)
       return (
         <FullReader
@@ -415,7 +404,7 @@ export function App() {
           }}
         />
       ) : (
-        <div className="empty">正在读取文档…</div>
+        <EmptyState>正在读取文档…</EmptyState>
       );
     }
     if (missingCurrent)
@@ -491,12 +480,12 @@ export function App() {
         </IconButton>
       </header>
       {error && (
-        <div className="notice error" role="alert">
+        <InlineMessage variant="error" className="notice">
           <span>{error}</span>
           <IconButton label="关闭错误提示" onClick={() => setError("")}>
             <X />
           </IconButton>
-        </div>
+        </InlineMessage>
       )}
       {settings ? (
         <section className="settings-workspace">
@@ -621,7 +610,7 @@ export function App() {
               </button>
             ))
           ) : (
-            <p className="muted">尚无最近工程</p>
+            <EmptyState className="muted">尚无最近工程</EmptyState>
           )}
         </main>
       ) : (
@@ -779,114 +768,46 @@ export function App() {
         </div>
       )}
       {dialog && (
-        <div className="modal-backdrop">
-          <form
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={dialog.type === "create" ? "新建工程" : dialog.type === "note" ? "新建笔记" : "改名或移动"}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (dialog.type === "create") void createProject(dialog);
-              if (dialog.type === "note" && root)
-                void run(async () => {
-                  const path = await desktop.invoke<string>({
-                    type: "createNote",
-                    root,
-                    name: dialog.name,
-                  });
-                  setProject(await desktop.invoke<Project>({ type: "refresh", root }));
-                  void openPath(path);
-                  setDialog(null);
-                });
-              if (dialog.type === "move" && root)
-                void update({
-                  type: "move",
+        <Modal
+          open
+          title={dialog.type === "create" ? "新建工程" : dialog.type === "note" ? "新建笔记" : "改名或移动"}
+          allowDismiss={!busy}
+          initialFocus={dialogInput}
+          finalFocus={dialog.type === "create" ? dialogReturnFocus : undefined}
+          onClose={() => {
+            setDialog(null);
+            setError("");
+          }}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (dialog.type === "create") void createProject(dialog);
+            if (dialog.type === "note" && root)
+              void run(async () => {
+                const path = await desktop.invoke<string>({
+                  type: "createNote",
                   root,
-                  path: dialog.path,
-                  destination: dialog.destination,
-                }).then((p) => {
-                  if (p) {
-                    retargetTabs(dialog.path, dialog.destination);
-                    setDialog(null);
-                  }
+                  name: dialog.name,
                 });
-            }}
-          >
-            <h2>{dialog.type === "create" ? "新建工程" : dialog.type === "note" ? "新建笔记" : "改名或移动"}</h2>
-            {dialog.type === "create" ? (
-              <>
-                <label htmlFor="project-name">工程名称</label>
-                <input
-                  id="project-name"
-                  autoFocus
-                  value={dialog.name}
-                  disabled={busy}
-                  onChange={(e) => setDialog({ ...dialog, name: e.target.value })}
-                  required
-                />
-                <label>原始 PDF</label>
-                <div className="path source-path">{dialog.source}</div>
-                <label>保存位置</label>
-                <div className="location">
-                  <span className="path">{dialog.parent || "请选择工程文件夹"}</span>
-                  <button
-                    type="button"
-                    className="borderbtn"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        const folder = await desktop.choose("folder");
-                        if (folder) setDialog({ ...dialog, parent: folder });
-                      })
-                    }
-                  >
-                    <FolderOpen /> 选择位置
-                  </button>
-                </div>
-                <label>完整工程路径</label>
-                <output className="path preview" data-testid="project-preview">
-                  {dialog.parent ? dialog.parent.replace(/[\\/]$/, "") + separator + dialog.name : "尚未选择保存位置"}
-                </output>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={dialog.makeDefault}
-                    disabled={busy}
-                    onChange={(e) => setDialog({ ...dialog, makeDefault: e.target.checked })}
-                  />
-                  将此位置设为默认工程文件夹
-                </label>
-              </>
-            ) : dialog.type === "note" ? (
-              <>
-                <label htmlFor="note-name">笔记名称</label>
-                <input
-                  id="note-name"
-                  autoFocus
-                  value={dialog.name}
-                  onChange={(e) => setDialog({ ...dialog, name: e.target.value })}
-                  required
-                  disabled={busy}
-                />
-              </>
-            ) : (
-              <>
-                <label htmlFor="destination">工程内相对路径</label>
-                <input
-                  id="destination"
-                  autoFocus
-                  value={dialog.destination}
-                  disabled={busy}
-                  onChange={(e) => setDialog({ ...dialog, destination: e.target.value })}
-                  required
-                />
-              </>
-            )}
-            {error && <p className="form-error">{error}</p>}
-            <div className="modal-footer">
-              <button
-                type="button"
+                setProject(await desktop.invoke<Project>({ type: "refresh", root }));
+                void openPath(path);
+                setDialog(null);
+              });
+            if (dialog.type === "move" && root)
+              void update({
+                type: "move",
+                root,
+                path: dialog.path,
+                destination: dialog.destination,
+              }).then((p) => {
+                if (p) {
+                  retargetTabs(dialog.path, dialog.destination);
+                  setDialog(null);
+                }
+              });
+          }}
+          footer={
+            <>
+              <Button
                 onClick={() => {
                   if (creating)
                     void desktop
@@ -900,9 +821,9 @@ export function App() {
                 disabled={busy && !creating}
               >
                 {creating ? "取消创建" : "取消"}
-              </button>
-              <button
-                className="primary"
+              </Button>
+              <Button
+                variant="primary"
                 type="submit"
                 disabled={busy || (dialog.type === "create" && (!dialog.parent || !dialog.name))}
               >
@@ -913,36 +834,114 @@ export function App() {
                     : dialog.type === "note"
                       ? "创建笔记"
                       : "保存"}
-              </button>
-            </div>
-          </form>
-        </div>
+              </Button>
+            </>
+          }
+        >
+          {dialog.type === "create" ? (
+            <>
+              <Field.Root>
+                <Field.Label>工程名称</Field.Label>
+                <Field.Control
+                  id="project-name"
+                  ref={dialogInput}
+                  value={dialog.name}
+                  disabled={busy}
+                  onChange={(e) => setDialog({ ...dialog, name: e.target.value })}
+                  required
+                />
+              </Field.Root>
+              <label>原始 PDF</label>
+              <div className="path source-path">{dialog.source}</div>
+              <label>保存位置</label>
+              <div className="location">
+                <span className="path">{dialog.parent || "请选择工程文件夹"}</span>
+                <Button
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      const folder = await desktop.choose("folder");
+                      if (folder) setDialog({ ...dialog, parent: folder });
+                    })
+                  }
+                >
+                  <FolderOpen /> 选择位置
+                </Button>
+              </div>
+              <label>完整工程路径</label>
+              <output className="path preview" data-testid="project-preview">
+                {dialog.parent ? dialog.parent.replace(/[\\/]$/, "") + separator + dialog.name : "尚未选择保存位置"}
+              </output>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={dialog.makeDefault}
+                  disabled={busy}
+                  onChange={(e) => setDialog({ ...dialog, makeDefault: e.target.checked })}
+                />
+                将此位置设为默认工程文件夹
+              </label>
+            </>
+          ) : dialog.type === "note" ? (
+            <Field.Root>
+              <Field.Label>笔记名称</Field.Label>
+              <Field.Control
+                id="note-name"
+                ref={dialogInput}
+                value={dialog.name}
+                onChange={(e) => setDialog({ ...dialog, name: e.target.value })}
+                required
+                disabled={busy}
+              />
+            </Field.Root>
+          ) : (
+            <Field.Root>
+              <Field.Label>工程内相对路径</Field.Label>
+              <Field.Control
+                id="destination"
+                ref={dialogInput}
+                value={dialog.destination}
+                disabled={busy}
+                onChange={(e) => setDialog({ ...dialog, destination: e.target.value })}
+                required
+              />
+            </Field.Root>
+          )}
+          {error && (
+            <InlineMessage variant="error" className="form-error" role="note">
+              {error}
+            </InlineMessage>
+          )}
+        </Modal>
       )}
       {uploadConfirm && (
-        <div className="modal-backdrop">
-          <div className="modal pdf-upload-confirm" role="dialog" aria-label="确认上传 PDF 到云端解析">
-            <h2>确认上传 PDF</h2>
-            <p>
-              将「{uploadConfirm.request.originalName}」（{uploadConfirm.request.pageCount} 页） 上传到{" "}
-              {uploadConfirm.request.provider} 的 {uploadConfirm.request.model} 解析服务，
-              可能产生费用。提交后本机停止不会取消云端任务。
-            </p>
-            <dl>
-              <dt>服务地址</dt>
-              <dd>{uploadConfirm.request.endpoint}</dd>
-              <dt>PDF SHA-256</dt>
-              <dd className="pdf-upload-hash">{uploadConfirm.request.pdfSha256}</dd>
-            </dl>
-            <div className="modal-footer">
-              <button type="button" onClick={() => replyUpload(false)}>
-                取消
-              </button>
-              <button className="primary" type="button" onClick={() => replyUpload(true)}>
+        <Modal
+          open
+          title="确认上传 PDF"
+          ariaLabel="确认上传 PDF 到云端解析"
+          className="pdf-upload-confirm"
+          allowDismiss={false}
+          footer={
+            <>
+              <Button onClick={() => replyUpload(false)}>取消</Button>
+              <Button variant="primary" onClick={() => replyUpload(true)}>
                 确认上传并解析
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </>
+          }
+        >
+          <p>
+            将「{uploadConfirm.request.originalName}」（{uploadConfirm.request.pageCount} 页） 上传到{" "}
+            {uploadConfirm.request.provider} 的 {uploadConfirm.request.model} 解析服务，
+            可能产生费用。提交后本机停止不会取消云端任务。
+          </p>
+          <dl>
+            <dt>服务地址</dt>
+            <dd>{uploadConfirm.request.endpoint}</dd>
+            <dt>PDF SHA-256</dt>
+            <dd className="pdf-upload-hash">{uploadConfirm.request.pdfSha256}</dd>
+          </dl>
+        </Modal>
       )}
     </>
   );
