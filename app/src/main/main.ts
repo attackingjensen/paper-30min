@@ -404,13 +404,13 @@ async function start() {
     // renderer 重载或窗口关闭都会丢失未应答的确认对话框：按拒绝应答，操作不挂起。
     window.webContents.on("did-start-navigation", (_event, _url, _inPlace, isMainFrame) => {
       if (!isMainFrame) return;
-      for (const confirmationId of [...pendingUploadConfirms.keys()])
+      for (const confirmationId of Array.from(pendingUploadConfirms.keys()))
         rejectUploadConfirm(confirmationId);
     });
     window.on("closed", () => {
       ++watchGeneration;
       stopWatching();
-      for (const confirmationId of [...pendingUploadConfirms.keys()])
+      for (const confirmationId of Array.from(pendingUploadConfirms.keys()))
         rejectUploadConfirm(confirmationId);
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

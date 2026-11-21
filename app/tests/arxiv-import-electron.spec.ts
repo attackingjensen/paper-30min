@@ -24,7 +24,7 @@ import type {
 } from "../src/shared/contracts";
 import type { DocumentTree } from "../src/shared/document/tree";
 import { absHtml } from "./fixtures/arxiv-abs";
-import { latexmlDocument, FIG1_SRC, FIG2_SRC } from "./fixtures/arxiv-latexml";
+import { latexmlDocument, FIG2_SRC } from "./fixtures/arxiv-latexml";
 
 const ID = "2401.01234";
 const ABS_PATH = `/abs/${ID}v1`;

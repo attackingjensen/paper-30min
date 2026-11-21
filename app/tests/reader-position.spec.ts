@@ -110,7 +110,7 @@ test("reader 位置解析 removed 且父 section 也删除时回到文首，不�
   const position = positionAt(ids.intro, tree);
   const { next } = revise(tree, (t) => {
     // 删除整个 body 直属内容单元与 intro；保留 method 子章节及其单元。
-    for (const unitId of [...t.sections[ids.body].unitIds]) {
+    for (const unitId of t.sections[ids.body].unitIds) {
       const unit = t.units[unitId];
       for (const sentenceId of unit.sentenceIds) delete t.sentences[sentenceId];
       delete t.units[unitId];
@@ -146,8 +146,8 @@ test("reader 位置解析 removed 的父 section 整体删除时回到文首并�
   const { next } = revise(tree, (t) => {
     const removeSection = (sectionId: string) => {
       const section = t.sections[sectionId];
-      for (const child of [...section.childSectionIds]) removeSection(child);
-      for (const unitId of [...section.unitIds]) {
+      for (const child of section.childSectionIds) removeSection(child);
+      for (const unitId of section.unitIds) {
         const unit = t.units[unitId];
         for (const sentenceId of unit.sentenceIds) delete t.sentences[sentenceId];
         delete t.units[unitId];

@@ -22,7 +22,7 @@ import type {
 
 const manifestName = "paper30min.json";
 const directories = ["text", "notes", "memories", "tmp"];
-const invalidName = /[<>:"/\\|?*\x00-\x1f]/;
+const invalidName = /[<>:"/\\|?*]/;
 const readingName = ".paper30min-reading.json";
 export interface AgentFile {
   bytes: Buffer;
@@ -109,6 +109,7 @@ function validName(name: string) {
     !name ||
     name !== name.trim() ||
     invalidName.test(name) ||
+    Array.from(name).some((character) => character.charCodeAt(0) < 32) ||
     /[. ]$/.test(name) ||
     /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ||
     name === "." ||

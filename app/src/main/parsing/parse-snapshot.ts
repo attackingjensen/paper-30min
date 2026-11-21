@@ -140,7 +140,8 @@ function safeVendorPath(value: string) {
   return (
     value.length > 0 &&
     value.length <= 512 &&
-    !/[\u0000-\u001f\\]/.test(value) &&
+    !value.includes("\\") &&
+    !Array.from(value).some((character) => character.charCodeAt(0) < 32) &&
     !/^[a-z][a-z0-9+.-]*:/i.test(value) &&
     !value.includes("://")
   );

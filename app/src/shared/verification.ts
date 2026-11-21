@@ -1,6 +1,6 @@
 import Type from "typebox";
 import Schema from "typebox/schema";
-import { DocumentAnchorSchema, type DocumentAnchor } from "./document/anchor.js";
+import { DocumentAnchorSchema } from "./document/anchor.js";
 import { parseDocumentChangeset, type DocumentChangeset } from "./document/changeset.js";
 import type { DocumentTree } from "./document/tree.js";
 

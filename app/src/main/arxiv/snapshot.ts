@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import type { ArxivReference, ImportDiagnostic } from "../../shared/arxiv.js";
+import type { ImportDiagnostic } from "../../shared/arxiv.js";
 import type { ManagedFileContent } from "../../shared/contracts.js";
-import { listSourceSnapshots, publishSourceSnapshot, type ProjectCommitHooks } from "../project-core.js";
+import { listSourceSnapshots, publishSourceSnapshot } from "../project-core.js";
 import { assertArxivVersionConsistent } from "./version.js";
 import { ArxivFetchError, fetchDiagnostic, type ArxivFetchResponse, type FetchArxivSnapshotInput, type ArxivSnapshotResult, type ArxivAssetMapping, type ArxivSourceMetadata } from "./fetch.js";
 
