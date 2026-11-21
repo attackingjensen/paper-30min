@@ -24,6 +24,9 @@ Thumbs.db
 # 上游只读源码副本（研读用，不作为依赖或子模块）
 /.upstream/
 
+# CodeGraph 本地索引（工具保留，数据与挂载不入库）
+/.codegraph/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
