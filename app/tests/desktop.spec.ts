@@ -2555,10 +2555,17 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
       e.scrollTop = y;
     }, offset);
     await expect
-      .poll(
-        async () =>
-          JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf["text/paper.pdf"]?.y,
-      )
+      .poll(async () => {
+        try {
+          return JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf[
+            "text/paper.pdf"
+          ]?.y;
+        } catch (error) {
+          // 首次滚动持久化前状态文件可能尚未创建；仅该情况继续等待。
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+          throw error;
+        }
+      })
       .toBe(offset);
     await page.getByRole("button", { name: "笔记", exact: true }).click();
     await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
