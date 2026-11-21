@@ -87,13 +87,13 @@ for (const line of diff.split("\n")) {
 
 // 排版不变归一：去空白与成对括号、去尾逗号/分号、union 竖线、引号风格与可去转义、
 // JSX 显式空格；markdown 表格对齐填充（:---:）归一为 ---。
-// 按文件比较基线与工作区的归一全文：整文件只是重排时，其行级增删不构成 floor 变更。
-// 归一不能证明语义等价，故只在整文件 canon 相等时豁免；混入真实修改的文件仍逐行扫描。
+// 两级豁免只作用于「删除行」检测：整文件 canon 相等 → 全文件删行豁免；否则删行 canon
+// 原样出现在某条新增行 canon 中（如多行调用被收成单行）视为重排。新增行始终逐行严检，
+// 重排不能掩盖新引入的抑制/跳过/未完成标记。
 const formatCanon = (t) =>
   t
     .replace(/\s+/g, "")
-    .replace(/,(?=[)\]}])/g, "")
-    .replace(/;(?=[)\]}])/g, "")
+    .replace(/[,;](?=[)\]}]|$)/g, "")
     .replace(/[()]/g, "")
     .replace(/\|/g, "")
     .replace(/\\(["'`])/g, "$1")
@@ -113,6 +113,33 @@ for (const f of new Set([...added, ...removed].map((l) => l.file))) {
   }
   if (formatCanon(before) === formatCanon(after)) reflowedFiles.add(f);
 }
+const addedCanonByFile = new Map();
+for (const { file: f, text } of added) {
+  let list = addedCanonByFile.get(f);
+  if (!list) addedCanonByFile.set(f, (list = []));
+  list.push(formatCanon(text));
+}
+// 删行 canon 若原样出现在某条新增行 canon 中（如多行调用被收成单行），视为重排而非删除。
+const reflowedLine = (f, text) => {
+  if (reflowedFiles.has(f)) return true;
+  const c = formatCanon(text);
+  if (!c) return false;
+  return (addedCanonByFile.get(f) ?? []).some((a) => a.includes(c));
+};
+const removedCanonByFile = new Map();
+for (const { file: f, text } of removed) {
+  let list = removedCanonByFile.get(f);
+  if (!list) removedCanonByFile.set(f, (list = []));
+  list.push(formatCanon(text));
+}
+// 新增行 canon 若原样出现在某条删除行 canon 中，说明内容基线已有、只是重排呈现，豁免；
+// 基线没有的新内容（新抑制/跳过/未完成标记）仍逐行严检。
+const reflowedAdded = (f, text) => {
+  if (reflowedFiles.has(f)) return true;
+  const c = formatCanon(text);
+  if (!c) return false;
+  return (removedCanonByFile.get(f) ?? []).some((r) => r.includes(c));
+};
 
 const findings = [];
 const flag = (rule, f, text) => {
@@ -174,7 +201,7 @@ for (const { file, text } of added) {
       && /^\s*(?:\[{1,2}[^\]]*allowlist[^\]]*\]{1,2}|paths\s*=|regexes\s*=|stopwords\s*=|\[\[rules\]\]|'''.*''',?\s*$)/i.test(text)) {
     flag("new-scan-exclusion", file, text);
   }
-  if (reflowedFiles.has(file)) continue;
+  if (reflowedAdded(file, text)) continue;
   const suppression = text.match(SUPPRESSIONS);
   if (suppression) flag("silenced-checker", file, suppression[0]);
   if (STUBS.test(text)) flag("unfinished-work", file, text);
@@ -218,7 +245,7 @@ const removedRules = removed.filter(l => isConstraints(l.file) && ruleKey(l.text
 const addedRules = added.filter(l => isConstraints(l.file) && ruleKey(l.text) !== null);
 for (const r of removedRules) {
   const a = addedRules.find(x => ruleKey(x.text) === ruleKey(r.text));
-  if (reflowedFiles.has(r.file)) continue;
+  if (reflowedLine(r.file, r.text)) continue;
   if (!a) {
     if (!isException(r.text)) flag("rule-removed", r.file, r.text);
     continue;

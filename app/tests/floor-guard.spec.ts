@@ -225,3 +225,20 @@ test("floor-guard 重排豁免不掩盖同文件新增的抑制与跳过", async
   expect(result.status).toBe(1);
   expect(result.stderr).toContain("test-made-easier");
 });
+
+test("floor-guard 混合文件：重排断言豁免而真实删除仍拦截", async () => {
+  await fixtureRepo();
+  const spec = path.join(sandbox, "sample.spec.ts");
+  // 基线：两个多行断言调用，首行含 expect（格式化会把它们收成单行）。
+  await fs.writeFile(spec, `${EXPECT}(1)\n  .toBe(1);\n${EXPECT}(2)\n  .toBe(2);\n`);
+  git(sandbox, "add", "-A");
+  git(sandbox, "commit", "-qm", "tests");
+  // 第一个断言重排为单行（canon 原样保留），第二个断言被真实删除。
+  await fs.writeFile(spec, `${EXPECT}(1).toBe(1);\n`);
+  const result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("assertion-removed");
+  // 只报被删的那条（删行首行 expect(2)），重排保留的 expect(1) 不报。
+  expect(result.stderr).toContain(`${EXPECT}(2)`);
+  expect(result.stderr).not.toContain(`${EXPECT}(1)`);
+});
