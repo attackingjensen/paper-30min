@@ -1,12 +1,12 @@
 # Constraints
 
-Last reviewed: 2026-11-19 by @attackingjensen
+Last reviewed: 2026-11-21 by @attackingjensen
 
 本文件是 Paper30Min 质量线的唯一权威来源。除特别注明外，命令均在 `app/` 中运行。脚本只是可复现封装；修改本文件必须进入 code review，不得为了让当前变更通过而降低标准。
 
 ## Floor（始终阻断）
 
-- 禁止新增抑制注释: 不允许新增 `@ts-ignore`、`@ts-expect-error`、`@ts-nocheck`、`eslint-disable`、`biome-ignore`、`istanbul ignore`、`nosemgrep`、`gitleaks:allow`、`Stryker disable` 及同类绕过。
+- 禁止新增抑制注释: 不允许新增 `@ts-ignore`、`@ts-expect-error`、`@ts-nocheck`、`eslint-disable`、`oxlint-disable`、`biome-ignore`、`istanbul ignore`、`nosemgrep`、`gitleaks:allow`、`Stryker disable` 及同类绕过。
 - 禁止未完成桩: 不允许新增 not-implemented 异常、空 `catch {}` 或以 `TODO` 代替本次承诺的实现。
 - 禁止静默弱化测试: 新增 `.skip` / `.todo`、删除测试文件或移除既有断言必须阻断；真实环境例外只能进入下方 Exceptions。
 - 禁止源码秘密: 产品源码、测试、文档和 CI 不得包含凭据；gitleaks 输出必须始终使用 `--redact`。
@@ -37,10 +37,19 @@ Floor 由 `node scripts/floor-guard.mjs --base origin/main` 对 merge base 到�
 | C2 | Dead code | `0` 个 knip 问题 | 防止死文件、死导出和依赖漂移；不允许新增宽泛豁免 | `npm run test:dead-code` | BUILD、CI |
 | C3 | Secrets | `0` 个产品范围 finding | 凭据不得进入源码、transcript 或 CI 日志 | `npm run check:secrets` | BUILD、CI |
 | C4 | Architecture | `0` 个边界违规；`>= 1` 个扫描模块；SWC 与 `.ts/.tsx/.cts` 解析必须可用 | renderer 不得访问 main / Node / Electron；shared 保持进程中立；preload 只经受限契约暴露能力。非空扫描防止“0 modules 假通过” | `npm run check:architecture` | VERIFY、CI |
+| C9 | Lint correctness | `0` 个 correctness、React Hooks 或 floating Promise finding | linter 补充 tsc/knip 未覆盖的正确性检查；type-aware 检查只在 VERIFY/CI 增加成本 | `npm run check:lint`；`npm run check:lint:type-aware` | BUILD、VERIFY、CI |
 | C5 | Security: dependencies | high / critical 为 `0`；unknown severity 阻断；扫描包清单 `>= 1` | 高危依赖必须有修复或有期限的明确处置；低级别不掩盖高级别；非空包清单区分“零漏洞”与“未扫描” | `npm run check:dependencies` | REVIEW、CI |
 | C6 | Build | `0` 个构建错误 | 生产运行目录必须能由锁定依赖重建；构建不等同安装包 | `npm run build` | REVIEW、CI |
 | C7 | Contract tests | `0` 个失败 | 工程、文档、来源、核验与解析预算必须由真实契约回归裁决 | `npx playwright test -g "project-core\|document-core\|arxiv-import\|pdf-import\|pdf-reparse\|pdf-snapshot\|pdf-verification"` | VERIFY |
 | C8 | Windows Electron | `0` 个失败；环境跳过按 M1 测量并仅登记 W2 | 桌面行为不能用 Linux 构建或纯静态检查替代 | `npm run test:electron`（Windows CI）；`npm test`（本地全量） | Windows CI、完整本地验证 |
+
+### Lint 与架构工具分工
+
+- Oxlint `1.94.0` 承担 correctness 与 React Hooks，tsrs `7.1.0-beta.tsrs4` 只承担 VERIFY/CI 的 floating Promise 类型检查；不叠加 ESLint 或 Biome。官方依据：[配置与 correctness](https://oxc.rs/docs/guide/usage/linter/config)、[CLI 非空扫描语义](https://oxc.rs/docs/guide/usage/linter/cli)、[type-aware linting](https://oxc.rs/docs/guide/usage/linter/type-aware)。
+- 首版采用默认 correctness、`react/rules-of-hooks`、`react/exhaustive-deps` 与 `typescript/no-floating-promises`。React Compiler 的 `react/refs`、`react/immutability`、`react/error-boundaries`、`react/set-state-in-effect` 以及更宽的 `typescript/no-base-to-string` 不纳入首版，避免把工具基线扩张成 React/类型语义重构；后续采纳须独立评审，不使用逐文件豁免。
+- 架构边界仍由 dependency-cruiser `18.8.0`（SWC 解析）承担：曾尝试用 Oxlint `no-restricted-imports` 等价接管 11 条规则，但独立审查证实字符串匹配与解析路径判定不等价（`./sub/../preload.cts` 等点段路径可绕过、部分目录深度误报），触发本票预设退路“无法等价表达则保留 dependency-cruiser”。两工具职责零重叠：depcruise 只管 import 边界，Oxlint 只管正确性。`app/tests/architecture-gate.spec.ts` 以真实脚本+生产配置验证 11 条边界逐条阻断（含点段路径、type-only、动态 import、preload 特例）、干净样本零误报与空扫描 fail-closed。
+- `quality-gate.mjs` 收敛为仅 depcruise 分支；semgrep/axe 死分支随“当前不采用”决定删除。
+- 当日同机探针成本：dependency-cruiser 为 126 modules / 2.62 秒；Oxlint 原生默认 correctness 在 app 范围探针为 136 files / 2.54 秒；tsrs 首次冷启动为 12.36 秒，接入后的 warm type-aware 为 1.02 秒。冷启动包含首次包准备，不作为稳定耗时承诺；版本均由 `app/package-lock.json` 固定。
 
 依赖漏洞覆盖差异：旧 OSV 路径直接读取 lockfile 并查询 OSV 数据；新路径以 `npm audit --audit-level=high` 查询当前 npm registry 的 advisory，按实际 npm 依赖树计算，并校验非空报告、依赖总数和严重度。npm audit 会把直接依赖的 meta-vulnerability 单列，因此 low / moderate 数量不与 OSV 逐项相等。当前安装边界只有 `app/package-lock.json`；不保留 OSV 对其他语言生态的扫描。Dependabot 如启用，仅作 GitHub 后台监控与提醒，不替代 npm audit，也不作为本地或 CI 合并门禁。
 
@@ -89,7 +98,7 @@ Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；
 
 整数计数不设容差，因为新增一次跳过、漏洞或豁免都是可审查的离散事件。比例型指标若以后引入，ratchet 容差为 **0.5 个百分点**，用于吸收无关文件的轻微比例波动，而不是允许真实回退。
 
-补充基线为测量参考，不是阻断阈值：拆分前 PR #160（d52ace9）共 `602` 条，`599 passed / 3 skipped (9.9m)`，其中 `9` 条为 OSV 工具自测；c3e 本地拆分后产品清单 `593` 条，`590 passed / 3 skipped`，非 Electron `482` 条（4 workers，71.7 秒），Electron `108 passed / 3 skipped`（1 worker，568.7 秒）。产品测试 ID 与跳过数前后一致，删除的 `9` 条 OSV 自测由 W5 单独审查；新增 `10` 条 npm audit 工具回归单独计入完整套件，不计入产品清单。架构 `126 modules / 0 violations`。耗时只记录当日成本；机器与 runner 负载不同，耗时本身不自动阻断。
+补充基线为测量参考，不是阻断阈值：拆分前 PR #160（d52ace9）共 `602` 条，`599 passed / 3 skipped (9.9m)`，其中 `9` 条为 OSV 工具自测；c3e 本地拆分后产品清单 `593` 条，`590 passed / 3 skipped`，非 Electron `482` 条（4 workers，71.7 秒），Electron `108 passed / 3 skipped`（1 worker，568.7 秒）。产品测试 ID 与跳过数前后一致，删除的 `9` 条 OSV 自测由 W5 单独审查；新增 `10` 条 npm audit 工具回归与 `8` 条 Oxlint／架构／suppression 工具回归单独计入完整套件，不计入产品清单。架构保持 dependency-cruiser `126 modules / 0 violations`；Oxlint 最终验证 `139 files / 0 findings`（原生与 type-aware，含恢复的架构脚本）。耗时只记录当日成本；机器与 runner 负载不同，耗时本身不自动阻断。
 
 ## Exceptions
 
@@ -104,16 +113,22 @@ Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；
 
 | Stage | Command | 内容与成本 |
 |---|---|---|
-| BUILD / 编辑循环 | `npm run check:fast` | 类型、knip、secrets、diff floor；保持秒级，secrets 今日扫描约 2.3 秒 |
-| VERIFY / 任务交还前 | `npm run check:task` | fast、架构和导入/工程契约 Playwright；非 Electron 并行，Electron 串行，其他功能另跑相关 `-g` 套件 |
-| REVIEW / 完整本地验证 | `npm run check:full` | fast、架构、npm audit、构建和完整分层回归；以分钟计 |
+| BUILD / 编辑循环 | `npm run check:fast` | 类型、knip、原生 Oxlint、secrets、diff floor；保持秒级，secrets 今日扫描约 2.3 秒 |
+| VERIFY / 任务交还前 | `npm run check:task` | fast、架构边界、type-aware Oxlint 和导入/工程契约 Playwright；非 Electron 并行，Electron 串行，其他功能另跑相关 `-g` 套件 |
+| REVIEW / 完整本地验证 | `npm run check:full` | fast、架构边界、type-aware Oxlint、npm audit、构建和完整分层回归；以分钟计 |
 | SHIP / CI | `.github/workflows/ci.yml` | Linux quality 执行静态门禁、构建与并行非 Electron；Windows electron 执行构建、定向 `win32` junction 非 Electron 与串行全量 Electron；两条路径并行且各安装一次依赖 |
 
 Playwright 在 `test-results/timing/non-electron.json` 与 `test-results/timing/electron.json` 写入 JSON 时序报告，包含开始时间、持续时间和通过／跳过／失败计数；直接运行默认配置时写入 `full.json`。CI 分别上传两类报告，PR 记录拆分前后的墙钟时间与 GitHub runner 成本。
 
-CI 固定 gitleaks 8.30.1，避免未审查的工具漂移；dependency-cruiser、SWC 和 npm 依赖由 `app/package-lock.json` 固定。Go 仅用于安装 gitleaks，OSV 不再安装。gitleaks 的 `.local/`、`.upstream/`、`node_modules/` 与生成目录排除只界定非产品文件，不是源码 finding 豁免。
+CI 固定 gitleaks 8.30.1，避免未审查的工具漂移；dependency-cruiser、SWC、Oxlint、tsrs 和 npm 依赖由 `app/package-lock.json` 固定。Go 仅用于安装 gitleaks，OSV 不再安装。gitleaks 的 `.local/`、`.upstream/`、`node_modules/` 与生成目录排除只界定非产品文件，不是源码 finding 豁免。
 
 2026-11-21 用户确认暂时无法取得仓库 admin 权限或由持有者调整 GitHub 安全设置，因此本任务保留 gitleaks、setup-go 与现有仓库设置。repository-level Secret Scanning / Push Protection 状态未验证，不声称已由 GitHub 推送保护接管；取得证据后另行评估替换。
+
+## 检查时机与注释约定
+
+- 检查只在 BUILD、VERIFY、REVIEW、CI 的生命周期命令运行；禁止逐 Edit/Write hook、保存时全仓格式化或重复的第二套 lint/format 工具。格式化先形成独立机械基线，不与行为修改混在同一提交。
+- 删除只复述代码、记录已消失实现、空泛 TODO 或已与事实冲突的低信息量注释；保留解释非显然不变量、外部契约、边界条件与取舍的注释。不得借注释清理删除尚未理解的上下文。
+- 代码与测试记录当前实现和可执行证据，spec 记录目标行为与契约，ADR 记录重大决策的背景与取舍。验证结果写入对应 PR / beads，发布证据与限制写入发布说明；不用代码注释替代 spec / ADR，也不维护逐轮修改流水账。
 
 ## 当前不采用的维度
 
