@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check, ChevronDown, KeyRound, Pencil, Plus, Save, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Button, IconButton } from "./ui/Button";
+import { InlineMessage } from "./ui/Feedback";
 import "./agent.css";
 import {
   defaultAgentSettings,
@@ -207,7 +209,7 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
       setBusy(false);
     }
   }
-  if (!settings) return <p role="status">{message || "正在读取配置…"}</p>;
+  if (!settings) return <InlineMessage>{message || "正在读取配置…"}</InlineMessage>;
   const update = (value: Partial<SettingsDraft>) => {
     setSettings({ ...settings, ...value });
     setMessage("");
@@ -308,23 +310,19 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
                   ) : (
                     <h2>{settings.serviceName || "新服务"}</h2>
                   )}
-                  <button
-                    type="button"
+                  <IconButton
+                    label="编辑服务名称"
                     className="settings-icon"
-                    title="编辑服务名称"
-                    aria-label="编辑服务名称"
                     onClick={() => setEditingServiceName(true)}
                   >
                     <Pencil />
-                  </button>
+                  </IconButton>
                   <span className={settings.hasKey ? "key-state configured" : "key-state"}>
                     {settings.hasKey ? "密钥已配置" : "密钥未配置"}
                   </span>
-                  <button
-                    type="button"
+                  <IconButton
+                    label="删除服务"
                     className="settings-icon"
-                    title="删除服务"
-                    aria-label="删除服务"
                     disabled={catalog!.services.length < 2}
                     onClick={() => {
                       const next = merged();
@@ -336,7 +334,7 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
                     }}
                   >
                     <Trash2 />
-                  </button>
+                  </IconButton>
                 </div>
                 <label>
                   接口协议
@@ -418,15 +416,9 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
                   <p>
                     {settings.keyError ? "此密钥无法读取，请替换或移除。" : "此服务的模型共用密钥；留空保留现有密钥。"}
                   </p>
-                  <button
-                    type="button"
-                    className="remove-key"
-                    title="移除 API 密钥"
-                    aria-label="移除 API 密钥"
-                    onClick={() => void save(true)}
-                  >
+                  <Button variant="danger" className="remove-key" onClick={() => void save(true)}>
                     <Trash2 /> 移除密钥
-                  </button>
+                  </Button>
                 </div>
               </section>
               <section className="agent-model-list">
@@ -449,11 +441,10 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
                               {modelCode}
                             </span>
                           )}
-                          <button
-                            type="button"
+                          <IconButton
+                            label={`编辑模型 ${title}`}
                             className="settings-icon"
                             title={expandedModelId === model.id ? "收起模型" : "编辑模型"}
-                            aria-label={`编辑模型 ${title}`}
                             aria-expanded={expandedModelId === model.id}
                             onClick={() => {
                               if (model.id !== modelId) switchTo(merged(), serviceId, model.id);
@@ -461,12 +452,10 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
                             }}
                           >
                             {expandedModelId === model.id ? <ChevronDown /> : <Pencil />}
-                          </button>
-                          <button
-                            type="button"
+                          </IconButton>
+                          <IconButton
+                            label={`删除模型 ${title}`}
                             className="settings-icon"
-                            title="删除模型"
-                            aria-label={`删除模型 ${title}`}
                             disabled={serviceModels.length < 2}
                             onClick={() => {
                               const next = merged();
@@ -478,7 +467,7 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
                             }}
                           >
                             <Trash2 />
-                          </button>
+                          </IconButton>
                         </div>
                         {expandedModelId === model.id && modelId === model.id && (
                           <div className="agent-model-editor">
@@ -660,7 +649,9 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
               }}
             />
           </label>
-          {catalog?.search?.keyError && !clearExaKey && <p role="alert">Exa 密钥无法读取，请替换或移除。</p>}
+          {catalog?.search?.keyError && !clearExaKey && (
+            <InlineMessage variant="error">Exa 密钥无法读取，请替换或移除。</InlineMessage>
+          )}
           {catalog?.search?.hasKey && (
             <label className="settings-checkbox">
               <input
@@ -678,14 +669,18 @@ export function AgentSettingsForm({ section }: { section: "agent" | "proxy" | "s
         </section>
       )}
       <div className="settings-save-row">
-        <button className="primary" type="submit" disabled={busy}>
+        <Button variant="primary" type="submit" disabled={busy}>
           <Save /> {busy ? "正在保存…" : "保存配置"}
-        </button>
+        </Button>
         {message && (
-          <p className={message === "已保存" ? "settings-feedback success" : "settings-feedback"} role="status">
+          <InlineMessage
+            variant={message === "已保存" ? "success" : "error"}
+            className={message === "已保存" ? "settings-feedback success" : "settings-feedback"}
+            role="status"
+          >
             {message === "已保存" && <Check />}
             {message}
-          </p>
+          </InlineMessage>
         )}
       </div>
     </form>

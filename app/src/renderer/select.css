@@ -1,11 +1,4 @@
 /* Use Chromium's accessible picker, including its keyboard and focus handling. */
-:root {
-  --select-surface: #fdfcfe;
-  --select-border: #e2dbe9;
-  --select-hover: #f4f0f8;
-  --select-chosen: #ece5f3;
-  --select-ink: #655373;
-}
 select:not([multiple]):not([size]),
 select:not([multiple]):not([size])::picker(select) {
   appearance: base-select;
@@ -17,27 +10,25 @@ select:not([multiple]):not([size]) {
   gap: 8px;
   cursor: pointer;
   font: inherit;
-  border-radius: 7px;
+  border-radius: var(--radius-control);
 }
 select:not([multiple]):not([size]):focus-visible {
-  outline: 2px solid #b6a3cb;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 select:not([multiple]):not([size])::picker(select) {
   padding: 5px;
   margin-block: 5px;
-  border: 1px solid var(--select-border);
-  border-radius: 8px;
-  background: var(--select-surface);
-  color: #51475a;
-  box-shadow:
-    0 6px 24px #38234614,
-    0 1px 3px #38234608;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  color: var(--text-secondary);
+  box-shadow: var(--overlay-shadow);
   max-height: min(320px, 60dvh);
   max-width: calc(100vw - 24px);
   overflow: auto;
   scrollbar-width: thin;
-  scrollbar-color: #d3c7df transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 select:not([multiple]):not([size]) option {
   min-height: 32px;
@@ -49,31 +40,31 @@ select:not([multiple]):not([size]) option {
   line-height: 1.5;
   white-space: normal;
   overflow-wrap: anywhere;
-  color: #655c6e;
+  color: var(--text-secondary);
   background: transparent;
   cursor: pointer;
 }
 select:not([multiple]):not([size]) option:checked {
-  background: var(--select-chosen);
-  color: var(--select-ink);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
   font-weight: 550;
 }
 select:not([multiple]):not([size]) option:hover,
 select:not([multiple]):not([size]) option:focus {
-  background: var(--select-hover);
-  color: var(--select-ink);
+  background: var(--surface-hover);
+  color: var(--text);
   outline: none;
 }
 select:not([multiple]):not([size]) option:checked:hover,
 select:not([multiple]):not([size]) option:checked:focus {
-  background: var(--select-chosen);
+  background: var(--accent-soft);
 }
 select:not([multiple]):not([size]) option::checkmark {
-  color: #947bab;
+  color: var(--accent);
   font-size: 12px;
 }
 select:not([multiple]):not([size])::picker-icon {
-  color: #9c8bab;
+  color: var(--muted);
   font-size: 11px;
 }
 /* The compact session switch already has a Lucide chevron. */
@@ -83,5 +74,6 @@ select:not([multiple]):not([size])::picker-icon {
 select:not([multiple]):not([size]):disabled,
 select:not([multiple]):not([size]) option:disabled {
   cursor: default;
-  color: #b1a8b9;
+  color: var(--muted);
+  opacity: 0.6;
 }

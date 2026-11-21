@@ -16,7 +16,7 @@
 
 - 蓝靛色语义 tokens：表面、文字、边框、accent、状态、焦点、圆角与动效。
 - 原生优先的 `Button`、`IconButton`、`Field`、`InlineMessage`、`EmptyState`。
-- `Dialog`、`ConfirmDialog` 使用原生 `<dialog>` 管理焦点；Field 与需要复杂定位的自定义 `Select` 采用 Base UI headless 组件，样式仍由项目普通 CSS 负责。
+- `Dialog`、`ConfirmDialog` 使用原生 `<dialog>` 管理焦点；Field 采用 Base UI headless 组件；`Select` 使用 Chromium 原生 base-select 统一浮层（真实 Electron 键盘与窄窗口回归验证），样式仍由项目普通 CSS 负责。
 - 创建工程、笔记、移动、上传确认与 renderer 内未保存确认。
 - 设置、Agent、Reader、Markdown、PDF 的控件与状态样式迁移。
 - 真实 Electron 键盘、焦点、reduced-motion、多宽度截图和相关行为回归。
@@ -32,7 +32,7 @@
 ## Tech Stack
 
 - Electron 44、React 19、TypeScript、Vite、普通 CSS。
-- 原生 `button/input/textarea/dialog/details`；Base UI 仅承担 Field/Select 等复杂交互，不引入默认皮肤。Base UI Dialog 经真实 Electron Tab 焦点回归证伪后不再采用。
+- 原生 `button/input/textarea/dialog/details/select(base-select)`；Base UI 仅承担 Field，不引入默认皮肤。Base UI Dialog 经真实 Electron Tab 焦点回归证伪后不再采用；Base UI Select 因原生 picker 已满足契约（键盘、对勾、视口内重定位）不再引入。
 - Lucide 图标沿用现有依赖；不加载远端字体或视觉资源。
 
 ## Commands

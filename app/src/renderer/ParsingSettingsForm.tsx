@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { FileSearch, KeyRound, Save, Trash2 } from "lucide-react";
 import { defaultParsingSettings, type ParsingSettings } from "../shared/parsing";
+import { Button } from "./ui/Button";
+import { InlineMessage } from "./ui/Feedback";
 import "./parsing.css";
 
 export function ParsingSettingsForm() {
@@ -108,8 +110,8 @@ export function ParsingSettingsForm() {
           </label>
           <div className="key-help">
             <p>凭据加密保存在本机，不随论文工程保存。</p>
-            <button
-              type="button"
+            <Button
+              variant="danger"
               className="remove-key"
               aria-label="清除百度 Token"
               disabled={clearKey}
@@ -119,23 +121,27 @@ export function ParsingSettingsForm() {
               }}
             >
               <Trash2 /> 清除 Token
-            </button>
+            </Button>
           </div>
           {settings.keyError && !clearKey && (
-            <p className="settings-feedback" role="alert">
+            <InlineMessage variant="error" className="settings-feedback">
               已保存的凭据无法读取，请重新填写或清除。
-            </p>
+            </InlineMessage>
           )}
         </section>
       </fieldset>
       <div className="settings-save-row">
-        <button className="primary" disabled={busy}>
+        <Button variant="primary" type="submit" disabled={busy}>
           <Save /> {busy ? "正在保存…" : "保存解析配置"}
-        </button>
+        </Button>
         {message && (
-          <p className={`settings-feedback ${message === "解析配置已保存。" ? "success" : ""}`} role="status">
+          <InlineMessage
+            variant={message === "解析配置已保存。" ? "success" : "error"}
+            className={`settings-feedback ${message === "解析配置已保存。" ? "success" : ""}`}
+            role="status"
+          >
             {message}
-          </p>
+          </InlineMessage>
         )}
       </div>
     </form>

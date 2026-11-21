@@ -3210,3 +3210,64 @@ test("UI 未保存提示词重新载入与离开经 renderer 确认", async () =
   await dialog.getByRole("button", { name: "放弃并离开", exact: true }).click();
   await expect(page.getByLabel("百度任务地址", { exact: true })).toBeVisible();
 });
+
+test("UI Select 键盘选择与统一浮层语义色", async () => {
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "代理配置", exact: true }).click();
+  const proxy = page.getByLabel("连接方式", { exact: true });
+  await proxy.focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(proxy).toHaveValue("environment");
+  await expect(page.getByText("使用应用启动时的环境代理配置。")).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(proxy).toHaveValue("custom");
+  await expect(page.getByLabel("代理地址", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  const api = page.getByLabel("接口协议", { exact: true });
+  await expect(api).toHaveValue("openai-completions");
+  await api.click();
+  const pickerColors = await api.evaluate((element) => {
+    const style = getComputedStyle(element, "::picker(select)");
+    return { background: style.backgroundColor, color: style.color, border: style.borderTopColor };
+  });
+  const tokens = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const result = {
+      surface: resolve("--surface"),
+      textSecondary: resolve("--text-secondary"),
+      borderStrong: resolve("--border-strong"),
+    };
+    probe.remove();
+    return result;
+  });
+  expect(pickerColors.background).toBe(tokens.surface);
+  expect(pickerColors.color).toBe(tokens.textSecondary);
+  expect(pickerColors.border).toBe(tokens.borderStrong);
+  // 鼠标点开时焦点已在选中项，一次 ArrowDown 即移到下一项。
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(api).toHaveValue("openai-responses");
+  await page.screenshot({ path: "test-results/ou7-agent-settings.png" });
+  await page.setViewportSize({ width: 560, height: 780 });
+  await api.click();
+  const overflow = await api.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { doc: document.documentElement.scrollWidth <= innerWidth, triggerRight: rect.right <= innerWidth };
+  });
+  expect(overflow.doc).toBe(true);
+  expect(overflow.triggerRight).toBe(true);
+  await page.screenshot({ path: "test-results/ou7-agent-settings-narrow.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1440, height: 960 });
+});
