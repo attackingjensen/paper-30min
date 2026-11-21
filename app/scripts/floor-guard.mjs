@@ -198,8 +198,10 @@ const retirementWaivers = (() => {
 
 const SUPPRESSIONS =
   /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|oxlint-disable|biome-ignore|# *noqa|# *type: *ignore|istanbul ignore|nosemgrep|gitleaks:allow|Stryker disable/;
+// TODO 桩检测只对代码/脚本文件生效；文档与提示词里作为名词提及 TODO 不构成未完成桩。
+const isCode = (f) => /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|sh|ps1|vue|svelte)$/.test(f);
 const STUBS =
-  /throw new (Error|NotImplemented).*[Nn]ot implemented|catch\s*\(\w*\)\s*\{\s*\}|catch\s*\{\s*\}|\bTODO\b|\bpass\s*# *stub/;
+  /throw new (Error|NotImplemented).*[Nn]ot implemented|catch\s*\(\w*\)\s*\{\s*\}|catch\s*\{\s*\}|\bpass\s*# *stub/;
 const SKIPS = /\.(skip|todo)\b|\bxit\(|\bxdescribe\(|@pytest\.mark\.skip|t\.Skip\(/;
 
 for (const { file, text } of added) {
@@ -226,7 +228,7 @@ for (const { file, text } of added) {
   if (reflowedAdded(file, text)) continue;
   const suppression = text.match(SUPPRESSIONS);
   if (suppression) flag("silenced-checker", file, suppression[0]);
-  if (STUBS.test(text)) flag("unfinished-work", file, text);
+  if (STUBS.test(text) || (isCode(file) && /\bTODO\b/.test(text))) flag("unfinished-work", file, text);
   if (SKIPS.test(text)) flag("test-made-easier", file, text);
 }
 
@@ -244,6 +246,8 @@ for (const { file, text } of removed) {
 }
 
 // A rule is a floor bullet or a table row, identified by its stable label / first cell.
+// 删除检测只覆盖「## Floor」章节的 bullet 与表格行；其余章节的文档性 bullet 改写不视为规则移除，
+// 阈值棘轮仍对全部规则行生效。章节归属按基线文件内容判定，防止同一次改动挪动章节标题绕过检测。
 const ruleKey = (t) => {
   const s = t.trim();
   if (s.startsWith("|"))
@@ -256,6 +260,25 @@ const ruleKey = (t) => {
   if (/^[-*] /.test(s)) return s.slice(2).split(":")[0].trim();
   return null;
 };
+const floorRuleKeys = (() => {
+  // 基线无 CONSTRAINTS.md（bootstrap）时 git show 失败返回 null：无既有规则可删，返回空集。
+  const text = git(["show", `${mergeBase}:CONSTRAINTS.md`]);
+  if (text === null) return new Set();
+  const keys = new Set();
+  let inFloor = false;
+  for (const line of text.split(/\r?\n/)) {
+    const heading = line.match(/^##\s+(.*)$/);
+    if (heading) {
+      inFloor = heading[1].trim().startsWith("Floor");
+      continue;
+    }
+    if (inFloor) {
+      const key = ruleKey(line);
+      if (key !== null) keys.add(key);
+    }
+  }
+  return keys;
+})();
 const isException = (t) => /^\| *(W|E)\d+ *\|/.test(t.trim());
 const MIN_BEFORE = /(>=|>|≥|at least|minimum|\bmin\b|no less than|not fall|not drop|不得下降|至少)\s*$/;
 const MAX_BEFORE = /(<=|<|≤|at most|maximum|\bmax\b|no more than|under|below|not grow|not exceed|不得增长|不超过)\s*$/;
@@ -278,13 +301,14 @@ const thresholds = (t) => {
   }
   return out;
 };
+// 删除检测只覆盖基线 Floor 章节的规则；阈值棘轮仍对全部规则行（含例外/测量表）生效。
 const removedRules = removed.filter((l) => isConstraints(l.file) && ruleKey(l.text) !== null);
 const addedRules = added.filter((l) => isConstraints(l.file) && ruleKey(l.text) !== null);
 for (const r of removedRules) {
   const a = addedRules.find((x) => ruleKey(x.text) === ruleKey(r.text));
   if (reflowedLine(r.file, r.text)) continue;
   if (!a) {
-    if (!isException(r.text)) flag("rule-removed", r.file, r.text);
+    if (!isException(r.text) && floorRuleKeys.has(ruleKey(r.text))) flag("rule-removed", r.file, r.text);
     continue;
   }
   const before = thresholds(r.text),
