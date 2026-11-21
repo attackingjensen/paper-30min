@@ -1,0 +1,8 @@
+{
+  "printWidth": 120,
+  "endOfLine": "lf",
+  "embeddedLanguageFormatting": "off",
+  "sortImports": false,
+  "sortPackageJson": false,
+  "ignorePatterns": [".beads/", ".agents/", ".claude/", ".codegraph/", ".omp/", "skills/"]
+}

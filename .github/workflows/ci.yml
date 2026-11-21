@@ -49,6 +49,9 @@ jobs:
       - name: Fast constraints
         run: npm run check:fast
 
+      - name: Format baseline
+        run: npm run format:check
+
       - name: Architecture boundaries
         run: npm run check:architecture
 

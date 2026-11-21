@@ -14,6 +14,8 @@
     "test:desktop": "npm run build && npm run test:electron",
     "test:electron": "playwright test --config=playwright.electron.config.ts",
     "test:dead-code": "knip --no-progress",
+    "format": "cd .. && oxfmt --write .",
+    "format:check": "cd .. && oxfmt --check .",
     "check:fast": "npm run typecheck && npm run test:dead-code && npm run check:lint && npm run check:secrets && node scripts/floor-guard.mjs",
     "check:task": "npm run check:fast && npm run check:architecture && npm run check:lint:type-aware && node scripts/test.mjs -g \"project-core|document-core|arxiv-import|pdf-import|pdf-reparse|pdf-snapshot|pdf-verification\"",
     "check:full": "npm run check:fast && npm run check:architecture && npm run check:lint:type-aware && npm run check:dependencies && npm run build && node scripts/test.mjs",
