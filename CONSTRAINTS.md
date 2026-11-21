@@ -89,7 +89,7 @@ Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；
 
 整数计数不设容差，因为新增一次跳过、漏洞或豁免都是可审查的离散事件。比例型指标若以后引入，ratchet 容差为 **0.5 个百分点**，用于吸收无关文件的轻微比例波动，而不是允许真实回退。
 
-补充基线为测量参考，不是阻断阈值：拆分前 PR #160（d52ace9）共 `602` 条，`599 passed / 3 skipped (9.9m)`，其中 `9` 条为 OSV 工具自测；c3e 本地拆分后产品清单 `593` 条，`590 passed / 3 skipped`，非 Electron `482` 条（4 workers，76.1 秒），Electron `108 passed / 3 skipped`（1 worker，568.7 秒）。产品测试 ID 与跳过数前后一致，删除的 `9` 条 OSV 自测由 W5 单独审查。架构 `126 modules / 0 violations`。耗时只记录当日成本；机器与 runner 负载不同，耗时本身不自动阻断。
+补充基线为测量参考，不是阻断阈值：拆分前 PR #160（d52ace9）共 `602` 条，`599 passed / 3 skipped (9.9m)`，其中 `9` 条为 OSV 工具自测；c3e 本地拆分后产品清单 `593` 条，`590 passed / 3 skipped`，非 Electron `482` 条（4 workers，71.7 秒），Electron `108 passed / 3 skipped`（1 worker，568.7 秒）。产品测试 ID 与跳过数前后一致，删除的 `9` 条 OSV 自测由 W5 单独审查；新增 `10` 条 npm audit 工具回归单独计入完整套件，不计入产品清单。架构 `126 modules / 0 violations`。耗时只记录当日成本；机器与 runner 负载不同，耗时本身不自动阻断。
 
 ## Exceptions
 
@@ -107,11 +107,13 @@ Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；
 | BUILD / 编辑循环 | `npm run check:fast` | 类型、knip、secrets、diff floor；保持秒级，secrets 今日扫描约 2.3 秒 |
 | VERIFY / 任务交还前 | `npm run check:task` | fast、架构和导入/工程契约 Playwright；非 Electron 并行，Electron 串行，其他功能另跑相关 `-g` 套件 |
 | REVIEW / 完整本地验证 | `npm run check:full` | fast、架构、npm audit、构建和完整分层回归；以分钟计 |
-| SHIP / CI | `.github/workflows/ci.yml` | Linux quality 执行静态门禁、构建与并行非 Electron；Windows electron 执行构建与串行全量 Electron；两条路径并行且各安装一次依赖 |
+| SHIP / CI | `.github/workflows/ci.yml` | Linux quality 执行静态门禁、构建与并行非 Electron；Windows electron 执行构建、定向 `win32` junction 非 Electron 与串行全量 Electron；两条路径并行且各安装一次依赖 |
 
 Playwright 在 `test-results/timing/non-electron.json` 与 `test-results/timing/electron.json` 写入 JSON 时序报告，包含开始时间、持续时间和通过／跳过／失败计数；直接运行默认配置时写入 `full.json`。CI 分别上传两类报告，PR 记录拆分前后的墙钟时间与 GitHub runner 成本。
 
 CI 固定 gitleaks 8.30.1，避免未审查的工具漂移；dependency-cruiser、SWC 和 npm 依赖由 `app/package-lock.json` 固定。Go 仅用于安装 gitleaks，OSV 不再安装。gitleaks 的 `.local/`、`.upstream/`、`node_modules/` 与生成目录排除只界定非产品文件，不是源码 finding 豁免。
+
+2026-11-21 用户确认暂时无法取得仓库 admin 权限或由持有者调整 GitHub 安全设置，因此本任务保留 gitleaks、setup-go 与现有仓库设置。repository-level Secret Scanning / Push Protection 状态未验证，不声称已由 GitHub 推送保护接管；取得证据后另行评估替换。
 
 ## 当前不采用的维度
 

@@ -29,7 +29,7 @@
 
 Electron 自动化回归默认隐藏窗口，不弹窗或抢占焦点。只有明确需要现场视觉检查、原生焦点或人工交互验收时，才设置 `PAPER30MIN_TEST_WINDOW=visible` 并通过 Playwright `-g` 筛选相关用例；完成后清除该环境变量，不以可见模式运行整套回归。隐藏模式仍须验证实际渲染、截图和交互，但不能替代原生焦点或人工交互验收；剪贴板用例仍可能使用系统剪贴板。
 
-GitHub 的 `Electron CI` 分为并行的 Linux quality 与 Windows electron：前者运行类型、knip、secrets、floor、依赖漏洞、架构边界、构建和并行非 Electron；后者运行构建与隐藏窗口串行 Electron 全套回归。只有对应提交实际完成的 CI 才记为通过。旧 `Legacy v1 CI` 已随旧客户端删除一并移除。
+GitHub 的 `Electron CI` 分为并行的 Linux quality 与 Windows electron：前者运行类型、knip、secrets、floor、依赖漏洞、架构边界、构建和并行非 Electron；后者运行构建、定向 `win32` junction 非 Electron 回归与隐藏窗口串行 Electron 全套回归。只有对应提交实际完成的 CI 才记为通过。旧 `Legacy v1 CI` 已随旧客户端删除一并移除。
 
 ## 工作约定
 

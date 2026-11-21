@@ -32,13 +32,26 @@ try {
 
 const counts = report?.metadata?.vulnerabilities;
 const dependencyTotal = report?.metadata?.dependencies?.total;
-const vulnerabilities = Object.values(report?.vulnerabilities ?? {});
+const findingMap = report?.vulnerabilities;
+const findingListValid = findingMap !== null && typeof findingMap === "object" && !Array.isArray(findingMap);
+const vulnerabilities = findingListValid ? Object.values(findingMap) : [];
 const severities = ["info", "low", "moderate", "high", "critical"];
-const valid = audit.status === 0 || audit.status === 1
-  ? Number.isInteger(dependencyTotal) && dependencyTotal >= 1
-    && severities.every(level => Number.isInteger(counts?.[level]) && counts[level] >= 0)
-    && vulnerabilities.every(finding => severities.includes(finding?.severity))
-  : false;
+const actual = { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 };
+let findingsValid = findingListValid;
+for (const finding of vulnerabilities) {
+  const severity = finding?.severity;
+  if (!severities.includes(severity)) {
+    findingsValid = false;
+    break;
+  }
+  actual[severity] += 1;
+  actual.total += 1;
+}
+const valid = (audit.status === 0 || audit.status === 1)
+  && findingsValid
+  && Number.isInteger(dependencyTotal) && dependencyTotal >= 1
+  && counts?.total === actual.total
+  && severities.every(level => Number.isInteger(counts?.[level]) && counts[level] === actual[level]);
 
 if (!valid) {
   console.error(`check-dependencies: npm audit failed or returned an incomplete report (status ${audit.status ?? "unknown"})`);
@@ -46,8 +59,8 @@ if (!valid) {
 }
 
 writeFileSync(output, audit.stdout);
-const high = counts.high + counts.critical;
-console.log(`npm audit: ${dependencyTotal} dependencies, ${counts.low + counts.moderate} low/moderate, ${high} high/critical`);
+const high = actual.high + actual.critical;
+console.log(`npm audit: ${dependencyTotal} dependencies, ${actual.low + actual.moderate} low/moderate, ${high} high/critical`);
 if (high) process.exitCode = 1;
 else if (audit.status !== 0) {
   console.error("check-dependencies: npm audit failed below the blocking severity threshold");

@@ -96,6 +96,10 @@ jobs:
       - name: Typecheck and build
         run: npm run build
 
+      # Linux 运行完整非 Electron；这两条保留 win32 junction 分支覆盖。
+      - name: Run Windows-specific non-Electron tests
+        run: npm run test:fast -- --grep "公共工程写入保护基线、取消与所有权|受管写入不跟随 sources 目录链接"
+
       - name: Run Windows Electron tests
         run: npm run test:electron
 
@@ -106,7 +110,10 @@ jobs:
           name: electron-test-evidence-windows-latest
           path: |
             app/playwright-report/
+            app/test-results/*.png
             app/test-results/electron/
+            app/test-results/non-electron/
             app/test-results/timing/electron.json
+            app/test-results/timing/non-electron.json
           retention-days: 14
           if-no-files-found: warn

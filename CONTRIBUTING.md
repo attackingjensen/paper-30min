@@ -47,7 +47,7 @@ git push -u origin feat/my-change   # origin 指向自己的 fork
 
 ## 评审与合并
 
-- PR 需通过 Electron CI：Linux quality 跑静态门禁、构建与并行非 Electron 测试；Windows electron 跑构建与隐藏窗口串行 Electron 全套回归。
+- PR 需通过 Electron CI：Linux quality 跑静态门禁、构建与并行非 Electron 测试；Windows electron 跑构建、定向 `win32` junction 非 Electron 回归与隐藏窗口串行 Electron 全套回归。
 - 至少一次人工 review；有争议的取舍在 PR 中说明理由。新增依赖需说明用途与替代方案。
 - 保持 PR 范围聚焦，不夹带无关改动；已推送的分支不要 force push。
 - 合并前处理审查阻断项并记录实际验证结果；未运行的测试或安装走查不得记为通过。
