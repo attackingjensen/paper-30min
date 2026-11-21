@@ -13,10 +13,7 @@ import {
   publishSourceSnapshot,
   readRevisionDocument,
 } from "../src/main/project-core";
-import {
-  createDocumentMergeCandidate,
-  publishDocumentMergeCandidate,
-} from "../src/main/document/merge";
+import { createDocumentMergeCandidate, publishDocumentMergeCandidate } from "../src/main/document/merge";
 import {
   loadUpdateCandidate,
   readUpdateCandidateAsset,
@@ -132,10 +129,12 @@ test("reader 冲突解决显式落盘：重载保留选择，未解决项仍可�
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(localRevision.revisionId);
   const published = await publishDocumentMergeCandidate(loaded);
   expect(published.revisionId).toBe(stored.revisionId);
-  expect(projectSentenceText(
-    await readRevisionDocument(created.root, published.revisionId, "document"),
-    selectionIds.thirdSentence,
-  )).toBe("source edit");
+  expect(
+    projectSentenceText(
+      await readRevisionDocument(created.root, published.revisionId, "document"),
+      selectionIds.thirdSentence,
+    ),
+  ).toBe("source edit");
 });
 
 test("reader 未解决冲突的存储候选不能发布；解决结果在基线变化后保留但不套用", async () => {
@@ -146,7 +145,10 @@ test("reader 未解决冲突的存储候选不能发布；解决结果在基线�
   await expect(publishDocumentMergeCandidate(unresolved)).rejects.toThrow(/未解决|冲突/);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(localRevision.revisionId);
   await resolveStoredCandidateConflict({
-    root: created.root, revisionId: stored.revisionId, conflictId: conflict.id, choice: "current",
+    root: created.root,
+    revisionId: stored.revisionId,
+    conflictId: conflict.id,
+    choice: "current",
   });
   const loaded = await loadUpdateCandidate({ root: created.root, revisionId: stored.revisionId });
   // 另一操作推进 current。
@@ -181,7 +183,9 @@ test("reader 候选资产经受管读取：摘要校验，未登记资产拒绝"
   const figureId = randomUUID();
   const withFigure = structuredClone(tree);
   withFigure.blocks.push({
-    id: figureId, sectionId: selectionIds.section, kind: "figure",
+    id: figureId,
+    sectionId: selectionIds.section,
+    kind: "figure",
     asset: { path: `assets/${hash}.png`, sha256: hash, mime: "image/png" },
     captionUnitId: null,
   });
@@ -200,20 +204,25 @@ test("reader 候选资产经受管读取：摘要校验，未登记资产拒绝"
   });
   const stored = await storeUpdateCandidate(candidate);
   const asset = await readUpdateCandidateAsset({
-    root: created.root, revisionId: stored.revisionId, path: `assets/${hash}.png`,
+    root: created.root,
+    revisionId: stored.revisionId,
+    path: `assets/${hash}.png`,
   });
   expect(Buffer.from(asset.bytes).equals(png)).toBe(true);
   expect(asset.mime).toBe("image/png");
-  await expect(readUpdateCandidateAsset({
-    root: created.root, revisionId: stored.revisionId, path: `assets/${"0".repeat(64)}.png`,
-  })).rejects.toThrow();
+  await expect(
+    readUpdateCandidateAsset({
+      root: created.root,
+      revisionId: stored.revisionId,
+      path: `assets/${"0".repeat(64)}.png`,
+    }),
+  ).rejects.toThrow();
   void source;
 });
 
 test("reader 不存在的候选身份重载明确拒绝，不伪造空候选", async () => {
   const { created } = await initialProject("缺失候选");
-  await expect(loadUpdateCandidate({ root: created.root, revisionId: randomUUID() }))
-    .rejects.toThrow();
+  await expect(loadUpdateCandidate({ root: created.root, revisionId: randomUUID() })).rejects.toThrow();
 });
 
 test("reader 并发解决不同冲突串行落盘，两项选择重载后都保留", async () => {
@@ -227,13 +236,18 @@ test("reader 并发解决不同冲突串行落盘，两项选择重载后都保�
     { kind: "text", text: " tail." },
   ];
   const localSource = await publishSourceSnapshot({
-    root: created.root, files: { "document.html": Buffer.from("<html>local</html>") },
+    root: created.root,
+    files: { "document.html": Buffer.from("<html>local</html>") },
   });
   const localRevision = await commitRevision({
-    root: created.root, baseRevision: revision.revisionId, sourceSnapshotId: localSource.sourceSnapshotId,
+    root: created.root,
+    baseRevision: revision.revisionId,
+    sourceSnapshotId: localSource.sourceSnapshotId,
     files: {
-      "document.json": json(local), "source-base.json": json(tree),
-      "tombstones.json": json([]), "changeset.json": json({ baseRevision: revision.revisionId }),
+      "document.json": json(local),
+      "source-base.json": json(tree),
+      "tombstones.json": json([]),
+      "changeset.json": json({ baseRevision: revision.revisionId }),
     },
   });
   const candidateTree = structuredClone(tree);
@@ -244,19 +258,32 @@ test("reader 并发解决不同冲突串行落盘，两项选择重载后都保�
     { kind: "text", text: " tail." },
   ];
   const candidateSource = await publishSourceSnapshot({
-    root: created.root, files: { "document.html": Buffer.from("<html>candidate</html>") },
+    root: created.root,
+    files: { "document.html": Buffer.from("<html>candidate</html>") },
   });
   const candidate = await createDocumentMergeCandidate({
-    root: created.root, baseRevision: localRevision.revisionId,
-    sourceSnapshotId: candidateSource.sourceSnapshotId, candidate: candidateTree,
+    root: created.root,
+    baseRevision: localRevision.revisionId,
+    sourceSnapshotId: candidateSource.sourceSnapshotId,
+    candidate: candidateTree,
   });
   const stored = await storeUpdateCandidate(candidate);
   expect(stored.conflicts.length).toBeGreaterThanOrEqual(2);
   const [first, second] = stored.conflicts;
   // 并发解决两项不同冲突：写锁串行化，后写者不得覆盖先写者的选择。
   await Promise.all([
-    resolveStoredCandidateConflict({ root: created.root, revisionId: stored.revisionId, conflictId: first.id, choice: "current" }),
-    resolveStoredCandidateConflict({ root: created.root, revisionId: stored.revisionId, conflictId: second.id, choice: "candidate" }),
+    resolveStoredCandidateConflict({
+      root: created.root,
+      revisionId: stored.revisionId,
+      conflictId: first.id,
+      choice: "current",
+    }),
+    resolveStoredCandidateConflict({
+      root: created.root,
+      revisionId: stored.revisionId,
+      conflictId: second.id,
+      choice: "candidate",
+    }),
   ]);
   const loaded = await loadUpdateCandidate({ root: created.root, revisionId: stored.revisionId });
   expect(loaded.resolutions[first.id]).toBe("current");
@@ -267,14 +294,26 @@ test("reader 解决代际切换崩溃后旧代际仍完整可读（manifest 是�
   const { created, stored } = await conflictedCandidate("代际崩溃");
   const conflict = stored.conflicts[0];
   await resolveStoredCandidateConflict({
-    root: created.root, revisionId: stored.revisionId, conflictId: conflict.id, choice: "candidate",
+    root: created.root,
+    revisionId: stored.revisionId,
+    conflictId: conflict.id,
+    choice: "candidate",
   });
   const directory = path.join(created.root, ".paper30min", "update-candidates", stored.revisionId);
   // 模拟第二次解决在写完新代际树文件后、切换 manifest 前崩溃：
   // 留下孤儿代际文件，但 manifest 仍指向完整旧代际。
   const manifest = JSON.parse(await fs.readFile(path.join(directory, "candidate.json"), "utf8"));
   const generation = (manifest.generation ?? 0) + 1;
-  for (const name of ["base", "current", "sourceBase", "document", "candidateTree", "changeset", "tombstones", "previousTombstones"])
+  for (const name of [
+    "base",
+    "current",
+    "sourceBase",
+    "document",
+    "candidateTree",
+    "changeset",
+    "tombstones",
+    "previousTombstones",
+  ])
     await fs.writeFile(path.join(directory, `${name}.${generation}.json`), Buffer.from("{}"));
   // 重载仍按 manifest 指向的代际读取，候选与已落盘解决保持可用。
   const loaded = await loadUpdateCandidate({ root: created.root, revisionId: stored.revisionId });

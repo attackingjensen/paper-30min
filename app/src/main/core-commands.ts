@@ -16,26 +16,12 @@ import {
   publishDocumentMergeCandidate,
   resolveDocumentMergeCandidateConflict,
 } from "./document/merge.js";
-import {
-  previewDocumentCorrections,
-  publishDocumentCorrections,
-} from "./document/correction.js";
-import {
-  loadUpdateCandidate,
-  resolveStoredCandidateConflict,
-} from "./document/candidate-store.js";
-import {
-  createVerification,
-  readVerificationRecords,
-  verificationInheritCommitHooks,
-} from "./pdf/verification.js";
+import { previewDocumentCorrections, publishDocumentCorrections } from "./document/correction.js";
+import { loadUpdateCandidate, resolveStoredCandidateConflict } from "./document/candidate-store.js";
+import { createVerification, readVerificationRecords, verificationInheritCommitHooks } from "./pdf/verification.js";
 import { snapshotLocalPdf } from "./pdf/snapshot.js";
 import { importArxivPdfFallback } from "./pdf/fallback-import.js";
-import {
-  listBaiduPdfParseTasks,
-  stopBaiduPdfParse,
-  type BaiduPdfParseConfig,
-} from "./parsing/baidu-task.js";
+import { listBaiduPdfParseTasks, stopBaiduPdfParse, type BaiduPdfParseConfig } from "./parsing/baidu-task.js";
 import {
   importPdfToCurrent,
   publishParseCandidate,
@@ -135,10 +121,7 @@ export interface PdfCommandContext {
   signal: AbortSignal;
 }
 
-export async function dispatchCoreCommand(
-  command: CoreCommand,
-  pdf?: PdfCommandContext,
-): Promise<unknown> {
+export async function dispatchCoreCommand(command: CoreCommand, pdf?: PdfCommandContext): Promise<unknown> {
   switch (command.type) {
     case "coreCreate":
       return createProject({ parent: command.parent, name: command.name });
@@ -157,9 +140,7 @@ export async function dispatchCoreCommand(
         const content = command.files["document.json"];
         const bytes = content instanceof Uint8Array ? content : content?.bytes;
         if (!bytes) throw new Error("coreCommit 缺少 document.json，不能发布新 current。");
-        const document = parseDocumentTree(
-          JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
-        );
+        const document = parseDocumentTree(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
         hooks = verificationInheritCommitHooks({
           root: command.root,
           baseRevision: command.baseRevision,
@@ -168,14 +149,17 @@ export async function dispatchCoreCommand(
           document,
         });
       }
-      return commitRevision({
-        root: command.root,
-        baseRevision: command.baseRevision,
-        sourceSnapshotId: command.sourceSnapshotId,
-        revisionId,
-        files: command.files,
-        metadata: command.metadata,
-      }, hooks);
+      return commitRevision(
+        {
+          root: command.root,
+          baseRevision: command.baseRevision,
+          sourceSnapshotId: command.sourceSnapshotId,
+          revisionId,
+          files: command.files,
+          metadata: command.metadata,
+        },
+        hooks,
+      );
     }
     case "coreReadSource":
       return readSourceSnapshot(command.root, command.sourceSnapshotId);
@@ -218,17 +202,21 @@ export async function dispatchCoreCommand(
       return published;
     }
     case "coreCandidateLoad":
-      return candidateSummary(await loadUpdateCandidate({
-        root: command.root,
-        revisionId: command.revisionId,
-      }));
+      return candidateSummary(
+        await loadUpdateCandidate({
+          root: command.root,
+          revisionId: command.revisionId,
+        }),
+      );
     case "coreCandidateResolve":
-      return candidateSummary(await resolveStoredCandidateConflict({
-        root: command.root,
-        revisionId: command.revisionId,
-        conflictId: command.conflictId,
-        choice: command.choice,
-      }));
+      return candidateSummary(
+        await resolveStoredCandidateConflict({
+          root: command.root,
+          revisionId: command.revisionId,
+          conflictId: command.conflictId,
+          choice: command.choice,
+        }),
+      );
     case "coreMergePublish":
       return mergePublish(command);
     case "corePdfSnapshot":
@@ -268,27 +256,27 @@ export async function dispatchCoreCommand(
       const controller = new AbortController();
       arxivOperations.set(command.operationId, controller);
       const transport = arxivTransportFor(command.baseUrl, controller.signal);
-      const run = command.type === "coreArxivImport"
-        ? importArxivPaper({
-            parent: command.parent,
-            name: command.name,
-            input: command.input,
-            transport,
-            signal: controller.signal,
-            ...(command.baseUrl === undefined ? {} : { baseUrl: command.baseUrl }),
-            ...(fixtureGate(command.baseUrl) ? { allowFixtureLoopback: true } : {}),
-          })
-        : resumeArxivImport({
-            root: command.root,
-            transport,
-            signal: controller.signal,
-            ...(command.baseUrl === undefined ? {} : { baseUrl: command.baseUrl }),
-            ...(fixtureGate(command.baseUrl) ? { allowFixtureLoopback: true } : {}),
-          });
+      const run =
+        command.type === "coreArxivImport"
+          ? importArxivPaper({
+              parent: command.parent,
+              name: command.name,
+              input: command.input,
+              transport,
+              signal: controller.signal,
+              ...(command.baseUrl === undefined ? {} : { baseUrl: command.baseUrl }),
+              ...(fixtureGate(command.baseUrl) ? { allowFixtureLoopback: true } : {}),
+            })
+          : resumeArxivImport({
+              root: command.root,
+              transport,
+              signal: controller.signal,
+              ...(command.baseUrl === undefined ? {} : { baseUrl: command.baseUrl }),
+              ...(fixtureGate(command.baseUrl) ? { allowFixtureLoopback: true } : {}),
+            });
       return run.finally(() => {
         // 仅删除本次注册的控制器，避免误删同 ID 的后续操作。
-        if (arxivOperations.get(command.operationId) === controller)
-          arxivOperations.delete(command.operationId);
+        if (arxivOperations.get(command.operationId) === controller) arxivOperations.delete(command.operationId);
       });
     }
     case "coreArxivCancel": {
@@ -331,9 +319,7 @@ export async function dispatchCoreCommand(
   }
 }
 
-async function mergePublish(
-  command: Extract<CoreCommand, { type: "coreMergePublish" }>,
-) {
+async function mergePublish(command: Extract<CoreCommand, { type: "coreMergePublish" }>) {
   let candidate = await createDocumentMergeCandidate({
     root: command.root,
     baseRevision: command.baseRevision,
@@ -341,19 +327,18 @@ async function mergePublish(
     candidate: command.candidate,
   });
   for (const resolution of command.resolutions ?? []) {
-    candidate = resolveDocumentMergeCandidateConflict(
-      candidate,
-      resolution.conflictId,
-      resolution.choice,
-    );
+    candidate = resolveDocumentMergeCandidateConflict(candidate, resolution.conflictId, resolution.choice);
   }
-  return publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
-    root: candidate.root,
-    baseRevision: candidate.baseRevision,
-    revisionId: candidate.revisionId,
-    sourceSnapshotId: candidate.sourceSnapshotId,
-    document: candidate.document,
-  }));
+  return publishDocumentMergeCandidate(
+    candidate,
+    verificationInheritCommitHooks({
+      root: candidate.root,
+      baseRevision: candidate.baseRevision,
+      revisionId: candidate.revisionId,
+      sourceSnapshotId: candidate.sourceSnapshotId,
+      document: candidate.document,
+    }),
+  );
 }
 
 /** 候选摘要：剥离资产字节，只保留可经 IPC 序列化的树、changeset 与冲突。 */
@@ -367,8 +352,7 @@ function candidateSummary(candidate: DocumentMergeCandidate) {
 async function arxivUpdateNetworkCommand(
   command: Extract<CoreCommand, { type: "coreArxivCheckUpdate" | "coreArxivUpdateCandidate" | "coreArxivRefetch" }>,
 ): Promise<ArxivUpdateCheckCommandResult | ArxivUpdateCandidateCommandResult> {
-  if (arxivOperations.has(command.operationId))
-    throw new Error(`arXiv 操作已在进行中：${command.operationId}`);
+  if (arxivOperations.has(command.operationId)) throw new Error(`arXiv 操作已在进行中：${command.operationId}`);
   const controller = new AbortController();
   arxivOperations.set(command.operationId, controller);
   const network = {
@@ -377,21 +361,23 @@ async function arxivUpdateNetworkCommand(
     ...(command.baseUrl === undefined ? {} : { baseUrl: command.baseUrl }),
     ...(fixtureGate(command.baseUrl) ? { allowFixtureLoopback: true } : {}),
   };
-  const run = command.type === "coreArxivCheckUpdate"
-    ? checkArxivUpdate({ root: command.root, ...network })
-    : arxivCandidateCommand(command.type === "coreArxivUpdateCandidate"
-        ? fetchArxivUpdateCandidate({
-            root: command.root,
-            reference: command.reference,
-            baseRevision: command.baseRevision,
-            ...network,
-          })
-        : refetchArxivSnapshot({ root: command.root, baseRevision: command.baseRevision, ...network }));
+  const run =
+    command.type === "coreArxivCheckUpdate"
+      ? checkArxivUpdate({ root: command.root, ...network })
+      : arxivCandidateCommand(
+          command.type === "coreArxivUpdateCandidate"
+            ? fetchArxivUpdateCandidate({
+                root: command.root,
+                reference: command.reference,
+                baseRevision: command.baseRevision,
+                ...network,
+              })
+            : refetchArxivSnapshot({ root: command.root, baseRevision: command.baseRevision, ...network }),
+        );
   try {
     return await run;
   } finally {
-    if (arxivOperations.get(command.operationId) === controller)
-      arxivOperations.delete(command.operationId);
+    if (arxivOperations.get(command.operationId) === controller) arxivOperations.delete(command.operationId);
   }
 }
 
@@ -427,9 +413,7 @@ async function pdfReconvert(
     task,
     candidate: candidateSummary(candidate),
     warnings: readDiagnosticArray(
-      metadata !== null && typeof metadata === "object"
-        ? (metadata as Record<string, unknown>).warnings
-        : undefined,
+      metadata !== null && typeof metadata === "object" ? (metadata as Record<string, unknown>).warnings : undefined,
     ),
   };
 }
@@ -461,9 +445,7 @@ async function pdfCloudCommand(
       signal: pdf.signal,
       ...(fixtureGate(command.baseUrl) ? { allowFixtureLoopback: true } : {}),
     });
-    return result.outcome === "candidate"
-      ? { ...result, candidate: candidateSummary(result.candidate) }
-      : result;
+    return result.outcome === "candidate" ? { ...result, candidate: candidateSummary(result.candidate) } : result;
   }
   if (command.type === "corePdfImport") {
     return importPdfToCurrent({
@@ -479,9 +461,7 @@ async function pdfCloudCommand(
       baseRevision: command.baseRevision,
       confirmUpload: pdf.confirmUpload,
     });
-    return result.outcome === "candidate"
-      ? { ...result, candidate: candidateSummary(result.candidate) }
-      : result;
+    return result.outcome === "candidate" ? { ...result, candidate: candidateSummary(result.candidate) } : result;
   }
   if (command.type === "corePdfResume") {
     return resumePdfImport({
@@ -495,7 +475,5 @@ async function pdfCloudCommand(
     parseBatchId: command.parseBatchId,
     ...(command.jobId === undefined ? {} : { jobId: command.jobId }),
   });
-  return result.outcome === "candidate"
-    ? { ...result, candidate: candidateSummary(result.candidate) }
-    : result;
+  return result.outcome === "candidate" ? { ...result, candidate: candidateSummary(result.candidate) } : result;
 }

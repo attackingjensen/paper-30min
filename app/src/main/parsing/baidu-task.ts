@@ -4,14 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { renameManaged } from "../managed-rename.js";
 import { fetch, FormData, type Dispatcher } from "undici";
-import {
-  parseImportDiagnostic,
-  type ImportDiagnostic,
-} from "../../shared/arxiv.js";
-import type {
-  PdfParseSourceSnapshotRecord,
-  PdfSourceSnapshotRecord,
-} from "../../shared/contracts.js";
+import { parseImportDiagnostic, type ImportDiagnostic } from "../../shared/arxiv.js";
+import type { PdfParseSourceSnapshotRecord, PdfSourceSnapshotRecord } from "../../shared/contracts.js";
 import type {
   BaiduPdfParseOptions,
   BaiduUploadConfirmationRequest,
@@ -56,9 +50,7 @@ export interface BaiduPdfParseConfig {
   dispatcher?: Dispatcher;
 }
 
-type BaiduPdfParseTaskPoint =
-  | "submitting-persisted"
-  | "job-persisted";
+type BaiduPdfParseTaskPoint = "submitting-persisted" | "job-persisted";
 
 export interface TaskHooks {
   onPoint?: (point: BaiduPdfParseTaskPoint) => void | Promise<void>;
@@ -112,10 +104,7 @@ type PdfParseTaskResult =
       snapshot: PdfParseSourceSnapshotRecord;
     };
 
-const active = new Map<
-  string,
-  { controller: AbortController; parseBatchId: string | null }
->();
+const active = new Map<string, { controller: AbortController; parseBatchId: string | null }>();
 
 function activeKey(root: string) {
   return path.resolve(root).toLowerCase();
@@ -126,8 +115,7 @@ function hash(bytes: Uint8Array) {
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new OperationError("invalid-object");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new OperationError("invalid-object");
   return value as Record<string, unknown>;
 }
 
@@ -140,7 +128,7 @@ function checkedEndpoint(value: string) {
   }
   const loopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
   if (
-    !((url.protocol === "https:") || (url.protocol === "http:" && loopback)) ||
+    !(url.protocol === "https:" || (url.protocol === "http:" && loopback)) ||
     url.username ||
     url.password ||
     url.search ||
@@ -207,8 +195,7 @@ function parseTask(value: unknown, projectId: string, paperId: string): PdfParse
     checkedEndpoint(record.endpoint) !== record.endpoint ||
     typeof record.phase !== "string" ||
     !PHASES.has(record.phase as PdfParseTaskPhase) ||
-    (record.jobId !== undefined &&
-      (typeof record.jobId !== "string" || !JOB_ID.test(record.jobId))) ||
+    (record.jobId !== undefined && (typeof record.jobId !== "string" || !JOB_ID.test(record.jobId))) ||
     (record.responseSha256 !== undefined &&
       (typeof record.responseSha256 !== "string" || !SHA256.test(record.responseSha256))) ||
     (record.parseSourceSnapshotId !== undefined &&
@@ -251,22 +238,16 @@ function parseTask(value: unknown, projectId: string, paperId: string): PdfParse
     options: { ...OPTIONS },
     phase: record.phase as PdfParseTaskPhase,
     ...(record.jobId === undefined ? {} : { jobId: record.jobId as string }),
-    ...(record.responseSha256 === undefined
-      ? {}
-      : { responseSha256: record.responseSha256 as string }),
+    ...(record.responseSha256 === undefined ? {} : { responseSha256: record.responseSha256 as string }),
     ...(record.parseSourceSnapshotId === undefined
       ? {}
       : {
           parseSourceSnapshotId: record.parseSourceSnapshotId as string,
           sanitizedSha256: record.sanitizedSha256 as string,
         }),
-    ...(record.candidateRevisionId === undefined
-      ? {}
-      : { candidateRevisionId: record.candidateRevisionId as string }),
+    ...(record.candidateRevisionId === undefined ? {} : { candidateRevisionId: record.candidateRevisionId as string }),
     ...(record.baseRevision === undefined ? {} : { baseRevision: record.baseRevision as string }),
-    ...(record.diagnostic === undefined
-      ? {}
-      : { diagnostic: parseTaskDiagnostic(record.diagnostic) }),
+    ...(record.diagnostic === undefined ? {} : { diagnostic: parseTaskDiagnostic(record.diagnostic) }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -285,18 +266,13 @@ async function managedDirectory(root: string, relative: string, create: boolean)
       await fs.mkdir(target);
       entry = await fs.lstat(target);
     }
-    if (entry.isSymbolicLink() || !entry.isDirectory())
-      throw new Error("PDF 任务目录不能通过链接或普通文件访问。");
+    if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("PDF 任务目录不能通过链接或普通文件访问。");
   }
   return target;
 }
 
 export async function saveTask(root: string, task: PdfParseTaskRecord) {
-  const directory = await managedDirectory(
-    root,
-    `.paper30min/parsing/${task.parseBatchId}`,
-    true,
-  );
+  const directory = await managedDirectory(root, `.paper30min/parsing/${task.parseBatchId}`, true);
   if (!directory) throw new Error("PDF 任务目录不可用。");
   const bytes = Buffer.from(JSON.stringify(task, null, 2) + "\n");
   if (bytes.byteLength > TASK_BUDGET) throw new Error("PDF 任务记录超过 1 MiB 预算。");
@@ -342,8 +318,7 @@ async function listTasks(root: string, projectId: string, paperId: string) {
   const tasks: PdfParseTaskRecord[] = [];
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
     if (!UUID.test(entry.name)) continue;
-    if (entry.isSymbolicLink() || !entry.isDirectory())
-      throw new Error("PDF 任务目录不能是链接或普通文件。");
+    if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("PDF 任务目录不能是链接或普通文件。");
     try {
       tasks.push(await readTask(root, entry.name, projectId, paperId));
     } catch (error) {
@@ -416,11 +391,8 @@ export async function findBatchParseSnapshot(
 }
 
 function assertNoBlockingTask(tasks: PdfParseTaskRecord[]) {
-  const blocking = tasks.some(
-    (task) => !["failed", "remote-failed", "candidate-complete"].includes(task.phase),
-  );
-  if (blocking)
-    throw new Error("尚有提交结果不明或未完成的云端任务，请先恢复原任务，避免重复付费。");
+  const blocking = tasks.some((task) => !["failed", "remote-failed", "candidate-complete"].includes(task.phase));
+  if (blocking) throw new Error("尚有提交结果不明或未完成的云端任务，请先恢复原任务，避免重复付费。");
 }
 
 export function resultResource(value: string, endpointValue: string) {
@@ -435,12 +407,7 @@ export function resultResource(value: string, endpointValue: string) {
     url.protocol === "https:" &&
     (!url.port || url.port === "443") &&
     (url.hostname === "paddleocr.aistudio-app.com" || url.hostname.endsWith(".bcebos.com"));
-  if (
-    url.username ||
-    url.password ||
-    url.hash ||
-    !(url.origin === endpoint.origin || approvedBaiduHost)
-  )
+  if (url.username || url.password || url.hash || !(url.origin === endpoint.origin || approvedBaiduHost))
     throw new OperationError("baidu-result-url-invalid");
   return url.href;
 }
@@ -453,22 +420,14 @@ async function requestBytes(
   init: { method?: string; body?: FormData; headers?: Record<string, string> } = {},
 ) {
   const failureCode =
-    kind === "submit"
-      ? "baidu-submit-unknown"
-      : kind === "query"
-        ? "baidu-query-failed"
-        : "baidu-download-failed";
+    kind === "submit" ? "baidu-submit-unknown" : kind === "query" ? "baidu-query-failed" : "baidu-download-failed";
   const timeout = AbortSignal.timeout(context.timing?.requestTimeoutMs ?? 120_000);
-  const signal = kind === "submit"
-    ? timeout
-    : AbortSignal.any([context.signal, timeout]);
+  const signal = kind === "submit" ? timeout : AbortSignal.any([context.signal, timeout]);
   try {
     const response = await fetch(url, {
       ...init,
       redirect: "error",
-      ...(context.config.dispatcher === undefined
-        ? {}
-        : { dispatcher: context.config.dispatcher }),
+      ...(context.config.dispatcher === undefined ? {} : { dispatcher: context.config.dispatcher }),
       signal,
     });
     if (!response.ok) {
@@ -478,10 +437,7 @@ async function requestBytes(
       throw new OperationError(failureCode);
     }
     const declared = response.headers.get("content-length");
-    if (
-      declared !== null &&
-      (!/^\d+$/.test(declared) || Number(declared) > limit)
-    ) {
+    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit)) {
       await response.body?.cancel();
       throw new OperationError(failureCode);
     }
@@ -518,9 +474,7 @@ async function apiData(
       throw new Error("provider envelope rejected");
     return objectValue(value.data);
   } catch {
-    throw new OperationError(
-      kind === "submit" ? "baidu-submit-receipt-invalid" : "baidu-query-response-invalid",
-    );
+    throw new OperationError(kind === "submit" ? "baidu-submit-receipt-invalid" : "baidu-query-response-invalid");
   }
 }
 
@@ -558,12 +512,7 @@ async function submit(
     jobId = data.jobId;
   } catch (error) {
     const code = error instanceof OperationError ? error.code : "baidu-submit-receipt-invalid";
-    return incomplete(
-      task,
-      code,
-      code === "baidu-submit-rejected" ? "failed" : "unknown",
-      context.root,
-    );
+    return incomplete(task, code, code === "baidu-submit-rejected" ? "failed" : "unknown", context.root);
   }
   task.jobId = jobId;
   task.phase = "querying";
@@ -573,10 +522,7 @@ async function submit(
   return undefined;
 }
 
-async function queryAndDownload(
-  task: PdfParseTaskRecord,
-  context: ExecutionContext,
-): Promise<PdfParseTaskResult> {
+async function queryAndDownload(task: PdfParseTaskRecord, context: ExecutionContext): Promise<PdfParseTaskResult> {
   try {
     if (!task.jobId) throw new Error("已受理任务缺少任务号。");
     if (task.phase !== "querying") {
@@ -584,8 +530,7 @@ async function queryAndDownload(
       await saveTask(context.root, task);
     }
     const now = context.timing?.now ?? Date.now;
-    const sleep = context.timing?.sleep ?? ((ms: number, signal?: AbortSignal) =>
-      delay(ms, undefined, { signal }));
+    const sleep = context.timing?.sleep ?? ((ms: number, signal?: AbortSignal) => delay(ms, undefined, { signal }));
     const deadline = now() + (context.timing?.queryWaitMs ?? 30 * 60_000);
     let downloadUrl: string;
     for (;;) {
@@ -599,8 +544,7 @@ async function queryAndDownload(
         } catch {
           throw new OperationError("baidu-query-response-invalid");
         }
-        if (typeof urls.jsonUrl !== "string")
-          throw new OperationError("baidu-query-response-invalid");
+        if (typeof urls.jsonUrl !== "string") throw new OperationError("baidu-query-response-invalid");
         downloadUrl = resultResource(urls.jsonUrl, task.endpoint);
         break;
       }
@@ -628,30 +572,22 @@ async function queryAndDownload(
   } catch (error) {
     if (error instanceof OperationError && error.code === "baidu-remote-failed")
       return incomplete(task, error.code, "remote-failed", context.root);
-    if (context.signal.aborted)
-      return incomplete(task, "baidu-task-stopped", "stopped", context.root);
+    if (context.signal.aborted) return incomplete(task, "baidu-task-stopped", "stopped", context.root);
     if (!(error instanceof OperationError)) throw error;
     const phase = error.code === "baidu-result-digest-mismatch" ? "downloading" : task.phase;
     return incomplete(task, error.code, phase, context.root);
   }
 }
 
-async function runAcceptedTask(
-  task: PdfParseTaskRecord,
-  context: ExecutionContext,
-): Promise<PdfParseTaskResult> {
-  if (context.signal.aborted)
-    return incomplete(task, "baidu-task-stopped", "stopped", context.root);
+async function runAcceptedTask(task: PdfParseTaskRecord, context: ExecutionContext): Promise<PdfParseTaskResult> {
+  if (context.signal.aborted) return incomplete(task, "baidu-task-stopped", "stopped", context.root);
   return queryAndDownload(task, context);
 }
 
 export async function withActive<T>(
   root: string,
   externalSignal: AbortSignal | undefined,
-  operation: (context: {
-    signal: AbortSignal;
-    setBatch: (parseBatchId: string) => void;
-  }) => Promise<T>,
+  operation: (context: { signal: AbortSignal; setBatch: (parseBatchId: string) => void }) => Promise<T>,
 ): Promise<T> {
   const key = activeKey(root);
   if (active.has(key)) throw new Error("工程已有 PDF 云端任务正在本机运行。");
@@ -694,9 +630,7 @@ interface NewPdfParseInput {
   root: string;
   sourceSnapshotId: string;
   config: BaiduPdfParseConfig;
-  confirmUpload: (
-    request: BaiduUploadConfirmationRequest,
-  ) => boolean | Promise<boolean>;
+  confirmUpload: (request: BaiduUploadConfirmationRequest) => boolean | Promise<boolean>;
   /** 重解析／更新任务的合并基线；随首条任务记录原子持久化，崩溃后恢复可识别。 */
   baseRevision?: string;
   hooks?: TaskHooks;
@@ -781,20 +715,16 @@ export async function executeResumePdfParse(
   const { signal, setBatch } = context;
   const opened = await openProject(input.root);
   const config = checkedConfig(input.config);
-  let task = recoveredPhase(await readTask(
-    opened.root,
-    input.parseBatchId,
-    opened.manifest.id,
-    opened.manifest.paper.id,
-  ));
+  let task = recoveredPhase(
+    await readTask(opened.root, input.parseBatchId, opened.manifest.id, opened.manifest.paper.id),
+  );
   setBatch(task.parseBatchId);
   if (["failed", "remote-failed", "candidate-complete"].includes(task.phase))
     throw new Error("此任务已结束，不能作为未完成任务恢复。");
   if (task.endpoint !== config.endpoint || task.model !== config.model)
     throw new Error("恢复必须使用原 endpoint、模型与解析选项，不能改传新任务。");
   const { source } = await loadPdf(opened.root, task.parentSourceSnapshotId);
-  if (source.sha256 !== task.pdfSha256)
-    throw new Error("PDF 摘要已变化，不能恢复此云端任务。");
+  if (source.sha256 !== task.pdfSha256) throw new Error("PDF 摘要已变化，不能恢复此云端任务。");
   if (!task.jobId) {
     if (typeof input.jobId !== "string" || !JOB_ID.test(input.jobId))
       throw new Error("提交结果不明，请提供百度控制台任务号；不能自动重传。");

@@ -16,11 +16,7 @@ import type {
 } from "../shared/contracts.js";
 import type { ArxivReference } from "../shared/arxiv.js";
 import { parseImportDiagnostic } from "../shared/arxiv.js";
-import {
-  parseDocumentTree,
-  validateDocumentAssets,
-  type DocumentTree,
-} from "../shared/document/tree.js";
+import { parseDocumentTree, validateDocumentAssets, type DocumentTree } from "../shared/document/tree.js";
 import {
   createDocumentChangeset,
   parseDocumentChangeset,
@@ -29,12 +25,7 @@ import {
 
 const manifestName = "paper30min.json";
 const initialImportName = ".paper30min/imports/initial.json";
-const requiredRevisionFiles = [
-  "document.json",
-  "source-base.json",
-  "tombstones.json",
-  "changeset.json",
-];
+const requiredRevisionFiles = ["document.json", "source-base.json", "tombstones.json", "changeset.json"];
 const invalidName = /[<>:"/\\|?*]/;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const sha256 = /^[a-f0-9]{64}$/;
@@ -76,10 +67,7 @@ interface ProjectCommitContext {
 }
 
 export interface ProjectCommitHooks {
-  onCommitPoint?: (
-    point: ProjectCommitPoint,
-    context: ProjectCommitContext,
-  ) => void | Promise<void>;
+  onCommitPoint?: (point: ProjectCommitPoint, context: ProjectCommitContext) => void | Promise<void>;
 }
 
 interface NormalizedFile extends ManagedFileRecord {
@@ -116,8 +104,7 @@ function validRelativePath(value: string) {
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("工程数据必须是 JSON 对象。");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("工程数据必须是 JSON 对象。");
   return value as Record<string, unknown>;
 }
 
@@ -129,19 +116,15 @@ function exactKeys(value: Record<string, unknown>, expected: string[]) {
 
 function parseManifest(value: unknown): ProjectManifest {
   const manifest = objectValue(value);
-  if (manifest.formatVersion === 1)
-    throw new Error("这是 formatVersion: 1 旧格式工程，需要由旧格式处理流程打开。");
-  if (manifest.formatVersion !== 2)
-    throw new Error("工程清单格式不支持或已损坏。");
+  if (manifest.formatVersion === 1) throw new Error("这是 formatVersion: 1 旧格式工程，需要由旧格式处理流程打开。");
+  if (manifest.formatVersion !== 2) throw new Error("工程清单格式不支持或已损坏。");
   exactKeys(manifest, ["formatVersion", "id", "name", "paper"]);
-  if (typeof manifest.id !== "string" || !uuid.test(manifest.id))
-    throw new Error("工程身份无效。");
+  if (typeof manifest.id !== "string" || !uuid.test(manifest.id)) throw new Error("工程身份无效。");
   if (typeof manifest.name !== "string") throw new Error("工程名称无效。");
   validName(manifest.name);
   const paper = objectValue(manifest.paper);
   exactKeys(paper, ["currentRevision", "id"]);
-  if (typeof paper.id !== "string" || !uuid.test(paper.id))
-    throw new Error("主论文身份无效。");
+  if (typeof paper.id !== "string" || !uuid.test(paper.id)) throw new Error("主论文身份无效。");
   if (
     paper.currentRevision !== null &&
     (typeof paper.currentRevision !== "string" || !uuid.test(paper.currentRevision))
@@ -187,13 +170,15 @@ function parseArxivReferenceValue(value: unknown): ArxivReference {
   if (
     typeof record.baseId !== "string" ||
     typeof record.canonicalId !== "string" ||
-    !(record.version === null || (typeof record.version === "number" && Number.isInteger(record.version) && record.version >= 1))
+    !(
+      record.version === null ||
+      (typeof record.version === "number" && Number.isInteger(record.version) && record.version >= 1)
+    )
   ) {
     throw new Error("首次导入记录中的 arXiv 引用无效。");
   }
   return { baseId: record.baseId, version: record.version, canonicalId: record.canonicalId };
 }
-
 
 function parseArxivImportProgress(value: unknown): ArxivImportProgress {
   const record = objectValue(value);
@@ -214,23 +199,21 @@ function parseArxivImportProgress(value: unknown): ArxivImportProgress {
     nextAction: record.nextAction as ArxivImportProgress["nextAction"],
     ...(record.sourceSnapshotId === undefined ? {} : { sourceSnapshotId: record.sourceSnapshotId as string }),
     ...(record.candidateRevisionId === undefined ? {} : { candidateRevisionId: record.candidateRevisionId as string }),
-    ...(record.convertWarnings === undefined ? {} : {
-      convertWarnings: (record.convertWarnings as unknown[]).map(parseImportDiagnostic),
-    }),
+    ...(record.convertWarnings === undefined
+      ? {}
+      : {
+          convertWarnings: (record.convertWarnings as unknown[]).map(parseImportDiagnostic),
+        }),
     ...(record.diagnostic === undefined ? {} : { diagnostic: parseImportDiagnostic(record.diagnostic) }),
   };
 }
 
 /** 原子更新首次导入记录的 arXiv 进度；身份字段由 project-core 保持权威。 */
-export async function updateArxivImportProgress(
-  root: string,
-  progress: ArxivImportProgress,
-): Promise<void> {
+export async function updateArxivImportProgress(root: string, progress: ArxivImportProgress): Promise<void> {
   const canonical = await canonicalRoot(root);
   return serialized(canonical, async () => {
     const { manifest } = await readManifest(canonical);
-    if (manifest.paper.currentRevision !== null)
-      throw new Error("current 已存在，首次导入进度不再可写。");
+    if (manifest.paper.currentRevision !== null) throw new Error("current 已存在，首次导入进度不再可写。");
     const record = parseImportRecord(
       (await readManagedJson(canonical, initialImportName, "首次导入记录")).value,
       manifest,
@@ -250,14 +233,10 @@ function validateAssetPath(relative: string, expectedHash: string) {
 }
 
 function validMime(value: unknown): value is string {
-  return typeof value === "string" &&
-    /^[a-z0-9][a-z0-9!#$&^.*+-]*\/[a-z0-9][a-z0-9!#$&^.*+-]*$/i.test(value);
+  return typeof value === "string" && /^[a-z0-9][a-z0-9!#$&^.*+-]*\/[a-z0-9][a-z0-9!#$&^.*+-]*$/i.test(value);
 }
 
-function parseManagedFileRecord(
-  value: unknown,
-  kind: "source" | "revision",
-): ManagedFileRecord {
+function parseManagedFileRecord(value: unknown, kind: "source" | "revision"): ManagedFileRecord {
   const record = objectValue(value);
   const keys = Object.keys(record);
   if (
@@ -292,24 +271,17 @@ function parseManagedFileRecord(
 const maximumAssetBytes = 32 * 1024 * 1024;
 const maximumRevisionAssetBytes = 512 * 1024 * 1024;
 
-export function validateRevisionAssetBudget(
-  files: Array<Pick<ManagedFileRecord, "path" | "size">>,
-) {
+export function validateRevisionAssetBudget(files: Array<Pick<ManagedFileRecord, "path" | "size">>) {
   let total = 0;
   for (const file of files) {
     if (!file.path.startsWith("assets/")) continue;
-    if (file.size > maximumAssetBytes)
-      throw new Error(`单个资产超过 32 MiB 预算：${file.path}。`);
+    if (file.size > maximumAssetBytes) throw new Error(`单个资产超过 32 MiB 预算：${file.path}。`);
     total += file.size;
-    if (total > maximumRevisionAssetBytes)
-      throw new Error("revision 引用资产总量超过 512 MiB 预算。");
+    if (total > maximumRevisionAssetBytes) throw new Error("revision 引用资产总量超过 512 MiB 预算。");
   }
 }
 
-function validateManagedFileList<T extends ManagedFileRecord>(
-  files: T[],
-  kind: "source" | "revision",
-) {
+function validateManagedFileList<T extends ManagedFileRecord>(files: T[], kind: "source" | "revision") {
   const paths = new Set<string>();
   for (const file of files) {
     const portable = file.path.normalize("NFC").toLowerCase();
@@ -318,9 +290,7 @@ function validateManagedFileList<T extends ManagedFileRecord>(
   }
   if (kind === "revision") {
     validateRevisionAssetBudget(files);
-    const missing = requiredRevisionFiles.filter((required) =>
-      !files.some((file) => file.path === required)
-    );
+    const missing = requiredRevisionFiles.filter((required) => !files.some((file) => file.path === required));
     if (missing.length) throw new Error(`revision 缺少必需正文文件：${missing.join("、")}。`);
   }
   return files.sort((a, b) => a.path.localeCompare(b.path));
@@ -343,12 +313,15 @@ function normalizeFiles(
       mime = input.mime;
     }
     if (!(bytes instanceof Uint8Array)) throw new Error("受管文件内容必须是字节数组。");
-    const record = parseManagedFileRecord({
-      path: relative,
-      sha256: digest(bytes),
-      size: bytes.byteLength,
-      ...(mime === undefined ? {} : { mime }),
-    }, kind);
+    const record = parseManagedFileRecord(
+      {
+        path: relative,
+        sha256: digest(bytes),
+        size: bytes.byteLength,
+        ...(mime === undefined ? {} : { mime }),
+      },
+      kind,
+    );
     return { ...record, bytes };
   });
   const validated = validateManagedFileList(files, kind);
@@ -357,8 +330,7 @@ function normalizeFiles(
     const decoder = new TextDecoder("utf-8", { fatal: true });
     for (const required of requiredRevisionFiles) {
       const file = validated.find((candidate) => candidate.path === required)!;
-      if (file.bytes.byteLength > documentJsonBudget)
-        throw new Error(`revision JSON 超过 64 MiB 预算：${required}。`);
+      if (file.bytes.byteLength > documentJsonBudget) throw new Error(`revision JSON 超过 64 MiB 预算：${required}。`);
       try {
         JSON.parse(decoder.decode(file.bytes));
       } catch {
@@ -378,8 +350,7 @@ function validateRevisionDocumentTrees(
   const document = parseDocumentTree(documentValue, paperId);
   const sourceBase = parseDocumentTree(sourceBaseValue, paperId);
   const assetHashes = Object.fromEntries(
-    files.filter((file) => file.path.startsWith("assets/"))
-      .map((file) => [file.path, file.sha256]),
+    files.filter((file) => file.path.startsWith("assets/")).map((file) => [file.path, file.sha256]),
   );
   validateDocumentAssets(document, assetHashes);
   validateDocumentAssets(sourceBase, assetHashes);
@@ -388,15 +359,9 @@ function validateRevisionDocumentTrees(
 
 function validateBufferedRevisionTrees(files: NormalizedFile[], paperId: string) {
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  const read = (relative: string) => JSON.parse(decoder.decode(
-    files.find((file) => file.path === relative)!.bytes,
-  )) as unknown;
-  return validateRevisionDocumentTrees(
-    read("document.json"),
-    read("source-base.json"),
-    files,
-    paperId,
-  );
+  const read = (relative: string) =>
+    JSON.parse(decoder.decode(files.find((file) => file.path === relative)!.bytes)) as unknown;
+  return validateRevisionDocumentTrees(read("document.json"), read("source-base.json"), files, paperId);
 }
 
 function materializeRevisionChangeset(
@@ -414,8 +379,12 @@ function materializeRevisionChangeset(
   });
   const file = files.find((candidate) => candidate.path === "changeset.json")!;
   const supplied = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(file.bytes)) as unknown;
-  const placeholder = supplied !== null && typeof supplied === "object" && !Array.isArray(supplied) &&
-    Object.keys(supplied).length === 1 && Object.hasOwn(supplied, "baseRevision") &&
+  const placeholder =
+    supplied !== null &&
+    typeof supplied === "object" &&
+    !Array.isArray(supplied) &&
+    Object.keys(supplied).length === 1 &&
+    Object.hasOwn(supplied, "baseRevision") &&
     (supplied as { baseRevision?: unknown }).baseRevision === baseRevision;
   if (!placeholder) {
     const actual = parseDocumentChangeset(supplied);
@@ -424,26 +393,23 @@ function materializeRevisionChangeset(
     return files;
   }
   const bytes = Buffer.from(JSON.stringify(expected));
-  return files.map((candidate) => candidate.path === "changeset.json"
-    ? { ...candidate, bytes, sha256: digest(bytes), size: bytes.byteLength }
-    : candidate);
+  return files.map((candidate) =>
+    candidate.path === "changeset.json"
+      ? { ...candidate, bytes, sha256: digest(bytes), size: bytes.byteLength }
+      : candidate,
+  );
 }
 
-function normalizeMetadata(
-  input: Record<string, unknown> | undefined,
-  reserved: string[],
-): Record<string, unknown> {
+function normalizeMetadata(input: Record<string, unknown> | undefined, reserved: string[]): Record<string, unknown> {
   const metadata = objectValue(input ?? {});
   for (const key of reserved) {
-    if (Object.hasOwn(metadata, key))
-      throw new Error(`来源或 revision 元数据不能覆盖工程核字段：${key}。`);
+    if (Object.hasOwn(metadata, key)) throw new Error(`来源或 revision 元数据不能覆盖工程核字段：${key}。`);
   }
   const ancestors = new Set<object>();
   const visit = (value: unknown) => {
     if (value === null || typeof value === "string" || typeof value === "boolean") return;
     if (typeof value === "number" && Number.isFinite(value)) return;
-    if (!value || typeof value !== "object")
-      throw new Error("来源或 revision 元数据必须是可无损序列化的 JSON。");
+    if (!value || typeof value !== "object") throw new Error("来源或 revision 元数据必须是可无损序列化的 JSON。");
     if (ancestors.has(value)) throw new Error("来源或 revision 元数据不能包含循环引用。");
     ancestors.add(value);
     if (Array.isArray(value)) {
@@ -502,11 +468,7 @@ function parseSourceSnapshot(
   };
 }
 
-function parseRevision(
-  value: unknown,
-  manifest: ProjectManifest,
-  revisionId: string,
-): ProjectRevisionRecord {
+function parseRevision(value: unknown, manifest: ProjectManifest, revisionId: string): ProjectRevisionRecord {
   const record = objectValue(value);
   if (
     record.formatVersion !== 1 ||
@@ -515,8 +477,7 @@ function parseRevision(
     record.paperId !== manifest.paper.id ||
     typeof record.sourceSnapshotId !== "string" ||
     !uuid.test(record.sourceSnapshotId) ||
-    (record.baseRevision !== null &&
-      (typeof record.baseRevision !== "string" || !uuid.test(record.baseRevision))) ||
+    (record.baseRevision !== null && (typeof record.baseRevision !== "string" || !uuid.test(record.baseRevision))) ||
     record.path !== `paper/revisions/${revisionId}` ||
     !validTimestamp(record.committedAt)
   ) {
@@ -536,15 +497,10 @@ function parseRevision(
   };
 }
 
-async function atomicJson(
-  file: string,
-  value: unknown,
-  beforeReplace?: () => void | Promise<void>,
-) {
+async function atomicJson(file: string, value: unknown, beforeReplace?: () => void | Promise<void>) {
   const text = JSON.stringify(value, null, 2) + "\n";
   const bytes = Buffer.from(text);
-  if (bytes.length > jsonBudget)
-    throw new Error("工程 JSON 元数据超过 1 MiB 写入预算，受管内容尚未发布。");
+  if (bytes.length > jsonBudget) throw new Error("工程 JSON 元数据超过 1 MiB 写入预算，受管内容尚未发布。");
   const temporary = path.join(path.dirname(file), `.paper30min-${randomUUID()}.tmp`);
   try {
     const handle = await fs.open(temporary, "wx");
@@ -566,8 +522,7 @@ async function managedPath(root: string, relative: string) {
   let target = root;
   for (const part of relative.split("/")) {
     target = path.join(target, part);
-    if ((await fs.lstat(target)).isSymbolicLink())
-      throw new Error("受管工程文件不能通过符号链接或目录联接访问。");
+    if ((await fs.lstat(target)).isSymbolicLink()) throw new Error("受管工程文件不能通过符号链接或目录联接访问。");
   }
   return target;
 }
@@ -615,12 +570,7 @@ async function readJsonFile(file: string, description: string, budget = jsonBudg
   }
 }
 
-async function readManagedJson(
-  root: string,
-  relative: string,
-  description: string,
-  budget = jsonBudget,
-) {
+async function readManagedJson(root: string, relative: string, description: string, budget = jsonBudget) {
   return readJsonFile(await managedPath(root, relative), description, budget);
 }
 
@@ -654,7 +604,7 @@ async function listDiskFiles(directory: string, prefix = ""): Promise<string[]> 
     if (entry.isSymbolicLink()) throw new Error("受管内容不能包含符号链接或目录联接。");
     const relative = prefix + entry.name;
     if (entry.isDirectory()) {
-      files.push(...await listDiskFiles(path.join(directory, entry.name), relative + "/"));
+      files.push(...(await listDiskFiles(path.join(directory, entry.name), relative + "/")));
     } else if (entry.isFile()) {
       files.push(relative);
     } else {
@@ -664,11 +614,7 @@ async function listDiskFiles(directory: string, prefix = ""): Promise<string[]> 
   return files;
 }
 
-async function verifyDirectory(
-  directory: string,
-  files: ManagedFileRecord[],
-  additionalFiles: string[] = [],
-) {
+async function verifyDirectory(directory: string, files: ManagedFileRecord[], additionalFiles: string[] = []) {
   const expected = [...files.map((file) => file.path), ...additionalFiles].sort();
   const actual = (await listDiskFiles(directory)).sort();
   if (actual.length !== expected.length || actual.some((file, index) => file !== expected[index]))
@@ -732,21 +678,13 @@ async function assertMissing(file: string) {
   if (existing) throw new Error("受管快照或 revision 已存在，拒绝覆盖不可变内容。");
 }
 
-async function loadSourceSnapshot(
-  root: string,
-  manifest: ProjectManifest,
-  sourceSnapshotId: string,
-) {
+async function loadSourceSnapshot(root: string, manifest: ProjectManifest, sourceSnapshotId: string) {
   if (!uuid.test(sourceSnapshotId)) throw new Error("sourceSnapshotId 无效。");
   try {
     const relative = `sources/${sourceSnapshotId}`;
     const { value } = await readManagedJson(root, `${relative}/snapshot.json`, "来源快照元数据");
     const snapshot = parseSourceSnapshot(value, manifest, sourceSnapshotId);
-    await verifyDirectory(
-      await managedPath(root, relative),
-      snapshot.files,
-      ["snapshot.json"],
-    );
+    await verifyDirectory(await managedPath(root, relative), snapshot.files, ["snapshot.json"]);
     return snapshot;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
@@ -766,30 +704,10 @@ async function loadRevisionContent(root: string, manifest: ProjectManifest, revi
     const revision = parseRevision(value, manifest, revisionId);
     await verifyDirectory(await managedPath(root, revision.path), revision.files);
     const [documentResult, sourceBaseResult, tombstonesResult, changesetResult] = await Promise.all([
-      readManagedJson(
-        root,
-        `${revision.path}/document.json`,
-        "current 文档树",
-        documentJsonBudget,
-      ),
-      readManagedJson(
-        root,
-        `${revision.path}/source-base.json`,
-        "source-base 文档树",
-        documentJsonBudget,
-      ),
-      readManagedJson(
-        root,
-        `${revision.path}/tombstones.json`,
-        "revision tombstones",
-        documentJsonBudget,
-      ),
-      readManagedJson(
-        root,
-        `${revision.path}/changeset.json`,
-        "revision changeset",
-        documentJsonBudget,
-      ),
+      readManagedJson(root, `${revision.path}/document.json`, "current 文档树", documentJsonBudget),
+      readManagedJson(root, `${revision.path}/source-base.json`, "source-base 文档树", documentJsonBudget),
+      readManagedJson(root, `${revision.path}/tombstones.json`, "revision tombstones", documentJsonBudget),
+      readManagedJson(root, `${revision.path}/changeset.json`, "revision changeset", documentJsonBudget),
     ]);
     const documents = validateRevisionDocumentTrees(
       documentResult.value,
@@ -827,8 +745,7 @@ async function inspectProject(root: string) {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    if (!importRecord)
-      throw new Error("工程 currentRevision 为空，但缺少有效的首次导入记录，工程不完整。");
+    if (!importRecord) throw new Error("工程 currentRevision 为空，但缺少有效的首次导入记录，工程不完整。");
   }
   const currentRevision = manifest.paper.currentRevision
     ? await loadRevision(root, manifest, manifest.paper.currentRevision)
@@ -842,7 +759,10 @@ async function inspectProject(root: string) {
 async function serialized<T>(root: string, operation: () => Promise<T>): Promise<T> {
   const previous = writeQueues.get(root) ?? Promise.resolve();
   const result = previous.then(operation);
-  const tail = result.then(() => undefined, () => undefined);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
   writeQueues.set(root, tail);
   try {
     return await result;
@@ -879,8 +799,7 @@ export async function createProject(
   try {
     await fs.mkdir(root);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST")
-      throw new Error("同名工程文件夹已存在，请修改名称或位置。");
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("同名工程文件夹已存在，请修改名称或位置。");
     throw error;
   }
 
@@ -954,8 +873,7 @@ export async function readRevisionDocument(
   revisionId: string,
   kind: "document" | "source-base",
 ): Promise<DocumentTree> {
-  if (kind !== "document" && kind !== "source-base")
-    throw new Error("文档树读取类型必须是 document 或 source-base。");
+  if (kind !== "document" && kind !== "source-base") throw new Error("文档树读取类型必须是 document 或 source-base。");
   root = await canonicalRoot(root);
   const { manifest } = await readManifest(root);
   const { documents } = await loadRevisionContent(root, manifest, revisionId);
@@ -968,12 +886,7 @@ export async function readRevisionTombstones(root: string, revisionId: string) {
   return (await loadRevisionContent(root, manifest, revisionId)).tombstones;
 }
 
-async function readManagedAsset(
-  root: string,
-  files: ManagedFileRecord[],
-  directory: string,
-  relative: string,
-) {
+async function readManagedAsset(root: string, files: ManagedFileRecord[], directory: string, relative: string) {
   if (!relative.startsWith("assets/")) throw new Error("只能读取受管 assets 内容。");
   const record = files.find((file) => file.path === relative);
   if (!record) throw new Error(`受管资产未登记：${relative}。`);
@@ -986,22 +899,14 @@ async function readManagedAsset(
   };
 }
 
-export async function readSourceSnapshotAsset(
-  root: string,
-  sourceSnapshotId: string,
-  relative: string,
-) {
+export async function readSourceSnapshotAsset(root: string, sourceSnapshotId: string, relative: string) {
   root = await canonicalRoot(root);
   const { manifest } = await readManifest(root);
   const snapshot = await loadSourceSnapshot(root, manifest, sourceSnapshotId);
   return readManagedAsset(root, snapshot.files, snapshot.path, relative);
 }
 
-export async function readRevisionAsset(
-  root: string,
-  revisionId: string,
-  relative: string,
-) {
+export async function readRevisionAsset(root: string, revisionId: string, relative: string) {
   root = await canonicalRoot(root);
   const { manifest } = await readManifest(root);
   const { revision } = await loadRevisionContent(root, manifest, revisionId);
@@ -1046,10 +951,7 @@ export async function publishSourceSnapshot(
     await assertMissing(target);
     await renameManaged(staged, target);
     const latest = await readManifest(root);
-    if (
-      latest.manifest.id !== manifest.id ||
-      latest.manifest.paper.id !== manifest.paper.id
-    ) {
+    if (latest.manifest.id !== manifest.id || latest.manifest.paper.id !== manifest.paper.id) {
       throw new Error("工程或主论文身份在来源发布期间发生变化，拒绝把快照报告为当前工程内容。");
     }
     return loadSourceSnapshot(root, latest.manifest, sourceSnapshotId);
@@ -1062,8 +964,7 @@ export async function commitRevision(
 ): Promise<ProjectRevisionRecord> {
   if (input.baseRevision !== null && !uuid.test(input.baseRevision))
     throw new Error("baseRevision 必须是 revision ID 或 null。");
-  if (input.revisionId !== undefined && !uuid.test(input.revisionId))
-    throw new Error("revisionId 必须是有效 UUID。");
+  if (input.revisionId !== undefined && !uuid.test(input.revisionId)) throw new Error("revisionId 必须是有效 UUID。");
   let files = normalizeFiles(input.files, "revision");
   const metadata = normalizeMetadata(input.metadata, [
     "formatVersion",
@@ -1090,13 +991,7 @@ export async function commitRevision(
     const documents = validateBufferedRevisionTrees(files, manifest.paper.id);
 
     const revisionId = input.revisionId ?? randomUUID();
-    files = materializeRevisionChangeset(
-      files,
-      revisionId,
-      baseDocument,
-      input.baseRevision,
-      documents.document,
-    );
+    files = materializeRevisionChangeset(files, revisionId, baseDocument, input.baseRevision, documents.document);
     const staged = await stageFiles(root, "revision", files);
     const revisionPath = `paper/revisions/${revisionId}`;
     const revisions = await ensureManagedDirectory(root, "paper/revisions");
@@ -1109,11 +1004,11 @@ export async function commitRevision(
     if (targetExists) {
       await verifyDirectory(target, files);
       try {
-        existingRevision = parseRevision((await readManagedJson(
-          root,
-          `.paper30min/revisions/${revisionId}/revision.json`,
-          "revision 元数据",
-        )).value, manifest, revisionId);
+        existingRevision = parseRevision(
+          (await readManagedJson(root, `.paper30min/revisions/${revisionId}/revision.json`, "revision 元数据")).value,
+          manifest,
+          revisionId,
+        );
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -1138,12 +1033,8 @@ export async function commitRevision(
     if (existingRevision && !isDeepStrictEqual(revision, existingRevision))
       throw new Error("相同 revisionId 的残留候选与本次提交不一致，拒绝覆盖不可变内容。");
     await ensureManagedDirectory(root, ".paper30min/revisions");
-    const metadataDirectory = await ensureManagedDirectory(
-      root,
-      `.paper30min/revisions/${revisionId}`,
-    );
-    if (!existingRevision)
-      await atomicJson(path.join(metadataDirectory, "revision.json"), revision);
+    const metadataDirectory = await ensureManagedDirectory(root, `.paper30min/revisions/${revisionId}`);
+    if (!existingRevision) await atomicJson(path.join(metadataDirectory, "revision.json"), revision);
     await hooks.onCommitPoint?.("revision-metadata", { revisionId });
 
     const nextManifest: ProjectManifest = {
@@ -1157,8 +1048,7 @@ export async function commitRevision(
       if (latest.manifest.paper.currentRevision !== input.baseRevision)
         throw new Error("current 基线在提交期间发生变化，拒绝发布；候选已保留。");
       await loadSourceSnapshot(root, latest.manifest, input.sourceSnapshotId);
-      if (input.baseRevision)
-        await loadRevision(root, latest.manifest, input.baseRevision);
+      if (input.baseRevision) await loadRevision(root, latest.manifest, input.baseRevision);
       await loadRevision(root, latest.manifest, revisionId);
       await hooks.onCommitPoint?.("before-current-replace", { revisionId });
     });
@@ -1184,11 +1074,9 @@ export async function completePublishedRevision(
   return serialized(root, async () => {
     const initial = await readManifest(root);
     const { manifest } = initial;
-    if (manifest.paper.currentRevision !== null)
-      throw new Error("current 已存在，不能按首次导入候选推进。");
+    if (manifest.paper.currentRevision !== null) throw new Error("current 已存在，不能按首次导入候选推进。");
     const revision = await loadRevision(root, manifest, revisionId);
-    if (revision.baseRevision !== null)
-      throw new Error("候选不是首次导入 revision，拒绝按空基线推进。");
+    if (revision.baseRevision !== null) throw new Error("候选不是首次导入 revision，拒绝按空基线推进。");
     await loadSourceSnapshot(root, manifest, revision.sourceSnapshotId);
     await verifyDirectory(await managedPath(root, revision.path), revision.files);
     validateMetadata?.(revision);
@@ -1208,8 +1096,7 @@ export async function completePublishedRevision(
         // 重载记录必须与初始记录完全一致：换源、改警告/版本/时间都拒绝。
         if (!isDeepStrictEqual(current, revision))
           throw new Error("候选 revision 元数据在提交期间发生变化，拒绝推进 current。");
-        if (current.baseRevision !== null)
-          throw new Error("候选基线在提交期间发生变化，拒绝推进 current。");
+        if (current.baseRevision !== null) throw new Error("候选基线在提交期间发生变化，拒绝推进 current。");
         await loadSourceSnapshot(root, latest.manifest, current.sourceSnapshotId);
         validateMetadata?.(current);
       };
@@ -1237,8 +1124,7 @@ export async function inspectImportCandidate(
   root = await canonicalRoot(root);
   return serialized(root, async () => {
     const { manifest } = await readManifest(root);
-    if (manifest.paper.currentRevision !== null)
-      throw new Error("current 已存在，首次导入候选不再可探测或清理。");
+    if (manifest.paper.currentRevision !== null) throw new Error("current 已存在，首次导入候选不再可探测或清理。");
     if (!uuid.test(revisionId)) throw new Error("candidateRevisionId 无效。");
     const contentDir = path.join(root, "paper", "revisions", revisionId);
     const metadataFile = path.join(root, ".paper30min", "revisions", revisionId, "revision.json");
@@ -1257,10 +1143,8 @@ export async function inspectImportCandidate(
     if (!hasContent) return "absent";
     // 仅内容无元数据：锁内再次确认 current 为空且元数据仍缺失，才清除残留。
     const latest = await readManifest(root);
-    if (latest.manifest.paper.currentRevision !== null)
-      throw new Error("current 已被推进，拒绝清理候选内容。");
-    if (await exists(metadataFile))
-      throw new Error("候选元数据已出现，拒绝按残留清理。");
+    if (latest.manifest.paper.currentRevision !== null) throw new Error("current 已被推进，拒绝清理候选内容。");
+    if (await exists(metadataFile)) throw new Error("候选元数据已出现，拒绝按残留清理。");
     await fs.rm(contentDir, { recursive: true, force: true });
     return "residual";
   });

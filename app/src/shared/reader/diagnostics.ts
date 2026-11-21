@@ -29,8 +29,7 @@ export function collectReaderDiagnostics(projection: ReaderProjection): ReaderDi
           message: item.warning ?? "图片资产缺失，保留占位与来源说明。",
           blockId: item.blockId,
         });
-      else if (item.warning)
-        diagnostics.push({ code: "figure-warning", message: item.warning, blockId: item.blockId });
+      else if (item.warning) diagnostics.push({ code: "figure-warning", message: item.warning, blockId: item.blockId });
     }
     if (item.kind === "raw")
       diagnostics.push({
@@ -38,10 +37,14 @@ export function collectReaderDiagnostics(projection: ReaderProjection): ReaderDi
         message: `raw block 按白名单投影：${item.limitations.join("；")}`,
         blockId: item.blockId,
       });
-    const units = item.kind === "unit" ? [item]
-      : item.kind === "table" ? [...(item.caption ? [item.caption] : []), ...Object.values(item.cells)]
-      : item.kind === "figure" && item.caption ? [item.caption]
-      : [];
+    const units =
+      item.kind === "unit"
+        ? [item]
+        : item.kind === "table"
+          ? [...(item.caption ? [item.caption] : []), ...Object.values(item.cells)]
+          : item.kind === "figure" && item.caption
+            ? [item.caption]
+            : [];
     for (const unit of units)
       for (const sentence of unit.sentences)
         for (const part of sentence.parts) {

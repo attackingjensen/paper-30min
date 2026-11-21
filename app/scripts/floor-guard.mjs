@@ -24,7 +24,10 @@ const git = (args, { diffExit = false } = {}) => {
     return diffExit && e.status === 1 && typeof e.stdout === "string" ? e.stdout : null;
   }
 };
-const bail = (msg) => { console.error("floor-guard: " + msg); process.exit(2); };
+const bail = (msg) => {
+  console.error("floor-guard: " + msg);
+  process.exit(2);
+};
 
 // Run from the top of the work tree so untracked files outside app/ are included too.
 const top = git(["rev-parse", "--show-toplevel"])?.trim();
@@ -38,11 +41,15 @@ const tracked = git(["diff", "--unified=0", mergeBase, "--"]);
 if (tracked === null) bail("could not diff against " + base);
 const untrackedFiles = git(["ls-files", "--others", "--exclude-standard"]);
 if (untrackedFiles === null) bail("could not list untracked files");
-const untracked = untrackedFiles.split("\n").filter(Boolean).map((f) => {
-  const d = git(["diff", "--no-index", "--unified=0", "/dev/null", f], { diffExit: true });
-  if (d === null) bail("could not diff untracked file " + f);
-  return d;
-}).join("\n");
+const untracked = untrackedFiles
+  .split("\n")
+  .filter(Boolean)
+  .map((f) => {
+    const d = git(["diff", "--no-index", "--unified=0", "/dev/null", f], { diffExit: true });
+    if (d === null) bail("could not diff untracked file " + f);
+    return d;
+  })
+  .join("\n");
 const diff = tracked + "\n" + untracked;
 
 let ignoreText;
@@ -52,23 +59,30 @@ try {
   if (error.code !== "ENOENT") bail("could not read .constraintsignore: " + error.message);
   ignoreText = "";
 }
-const ignoreRegexes = ignoreText.split(/\r?\n/)
-  .map(line => line.trim())
-  .filter(line => line && !line.startsWith("#"))
-  .map(pattern => {
-    const source = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+const ignoreRegexes = ignoreText
+  .split(/\r?\n/)
+  .map((line) => line.trim())
+  .filter((line) => line && !line.startsWith("#"))
+  .map((pattern) => {
+    const source = pattern
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
       .replace(/\*\*/g, "\0")
       .replace(/\*/g, "[^/]*")
       .replace(/\?/g, "[^/]")
       .replace(/\0/g, ".*");
     return new RegExp("^" + source + "$");
   });
-const ignored = (file) => ignoreRegexes.some(pattern => pattern.test(file));
+const ignored = (file) => ignoreRegexes.some((pattern) => pattern.test(file));
 
 // Walk the diff. `---` and `+++` are headers only before the first `@@` hunk.
-const added = [], removed = [], deleted = [], addedFiles = new Set();
+const added = [],
+  removed = [],
+  deleted = [],
+  addedFiles = new Set();
 const pathOf = (s) => s.replace(/^[ab]\//, "");
-let file = "", oldFile = "", inHeader = false;
+let file = "",
+  oldFile = "",
+  inHeader = false;
 for (const line of diff.split("\n")) {
   if (line.startsWith("diff ")) inHeader = true;
   else if (line.startsWith("@@")) inHeader = false;
@@ -80,8 +94,7 @@ for (const line of diff.split("\n")) {
       if (newFile === "/dev/null") deleted.push(file);
       if (oldFile === "/dev/null" && newFile !== "/dev/null") addedFiles.add(file);
     }
-  }
-  else if (line.startsWith("+")) added.push({ file, text: line.slice(1) });
+  } else if (line.startsWith("+")) added.push({ file, text: line.slice(1) });
   else if (line.startsWith("-")) removed.push({ file, text: line.slice(1) });
 }
 
@@ -166,8 +179,11 @@ const exceptionRegistered = (text) => {
 // exceptionRegistered 验证；其他 finding 类型不受影响，到期后豁免自动失效。
 const retirementWaivers = (() => {
   let text;
-  try { text = readFileSync("CONSTRAINTS.md", "utf8"); }
-  catch { return []; }
+  try {
+    text = readFileSync("CONSTRAINTS.md", "utf8");
+  } catch {
+    return [];
+  }
   const waivers = [];
   for (const line of text.split(/\r?\n/)) {
     if (!/^\| *(W|E)\d+ *\|/.test(line) || !exceptionRegistered(line)) continue;
@@ -180,8 +196,10 @@ const retirementWaivers = (() => {
   return waivers;
 })();
 
-const SUPPRESSIONS = /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|oxlint-disable|biome-ignore|# *noqa|# *type: *ignore|istanbul ignore|nosemgrep|gitleaks:allow|Stryker disable/;
-const STUBS = /throw new (Error|NotImplemented).*[Nn]ot implemented|catch\s*\(\w*\)\s*\{\s*\}|catch\s*\{\s*\}|\bTODO\b|\bpass\s*# *stub/;
+const SUPPRESSIONS =
+  /@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|oxlint-disable|biome-ignore|# *noqa|# *type: *ignore|istanbul ignore|nosemgrep|gitleaks:allow|Stryker disable/;
+const STUBS =
+  /throw new (Error|NotImplemented).*[Nn]ot implemented|catch\s*\(\w*\)\s*\{\s*\}|catch\s*\{\s*\}|\bTODO\b|\bpass\s*# *stub/;
 const SKIPS = /\.(skip|todo)\b|\bxit\(|\bxdescribe\(|@pytest\.mark\.skip|t\.Skip\(/;
 
 for (const { file, text } of added) {
@@ -193,12 +211,16 @@ for (const { file, text } of added) {
       flag("new-exception", file, text);
     continue;
   }
-  if (!addedFiles.has(file) && file === ".constraintsignore"
-      && text.trim() && !text.trim().startsWith("#")) {
+  if (!addedFiles.has(file) && file === ".constraintsignore" && text.trim() && !text.trim().startsWith("#")) {
     flag("new-ignore-path", file, text);
   }
-  if (!addedFiles.has(file) && file === ".gitleaks.toml"
-      && /^\s*(?:\[{1,2}[^\]]*allowlist[^\]]*\]{1,2}|paths\s*=|regexes\s*=|stopwords\s*=|\[\[rules\]\]|'''.*''',?\s*$)/i.test(text)) {
+  if (
+    !addedFiles.has(file) &&
+    file === ".gitleaks.toml" &&
+    /^\s*(?:\[{1,2}[^\]]*allowlist[^\]]*\]{1,2}|paths\s*=|regexes\s*=|stopwords\s*=|\[\[rules\]\]|'''.*''',?\s*$)/i.test(
+      text,
+    )
+  ) {
     flag("new-scan-exclusion", file, text);
   }
   if (reflowedAdded(file, text)) continue;
@@ -208,11 +230,15 @@ for (const { file, text } of added) {
   if (SKIPS.test(text)) flag("test-made-easier", file, text);
 }
 
-for (const f of deleted)
-  if (isTest(f) && !retirementWaivers.includes(f)) flag("test-deleted", f, "file deleted");
+for (const f of deleted) if (isTest(f) && !retirementWaivers.includes(f)) flag("test-deleted", f, "file deleted");
 for (const { file, text } of removed) {
-  if (isTest(file) && !deleted.includes(file) && !retirementWaivers.includes(file)
-      && /\b(expect|assert|should)\b/.test(text) && !reflowedFiles.has(file)) {
+  if (
+    isTest(file) &&
+    !deleted.includes(file) &&
+    !retirementWaivers.includes(file) &&
+    /\b(expect|assert|should)\b/.test(text) &&
+    !reflowedLine(file, text)
+  ) {
     flag("assertion-removed", file, text);
   }
 }
@@ -220,7 +246,13 @@ for (const { file, text } of removed) {
 // A rule is a floor bullet or a table row, identified by its stable label / first cell.
 const ruleKey = (t) => {
   const s = t.trim();
-  if (s.startsWith("|")) return s.split("|").map(c => c.trim()).filter(Boolean)[0] ?? "";
+  if (s.startsWith("|"))
+    return (
+      s
+        .split("|")
+        .map((c) => c.trim())
+        .filter(Boolean)[0] ?? ""
+    );
   if (/^[-*] /.test(s)) return s.slice(2).split(":")[0].trim();
   return null;
 };
@@ -230,30 +262,37 @@ const MAX_BEFORE = /(<=|<|≤|at most|maximum|\bmax\b|no more than|under|below|n
 const MIN_AFTER = /^\s*\S*\s*(?:\|\s*)?(or more|or higher|must not fall|must not drop|不得下降|不许下降)/;
 const MAX_AFTER = /^\s*\S*\s*(?:\|\s*)?(or less|or lower|must not grow|must not exceed|不得增长|不许增长)/;
 const thresholds = (t) => {
-  const out = [], re = /\d+(?:\.\d+)?/g;
+  const out = [],
+    re = /\d+(?:\.\d+)?/g;
   let m;
   while ((m = re.exec(t))) {
     const before = t.slice(Math.max(0, m.index - 24), m.index).toLowerCase();
     const after = t.slice(m.index + m[0].length, m.index + m[0].length + 40).toLowerCase();
-    const dir = MIN_BEFORE.test(before) || MIN_AFTER.test(after) ? "min"
-      : MAX_BEFORE.test(before) || MAX_AFTER.test(after) ? "max" : null;
+    const dir =
+      MIN_BEFORE.test(before) || MIN_AFTER.test(after)
+        ? "min"
+        : MAX_BEFORE.test(before) || MAX_AFTER.test(after)
+          ? "max"
+          : null;
     out.push({ n: Number(m[0]), dir });
   }
   return out;
 };
-const removedRules = removed.filter(l => isConstraints(l.file) && ruleKey(l.text) !== null);
-const addedRules = added.filter(l => isConstraints(l.file) && ruleKey(l.text) !== null);
+const removedRules = removed.filter((l) => isConstraints(l.file) && ruleKey(l.text) !== null);
+const addedRules = added.filter((l) => isConstraints(l.file) && ruleKey(l.text) !== null);
 for (const r of removedRules) {
-  const a = addedRules.find(x => ruleKey(x.text) === ruleKey(r.text));
+  const a = addedRules.find((x) => ruleKey(x.text) === ruleKey(r.text));
   if (reflowedLine(r.file, r.text)) continue;
   if (!a) {
     if (!isException(r.text)) flag("rule-removed", r.file, r.text);
     continue;
   }
-  const before = thresholds(r.text), after = thresholds(a.text);
+  const before = thresholds(r.text),
+    after = thresholds(a.text);
   let verdict = null;
   for (const dir of ["min", "max", null]) {
-    const was = before.filter(x => x.dir === dir), now = after.filter(x => x.dir === dir);
+    const was = before.filter((x) => x.dir === dir),
+      now = after.filter((x) => x.dir === dir);
     was.forEach((b, i) => {
       const n = now[i];
       if (verdict) return;
@@ -262,8 +301,7 @@ for (const r of removedRules) {
       if (!n) {
         if (dir === null && b.n > 0 && /除\s*W\d+|豁免/.test(r.text)) return;
         verdict = "threshold-removed";
-      }
-      else if (n.n === b.n) return;
+      } else if (n.n === b.n) return;
       else if (dir === "min" ? n.n > b.n : dir === "max" ? n.n < b.n : n.n < b.n) return;
       else verdict = dir ? "threshold-loosened" : "threshold-changed";
     });
@@ -271,14 +309,21 @@ for (const r of removedRules) {
   if (verdict) flag(verdict, r.file, r.text + "  ->  " + a.text);
 }
 
-if (findings.length === 0) { console.log("floor-guard: clean"); process.exit(0); }
+if (findings.length === 0) {
+  console.log("floor-guard: clean");
+  process.exit(0);
+}
 console.error("floor-guard: " + findings.length + " floor violation(s):");
 for (const f of findings) console.error(`  [${f.rule}] ${f.file}: ${f.text}`);
-if (findings.some(f => f.rule === "rule-removed")) {
-  console.error("\nA rule-removed finding can also mean the rule's label changed: rename a rule in one commit and change its thresholds in another.");
+if (findings.some((f) => f.rule === "rule-removed")) {
+  console.error(
+    "\nA rule-removed finding can also mean the rule's label changed: rename a rule in one commit and change its thresholds in another.",
+  );
 }
-if (findings.some(f => f.rule === "threshold-removed")) {
-  console.error("\nA threshold-removed finding can also mean a number gained or lost its direction words: compare the two lines before assuming a threshold was deleted.");
+if (findings.some((f) => f.rule === "threshold-removed")) {
+  console.error(
+    "\nA threshold-removed finding can also mean a number gained or lost its direction words: compare the two lines before assuming a threshold was deleted.",
+  );
 }
 console.error("\nEach is a move that lowers the bar. Fix the code, or route it through a tracked exception.");
 process.exit(1);

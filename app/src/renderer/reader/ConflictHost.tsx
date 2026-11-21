@@ -25,10 +25,16 @@ function readingPositions(tree: DocumentTree): Map<string, number> {
   const positions = new Map<string, number>();
   tree.blocks.forEach((block, index) => {
     positions.set(`block:${block.id}`, index);
-    const units = block.kind === "unit" ? [block.unitId]
-      : block.kind === "figure" ? (block.captionUnitId ? [block.captionUnitId] : [])
-      : block.kind === "table" ? [...(block.captionUnitId ? [block.captionUnitId] : []), ...block.rows.flat().map((cell) => cell.unitId)]
-      : [];
+    const units =
+      block.kind === "unit"
+        ? [block.unitId]
+        : block.kind === "figure"
+          ? block.captionUnitId
+            ? [block.captionUnitId]
+            : []
+          : block.kind === "table"
+            ? [...(block.captionUnitId ? [block.captionUnitId] : []), ...block.rows.flat().map((cell) => cell.unitId)]
+            : [];
     for (const unitId of units) if (!positions.has(`unit:${unitId}`)) positions.set(`unit:${unitId}`, index);
   });
   return positions;
@@ -56,15 +62,21 @@ function snapshotText(value: unknown, tree: DocumentTree | null): string {
     const record = value as Record<string, unknown>;
     // unit 快照：sentences 数组含 content。
     if (Array.isArray(record.sentences)) {
-      return (record.sentences as Array<Record<string, unknown>>).map((sentence) => {
-        const content = sentence.content;
-        if (!Array.isArray(content)) return "";
-        return (content as Array<Record<string, unknown>>).map((part) =>
-          part.kind === "text" ? String(part.text ?? "")
-            : part.kind === "atom" && part.content && typeof part.content === "object"
-              ? String((part.content as Record<string, unknown>).text ?? "")
-              : "").join("");
-      }).join(" ");
+      return (record.sentences as Array<Record<string, unknown>>)
+        .map((sentence) => {
+          const content = sentence.content;
+          if (!Array.isArray(content)) return "";
+          return (content as Array<Record<string, unknown>>)
+            .map((part) =>
+              part.kind === "text"
+                ? String(part.text ?? "")
+                : part.kind === "atom" && part.content && typeof part.content === "object"
+                  ? String((part.content as Record<string, unknown>).text ?? "")
+                  : "",
+            )
+            .join("");
+        })
+        .join(" ");
     }
     // 块快照：figure 资产或 unit 引用。
     if (record.kind === "figure") {
@@ -73,11 +85,15 @@ function snapshotText(value: unknown, tree: DocumentTree | null): string {
     }
     if (record.kind === "unit" && typeof record.unitId === "string" && tree) {
       const unit = tree.units[record.unitId];
-      if (unit) return unit.sentenceIds.map((sentenceId) => {
-        const sentence = tree.sentences[sentenceId];
-        return sentence.content.map((part) =>
-          part.kind === "text" ? part.text : tree.atoms[part.atomId].text).join("");
-      }).join(" ");
+      if (unit)
+        return unit.sentenceIds
+          .map((sentenceId) => {
+            const sentence = tree.sentences[sentenceId];
+            return sentence.content
+              .map((part) => (part.kind === "text" ? part.text : tree.atoms[part.atomId].text))
+              .join("");
+          })
+          .join(" ");
     }
     if (typeof record.title === "string") return `章节「${record.title}」`;
     if (typeof record.text === "string") return record.text;
@@ -87,32 +103,55 @@ function snapshotText(value: unknown, tree: DocumentTree | null): string {
   return String(value);
 }
 
-function AssetPreview({ root, candidateRevisionId, value, label }: {
+function AssetPreview({
+  root,
+  candidateRevisionId,
+  value,
+  label,
+}: {
   root: string;
   candidateRevisionId: string;
   value: unknown;
   label: string;
 }) {
-  const record = value !== null && typeof value === "object" ? value as Record<string, unknown> : null;
-  const asset = record?.kind === "figure"
-    ? (record.asset as Record<string, unknown> | null)
-    : record && typeof record.path === "string" ? record : null;
+  const record = value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  const asset =
+    record?.kind === "figure"
+      ? (record.asset as Record<string, unknown> | null)
+      : record && typeof record.path === "string"
+        ? record
+        : null;
   if (!asset || typeof asset.path !== "string") {
-    return <p className="conflict-side-empty">{label}：{snapshotText(value, null)}</p>;
+    return (
+      <p className="conflict-side-empty">
+        {label}：{snapshotText(value, null)}
+      </p>
+    );
   }
-  const src = "paper30min://project/image?" + new URLSearchParams({
-    root,
-    path: `update-candidates/${candidateRevisionId}/${asset.path}`,
-  });
+  const src =
+    "paper30min://project/image?" +
+    new URLSearchParams({
+      root,
+      path: `update-candidates/${candidateRevisionId}/${asset.path}`,
+    });
   return (
     <figure className="conflict-asset">
-      <figcaption>{label}：<code>{asset.path}</code></figcaption>
+      <figcaption>
+        {label}：<code>{asset.path}</code>
+      </figcaption>
       <img src={src} alt={`${label} 资产预览`} loading="lazy" />
     </figure>
   );
 }
 
-function ConflictSide({ label, value, tree, root, candidateRevisionId, isAsset }: {
+function ConflictSide({
+  label,
+  value,
+  tree,
+  root,
+  candidateRevisionId,
+  isAsset,
+}: {
   label: string;
   value: unknown;
   tree: DocumentTree | null;
@@ -157,9 +196,10 @@ export function ConflictHost({
   const ordered = useMemo(() => {
     const positions = readingPositions(currentTree);
     const list = [...state.conflicts];
-    list.sort((a, b) =>
-      conflictOrder(positions, currentTree, a) - conflictOrder(positions, currentTree, b) ||
-      a.id.localeCompare(b.id));
+    list.sort(
+      (a, b) =>
+        conflictOrder(positions, currentTree, a) - conflictOrder(positions, currentTree, b) || a.id.localeCompare(b.id),
+    );
     return list;
   }, [state.conflicts, currentTree]);
   const unresolved = ordered.filter((conflict) => !state.resolutions[conflict.id]);
@@ -213,11 +253,15 @@ export function ConflictHost({
   return (
     <section className="conflict-host" aria-label="来源候选冲突">
       <header className="conflict-header">
-        <h2>来源候选 <code>{state.revisionId.slice(0, 8)}</code></h2>
+        <h2>
+          来源候选 <code>{state.revisionId.slice(0, 8)}</code>
+        </h2>
         <p className="conflict-baseline">
           基线 current <code>{state.baseRevision.slice(0, 8)}</code>；查看与解决冲突不会推进 current。
         </p>
-        <button type="button" onClick={onClose}>返回阅读</button>
+        <button type="button" onClick={onClose}>
+          返回阅读
+        </button>
       </header>
       <p className="conflict-count" role="status">
         冲突 {ordered.length} 项，未解决 <strong>{unresolved.length}</strong> 项。
@@ -228,22 +272,55 @@ export function ConflictHost({
           current 已被另一操作推进：已选解决结果保留，但不能套用到新基线。请基于新 current 重新构建候选。
         </p>
       )}
-      {error && <p className="conflict-error" role="alert">{error}</p>}
+      {error && (
+        <p className="conflict-error" role="alert">
+          {error}
+        </p>
+      )}
       <ol className="conflict-list">
         {ordered.map((conflict) => {
           const choice = state.resolutions[conflict.id];
           const isAsset = conflict.type === "asset";
           return (
-            <li key={conflict.id} className={`conflict-item ${choice ? "resolved" : "unresolved"}`} data-conflict-id={conflict.id}>
+            <li
+              key={conflict.id}
+              className={`conflict-item ${choice ? "resolved" : "unresolved"}`}
+              data-conflict-id={conflict.id}
+            >
               <div className="conflict-item-header">
-                <span className={`conflict-type conflict-type-${conflict.type}`}>{conflictTypeLabels[conflict.type]}</span>
+                <span className={`conflict-type conflict-type-${conflict.type}`}>
+                  {conflictTypeLabels[conflict.type]}
+                </span>
                 <code>{conflict.id}</code>
-                <span className="conflict-state">{choice ? `已选择：${choice === "current" ? "保留 current" : "采用 candidate"}` : "未解决"}</span>
+                <span className="conflict-state">
+                  {choice ? `已选择：${choice === "current" ? "保留 current" : "采用 candidate"}` : "未解决"}
+                </span>
               </div>
               <div className="conflict-sides">
-                <ConflictSide label="base（来源基线）" value={conflict.base} tree={state.base} root={root} candidateRevisionId={state.revisionId} isAsset={isAsset} />
-                <ConflictSide label="current（含本地修正）" value={conflict.current} tree={state.current} root={root} candidateRevisionId={state.revisionId} isAsset={isAsset} />
-                <ConflictSide label="candidate（新来源）" value={conflict.candidate} tree={state.sourceBase} root={root} candidateRevisionId={state.revisionId} isAsset={isAsset} />
+                <ConflictSide
+                  label="base（来源基线）"
+                  value={conflict.base}
+                  tree={state.base}
+                  root={root}
+                  candidateRevisionId={state.revisionId}
+                  isAsset={isAsset}
+                />
+                <ConflictSide
+                  label="current（含本地修正）"
+                  value={conflict.current}
+                  tree={state.current}
+                  root={root}
+                  candidateRevisionId={state.revisionId}
+                  isAsset={isAsset}
+                />
+                <ConflictSide
+                  label="candidate（新来源）"
+                  value={conflict.candidate}
+                  tree={state.sourceBase}
+                  root={root}
+                  candidateRevisionId={state.revisionId}
+                  isAsset={isAsset}
+                />
               </div>
               <div className="conflict-actions" role="group" aria-label={`解决冲突 ${conflict.id}`}>
                 <button
@@ -279,11 +356,7 @@ export function ConflictHost({
         >
           发布候选为新 current
         </button>
-        <button
-          type="button"
-          disabled={busy || unresolved.length > 0}
-          onClick={() => setPreviewOrder(!previewOrder)}
-        >
+        <button type="button" disabled={busy || unresolved.length > 0} onClick={() => setPreviewOrder(!previewOrder)}>
           {previewOrder ? "收起阅读流预览" : "预览发布后阅读流"}
         </button>
       </div>

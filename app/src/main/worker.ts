@@ -25,10 +25,7 @@ const port = process.parentPort!;
 const pdfOperations = new Map<string, { controller: AbortController; done: Promise<void> }>();
 /** 上传确认往返：confirmationId → resolver；应答须同时匹配 operationId 与 confirmationId，
  * 只有 confirmed === true 才发起上传；未应答前不发起 POST。 */
-const pdfConfirmations = new Map<
-  string,
-  { operationId: string; resolve: (confirmed: boolean) => void }
->();
+const pdfConfirmations = new Map<string, { operationId: string; resolve: (confirmed: boolean) => void }>();
 
 function requestUploadConfirmation(
   operationId: string,
@@ -90,9 +87,7 @@ async function dispatchPdfOffline(
     controller.signal.throwIfAborted();
     const metadata = candidate.metadata?.pdfParse;
     const warnings =
-      metadata !== null && typeof metadata === "object" && "warnings" in metadata
-        ? metadata.warnings
-        : undefined;
+      metadata !== null && typeof metadata === "object" && "warnings" in metadata ? metadata.warnings : undefined;
     const { assets: _assets, metadata: _metadata, ...summary } = candidate;
     return {
       outcome: "candidate",
@@ -116,8 +111,7 @@ async function dispatchPdfOffline(
 
 async function dispatchPdfCloud(command: PdfImportWorkerCommand): Promise<unknown> {
   const inner = command.command;
-  if (pdfOperations.has(inner.operationId))
-    throw new Error(`PDF 操作已在进行中：${inner.operationId}`);
+  if (pdfOperations.has(inner.operationId)) throw new Error(`PDF 操作已在进行中：${inner.operationId}`);
   const controller = new AbortController();
   let network: Dispatcher;
   let run: Promise<unknown>;
@@ -131,8 +125,7 @@ async function dispatchPdfCloud(command: PdfImportWorkerCommand): Promise<unknow
         apiKey: command.config.apiKey,
         dispatcher: network,
       },
-      confirmUpload: (request) =>
-        requestUploadConfirmation(inner.operationId, request, controller.signal),
+      confirmUpload: (request) => requestUploadConfirmation(inner.operationId, request, controller.signal),
       signal: controller.signal,
     });
   } catch (error) {
@@ -147,10 +140,8 @@ async function dispatchPdfCloud(command: PdfImportWorkerCommand): Promise<unknow
   try {
     return await run;
   } finally {
-    for (const entry of pdfConfirmations.values())
-      if (entry.operationId === inner.operationId) entry.resolve(false);
-    if (pdfOperations.get(inner.operationId)?.controller === controller)
-      pdfOperations.delete(inner.operationId);
+    for (const entry of pdfConfirmations.values()) if (entry.operationId === inner.operationId) entry.resolve(false);
+    if (pdfOperations.get(inner.operationId)?.controller === controller) pdfOperations.delete(inner.operationId);
     await network.destroy();
   }
 }
@@ -168,10 +159,7 @@ port.on(
   }: {
     data: {
       id: number;
-      command?:
-        | Command
-        | { type: "agent"; command: AgentCommand; config: ModelConfig }
-        | PdfImportWorkerCommand;
+      command?: Command | { type: "agent"; command: AgentCommand; config: ModelConfig } | PdfImportWorkerCommand;
       shutdown?: boolean;
       pdfUploadConfirmReply?: PdfUploadConfirmationReply;
       error?: string;
@@ -182,8 +170,7 @@ port.on(
       const entry = pdfConfirmations.get(reply.confirmationId);
       // 只有 operationId + confirmationId 双匹配的显式 true 才确认；
       // 其余（truthy 非布尔、错误 id、重复／迟到应答）一律按拒绝或忽略。
-      if (entry && entry.operationId === reply.operationId)
-        entry.resolve(reply.confirmed === true);
+      if (entry && entry.operationId === reply.operationId) entry.resolve(reply.confirmed === true);
       return;
     }
     try {
@@ -208,25 +195,23 @@ port.on(
           command.command.type === "selectModel"
         )
           throw new Error("无效的模型命令。");
-        const project =
-          !("root" in command.command) ? undefined : command.command.type === "stop"
+        const project = !("root" in command.command)
+          ? undefined
+          : command.command.type === "stop"
             ? { root: command.command.root }
             : ((await service.dispatch({
                 type: "refresh",
                 root: command.command.root,
               })) as { root: string });
         value = await agent.dispatch(
-          project ? { ...command.command, root: project.root } as typeof command.command : command.command,
+          project ? ({ ...command.command, root: project.root } as typeof command.command) : command.command,
           command.config,
         );
       } else if (command?.type === "pdfImport") {
         value = await dispatchPdfCloud(command);
       } else if (command?.type === "move") {
         value = await agent.withFileMove(command.root, () => service.dispatch(command));
-      } else if (
-        command &&
-        (command.type === "corePdfReconvert" || command.type === "corePdfPublishCandidate")
-      ) {
+      } else if (command && (command.type === "corePdfReconvert" || command.type === "corePdfPublishCandidate")) {
         value = await dispatchPdfOffline(command);
       } else if (command && isCoreCommand(command)) {
         value = await dispatchCoreCommand(command);

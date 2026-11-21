@@ -11,9 +11,7 @@ export type FigureBlock = Extract<BlockNode, { kind: "figure" }>;
 export type UnitKind = DocumentTree["units"][string]["kind"];
 export type AssetReference = FigureBlock["asset"];
 type AtomValue = DocumentTree["atoms"][string];
-type AtomInput = AtomValue extends infer T
-  ? T extends AtomValue ? Omit<T, "id" | "unitId"> : never
-  : never;
+type AtomInput = AtomValue extends infer T ? (T extends AtomValue ? Omit<T, "id" | "unitId"> : never) : never;
 
 export interface CaptionInput {
   unitId: string;
@@ -156,8 +154,7 @@ export class TreeBuilder {
       const sentenceId = randomUUID();
       this.tree.sentences[sentenceId] = { id: sentenceId, unitId, content: merged };
       sentenceIds.push(sentenceId);
-      for (const part of merged)
-        if (part.kind === "atom") this.tree.atoms[part.atomId].unitId = unitId;
+      for (const part of merged) if (part.kind === "atom") this.tree.atoms[part.atomId].unitId = unitId;
     }
     if (!sentenceIds.length) {
       const sentenceId = randomUUID();
@@ -182,13 +179,19 @@ export class TreeBuilder {
 
   addUnit(kind: UnitKind, sentences: InlinePart[][], aliases?: string[]): string {
     const unitId = this.reserveUnit();
-    this.flushUnit(unitId, kind, sentences, {
-      id: randomUUID(),
-      sectionId: this.currentSectionId,
-      kind: "unit",
+    this.flushUnit(
       unitId,
-      ...(aliases ? { sourceAliases: aliases } : {}),
-    }, aliases);
+      kind,
+      sentences,
+      {
+        id: randomUUID(),
+        sectionId: this.currentSectionId,
+        kind: "unit",
+        unitId,
+        ...(aliases ? { sourceAliases: aliases } : {}),
+      },
+      aliases,
+    );
     return unitId;
   }
 
@@ -219,11 +222,13 @@ export class TreeBuilder {
       sectionId,
       kind: "table",
       captionUnitId: caption?.unitId ?? null,
-      rows: rows.map((row) => row.map((cell) => ({
-        unitId: cell.unitId,
-        rowSpan: cell.rowSpan,
-        columnSpan: cell.columnSpan,
-      }))),
+      rows: rows.map((row) =>
+        row.map((cell) => ({
+          unitId: cell.unitId,
+          rowSpan: cell.rowSpan,
+          columnSpan: cell.columnSpan,
+        })),
+      ),
       ...(aliases ? { sourceAliases: aliases } : {}),
     };
     const ordered: Array<{ kind: UnitKind; entry: CaptionInput | CellInput }> = [
@@ -273,8 +278,7 @@ function inlineParts(text: string, unitId: string, builder: TreeBuilder): Inline
   for (const match of text.matchAll(pattern)) {
     const inner = (match[1] ?? match[2] ?? "").trim();
     if (!inner) continue;
-    if (match.index > cursor)
-      parts.push({ kind: "text", text: text.slice(cursor, match.index) });
+    if (match.index > cursor) parts.push({ kind: "text", text: text.slice(cursor, match.index) });
     const atomId = builder.addAtom(unitId, {
       kind: "math",
       text: match[0],

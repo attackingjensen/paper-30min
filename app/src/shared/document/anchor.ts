@@ -5,45 +5,69 @@ import type { DocumentTree } from "./tree.js";
 const IdSchema = Type.String({
   pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
 });
-const SelectionRangeSchema = Type.Object({
-  unitId: IdSchema,
-  sentenceId: IdSchema,
-  start: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
-  end: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
-}, { additionalProperties: false });
-const QuoteSnapshotSchema = Type.Object({
-  text: Type.String(),
-  before: Type.String(),
-  after: Type.String(),
-}, { additionalProperties: false });
-export const DocumentAnchorSchema = Type.Union([
-  Type.Object({
-    kind: Type.Literal("section"),
-    sectionId: IdSchema,
-  }, { additionalProperties: false }),
-  Type.Object({
-    kind: Type.Literal("unit"),
-    unitId: IdSchema,
-  }, { additionalProperties: false }),
-  Type.Object({
-    kind: Type.Literal("sentence"),
+const SelectionRangeSchema = Type.Object(
+  {
     unitId: IdSchema,
     sentenceId: IdSchema,
-  }, { additionalProperties: false }),
-  Type.Object({
-    kind: Type.Literal("atom"),
-    unitId: IdSchema,
-    atomId: IdSchema,
-  }, { additionalProperties: false }),
-  Type.Object({
-    kind: Type.Literal("block"),
-    blockId: IdSchema,
-  }, { additionalProperties: false }),
-  Type.Object({
-    kind: Type.Literal("range"),
-    ranges: Type.Array(SelectionRangeSchema, { minItems: 1 }),
-    quote: QuoteSnapshotSchema,
-  }, { additionalProperties: false }),
+    start: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+    end: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+  },
+  { additionalProperties: false },
+);
+const QuoteSnapshotSchema = Type.Object(
+  {
+    text: Type.String(),
+    before: Type.String(),
+    after: Type.String(),
+  },
+  { additionalProperties: false },
+);
+export const DocumentAnchorSchema = Type.Union([
+  Type.Object(
+    {
+      kind: Type.Literal("section"),
+      sectionId: IdSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("unit"),
+      unitId: IdSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("sentence"),
+      unitId: IdSchema,
+      sentenceId: IdSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("atom"),
+      unitId: IdSchema,
+      atomId: IdSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("block"),
+      blockId: IdSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("range"),
+      ranges: Type.Array(SelectionRangeSchema, { minItems: 1 }),
+      quote: QuoteSnapshotSchema,
+    },
+    { additionalProperties: false },
+  ),
 ]);
 
 export type DocumentAnchor = Type.Static<typeof DocumentAnchorSchema>;
@@ -68,10 +92,7 @@ function sentence(tree: DocumentTree, sentenceId: string) {
 }
 
 function logicalLength(sentence: Sentence) {
-  return sentence.content.reduce(
-    (length, part) => length + (part.kind === "text" ? part.text.length : 1),
-    0,
-  );
+  return sentence.content.reduce((length, part) => length + (part.kind === "text" ? part.text.length : 1), 0);
 }
 
 function logicalSlice(tree: DocumentTree, value: Sentence, start: number, end: number) {
@@ -103,13 +124,14 @@ export function projectSentenceText(tree: DocumentTree, sentenceId: string) {
 
 function blockUnits(block: Block) {
   switch (block.kind) {
-    case "unit": return [block.unitId];
-    case "figure": return block.captionUnitId ? [block.captionUnitId] : [];
-    case "table": return [
-      ...(block.captionUnitId ? [block.captionUnitId] : []),
-      ...block.rows.flat().map((cell) => cell.unitId),
-    ];
-    default: return [];
+    case "unit":
+      return [block.unitId];
+    case "figure":
+      return block.captionUnitId ? [block.captionUnitId] : [];
+    case "table":
+      return [...(block.captionUnitId ? [block.captionUnitId] : []), ...block.rows.flat().map((cell) => cell.unitId)];
+    default:
+      return [];
   }
 }
 
@@ -136,11 +158,14 @@ function validateRanges(tree: DocumentTree, ranges: SelectionRange[]) {
     const index = order.get(range.sentenceId);
     if (index === undefined) invalid(`句子不在阅读流中：${range.sentenceId}。`);
     const length = logicalLength(value);
-    if (range.start >= range.end || range.end > length)
-      invalid(`选区偏移超出句子逻辑边界：${range.sentenceId}。`);
+    if (range.start >= range.end || range.end > length) invalid(`选区偏移超出句子逻辑边界：${range.sentenceId}。`);
     if (previous) {
       if (index <= previous.index) invalid("多个选区必须按原文顺序排列，且每句至多一个范围。");
-      if (index !== previous.index + 1 || previous.end !== logicalLength(sentence(tree, previous.sentenceId)) || range.start !== 0)
+      if (
+        index !== previous.index + 1 ||
+        previous.end !== logicalLength(sentence(tree, previous.sentenceId)) ||
+        range.start !== 0
+      )
         invalid("跨句或跨单元选区不连续，必须显式保存全部中间句子。");
     }
     previous = { index, end: range.end, sentenceId: range.sentenceId };
@@ -153,18 +178,10 @@ function quoteSnapshot(tree: DocumentTree, ranges: SelectionRange[]) {
   const firstSentence = sentence(tree, first.sentenceId);
   const lastSentence = sentence(tree, last.sentenceId);
   return {
-    text: ranges.map((range) => logicalSlice(
-      tree,
-      sentence(tree, range.sentenceId),
-      range.start,
-      range.end,
-    )).join("\n"),
-    before: logicalSlice(
-      tree,
-      firstSentence,
-      Math.max(0, first.start - quoteContextLength),
-      first.start,
-    ),
+    text: ranges
+      .map((range) => logicalSlice(tree, sentence(tree, range.sentenceId), range.start, range.end))
+      .join("\n"),
+    before: logicalSlice(tree, firstSentence, Math.max(0, first.start - quoteContextLength), first.start),
     after: logicalSlice(
       tree,
       lastSentence,
@@ -174,10 +191,7 @@ function quoteSnapshot(tree: DocumentTree, ranges: SelectionRange[]) {
   };
 }
 
-export function createRangeAnchor(
-  tree: DocumentTree,
-  ranges: SelectionRange[],
-): RangeAnchor {
+export function createRangeAnchor(tree: DocumentTree, ranges: SelectionRange[]): RangeAnchor {
   validateRanges(tree, ranges);
   return {
     kind: "range",
@@ -189,14 +203,12 @@ export function createRangeAnchor(
 function validateAtomPosition(tree: DocumentTree, unitId: string, atomId: string) {
   const unit = tree.units[unitId] ?? invalid(`原子所属单元不存在：${unitId}。`);
   const referenced = unit.sentenceIds.some((sentenceId) =>
-    sentence(tree, sentenceId).content.some((part) => part.kind === "atom" && part.atomId === atomId));
+    sentence(tree, sentenceId).content.some((part) => part.kind === "atom" && part.atomId === atomId),
+  );
   if (!referenced) invalid("原子未出现在所属单元的句子内容中。");
 }
 
-export function parseDocumentAnchor(
-  tree: DocumentTree,
-  value: unknown,
-): DocumentAnchor {
+export function parseDocumentAnchor(tree: DocumentTree, value: unknown): DocumentAnchor {
   if (!anchorSchema.Check(value)) invalid("不符合结构化锚点 schema。");
   switch (value.kind) {
     case "section":
@@ -217,13 +229,16 @@ export function parseDocumentAnchor(
       break;
     }
     case "block":
-      if (!tree.blocks.some((block) => block.id === value.blockId))
-        invalid(`阅读块不存在：${value.blockId}。`);
+      if (!tree.blocks.some((block) => block.id === value.blockId)) invalid(`阅读块不存在：${value.blockId}。`);
       break;
     case "range": {
       validateRanges(tree, value.ranges);
       const expected = quoteSnapshot(tree, value.ranges);
-      if (value.quote.text !== expected.text || value.quote.before !== expected.before || value.quote.after !== expected.after)
+      if (
+        value.quote.text !== expected.text ||
+        value.quote.before !== expected.before ||
+        value.quote.after !== expected.after
+      )
         invalid("quote 与当前选区内容或前后文不一致；不得仅凭相似文本自动重锚。");
       break;
     }
@@ -231,10 +246,7 @@ export function parseDocumentAnchor(
   return value;
 }
 
-export function documentAnchorDependencies(
-  tree: DocumentTree,
-  value: unknown,
-): Dependency[] {
+export function documentAnchorDependencies(tree: DocumentTree, value: unknown): Dependency[] {
   const anchor = parseDocumentAnchor(tree, value);
   const dependencies: Dependency[] = [];
   const seen = new Set<string>();
@@ -246,8 +258,7 @@ export function documentAnchorDependencies(
   };
   const addSentence = (sentenceId: string) => {
     add("sentence", sentenceId);
-    for (const part of sentence(tree, sentenceId).content)
-      if (part.kind === "atom") add("atom", part.atomId);
+    for (const part of sentence(tree, sentenceId).content) if (part.kind === "atom") add("atom", part.atomId);
   };
   const addUnit = (unitId: string) => {
     const unit = tree.units[unitId] ?? invalid(`单元不存在：${unitId}。`);
@@ -265,10 +276,8 @@ export function documentAnchorDependencies(
       add("section", sectionId);
       pending.push(...tree.sections[sectionId].childSectionIds);
     }
-    for (const unit of Object.values(tree.units))
-      if (sectionIds.has(unit.sectionId)) addUnit(unit.id);
-    for (const block of tree.blocks)
-      if (sectionIds.has(block.sectionId)) add("block", block.id);
+    for (const unit of Object.values(tree.units)) if (sectionIds.has(unit.sectionId)) addUnit(unit.id);
+    for (const block of tree.blocks) if (sectionIds.has(block.sectionId)) add("block", block.id);
   } else if (anchor.kind === "unit") addUnit(anchor.unitId);
   else if (anchor.kind === "sentence") addSentence(anchor.sentenceId);
   else if (anchor.kind === "atom") add("atom", anchor.atomId);

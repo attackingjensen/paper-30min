@@ -4,18 +4,14 @@ import katex from "@vscode/markdown-it-katex";
 import "katex/dist/katex.min.css";
 import { userMessageDisplayText } from "../shared/chat-input";
 
-const mathPlugin =
-  typeof katex === "function"
-    ? katex
-    : (katex as { default: typeof katex }).default;
+const mathPlugin = typeof katex === "function" ? katex : (katex as { default: typeof katex }).default;
 const markdown = new MarkdownIt({
   html: false,
   linkify: true,
   breaks: true,
 }).use(mathPlugin, { throwOnError: false, trust: false });
 // Replies may contain arbitrary URLs. Images remain descriptions, never network requests.
-markdown.renderer.rules.image = (tokens, index) =>
-  markdown.utils.escapeHtml(tokens[index].content || "[图片]");
+markdown.renderer.rules.image = (tokens, index) => markdown.utils.escapeHtml(tokens[index].content || "[图片]");
 
 export const AgentMessage = memo(function AgentMessage({
   text,
@@ -26,10 +22,7 @@ export const AgentMessage = memo(function AgentMessage({
   role: "user" | "assistant";
   onError: (message: string) => void;
 }) {
-  const html = useMemo(
-    () => markdown.render(role === "user" ? userMessageDisplayText(text) : text),
-    [text, role],
-  );
+  const html = useMemo(() => markdown.render(role === "user" ? userMessageDisplayText(text) : text), [text, role]);
   return (
     <div
       className="message-text chat-markdown"
@@ -40,9 +33,7 @@ export const AgentMessage = memo(function AgentMessage({
         event.preventDefault();
         const href = link.getAttribute("href") ?? "";
         if (/^https?:\/\//i.test(href)) {
-          void window.desktop
-            .openLink(href)
-            .catch((error: Error) => onError(error.message));
+          void window.desktop.openLink(href).catch((error: Error) => onError(error.message));
         } else {
           onError("此链接暂不支持打开，请复制链接后查看。");
         }

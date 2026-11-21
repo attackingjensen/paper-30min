@@ -1,10 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { parseArxivReference } from "../src/main/arxiv/reference";
-import {
-  arxivLatestVersion,
-  assertArxivVersionConsistent,
-  resolveArxivVersion,
-} from "../src/main/arxiv/version";
+import { arxivLatestVersion, assertArxivVersionConsistent, resolveArxivVersion } from "../src/main/arxiv/version";
 import { absHtml } from "./fixtures/arxiv-abs";
 
 function reference(input: string) {
@@ -105,35 +101,24 @@ test("arxiv-import 版本守卫：v10 按整数高于 v2，URL 版本后缀与�
       citationId: "2401.01234v10",
     }).ok,
   ).toBe(true);
-  const mixedUrl = assertArxivVersionConsistent(
-    pinned,
-    "https://arxiv.org/html/2401.01234v2",
-  );
+  const mixedUrl = assertArxivVersionConsistent(pinned, "https://arxiv.org/html/2401.01234v2");
   expect(mixedUrl.ok).toBe(false);
   if (!mixedUrl.ok) expect(mixedUrl.diagnostic.code).toBe("arxiv-version-mixed");
-  const mixedMeta = assertArxivVersionConsistent(
-    pinned,
-    "https://arxiv.org/html/2401.01234v10",
-    { citationId: "2401.01234v2" },
-  );
+  const mixedMeta = assertArxivVersionConsistent(pinned, "https://arxiv.org/html/2401.01234v10", {
+    citationId: "2401.01234v2",
+  });
   expect(mixedMeta.ok).toBe(false);
   if (!mixedMeta.ok) expect(mixedMeta.diagnostic.code).toBe("arxiv-version-mixed");
 });
 
 test("arxiv-import 版本守卫：不同 base ID 的响应是另一来源，不是版本混杂", () => {
-  const result = assertArxivVersionConsistent(
-    reference("2401.01234v2"),
-    "https://arxiv.org/html/2401.99999v2",
-  );
+  const result = assertArxivVersionConsistent(reference("2401.01234v2"), "https://arxiv.org/html/2401.99999v2");
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.diagnostic.code).toBe("arxiv-identity-mismatch");
 });
 
 test("arxiv-import 版本守卫：非允许 host 的最终 URL 被拒绝", () => {
-  const result = assertArxivVersionConsistent(
-    reference("2401.01234v2"),
-    "https://cdn.example.com/html/2401.01234v2",
-  );
+  const result = assertArxivVersionConsistent(reference("2401.01234v2"), "https://cdn.example.com/html/2401.01234v2");
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.diagnostic.code).toBe("arxiv-source-host-rejected");
 });
@@ -176,7 +161,9 @@ test("arxiv-import resolve 阶段区分 404/403/429/取消，不折叠成同一�
     [new ArxivFetchError("arxiv-fetch-cancelled", "https://arxiv.org/abs/2401.01234"), "arxiv.fetch.cancelled"],
   ];
   for (const [error, messageKey] of cases) {
-    const result = await resolveArxivVersion(reference("2401.01234"), async () => { throw error; });
+    const result = await resolveArxivVersion(reference("2401.01234"), async () => {
+      throw error;
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.diagnostic.stage).toBe("resolve");

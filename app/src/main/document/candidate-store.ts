@@ -48,7 +48,16 @@ interface StoredCandidateManifest {
   generation?: number;
 }
 
-const TREE_NAMES = ["base", "current", "sourceBase", "document", "candidateTree", "changeset", "tombstones", "previousTombstones"] as const;
+const TREE_NAMES = [
+  "base",
+  "current",
+  "sourceBase",
+  "document",
+  "candidateTree",
+  "changeset",
+  "tombstones",
+  "previousTombstones",
+] as const;
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -89,8 +98,7 @@ async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    throw new Error("候选记录无效。");
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("候选记录无效。");
   return value as Record<string, unknown>;
 }
 
@@ -101,8 +109,10 @@ function parseManifest(value: unknown, revisionId: string): StoredCandidateManif
     record.revisionId !== revisionId ||
     typeof record.projectId !== "string" ||
     typeof record.paperId !== "string" ||
-    typeof record.baseRevision !== "string" || !UUID.test(record.baseRevision) ||
-    typeof record.sourceSnapshotId !== "string" || !UUID.test(record.sourceSnapshotId) ||
+    typeof record.baseRevision !== "string" ||
+    !UUID.test(record.baseRevision) ||
+    typeof record.sourceSnapshotId !== "string" ||
+    !UUID.test(record.sourceSnapshotId) ||
     typeof record.createdAt !== "string"
   )
     throw new Error("候选记录无效。");
@@ -111,25 +121,41 @@ function parseManifest(value: unknown, revisionId: string): StoredCandidateManif
     if (choice !== "current" && choice !== "candidate") throw new Error("候选冲突解决记录无效。");
     resolutions[id] = choice;
   }
-  const warnings = Array.isArray(record.warnings) ? record.warnings.map(parseImportDiagnostic) : (() => { throw new Error("候选警告记录无效。"); })();
+  const warnings = Array.isArray(record.warnings)
+    ? record.warnings.map(parseImportDiagnostic)
+    : (() => {
+        throw new Error("候选警告记录无效。");
+      })();
   const trees = Array.isArray(record.trees)
     ? (record.trees as unknown[]).map((entry) => {
         const item = objectValue(entry);
-        if (typeof item.name !== "string" || !(TREE_NAMES as readonly string[]).includes(item.name) ||
-            typeof item.sha256 !== "string" || !SHA256.test(item.sha256))
+        if (
+          typeof item.name !== "string" ||
+          !(TREE_NAMES as readonly string[]).includes(item.name) ||
+          typeof item.sha256 !== "string" ||
+          !SHA256.test(item.sha256)
+        )
           throw new Error("候选树登记无效。");
         return { name: item.name, sha256: item.sha256 };
       })
-    : (() => { throw new Error("候选树登记无效。"); })();
+    : (() => {
+        throw new Error("候选树登记无效。");
+      })();
   if (trees.length !== TREE_NAMES.length || new Set(trees.map((tree) => tree.name)).size !== TREE_NAMES.length)
     throw new Error("候选树登记不完整。");
   const assets = Array.isArray(record.assets)
     ? (record.assets as unknown[]).map((entry) => {
         const item = objectValue(entry);
-        if (typeof item.path !== "string" || !/^assets\/[a-f0-9]{64}\.[^/]+$/.test(item.path) ||
-            typeof item.sha256 !== "string" || !SHA256.test(item.sha256) ||
-            typeof item.size !== "number" || !Number.isSafeInteger(item.size) || item.size < 0 ||
-            (item.mime !== undefined && typeof item.mime !== "string"))
+        if (
+          typeof item.path !== "string" ||
+          !/^assets\/[a-f0-9]{64}\.[^/]+$/.test(item.path) ||
+          typeof item.sha256 !== "string" ||
+          !SHA256.test(item.sha256) ||
+          typeof item.size !== "number" ||
+          !Number.isSafeInteger(item.size) ||
+          item.size < 0 ||
+          (item.mime !== undefined && typeof item.mime !== "string")
+        )
           throw new Error("候选资产登记无效。");
         return {
           path: item.path,
@@ -138,7 +164,9 @@ function parseManifest(value: unknown, revisionId: string): StoredCandidateManif
           ...(item.mime === undefined ? {} : { mime: item.mime }),
         };
       })
-    : (() => { throw new Error("候选资产登记无效。"); })();
+    : (() => {
+        throw new Error("候选资产登记无效。");
+      })();
   // 登记本身也执行硬预算与路径唯一性：损坏 manifest 不得诱导无界读取。
   let declaredTotal = 0;
   const declaredPaths = new Set<string>();
@@ -152,14 +180,21 @@ function parseManifest(value: unknown, revisionId: string): StoredCandidateManif
   const conflicts = Array.isArray(record.conflicts)
     ? (record.conflicts as unknown[]).map((entry) => {
         const item = objectValue(entry);
-        if (typeof item.id !== "string" ||
-            (item.type !== "content" && item.type !== "deletion" && item.type !== "order" &&
-             item.type !== "structure" && item.type !== "asset") ||
-            !Array.isArray(item.anchors))
+        if (
+          typeof item.id !== "string" ||
+          (item.type !== "content" &&
+            item.type !== "deletion" &&
+            item.type !== "order" &&
+            item.type !== "structure" &&
+            item.type !== "asset") ||
+          !Array.isArray(item.anchors)
+        )
           throw new Error("候选冲突记录无效。");
         return item as unknown as MergeConflict;
       })
-    : (() => { throw new Error("候选冲突记录无效。"); })();
+    : (() => {
+        throw new Error("候选冲突记录无效。");
+      })();
   return {
     formatVersion: 1,
     conflicts,
@@ -174,11 +209,16 @@ function parseManifest(value: unknown, revisionId: string): StoredCandidateManif
     trees,
     assets,
     createdAt: record.createdAt,
-    ...(record.generation === undefined ? {} : {
-      generation: typeof record.generation === "number" && Number.isSafeInteger(record.generation) && record.generation >= 0
-        ? record.generation
-        : (() => { throw new Error("候选解决代际无效。"); })(),
-    }),
+    ...(record.generation === undefined
+      ? {}
+      : {
+          generation:
+            typeof record.generation === "number" && Number.isSafeInteger(record.generation) && record.generation >= 0
+              ? record.generation
+              : (() => {
+                  throw new Error("候选解决代际无效。");
+                })(),
+        }),
   };
 }
 
@@ -214,7 +254,12 @@ export async function storeUpdateCandidate(candidate: DocumentMergeCandidate): P
     if (asset.bytes.byteLength > MAX_ASSET_BYTES) throw new Error(`候选资产超过 32 MiB 预算：${relative}。`);
     total += asset.bytes.byteLength;
     if (total > MAX_TOTAL_ASSET_BYTES) throw new Error("候选引用资产总量超过 512 MiB 预算。");
-    assetRecords.push({ path: relative, sha256: sha256(asset.bytes), size: asset.bytes.byteLength, ...(asset.mime === undefined ? {} : { mime: asset.mime }) });
+    assetRecords.push({
+      path: relative,
+      sha256: sha256(asset.bytes),
+      size: asset.bytes.byteLength,
+      ...(asset.mime === undefined ? {} : { mime: asset.mime }),
+    });
   }
   const manifest: StoredCandidateManifest = {
     formatVersion: 1,
@@ -286,7 +331,10 @@ function treeFileName(name: string, generation: number): string {
   return generation === 0 ? `${name}.json` : `${name}.${generation}.json`;
 }
 
-async function loadStoredTrees(root: string, revisionId: string): Promise<{
+async function loadStoredTrees(
+  root: string,
+  revisionId: string,
+): Promise<{
   manifest: StoredCandidateManifest;
   trees: Record<(typeof TREE_NAMES)[number], unknown>;
 }> {
@@ -303,12 +351,18 @@ async function loadStoredTrees(root: string, revisionId: string): Promise<{
     const bytes = await fs.readFile(file);
     if (bytes.byteLength > CANDIDATE_JSON_BUDGET || sha256(bytes) !== record.sha256)
       throw new Error(`候选树摘要不符：${record.name}。`);
-    trees[record.name as (typeof TREE_NAMES)[number]] = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    trees[record.name as (typeof TREE_NAMES)[number]] = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
   }
   return { manifest, trees };
 }
 
-async function loadStoredAssets(root: string, revisionId: string, manifest: StoredCandidateManifest): Promise<Record<string, ManagedAsset>> {
+async function loadStoredAssets(
+  root: string,
+  revisionId: string,
+  manifest: StoredCandidateManifest,
+): Promise<Record<string, ManagedAsset>> {
   const directory = candidateDirectory(root, revisionId);
   const assets: Record<string, ManagedAsset> = {};
   for (const record of manifest.assets) {
@@ -460,4 +514,3 @@ export async function readUpdateCandidateAsset(input: {
     throw new Error(`候选资产摘要不符：${input.path}。`);
   return { bytes, ...(record.mime === undefined ? {} : { mime: record.mime }) };
 }
-

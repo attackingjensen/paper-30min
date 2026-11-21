@@ -3,12 +3,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PNG } from "pngjs";
 import {
@@ -22,29 +17,14 @@ import {
   readRevisionTombstones,
 } from "../src/main/project-core";
 import { snapshotLocalPdf } from "../src/main/pdf/snapshot";
-import {
-  listBaiduPdfParseTasks,
-  startBaiduPdfParse,
-  type BaiduPdfParseConfig,
-} from "../src/main/parsing/baidu-task";
+import { listBaiduPdfParseTasks, startBaiduPdfParse, type BaiduPdfParseConfig } from "../src/main/parsing/baidu-task";
 import { publishParseSnapshot } from "../src/main/parsing/parse-snapshot";
-import {
-  PDF_CONVERTER_VERSION,
-  convertParseResult,
-  publishParseDocument,
-} from "../src/main/parsing/parse-convert";
-import {
-  importPdfToCurrent,
-  reconvertParseCandidate,
-  resumePdfImport,
-} from "../src/main/parsing/pdf-import";
+import { PDF_CONVERTER_VERSION, convertParseResult, publishParseDocument } from "../src/main/parsing/parse-convert";
+import { importPdfToCurrent, reconvertParseCandidate, resumePdfImport } from "../src/main/parsing/pdf-import";
 import { publishDocumentMergeCandidate } from "../src/main/document/merge";
 import { projectSentenceText } from "../src/shared/document/anchor";
 import type { DocumentTree } from "../src/shared/document/tree";
-import type {
-  PdfParseSourceSnapshotRecord,
-  ProjectRevisionRecord,
-} from "../src/shared/contracts";
+import type { PdfParseSourceSnapshotRecord, ProjectRevisionRecord } from "../src/shared/contracts";
 import type { PdfParseFactsFile, PdfParseTaskRecord } from "../src/shared/parsing";
 import type { ImportDiagnostic } from "../src/shared/arxiv";
 
@@ -53,11 +33,7 @@ const TOKEN = "test-baidu-token-never-persist";
 const SIGNED_URL_MARKER = "signature-never-persist";
 const MODEL = "PaddleOCR-VL-1.6" as const;
 
-type AssetHandler = (
-  request: IncomingMessage,
-  response: ServerResponse,
-  endpoint: string,
-) => void | Promise<void>;
+type AssetHandler = (request: IncomingMessage, response: ServerResponse, endpoint: string) => void | Promise<void>;
 
 let sandbox: string;
 let root: string;
@@ -70,9 +46,7 @@ async function drain(request: IncomingMessage) {
   }
 }
 
-async function controlledServer(
-  handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
-) {
+async function controlledServer(handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>) {
   const server = createServer((request, response) => {
     void Promise.resolve(handler(request, response)).catch(() => {
       response.destroy();
@@ -105,8 +79,7 @@ async function filesUnder(directory: string): Promise<string[]> {
 async function expectProjectDoesNotContain(...secrets: string[]) {
   for (const file of await filesUnder(root)) {
     const bytes = await fs.readFile(file);
-    for (const secret of secrets)
-      expect(bytes.includes(secret), `${path.basename(file)} leaked a secret`).toBe(false);
+    for (const secret of secrets) expect(bytes.includes(secret), `${path.basename(file)} leaked a secret`).toBe(false);
   }
 }
 
@@ -192,10 +165,12 @@ async function downloadResponse(
     }
     if (request.url === "/jobs/job-convert") {
       counts.queries += 1;
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result") {
@@ -266,10 +241,12 @@ async function importFixture(
     }
     if (request.url === "/jobs/job-convert") {
       counts.queries += 1;
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result` } },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result") {
@@ -317,9 +294,7 @@ async function writeTaskRecord(record: PdfParseTaskRecord) {
 }
 
 function unitText(tree: DocumentTree, unitId: string): string {
-  return tree.units[unitId].sentenceIds
-    .map((sentenceId) => projectSentenceText(tree, sentenceId))
-    .join(" ");
+  return tree.units[unitId].sentenceIds.map((sentenceId) => projectSentenceText(tree, sentenceId)).join(" ");
 }
 
 function normalized(text: string) {
@@ -358,28 +333,25 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
   await fs.rm(sandbox, { recursive: true, force: true });
 });
 
 test("pdf-import 端到端：全部页面转换后才推进 current，正文逐字进入规范树", async () => {
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([
-        block(0, "A Study of Testing", { block_label: "doc_title" }),
-        block(1, "Introduction", { block_label: "paragraph_title" }),
-        block(2, "First paragraph. Second sentence."),
-        block(3, "More text here."),
-      ]),
-      vendorPage([
-        block(0, "Method", { block_label: "paragraph_title" }),
-        block(1, "We did things."),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([
+          block(0, "A Study of Testing", { block_label: "doc_title" }),
+          block(1, "Introduction", { block_label: "paragraph_title" }),
+          block(2, "First paragraph. Second sentence."),
+          block(3, "More text here."),
+        ]),
+        vendorPage([block(0, "Method", { block_label: "paragraph_title" }), block(1, "We did things.")]),
       ]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const { revision, task, warnings } = fixture.result;
@@ -399,11 +371,7 @@ test("pdf-import 端到端：全部页面转换后才推进 current，正文逐�
   expect(childSections.map((section) => section.title)).toEqual(["Introduction", "Method"]);
   // 平铺确定结构：vendor 不提供层级，全部章节直属根章节。
   expect(childSections.every((section) => section.parentSectionId === rootSection.id)).toBe(true);
-  expect(paragraphTexts(tree)).toEqual([
-    "First paragraph. Second sentence.",
-    "More text here.",
-    "We did things.",
-  ]);
+  expect(paragraphTexts(tree)).toEqual(["First paragraph. Second sentence.", "More text here.", "We did things."]);
   const firstParagraph = Object.values(tree.units).find(
     (unit) => unit.kind === "paragraph" && unitText(tree, unit.id).startsWith("First paragraph"),
   )!;
@@ -412,10 +380,9 @@ test("pdf-import 端到端：全部页面转换后才推进 current，正文逐�
   const sourceBase = await readRevisionDocument(root, revision.revisionId, "source-base");
   expect(sourceBase).toEqual(tree);
   expect(await readRevisionTombstones(root, revision.revisionId)).toEqual([]);
-  const changeset = JSON.parse(await fs.readFile(
-    path.join(root, revision.path, "changeset.json"),
-    "utf8",
-  )) as { changes: Array<{ status: string }> };
+  const changeset = JSON.parse(await fs.readFile(path.join(root, revision.path, "changeset.json"), "utf8")) as {
+    changes: Array<{ status: string }>;
+  };
   expect(changeset.changes.length).toBeGreaterThan(0);
   expect(changeset.changes.every((change) => change.status === "added")).toBe(true);
 
@@ -430,14 +397,16 @@ test("pdf-import 端到端：全部页面转换后才推进 current，正文逐�
 
 test("pdf-import 发布后正文与资产离线可读，不需要网络或 LLM 审阅", async () => {
   const image = pngBytes();
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([
-        block(0, "Before ![Figure A](imgs/fig.png) after."),
-      ], { images: { "imgs/fig.png": image.toString("base64") } }),
-      vendorPage([block(0, "Second page text")]),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([block(0, "Before ![Figure A](imgs/fig.png) after.")], {
+          images: { "imgs/fig.png": image.toString("base64") },
+        }),
+        vendorPage([block(0, "Second page text")]),
+      ]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const { revision } = fixture.result;
@@ -445,9 +414,7 @@ test("pdf-import 发布后正文与资产离线可读，不需要网络或 LLM �
   // 关闭全部受控服务后读取：current 阅读不依赖任何网络入口。
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
   const tree = await publishedTree(revision);
   expect(paragraphTexts(tree)).toContain("Second page text");
@@ -460,26 +427,28 @@ test("pdf-import 发布后正文与资产离线可读，不需要网络或 LLM �
 });
 
 test("pdf-import vendor 标签映射到规范结构：章节、图注、公式、参考文献与视觉块", async () => {
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([
-        block(0, "Deep Learning Review", { block_label: "doc_title" }),
-        block(1, "Introduction", { block_label: "paragraph_title" }),
-        block(2, "We study things."),
-        block(3, "<table><tr><td>1</td></tr></table>", { block_label: "table" }),
-        block(4, "Table 1: Numbers.", { block_label: "figure_title" }),
-        block(5, " $$ E=mc^2 $$ ", { block_label: "display_formula" }),
-        block(6, "", { block_label: "image" }),
-        block(7, "", { block_label: "chart" }),
-      ]),
-      vendorPage([
-        block(0, "[1] First ref. [2] Second ref.", { block_label: "reference_content" }),
-        block(1, "A footnote.", { block_label: "footnote" }),
-        block(2, "Page header", { block_label: "header" }),
-        block(3, "Unknown content.", { block_label: "weird_label" }),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([
+          block(0, "Deep Learning Review", { block_label: "doc_title" }),
+          block(1, "Introduction", { block_label: "paragraph_title" }),
+          block(2, "We study things."),
+          block(3, "<table><tr><td>1</td></tr></table>", { block_label: "table" }),
+          block(4, "Table 1: Numbers.", { block_label: "figure_title" }),
+          block(5, " $$ E=mc^2 $$ ", { block_label: "display_formula" }),
+          block(6, "", { block_label: "image" }),
+          block(7, "", { block_label: "chart" }),
+        ]),
+        vendorPage([
+          block(0, "[1] First ref. [2] Second ref.", { block_label: "reference_content" }),
+          block(1, "A footnote.", { block_label: "footnote" }),
+          block(2, "Page header", { block_label: "header" }),
+          block(3, "Unknown content.", { block_label: "weird_label" }),
+        ]),
       ]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(fixture.result.revision);
@@ -510,8 +479,7 @@ test("pdf-import vendor 标签映射到规范结构：章节、图注、公式�
 
   const references = Object.values(tree.units).filter((unit) => unit.kind === "reference");
   expect(references).toHaveLength(2);
-  expect(references.map((unit) => normalized(unitText(tree, unit.id))))
-    .toEqual(["[1] First ref.", "[2] Second ref."]);
+  expect(references.map((unit) => normalized(unitText(tree, unit.id)))).toEqual(["[1] First ref.", "[2] Second ref."]);
   const footnotes = Object.values(tree.units).filter((unit) => unit.kind === "footnote");
   expect(footnotes).toHaveLength(1);
   expect(normalized(unitText(tree, footnotes[0].id))).toBe("A footnote.");
@@ -522,14 +490,10 @@ test("pdf-import vendor 标签映射到规范结构：章节、图注、公式�
 });
 
 test("pdf-import HTML 表格保留行列跨度与单元格文本", async () => {
-  const html = '<table><tr><td rowspan="2">A</td><td colspan="2">B</td></tr>' +
-    "<tr><td>C</td><td>D</td></tr></table>";
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, html, { block_label: "table" })]),
-      vendorPage([block(0, "Second page text")]),
-    ]),
-  ]));
+  const html = '<table><tr><td rowspan="2">A</td><td colspan="2">B</td></tr>' + "<tr><td>C</td><td>D</td></tr></table>";
+  const fixture = await importFixture(() =>
+    jsonl([row([vendorPage([block(0, html, { block_label: "table" })]), vendorPage([block(0, "Second page text")])])]),
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(fixture.result.revision);
@@ -542,21 +506,18 @@ test("pdf-import HTML 表格保留行列跨度与单元格文本", async () => {
   expect(table.rows[1]).toHaveLength(2);
   const texts = table.rows.flat().map((cell) => normalized(unitText(tree, cell.unitId)));
   expect(texts).toEqual(["A", "B", "C", "D"]);
-  for (const cell of table.rows.flat())
-    expect(tree.units[cell.unitId].kind).toBe("table-cell");
+  for (const cell of table.rows.flat()) expect(tree.units[cell.unitId].kind).toBe("table-cell");
 });
 
 test("pdf-import 恶意 HTML 表格被消毒，危险内容不进入规范树", async () => {
-  const html = '<table><tr><td onclick="alert(1)">safe</td>' +
+  const html =
+    '<table><tr><td onclick="alert(1)">safe</td>' +
     '<td><script>alert(2)</script><a href="javascript:alert(3)">link</a></td></tr>' +
     '<tr><td><img src="https://evil.example/x.png" onerror="alert(4)"></td>' +
     "<td><!-- comment -->ok</td></tr></table>";
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, html, { block_label: "table" })]),
-      vendorPage([block(0, "Second page text")]),
-    ]),
-  ]));
+  const fixture = await importFixture(() =>
+    jsonl([row([vendorPage([block(0, html, { block_label: "table" })]), vendorPage([block(0, "Second page text")])])]),
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const { revision } = fixture.result;
@@ -577,16 +538,18 @@ test("pdf-import 嵌套表格与不可信跨度降级为 raw block 并保留文�
   const nested = "<table><tr><td><table><tr><td>inner</td></tr></table></td></tr></table>";
   // 超过列预算的数字跨度由转换器整体降级 raw；非数字跨度在去敏阶段即被移除。
   const badSpan = '<table><tr><td colspan="999">wide</td></tr></table>';
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([
-        block(0, nested, { block_label: "table" }),
-        block(1, badSpan, { block_label: "table" }),
-        block(2, "Table 1: Nested.", { block_label: "figure_title" }),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([
+          block(0, nested, { block_label: "table" }),
+          block(1, badSpan, { block_label: "table" }),
+          block(2, "Table 1: Nested.", { block_label: "figure_title" }),
+        ]),
+        vendorPage([block(0, "Second page text")]),
       ]),
-      vendorPage([block(0, "Second page text")]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(fixture.result.revision);
@@ -607,14 +570,16 @@ test("pdf-import 嵌套表格与不可信跨度降级为 raw block 并保留文�
 test("pdf-import 表格内图片给出可读占位与 warning，资产保留在解析快照", async () => {
   const image = pngBytes();
   const html = '<table><tr><td><img src="imgs/table.png" alt="表格图"></td></tr></table>';
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, html, { block_label: "table" })], {
-        images: { "imgs/table.png": image.toString("base64") },
-      }),
-      vendorPage([block(0, "Second page text")]),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([block(0, html, { block_label: "table" })], {
+          images: { "imgs/table.png": image.toString("base64") },
+        }),
+        vendorPage([block(0, "Second page text")]),
+      ]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(fixture.result.revision);
@@ -629,12 +594,9 @@ test("pdf-import 表格内图片给出可读占位与 warning，资产保留在�
 });
 
 test("pdf-import 行内公式成为 math atom 并保留文本投影", async () => {
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, "Energy $E=mc^2$ is famous.")]),
-      vendorPage([block(0, "Second page text")]),
-    ]),
-  ]));
+  const fixture = await importFixture(() =>
+    jsonl([row([vendorPage([block(0, "Energy $E=mc^2$ is famous.")]), vendorPage([block(0, "Second page text")])])]),
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(fixture.result.revision);
@@ -650,14 +612,16 @@ test("pdf-import 行内公式成为 math atom 并保留文本投影", async () =
 
 test("pdf-import 正文图片引用本地化为 revision 资产，缺失资源成为占位", async () => {
   const image = pngBytes();
-  const localized = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, "Before ![Figure A](imgs/fig.png) after.")], {
-        images: { "imgs/fig.png": image.toString("base64") },
-      }),
-      vendorPage([block(0, "Second page text")]),
+  const localized = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([block(0, "Before ![Figure A](imgs/fig.png) after.")], {
+          images: { "imgs/fig.png": image.toString("base64") },
+        }),
+        vendorPage([block(0, "Second page text")]),
+      ]),
     ]),
-  ]));
+  );
   expect(localized.result.outcome).toBe("published");
   if (localized.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(localized.result.revision);
@@ -667,26 +631,24 @@ test("pdf-import 正文图片引用本地化为 revision 资产，缺失资源�
   expect(figure.asset.mime).toBe("image/png");
   expect(figure.asset.path).toBe(`assets/${sha256(image)}.png`);
   expect(figure.captionUnitId).toBeTruthy();
-  if (figure.captionUnitId)
-    expect(normalized(unitText(tree, figure.captionUnitId))).toBe("Figure A");
+  if (figure.captionUnitId) expect(normalized(unitText(tree, figure.captionUnitId))).toBe("Figure A");
   expect(paragraphTexts(tree)).toContain("Before");
   expect(paragraphTexts(tree)).toContain("after.");
-  const revisionFile = localized.result.revision.files.find(
-    (file) => file.path === figure.asset!.path,
-  );
+  const revisionFile = localized.result.revision.files.find((file) => file.path === figure.asset!.path);
   expect(revisionFile?.sha256).toBe(sha256(image));
 });
 
 test("pdf-import 缺失图片资源成为可读占位，警告不阻塞发布", async () => {
   const missing = await importFixture(
-    (endpoint) => jsonl([
-      row([
-        vendorPage([block(0, "Before ![Figure B](imgs/lost.png) after.")], {
-          images: { "imgs/lost.png": `${endpoint}/lost` },
-        }),
-        vendorPage([block(0, "Second page text")]),
+    (endpoint) =>
+      jsonl([
+        row([
+          vendorPage([block(0, "Before ![Figure B](imgs/lost.png) after.")], {
+            images: { "imgs/lost.png": `${endpoint}/lost` },
+          }),
+          vendorPage([block(0, "Second page text")]),
+        ]),
       ]),
-    ]),
     {
       assetHandler: (request, response) => {
         if (request.url === "/jobs/lost") {
@@ -708,16 +670,18 @@ test("pdf-import 缺失图片资源成为可读占位，警告不阻塞发布", 
 });
 
 test("pdf-import 页块顺序与 source alias 连接 facts.json，解析快照不可变", async () => {
-  const fixture = await sanitizedFixture(() => jsonl([
-    row([
-      vendorPage([
-        block(0, "Part one.", { group_id: 5 }),
-        block(1, "Part two.", { group_id: 5 }),
-        block(2, "Later."),
+  const fixture = await sanitizedFixture(() =>
+    jsonl([
+      row([
+        vendorPage([
+          block(0, "Part one.", { group_id: 5 }),
+          block(1, "Part two.", { group_id: 5 }),
+          block(2, "Later."),
+        ]),
+        vendorPage([block(0, "Second page text")]),
       ]),
-      vendorPage([block(0, "Second page text")]),
     ]),
-  ]));
+  );
   const factsBefore = await readSnapshotFile(fixture.snapshot, "facts.json");
   const resultBefore = await readSnapshotFile(fixture.snapshot, "result.jsonl");
   const snapshotBefore = await readSnapshotFile(fixture.snapshot, "snapshot.json");
@@ -746,36 +710,32 @@ test("pdf-import 页块顺序与 source alias 连接 facts.json，解析快照�
 });
 
 test("pdf-import 缺失 block_order 按响应数组顺序降级并记录 warning", async () => {
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([
-        block(0, "First.", { block_order: null }),
-        block(1, "Second.", { block_order: null }),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([block(0, "First.", { block_order: null }), block(1, "Second.", { block_order: null })]),
+        vendorPage([block(0, "Second page text")]),
       ]),
-      vendorPage([block(0, "Second page text")]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(fixture.result.revision);
   expect(paragraphTexts(tree).slice(0, 2)).toEqual(["First.", "Second."]);
-  const degraded = fixture.result.warnings.filter(
-    (warning) => warning.code === "pdf-convert-order-degraded",
-  );
+  const degraded = fixture.result.warnings.filter((warning) => warning.code === "pdf-convert-order-degraded");
   expect(degraded.length).toBeGreaterThan(0);
   expect(degraded[0].sourceAlias).toBe("page-1");
 });
 
 test("pdf-import 同组混用标签被拒绝，不发布部分 current", async () => {
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, "Good page text")]),
-      vendorPage([
-        block(0, "A", { group_id: 9 }),
-        block(1, "B", { group_id: 9, block_label: "table" }),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([block(0, "Good page text")]),
+        vendorPage([block(0, "A", { group_id: 9 }), block(1, "B", { group_id: 9, block_label: "table" })]),
       ]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("incomplete");
   if (fixture.result.outcome !== "incomplete") throw new Error("expected rejection");
   expect(fixture.result.diagnostic.code).toBe("pdf-convert-group-invalid");
@@ -789,12 +749,11 @@ test("pdf-import 同组混用标签被拒绝，不发布部分 current", async (
 });
 
 test("pdf-import 全部页面无可读正文时拒绝发布", async () => {
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, "", { block_label: "image" })]),
-      vendorPage([block(0, "", { block_label: "chart" })]),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([vendorPage([block(0, "", { block_label: "image" })]), vendorPage([block(0, "", { block_label: "chart" })])]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("incomplete");
   if (fixture.result.outcome !== "incomplete") throw new Error("expected rejection");
   expect(fixture.result.diagnostic.code).toBe("pdf-convert-body-empty");
@@ -802,12 +761,7 @@ test("pdf-import 全部页面无可读正文时拒绝发布", async () => {
 });
 
 test("pdf-import 个别空白页保留 warning，其余页面正常发布", async () => {
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, "Readable text.")]),
-      vendorPage([]),
-    ]),
-  ]));
+  const fixture = await importFixture(() => jsonl([row([vendorPage([block(0, "Readable text.")]), vendorPage([])])]));
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   expect(warningCodes(fixture.result.warnings)).toContain("pdf-convert-page-empty");
@@ -821,12 +775,9 @@ test("pdf-import current 已存在时拒绝直写覆盖，旧正文保持不变"
   if (first.result.outcome !== "published") throw new Error("first import did not publish");
   const originalCurrent = await currentRevisionId();
 
-  const second = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, "Different first page")]),
-      vendorPage([block(0, "Different second page")]),
-    ]),
-  ]));
+  const second = await importFixture(() =>
+    jsonl([row([vendorPage([block(0, "Different first page")]), vendorPage([block(0, "Different second page")])])]),
+  );
   expect(second.result.outcome).toBe("incomplete");
   if (second.result.outcome !== "incomplete") throw new Error("expected rejection");
   expect(second.result.diagnostic.code).toBe("pdf-convert-current-exists");
@@ -880,9 +831,7 @@ test("pdf-import revision-content 中断留下残留，恢复清理后按同一�
   expect(revisionId).toBeTruthy();
   // 内容目录已落盘但元数据缺失：受管残留候选。
   await fs.access(path.join(root, "paper", "revisions", revisionId));
-  await expect(
-    fs.access(path.join(root, ".paper30min", "revisions", revisionId, "revision.json")),
-  ).rejects.toThrow();
+  await expect(fs.access(path.join(root, ".paper30min", "revisions", revisionId, "revision.json"))).rejects.toThrow();
   expect(await currentRevisionId()).toBeNull();
 
   const resumed = await resumePdfImport({ root, parseBatchId: interrupted.parseBatchId });
@@ -981,8 +930,7 @@ test("pdf-import 重开已完成任务不重转换、不重复下载", async () 
   expect(resumed.outcome).toBe("published");
   if (resumed.outcome !== "published") throw new Error("resume did not complete");
   expect(resumed.revision.revisionId).toBe(revision.revisionId);
-  expect((await fs.readFile(path.join(root, revision.path, "document.json"))).equals(documentBefore))
-    .toBe(true);
+  expect((await fs.readFile(path.join(root, revision.path, "document.json"))).equals(documentBefore)).toBe(true);
   expect(fixture.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });
 
@@ -1011,12 +959,9 @@ test("pdf-import 转换中本机停止中止处理，恢复从快照继续", asy
 
 test("pdf-import 转换预算超限拒绝发布，不截断正文", async () => {
   const huge = "x".repeat(2 * 1024 * 1024 + 1);
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, huge, { block_label: "table" })]),
-      vendorPage([block(0, "Second page text")]),
-    ]),
-  ]));
+  const fixture = await importFixture(() =>
+    jsonl([row([vendorPage([block(0, huge, { block_label: "table" })]), vendorPage([block(0, "Second page text")])])]),
+  );
   expect(fixture.result.outcome).toBe("incomplete");
   if (fixture.result.outcome !== "incomplete") throw new Error("expected rejection");
   expect(fixture.result.diagnostic.code).toBe("pdf-convert-tree-invalid");
@@ -1045,14 +990,15 @@ test("pdf-import 快照字节被篡改时拒绝转换并保留现场", async () 
 test("pdf-import 全链路秘密不进入工程任何文件", async () => {
   const image = pngBytes();
   const fixture = await importFixture(
-    (endpoint) => jsonl([
-      row([
-        vendorPage([block(0, "First page paragraph")], {
-          images: { "imgs/fig.png": `${endpoint}/asset?${SIGNED_URL_MARKER}` },
-        }),
-        vendorPage([block(0, "Second page text")]),
+    (endpoint) =>
+      jsonl([
+        row([
+          vendorPage([block(0, "First page paragraph")], {
+            images: { "imgs/fig.png": `${endpoint}/asset?${SIGNED_URL_MARKER}` },
+          }),
+          vendorPage([block(0, "Second page text")]),
+        ]),
       ]),
-    ]),
     {
       assetHandler: (request, response) => {
         if (request.url === `/jobs/asset?${SIGNED_URL_MARKER}`) {
@@ -1079,10 +1025,12 @@ test("pdf-import 转换进行中拒绝新的云端任务", async () => {
       },
     },
   });
-  await expect.poll(async () => {
-    const tasks = await listBaiduPdfParseTasks(root);
-    return tasks.find((task) => task.phase === "converting")?.parseBatchId ?? "";
-  }).not.toBe("");
+  await expect
+    .poll(async () => {
+      const tasks = await listBaiduPdfParseTasks(root);
+      return tasks.find((task) => task.phase === "converting")?.parseBatchId ?? "";
+    })
+    .not.toBe("");
   await expect(
     startBaiduPdfParse({
       root,
@@ -1097,15 +1045,14 @@ test("pdf-import 转换进行中拒绝新的云端任务", async () => {
 });
 
 test("pdf-import 相同快照离线重新转换内容结构确定，无网络无模型", async () => {
-  const fixture = await sanitizedFixture(() => jsonl([
-    row([
-      vendorPage([
-        block(0, "Title", { block_label: "paragraph_title" }),
-        block(1, "Deterministic text. $x^2$"),
+  const fixture = await sanitizedFixture(() =>
+    jsonl([
+      row([
+        vendorPage([block(0, "Title", { block_label: "paragraph_title" }), block(1, "Deterministic text. $x^2$")]),
+        vendorPage([block(0, "Second page text")]),
       ]),
-      vendorPage([block(0, "Second page text")]),
     ]),
-  ]));
+  );
   const resultBytes = await readSnapshotFile(fixture.snapshot, "result.jsonl");
   const facts = JSON.parse(
     (await readSnapshotFile(fixture.snapshot, "facts.json")).toString("utf8"),
@@ -1116,17 +1063,24 @@ test("pdf-import 相同快照离线重新转换内容结构确定，无网络无
   expect(first.ok).toBe(true);
   expect(second.ok).toBe(true);
   if (!first.ok || !second.ok) throw new Error("conversion failed");
-  const fingerprint = (tree: DocumentTree) => tree.blocks.map((entry) => {
-    const units = entry.kind === "unit" ? [entry.unitId]
-      : entry.kind === "figure" ? (entry.captionUnitId ? [entry.captionUnitId] : [])
-      : entry.kind === "table" ? entry.rows.flat().map((cell) => cell.unitId)
-      : [];
-    return {
-      kind: entry.kind,
-      aliases: entry.sourceAliases ?? [],
-      texts: units.map((unitId) => normalized(unitText(tree, unitId))),
-    };
-  });
+  const fingerprint = (tree: DocumentTree) =>
+    tree.blocks.map((entry) => {
+      const units =
+        entry.kind === "unit"
+          ? [entry.unitId]
+          : entry.kind === "figure"
+            ? entry.captionUnitId
+              ? [entry.captionUnitId]
+              : []
+            : entry.kind === "table"
+              ? entry.rows.flat().map((cell) => cell.unitId)
+              : [];
+      return {
+        kind: entry.kind,
+        aliases: entry.sourceAliases ?? [],
+        texts: units.map((unitId) => normalized(unitText(tree, unitId))),
+      };
+    });
   expect(fingerprint(second.tree)).toEqual(fingerprint(first.tree));
   expect(second.warnings).toEqual(first.warnings);
   expect(fixture.counts.downloads).toBe(1);
@@ -1161,8 +1115,9 @@ test("pdf-import 离线重新转换：内容不变时保留本地修正，source
   expect(first.result.outcome).toBe("published");
   if (first.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(first.result.revision);
-  const paragraph = Object.values(tree.units).find((unit) =>
-    unit.kind === "paragraph" && normalized(unitText(tree, unit.id)) === "Second page text");
+  const paragraph = Object.values(tree.units).find(
+    (unit) => unit.kind === "paragraph" && normalized(unitText(tree, unit.id)) === "Second page text",
+  );
   if (!paragraph) throw new Error("fixture paragraph not found");
   const sentenceId = paragraph.sentenceIds[0];
 
@@ -1210,11 +1165,13 @@ test("pdf-import 离线重新转换：baseRevision 已变化时拒绝形成候�
       "changeset.json": Buffer.from(JSON.stringify({ baseRevision: first.result.revision.revisionId })),
     },
   });
-  await expect(reconvertParseCandidate({
-    root,
-    parseBatchId: first.result.task.parseBatchId,
-    baseRevision: first.result.revision.revisionId,
-  })).rejects.toThrow(/baseRevision/);
+  await expect(
+    reconvertParseCandidate({
+      root,
+      parseBatchId: first.result.task.parseBatchId,
+      baseRevision: first.result.revision.revisionId,
+    }),
+  ).rejects.toThrow(/baseRevision/);
   expect(await currentRevisionId()).toBe(localRevision.revisionId);
   expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });
@@ -1225,25 +1182,29 @@ test("pdf-import 离线重新转换：解析快照缺失时明确拒绝，不访
   if (first.result.outcome !== "published") throw new Error("import did not publish");
   const snapshots = await parseSnapshots();
   await fs.rm(path.join(root, snapshots[0].path), { recursive: true, force: true });
-  await expect(reconvertParseCandidate({
-    root,
-    parseBatchId: first.result.task.parseBatchId,
-    baseRevision: first.result.revision.revisionId,
-  })).rejects.toThrow();
+  await expect(
+    reconvertParseCandidate({
+      root,
+      parseBatchId: first.result.task.parseBatchId,
+      baseRevision: first.result.revision.revisionId,
+    }),
+  ).rejects.toThrow();
   expect(await currentRevisionId()).toBe(first.result.revision.revisionId);
   expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });
 
 test("pdf-import 离线重新转换：候选保留 revision 资产，发布后离线可读", async () => {
   const image = pngBytes();
-  const first = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, "Before ![Figure A](imgs/fig.png) after.")], {
-        images: { "imgs/fig.png": image.toString("base64") },
-      }),
-      vendorPage([block(0, "Second page text")]),
+  const first = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([block(0, "Before ![Figure A](imgs/fig.png) after.")], {
+          images: { "imgs/fig.png": image.toString("base64") },
+        }),
+        vendorPage([block(0, "Second page text")]),
+      ]),
     ]),
-  ]));
+  );
   expect(first.result.outcome).toBe("published");
   if (first.result.outcome !== "published") throw new Error("import did not publish");
 
@@ -1319,11 +1280,15 @@ async function useInkPdf(pageDict?: string) {
 }
 
 function cropVisualResponse(): Buffer {
-  return jsonl([cropRow([cropPage([
-    block(0, "Intro text.", { block_bbox: [40, 40, 600, 80] }),
-    block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
-    block(2, " $$ E=mc^2 $$ ", { block_label: "display_formula", block_bbox: [80, 300, 400, 360] }),
-  ])])]);
+  return jsonl([
+    cropRow([
+      cropPage([
+        block(0, "Intro text.", { block_bbox: [40, 40, 600, 80] }),
+        block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+        block(2, " $$ E=mc^2 $$ ", { block_label: "display_formula", block_bbox: [80, 300, 400, 360] }),
+      ]),
+    ]),
+  ]);
 }
 
 test("pdf-import 无云端资产视觉块引用原页裁剪图：派生资产进入 revision，快照不回写", async () => {
@@ -1357,8 +1322,7 @@ test("pdf-import 无云端资产视觉块引用原页裁剪图：派生资产进
 
   // 派生资产只进 revision：解析快照与 PDF 快照文件清单不含裁剪图。
   const snapshots = await listSourceSnapshots(root);
-  for (const snapshot of snapshots)
-    expect(snapshot.files.some((file) => file.path === figure.asset!.path)).toBe(false);
+  for (const snapshot of snapshots) expect(snapshot.files.some((file) => file.path === figure.asset!.path)).toBe(false);
   expect(warningCodes(warnings)).not.toContain("pdf-crop-region-uncalibrated");
   expect(fixture.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });
@@ -1402,7 +1366,11 @@ test("pdf-import 旋转页视觉块只声明页级来源：warning 保留，正�
 test("pdf-import 预处理页面拒绝区域裁剪：只保留页级事实与 warning", async () => {
   await useInkPdf();
   const raw = cropVisualResponse();
-  const rows = raw.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const rows = raw
+    .toString("utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
   rows[0].result.layoutParsingResults[0].prunedResult.model_settings.use_doc_preprocessor = true;
   const fixture = await importFixture(() => jsonl(rows));
   expect(fixture.result.outcome).toBe("published");
@@ -1417,14 +1385,14 @@ test("pdf-import 预处理页面拒绝区域裁剪：只保留页级事实与 wa
 test("pdf-import 跨度范围重叠的表格整体降级 raw，不产生重叠单元", async () => {
   // 真实网格冲突：row0 的 D 以 rowspan=2 占据 (1,2)；row1 的 colspan=3 从空闲列 0
   // 开始，while-skip 不移动起点，但跨度范围内部 (1,2) 已被占用 → 整体降级 raw。
-  const overlap = '<table><tr><td rowspan="2">A</td><td>B</td><td rowspan="2">D</td></tr>' +
+  const overlap =
+    '<table><tr><td rowspan="2">A</td><td>B</td><td rowspan="2">D</td></tr>' +
     '<tr><td colspan="3">C</td></tr></table>';
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, overlap, { block_label: "table" })]),
-      vendorPage([block(0, "Second page text")]),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([vendorPage([block(0, overlap, { block_label: "table" })]), vendorPage([block(0, "Second page text")])]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(fixture.result.revision);
@@ -1440,12 +1408,11 @@ test("pdf-import 跨度范围重叠的表格整体降级 raw，不产生重叠�
 
 test("pdf-import 危险内容独占表格时只留占位，清洗前原文不进入 revision", async () => {
   const dangerous = '<table><tr><td><script>var payload = "table-secret-payload";</script></td></tr></table>';
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, dangerous, { block_label: "table" })]),
-      vendorPage([block(0, "Second page text")]),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([vendorPage([block(0, dangerous, { block_label: "table" })]), vendorPage([block(0, "Second page text")])]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const { revision } = fixture.result;
@@ -1471,11 +1438,13 @@ test("pdf-import 纯文本快照离线重转换：父 PDF 被删除时拒绝", a
   if (first.result.outcome !== "published") throw new Error("import did not publish");
   const pdfSnapshots = (await listSourceSnapshots(root)).filter((entry) => entry.kind === "pdf");
   await fs.rm(path.join(root, pdfSnapshots[0].path, "paper.pdf"));
-  await expect(reconvertParseCandidate({
-    root,
-    parseBatchId: first.result.task.parseBatchId,
-    baseRevision: first.result.revision.revisionId,
-  })).rejects.toThrow();
+  await expect(
+    reconvertParseCandidate({
+      root,
+      parseBatchId: first.result.task.parseBatchId,
+      baseRevision: first.result.revision.revisionId,
+    }),
+  ).rejects.toThrow();
   expect(await currentRevisionId()).toBe(first.result.revision.revisionId);
   expect(first.counts).toEqual({ posts: 1, queries: 1, downloads: 1 });
 });
@@ -1487,21 +1456,29 @@ test("pdf-import 纯文本快照离线重转换：父 PDF 被篡改时拒绝", a
   const pdfSnapshots = (await listSourceSnapshots(root)).filter((entry) => entry.kind === "pdf");
   const pdfPath = path.join(root, pdfSnapshots[0].path, "paper.pdf");
   await fs.writeFile(pdfPath, Buffer.concat([await fs.readFile(pdfPath), Buffer.from("%tampered")]));
-  await expect(reconvertParseCandidate({
-    root,
-    parseBatchId: first.result.task.parseBatchId,
-    baseRevision: first.result.revision.revisionId,
-  })).rejects.toThrow();
+  await expect(
+    reconvertParseCandidate({
+      root,
+      parseBatchId: first.result.task.parseBatchId,
+      baseRevision: first.result.revision.revisionId,
+    }),
+  ).rejects.toThrow();
   expect(await currentRevisionId()).toBe(first.result.revision.revisionId);
 });
 
 test("pdf-import 同页两视觉块同 bbox：二者引用同一 revision 裁剪资产", async () => {
   await useInkPdf();
-  const fixture = await importFixture(() => jsonl([cropRow([cropPage([
-    block(0, "Intro text.", { block_bbox: [40, 40, 600, 80] }),
-    block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
-    block(2, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
-  ])])]));
+  const fixture = await importFixture(() =>
+    jsonl([
+      cropRow([
+        cropPage([
+          block(0, "Intro text.", { block_bbox: [40, 40, 600, 80] }),
+          block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+          block(2, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+        ]),
+      ]),
+    ]),
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const { revision } = fixture.result;
@@ -1526,14 +1503,16 @@ test("pdf-import 同页两视觉块同 bbox：二者引用同一 revision 裁剪
 test("pdf-import 预处理页视觉块只保留一条 warning，不产生无谓裁切", async () => {
   await useInkPdf();
   const raw = cropVisualResponse();
-  const rows = raw.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const rows = raw
+    .toString("utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
   rows[0].result.layoutParsingResults[0].prunedResult.model_settings.use_doc_preprocessor = true;
   const fixture = await importFixture(() => jsonl(rows));
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
-  const uncalibrated = fixture.result.warnings.filter(
-    (entry) => entry.code === "pdf-crop-region-uncalibrated",
-  );
+  const uncalibrated = fixture.result.warnings.filter((entry) => entry.code === "pdf-crop-region-uncalibrated");
   expect(uncalibrated).toHaveLength(2);
   expect(new Set(uncalibrated.map((entry) => entry.sourceAlias)).size).toBe(2);
 });
@@ -1564,19 +1543,19 @@ test("pdf-import 离线重转换重建同一裁剪资产：候选发布后离线
 test("pdf-import 无 markdown 页的块内联资源：发布→转换→current 全链路可用", async () => {
   const image = pngBytes(3, 3);
   const base64 = image.toString("base64");
-  const fixture = await importFixture(() => jsonl([
-    row([
-      vendorPage([block(0, `<p>内联<img src=data:image/png;base64,${base64}></p>`)]),
-      vendorPage([block(0, "Second page text")]),
+  const fixture = await importFixture(() =>
+    jsonl([
+      row([
+        vendorPage([block(0, `<p>内联<img src=data:image/png;base64,${base64}></p>`)]),
+        vendorPage([block(0, "Second page text")]),
+      ]),
     ]),
-  ]));
+  );
   expect(fixture.result.outcome).toBe("published");
   if (fixture.result.outcome !== "published") throw new Error("import did not publish");
   const tree = await publishedTree(fixture.result.revision);
   const texts = Object.values(tree.units).flatMap((unit) =>
-    unit.sentenceIds.flatMap((id) =>
-      tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : "")),
-    ),
+    unit.sentenceIds.flatMap((id) => tree.sentences[id].content.map((part) => (part.kind === "text" ? part.text : ""))),
   );
   expect(texts.join(" ")).toContain("内联");
   const figures = tree.blocks.filter((entry) => entry.kind === "figure");

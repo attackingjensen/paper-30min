@@ -11,10 +11,7 @@ export const selectionIds = {
 
 export function testSelectionTree(paperId: string): DocumentTree {
   const tree = testDocumentTree(paperId, "论文");
-  tree.units[selectionIds.unit].sentenceIds = [
-    selectionIds.sentence,
-    selectionIds.secondSentence,
-  ];
+  tree.units[selectionIds.unit].sentenceIds = [selectionIds.sentence, selectionIds.secondSentence];
   tree.sentences[selectionIds.secondSentence] = {
     id: selectionIds.secondSentence,
     unitId: selectionIds.unit,
@@ -31,10 +28,7 @@ export function testSelectionTree(paperId: string): DocumentTree {
     unitId: selectionIds.secondUnit,
     content: [{ kind: "text", text: "Next unit." }],
   };
-  tree.sections[selectionIds.section].unitIds = [
-    selectionIds.unit,
-    selectionIds.secondUnit,
-  ];
+  tree.sections[selectionIds.section].unitIds = [selectionIds.unit, selectionIds.secondUnit];
   tree.blocks.push({
     id: selectionIds.secondBlock,
     sectionId: selectionIds.section,

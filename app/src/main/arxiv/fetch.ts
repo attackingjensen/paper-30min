@@ -52,21 +52,69 @@ export function fetchDiagnostic(
       case "arxiv-fetch-cancelled":
         return { code: error.code, severity: "fatal", stage, messageKey: "arxiv.fetch.cancelled", sourceUrl: url };
       case "arxiv-fetch-budget":
-        return { code: "arxiv-budget-exceeded", severity: "fatal", stage, messageKey: "arxiv.fetch.budget", sourceUrl: url };
+        return {
+          code: "arxiv-budget-exceeded",
+          severity: "fatal",
+          stage,
+          messageKey: "arxiv.fetch.budget",
+          sourceUrl: url,
+        };
       case "arxiv-fetch-tls":
-        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.tls`, sourceUrl: url };
+        return {
+          code: `${prefix}-fetch-failed`,
+          severity: "fatal",
+          stage,
+          messageKey: `${keyBase}.tls`,
+          sourceUrl: url,
+        };
       case "arxiv-fetch-stalled":
-        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.stalled`, sourceUrl: url };
+        return {
+          code: `${prefix}-fetch-failed`,
+          severity: "fatal",
+          stage,
+          messageKey: `${keyBase}.stalled`,
+          sourceUrl: url,
+        };
       case "arxiv-fetch-status":
         if (error.status === 404)
-          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.notFound`, sourceUrl: url };
+          return {
+            code: `${prefix}-fetch-failed`,
+            severity: "fatal",
+            stage,
+            messageKey: `${keyBase}.notFound`,
+            sourceUrl: url,
+          };
         if (error.status === 403)
-          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.forbidden`, sourceUrl: url };
+          return {
+            code: `${prefix}-fetch-failed`,
+            severity: "fatal",
+            stage,
+            messageKey: `${keyBase}.forbidden`,
+            sourceUrl: url,
+          };
         if (error.status === 429)
-          return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.rateLimited`, sourceUrl: url };
-        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.http`, sourceUrl: url };
+          return {
+            code: `${prefix}-fetch-failed`,
+            severity: "fatal",
+            stage,
+            messageKey: `${keyBase}.rateLimited`,
+            sourceUrl: url,
+          };
+        return {
+          code: `${prefix}-fetch-failed`,
+          severity: "fatal",
+          stage,
+          messageKey: `${keyBase}.http`,
+          sourceUrl: url,
+        };
       default:
-        return { code: `${prefix}-fetch-failed`, severity: "fatal", stage, messageKey: `${keyBase}.network`, sourceUrl: url };
+        return {
+          code: `${prefix}-fetch-failed`,
+          severity: "fatal",
+          stage,
+          messageKey: `${keyBase}.network`,
+          sourceUrl: url,
+        };
     }
   }
   const prefix = kind === "abs" ? "arxiv-abs" : kind === "html" ? "arxiv-html" : "arxiv-pdf";
@@ -96,10 +144,7 @@ export interface ArxivFetchOptions {
 }
 
 /** 受控幂等 GET：先验证 URL 与每一跳重定向，再访问网络；失败以 ArxivFetchError 分类。 */
-export type ArxivTransport = (
-  url: string,
-  options: ArxivFetchOptions,
-) => Promise<ArxivFetchResponse>;
+export type ArxivTransport = (url: string, options: ArxivFetchOptions) => Promise<ArxivFetchResponse>;
 
 export interface ArxivAssetMapping {
   /** 相对固定版本 HTML URL 解析出的原始绝对 URL。 */

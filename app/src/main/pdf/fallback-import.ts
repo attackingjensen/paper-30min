@@ -33,12 +33,7 @@ async function assertHandoffMatchesProject(root: string, request: PdfFallbackReq
     if (current !== null) mismatch(root);
     const progress = opened.importRecord?.arxiv;
     const reference = progress?.reference;
-    if (
-      !reference ||
-      reference.baseId !== request.baseId ||
-      reference.version !== request.version
-    )
-      mismatch(root);
+    if (!reference || reference.baseId !== request.baseId || reference.version !== request.version) mismatch(root);
     return;
   }
   if (current === null || current !== request.baseRevision) mismatch(root);
@@ -51,27 +46,22 @@ async function assertHandoffMatchesProject(root: string, request: PdfFallbackReq
   } catch {
     mismatch(root);
   }
-  if (
-    lineage === null ||
-    lineage.baseId !== request.baseId ||
-    lineage.version !== request.version
-  )
-    mismatch(root);
+  if (lineage === null || lineage.baseId !== request.baseId || lineage.version !== request.version) mismatch(root);
 }
 
 /** 同固定版本谱系的既有 PDF 快照直接复用（SPEC §3.5 摘要复用）：
  * 拒绝上传后重试不重复下载；谱系不符的快照不会被误用。 */
-async function reusableArxivPdfSnapshot(
-  root: string,
-  request: PdfFallbackRequest,
-): Promise<string | undefined> {
+async function reusableArxivPdfSnapshot(root: string, request: PdfFallbackRequest): Promise<string | undefined> {
   for (const existing of await listSourceSnapshots(root)) {
     if (existing.kind !== "pdf") continue;
     const arxiv = existing.arxiv;
     if (
-      typeof arxiv === "object" && arxiv !== null &&
-      "baseId" in arxiv && arxiv.baseId === request.baseId &&
-      "version" in arxiv && arxiv.version === request.version
+      typeof arxiv === "object" &&
+      arxiv !== null &&
+      "baseId" in arxiv &&
+      arxiv.baseId === request.baseId &&
+      "version" in arxiv &&
+      arxiv.version === request.version
     )
       return existing.sourceSnapshotId;
   }
@@ -92,8 +82,7 @@ export async function importArxivPdfFallback(input: {
   signal: AbortSignal;
   allowFixtureLoopback?: boolean;
 }): Promise<ArxivPdfFallbackImportResult> {
-  if (input.request.kind !== "arxiv-pdf")
-    throw new Error("回退交接必须是 arxiv-pdf 请求。");
+  if (input.request.kind !== "arxiv-pdf") throw new Error("回退交接必须是 arxiv-pdf 请求。");
   await assertHandoffMatchesProject(input.root, input.request);
   const reused = await reusableArxivPdfSnapshot(input.root, input.request);
   let sourceSnapshotId: string;

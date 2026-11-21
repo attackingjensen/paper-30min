@@ -90,11 +90,14 @@ export type DocumentCorrection =
 export function unitLogicalText(tree: DocumentTree, unitId: string): string {
   const unit = tree.units[unitId];
   if (!unit) throw new Error(`修正目标单元不存在：${unitId}。`);
-  return unit.sentenceIds.map((sentenceId) => {
-    const sentence = tree.sentences[sentenceId];
-    return sentence.content.map((part: InlinePart) =>
-      part.kind === "text" ? part.text : tree.atoms[part.atomId].text).join("");
-  }).join(" ");
+  return unit.sentenceIds
+    .map((sentenceId) => {
+      const sentence = tree.sentences[sentenceId];
+      return sentence.content
+        .map((part: InlinePart) => (part.kind === "text" ? part.text : tree.atoms[part.atomId].text))
+        .join("");
+    })
+    .join(" ");
 }
 
 /** atom 占位令牌：携带稳定 atom ID，普通文本无法伪造或歧义匹配。
@@ -108,10 +111,13 @@ export function atomPlaceholderToken(atomId: string): string {
 export function unitEditText(tree: DocumentTree, unitId: string): string {
   const unit = tree.units[unitId];
   if (!unit) throw new Error(`修正目标单元不存在：${unitId}。`);
-  return unit.sentenceIds.map((sentenceId) =>
-    tree.sentences[sentenceId].content.map((part: InlinePart) =>
-      part.kind === "text" ? part.text : atomPlaceholderToken(part.atomId)).join(""),
-  ).join(" ");
+  return unit.sentenceIds
+    .map((sentenceId) =>
+      tree.sentences[sentenceId].content
+        .map((part: InlinePart) => (part.kind === "text" ? part.text : atomPlaceholderToken(part.atomId)))
+        .join(""),
+    )
+    .join(" ");
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -126,8 +132,7 @@ function requireId(value: unknown, description: string): string {
 }
 
 function requireText(value: unknown, description: string, allowEmpty = false): string {
-  if (typeof value !== "string" || (!allowEmpty && value.length === 0))
-    invalid(`${description} 必须是非空文本。`);
+  if (typeof value !== "string" || (!allowEmpty && value.length === 0)) invalid(`${description} 必须是非空文本。`);
   return value;
 }
 
@@ -148,8 +153,7 @@ export function parseDocumentCorrection(value: unknown): DocumentCorrection {
         text: requireText(record.text, "text"),
       };
     case "unit-split": {
-      if (!Array.isArray(record.parts) || record.parts.length < 2)
-        invalid("拆分必须提供至少两个新单元文本。");
+      if (!Array.isArray(record.parts) || record.parts.length < 2) invalid("拆分必须提供至少两个新单元文本。");
       return {
         type: "unit-split",
         unitId: requireId(record.unitId, "unitId"),
@@ -158,8 +162,7 @@ export function parseDocumentCorrection(value: unknown): DocumentCorrection {
       };
     }
     case "unit-merge": {
-      if (!Array.isArray(record.unitIds) || record.unitIds.length < 2)
-        invalid("合并必须提供至少两个单元。");
+      if (!Array.isArray(record.unitIds) || record.unitIds.length < 2) invalid("合并必须提供至少两个单元。");
       if (!Array.isArray(record.expected) || record.expected.length !== record.unitIds.length)
         invalid("合并的预期原内容必须与单元一一对应。");
       return {
@@ -187,11 +190,9 @@ export function parseDocumentCorrection(value: unknown): DocumentCorrection {
       };
     }
     case "figure-asset": {
-      if (!(record.bytes instanceof Uint8Array) || record.bytes.byteLength === 0)
-        invalid("资产替换必须携带非空字节。");
+      if (!(record.bytes instanceof Uint8Array) || record.bytes.byteLength === 0) invalid("资产替换必须携带非空字节。");
       // 硬预算在边界即拒绝：预览不得认证一条发布必然失败的命令（B3）。
-      if (record.bytes.byteLength > 32 * 1024 * 1024)
-        invalid("资产替换超过 32 MiB 预算。");
+      if (record.bytes.byteLength > 32 * 1024 * 1024) invalid("资产替换超过 32 MiB 预算。");
       return {
         type: "figure-asset",
         blockId: requireId(record.blockId, "blockId"),
@@ -216,25 +217,44 @@ export function parseDocumentCorrection(value: unknown): DocumentCorrection {
         if (source.format !== "latex" && source.format !== "mathml" && source.format !== "text")
           invalid("atom source.format 必须是 latex、mathml 或 text。");
         return {
-          type: "atom", atomId, expected: expected as unknown as AtomNode, kind,
-          text, source: { format: source.format, value: requireText(source.value, "source.value") },
+          type: "atom",
+          atomId,
+          expected: expected as unknown as AtomNode,
+          kind,
+          text,
+          source: { format: source.format, value: requireText(source.value, "source.value") },
         };
       }
       if (kind === "citation" || kind === "cross-reference") {
         const target = record.targetUnitId === null ? null : requireId(record.targetUnitId, "targetUnitId");
-        const sourceTarget = record.sourceTarget === undefined
-          ? undefined : requireText(record.sourceTarget, "sourceTarget");
+        const sourceTarget =
+          record.sourceTarget === undefined ? undefined : requireText(record.sourceTarget, "sourceTarget");
         return {
-          type: "atom", atomId, expected: expected as unknown as AtomNode, kind, text,
+          type: "atom",
+          atomId,
+          expected: expected as unknown as AtomNode,
+          kind,
+          text,
           targetUnitId: target,
           ...(sourceTarget === undefined ? {} : { sourceTarget }),
         };
       }
       if (kind === "link")
-        return { type: "atom", atomId, expected: expected as unknown as AtomNode, kind, text, href: requireText(record.href, "href") };
+        return {
+          type: "atom",
+          atomId,
+          expected: expected as unknown as AtomNode,
+          kind,
+          text,
+          href: requireText(record.href, "href"),
+        };
       if (kind === "footnote-reference")
         return {
-          type: "atom", atomId, expected: expected as unknown as AtomNode, kind, text,
+          type: "atom",
+          atomId,
+          expected: expected as unknown as AtomNode,
+          kind,
+          text,
           targetUnitId: requireId(record.targetUnitId, "targetUnitId"),
         };
       return invalid("atom 修正类型不受支持。");
@@ -258,7 +278,12 @@ export interface CorrectionPreview {
 /** 预览树相对基线的变化统计：发布确认界面按真实 changeset 呈现，不猜测影响。 */
 export function summarizeCorrectionChangeset(changeset: DocumentChangeset) {
   const counts: Record<DocumentChangeset["changes"][number]["status"], number> = {
-    retained: 0, moved: 0, changed: 0, removed: 0, added: 0, conflicted: 0,
+    retained: 0,
+    moved: 0,
+    changed: 0,
+    removed: 0,
+    added: 0,
+    conflicted: 0,
   };
   for (const entry of changeset.changes) counts[entry.status] += 1;
   return counts;

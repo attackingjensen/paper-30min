@@ -42,9 +42,7 @@ function AtomEditor({
 }) {
   const [text, setText] = useState(atom.text);
   const [value, setValue] = useState(
-    atom.kind === "math" || atom.kind === "inline-object" ? atom.source.value
-      : atom.kind === "link" ? atom.href
-      : "",
+    atom.kind === "math" || atom.kind === "inline-object" ? atom.source.value : atom.kind === "link" ? atom.href : "",
   );
   const [format, setFormat] = useState<"latex" | "mathml" | "text">(
     atom.kind === "math" || atom.kind === "inline-object" ? atom.source.format : "text",
@@ -59,12 +57,23 @@ function AtomEditor({
         edit = { type: "atom", atomId: atom.id, expected: atom, kind: "link", text, href: value };
       } else if (atom.kind === "citation" || atom.kind === "cross-reference") {
         edit = {
-          type: "atom", atomId: atom.id, expected: atom, kind: atom.kind, text,
+          type: "atom",
+          atomId: atom.id,
+          expected: atom,
+          kind: atom.kind,
+          text,
           targetUnitId: atom.targetUnitId,
           ...(atom.kind === "cross-reference" && atom.sourceTarget ? { sourceTarget: atom.sourceTarget } : {}),
         };
       } else {
-        edit = { type: "atom", atomId: atom.id, expected: atom, kind: "footnote-reference", text, targetUnitId: atom.targetUnitId };
+        edit = {
+          type: "atom",
+          atomId: atom.id,
+          expected: atom,
+          kind: "footnote-reference",
+          text,
+          targetUnitId: atom.targetUnitId,
+        };
       }
       onSave(edit);
     } catch (e) {
@@ -105,10 +114,18 @@ function AtomEditor({
           目标：{atom.targetUnitId ? <code>{atom.targetUnitId.slice(0, 8)}</code> : "未解析（保留来源文本）"}
         </p>
       )}
-      {error && <p className="correction-error" role="alert">{error}</p>}
+      {error && (
+        <p className="correction-error" role="alert">
+          {error}
+        </p>
+      )}
       <div className="correction-actions">
-        <button type="button" className="primary" onClick={submit}>保存原子修正</button>
-        <button type="button" onClick={onCancel}>取消</button>
+        <button type="button" className="primary" onClick={submit}>
+          保存原子修正
+        </button>
+        <button type="button" onClick={onCancel}>
+          取消
+        </button>
       </div>
     </div>
   );
@@ -141,7 +158,8 @@ export function CorrectionHost({
   // 自行决定是否重新应用；只有预览/发布被禁止，不静默清空编辑。
   const [text, setText] = useState(() =>
     usableDraft
-      ? (usableDraft.corrections.find((edit) => edit.type === "unit-text") as { text: string } | undefined)?.text ?? original
+      ? ((usableDraft.corrections.find((edit) => edit.type === "unit-text") as { text: string } | undefined)?.text ??
+        original)
       : original,
   );
   const [extraEdits, setExtraEdits] = useState<DocumentCorrection[]>(() =>
@@ -168,15 +186,17 @@ export function CorrectionHost({
   const atoms = useMemo(() => {
     if (!unit) return [];
     return unit.sentenceIds.flatMap((sentenceId) =>
-      tree.sentences[sentenceId].content.flatMap((part) =>
-        part.kind === "atom" ? [tree.atoms[part.atomId]] : []));
+      tree.sentences[sentenceId].content.flatMap((part) => (part.kind === "atom" ? [tree.atoms[part.atomId]] : [])),
+    );
   }, [tree, unit]);
 
   if (!unit) {
     return (
       <section className="correction-host" role="alert">
         <p>修正目标单元已不存在（可能已被删除）。请关闭修正模式重新选择。</p>
-        <button type="button" onClick={onClose}>关闭</button>
+        <button type="button" onClick={onClose}>
+          关闭
+        </button>
       </section>
     );
   }
@@ -187,14 +207,10 @@ export function CorrectionHost({
     // 取文字修正后的中间文本。拆分按空行切段时 trim 会去掉首尾空白，
     // 中间文本以各段拼接（单空格连接）为准，与引擎投影口径一致。
     const split = extraEdits.find((edit) => edit.type === "unit-split");
-    const intermediate = split && split.type === "unit-split"
-      ? split.parts.join(" ")
-      : text;
-    if (intermediate !== original)
-      edits.push({ type: "unit-text", unitId, expected: original, text: intermediate });
+    const intermediate = split && split.type === "unit-split" ? split.parts.join(" ") : text;
+    if (intermediate !== original) edits.push({ type: "unit-text", unitId, expected: original, text: intermediate });
     for (const edit of extraEdits) {
-      if (edit.type === "unit-split" || edit.type === "unit-delete")
-        edits.push({ ...edit, expected: intermediate });
+      if (edit.type === "unit-split" || edit.type === "unit-delete") edits.push({ ...edit, expected: intermediate });
       else edits.push(edit);
     }
     return edits;
@@ -275,8 +291,12 @@ export function CorrectionHost({
   return (
     <section className="correction-host" aria-label="原文修正">
       <header className="correction-header">
-        <h2>修正单元 <code>{unitId.slice(0, 8)}</code></h2>
-        <button type="button" onClick={cancel}>取消修正</button>
+        <h2>
+          修正单元 <code>{unitId.slice(0, 8)}</code>
+        </h2>
+        <button type="button" onClick={cancel}>
+          取消修正
+        </button>
       </header>
       {baselineBroken && (
         <p className="correction-error" role="alert">
@@ -294,9 +314,10 @@ export function CorrectionHost({
             setText(next);
             setPreview(null);
             // 每次编辑即落草稿：外部 revision 变化前未预览的编辑也不丢失。
-            const edits: DocumentCorrection[] = next !== original
-              ? [{ type: "unit-text", unitId, expected: original, text: next }, ...extraEdits]
-              : [...extraEdits];
+            const edits: DocumentCorrection[] =
+              next !== original
+                ? [{ type: "unit-text", unitId, expected: original, text: next }, ...extraEdits]
+                : [...extraEdits];
             persistDraft(edits, null);
           }}
         />
@@ -315,8 +336,10 @@ export function CorrectionHost({
                 atom={atom}
                 onCancel={() => setAtomEditing(null)}
                 onSave={(edit) => {
-                  setExtraEdits((edits) => [...edits.filter((entry) =>
-                    !(entry.type === "atom" && entry.atomId === edit.atomId)), edit]);
+                  setExtraEdits((edits) => [
+                    ...edits.filter((entry) => !(entry.type === "atom" && entry.atomId === edit.atomId)),
+                    edit,
+                  ]);
                   setAtomEditing(null);
                   setPreview(null);
                 }}
@@ -331,7 +354,10 @@ export function CorrectionHost({
           disabled={atoms.length > 0}
           title={atoms.length > 0 ? "含原子的单元暂不支持拆分" : undefined}
           onClick={() => {
-            const parts = text.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+            const parts = text
+              .split(/\n{2,}/)
+              .map((part) => part.trim())
+              .filter(Boolean);
             if (parts.length < 2) {
               setError("拆分需要至少两段：请用空行分隔单元文本。");
               return;
@@ -353,7 +379,15 @@ export function CorrectionHost({
           删除该单元
         </button>
         {extraEdits.length > 0 && (
-          <button type="button" onClick={() => { setExtraEdits([]); setPreview(null); }}>清除结构操作</button>
+          <button
+            type="button"
+            onClick={() => {
+              setExtraEdits([]);
+              setPreview(null);
+            }}
+          >
+            清除结构操作
+          </button>
         )}
       </div>
       {extraEdits.length > 0 && (
@@ -366,7 +400,11 @@ export function CorrectionHost({
           ))}
         </ul>
       )}
-      {error && <p className="correction-error" role="alert">{error}</p>}
+      {error && (
+        <p className="correction-error" role="alert">
+          {error}
+        </p>
+      )}
       <div className="correction-actions">
         <button type="button" className="primary" disabled={busy || baselineBroken} onClick={() => void runPreview()}>
           预览 changeset
@@ -377,14 +415,20 @@ export function CorrectionHost({
       </div>
       {preview && counts && (
         <div className="correction-preview" aria-label="修正预览">
-          <h3>预览：{preview.revisionId.slice(0, 8)}（基线 {preview.baseRevision.slice(0, 8)}）</h3>
+          <h3>
+            预览：{preview.revisionId.slice(0, 8)}（基线 {preview.baseRevision.slice(0, 8)}）
+          </h3>
           <ul className="correction-counts">
-            {Object.entries(counts).filter(([, count]) => count > 0).map(([status, count]) => (
-              <li key={status}>
-                <span className={`correction-status correction-status-${status}`}>{changeLabels[status] ?? status}</span>
-                {count} 个节点
-              </li>
-            ))}
+            {Object.entries(counts)
+              .filter(([, count]) => count > 0)
+              .map(([status, count]) => (
+                <li key={status}>
+                  <span className={`correction-status correction-status-${status}`}>
+                    {changeLabels[status] ?? status}
+                  </span>
+                  {count} 个节点
+                </li>
+              ))}
           </ul>
           {preview.changeset.changes.filter((entry) => entry.status === "removed").length > 0 && (
             <p className="correction-removed-note">
@@ -394,7 +438,9 @@ export function CorrectionHost({
           {preview.assets.length > 0 && (
             <ul className="correction-assets">
               {preview.assets.map((asset) => (
-                <li key={asset.path}><code>{asset.path}</code>（{asset.mime}，{asset.size} 字节）</li>
+                <li key={asset.path}>
+                  <code>{asset.path}</code>（{asset.mime}，{asset.size} 字节）
+                </li>
               ))}
             </ul>
           )}

@@ -5,10 +5,7 @@
 import type { DocumentTree } from "../document/tree.js";
 
 type Atom = DocumentTree["atoms"][string];
-type AssetReference = Extract<
-  DocumentTree["blocks"][number],
-  { kind: "figure" }
->["asset"];
+type AssetReference = Extract<DocumentTree["blocks"][number], { kind: "figure" }>["asset"];
 
 /** 投影后的 atom：在树原子之上补充可点击性与降级警告。
  * link 的 href 经协议校验：危险协议为 null（渲染为纯文本）。 */
@@ -82,14 +79,10 @@ function projectAtom(atom: Atom): ReaderAtom {
     } catch {
       protocol = null;
     }
-    if (protocol !== null && safeLinkProtocols[protocol])
-      return { ...atom, href: atom.href };
+    if (protocol !== null && safeLinkProtocols[protocol]) return { ...atom, href: atom.href };
     return { ...atom, href: null, warning: "链接协议不受支持，已按纯文本显示。" };
   }
-  if (
-    (atom.kind === "cross-reference" || atom.kind === "citation") &&
-    atom.targetUnitId === null
-  ) {
+  if ((atom.kind === "cross-reference" || atom.kind === "citation") && atom.targetUnitId === null) {
     const source = atom.kind === "cross-reference" ? atom.sourceTarget : undefined;
     return {
       ...atom,
@@ -179,8 +172,7 @@ export function buildReaderProjection(tree: DocumentTree): ReaderProjection {
         break;
       case "table": {
         const cells: Record<string, ReaderUnitContent> = {};
-        for (const cell of block.rows.flat())
-          cells[cell.unitId] = projectUnit(tree, cell.unitId);
+        for (const cell of block.rows.flat()) cells[cell.unitId] = projectUnit(tree, cell.unitId);
         items.push({
           ...base,
           kind: "table",

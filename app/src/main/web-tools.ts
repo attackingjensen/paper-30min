@@ -1,21 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { Type } from "typebox";
-import {
-  McpClient,
-  McpHttpError,
-  StreamableHttpTransport,
-  type McpFetch,
-} from "@earendil-works/pi-mcp";
-import {
-  defineTool,
-  type SessionManager,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import { McpClient, McpHttpError, StreamableHttpTransport, type McpFetch } from "@earendil-works/pi-mcp";
+import { defineTool, type SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { redact, redactData } from "./agent-tools.js";
 
-const endpoint =
-  "https://mcp.exa.ai/mcp?tools=web_search_advanced_exa,web_fetch_exa";
+const endpoint = "https://mcp.exa.ai/mcp?tools=web_search_advanced_exa,web_fetch_exa";
 const inlineLimit = 12000;
 const contentLimit = 100000;
 interface StoredContent {
@@ -39,22 +29,14 @@ function publicUrl(value: string) {
   return url.href;
 }
 
-function resultText(result: {
-  content: unknown[];
-  isError?: boolean;
-  _meta?: Record<string, unknown>;
-}) {
-  const text = result.content
-    .flatMap((block: any) => (block.type === "text" ? [block.text] : []))
-    .join("\n\n");
+function resultText(result: { content: unknown[]; isError?: boolean; _meta?: Record<string, unknown> }) {
+  const text = result.content.flatMap((block: any) => (block.type === "text" ? [block.text] : [])).join("\n\n");
   if (
     result._meta?.["ai.exa/rateLimited"] ||
     /^You've hit Exa's free MCP rate limit/i.test(text.trim()) ||
     (result.isError && /rate.limit|quota exceeded/i.test(text))
   )
-    throw new Error(
-      "Exa 搜索服务限流，请稍后重试或在设置中配置自己的 Exa API key。",
-    );
+    throw new Error("Exa 搜索服务限流，请稍后重试或在设置中配置自己的 Exa API key。");
   if (result.isError) {
     if (/401|403|unauthori[sz]ed|invalid.*key|authentication/i.test(text))
       throw new Error("Exa 认证失败，请检查或移除设置中的 Exa API key。");
@@ -73,13 +55,8 @@ export function createWebTools(
   secrets: string[],
   active: () => boolean,
 ): ToolDefinition[] {
-  async function call(
-    name: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ) {
-    if (credentials.keyError)
-      throw new Error("Exa 密钥无法读取，请在设置中替换或移除。");
+  async function call(name: string, args: Record<string, unknown>, signal?: AbortSignal) {
+    if (credentials.keyError) throw new Error("Exa 密钥无法读取，请在设置中替换或移除。");
     const deadline = AbortSignal.timeout(25000);
     const bounded = AbortSignal.any([deadline, ...(signal ? [signal] : [])]);
     const client = new McpClient({
@@ -100,10 +77,7 @@ export function createWebTools(
           fetch: (url, init) =>
             fetch(url, {
               ...init,
-              signal: AbortSignal.any([
-                bounded,
-                ...(init?.signal ? [init.signal] : []),
-              ]),
+              signal: AbortSignal.any([bounded, ...(init?.signal ? [init.signal] : [])]),
             }),
           openGetStream: false,
           maxMessageBytes: 2 * 1024 * 1024,
@@ -117,19 +91,13 @@ export function createWebTools(
       if (!active()) throw new Error("任务已停止：网络调研已停止。");
       return redact(resultText(result), secrets);
     } catch (error) {
-      if (signal?.aborted || !active())
-        throw new Error("任务已停止：网络调研已停止。");
-      if (deadline.aborted || /timeout/i.test((error as Error).name))
-        throw new Error("Exa 请求超时，请稍后重试。");
+      if (signal?.aborted || !active()) throw new Error("任务已停止：网络调研已停止。");
+      if (deadline.aborted || /timeout/i.test((error as Error).name)) throw new Error("Exa 请求超时，请稍后重试。");
       const message = (error as Error).message;
       const status = error instanceof McpHttpError ? error.status : undefined;
       if (message.startsWith("Exa ")) throw new Error(redact(message, secrets));
-      if (status === 401 || status === 403)
-        throw new Error("Exa 认证失败，请检查或移除设置中的 Exa API key。");
-      if (status === 429)
-        throw new Error(
-          "Exa 搜索服务限流，请稍后重试或配置自己的 Exa API key。",
-        );
+      if (status === 401 || status === 403) throw new Error("Exa 认证失败，请检查或移除设置中的 Exa API key。");
+      if (status === 429) throw new Error("Exa 搜索服务限流，请稍后重试或配置自己的 Exa API key。");
       throw new Error("网络调研请求失败，请检查网络和代理后重试。");
     } finally {
       bounded.removeEventListener("abort", stop);
@@ -188,23 +156,16 @@ export function createWebTools(
         } catch {
           throw new Error("Exa 搜索响应格式无法识别，请稍后重试。");
         }
-        if (!Array.isArray(data.results))
-          throw new Error("Exa 搜索响应缺少结果，请稍后重试。");
-        const results = data.results
-          .slice(0, params.numResults ?? 5)
-          .map((item: any) => ({
-            title: String(item.title ?? ""),
-            url: publicUrl(String(item.url)),
-            excerpt: String(item.text ?? "").slice(0, 1500),
-            highlights: Array.isArray(item.highlights)
-              ? item.highlights.map(String).join("\n").slice(0, 1500)
-              : "",
-            publishedDate: item.publishedDate,
-          }));
+        if (!Array.isArray(data.results)) throw new Error("Exa 搜索响应缺少结果，请稍后重试。");
+        const results = data.results.slice(0, params.numResults ?? 5).map((item: any) => ({
+          title: String(item.title ?? ""),
+          url: publicUrl(String(item.url)),
+          excerpt: String(item.text ?? "").slice(0, 1500),
+          highlights: Array.isArray(item.highlights) ? item.highlights.map(String).join("\n").slice(0, 1500) : "",
+          publishedDate: item.publishedDate,
+        }));
         return stored(
-          results.length
-            ? JSON.stringify(results, null, 2)
-            : "没有找到匹配的外部资料。",
+          results.length ? JSON.stringify(results, null, 2) : "没有找到匹配的外部资料。",
           "search-excerpts",
         );
       },
@@ -224,11 +185,7 @@ export function createWebTools(
           details: {},
         });
         return stored(
-          await call(
-            "web_fetch_exa",
-            { urls: [url], maxCharacters: contentLimit },
-            signal,
-          ),
+          await call("web_fetch_exa", { urls: [url], maxCharacters: contentLimit }, signal),
           "page-content",
         );
       },
@@ -241,9 +198,7 @@ export function createWebTools(
       parameters: Type.Object({
         responseId: Type.String(),
         offset: Type.Optional(Type.Integer({ minimum: 0 })),
-        limit: Type.Optional(
-          Type.Integer({ minimum: 1, maximum: inlineLimit }),
-        ),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: inlineLimit })),
         findText: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
       }),
       async execute(_id, params, signal) {
@@ -255,35 +210,20 @@ export function createWebTools(
             if (
               entry.type !== "message" ||
               entry.message.role !== "toolResult" ||
-              !["web_search", "fetch_content"].includes(
-                entry.message.toolName,
-              ) ||
+              !["web_search", "fetch_content"].includes(entry.message.toolName) ||
               entry.message.isError
             )
               return [];
-            const record = (
-              entry.message.details as { webContent?: StoredContent }
-            )?.webContent;
+            const record = (entry.message.details as { webContent?: StoredContent })?.webContent;
             return record ? [record] : [];
           })
           .slice(-32);
-        const record = records.find(
-          (item) => item.responseId === params.responseId,
-        );
-        if (!record)
-          throw new Error("当前会话中找不到此网络资料，请重新搜索或读取网页。");
-        if (
-          params.findText &&
-          (params.offset !== undefined || params.limit !== undefined)
-        )
+        const record = records.find((item) => item.responseId === params.responseId);
+        if (!record) throw new Error("当前会话中找不到此网络资料，请重新搜索或读取网页。");
+        if (params.findText && (params.offset !== undefined || params.limit !== undefined))
           throw new Error("查找文字时不能同时指定 offset 或 limit。");
         const match = params.findText
-          ? record.text.search(
-              new RegExp(
-                params.findText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-                "i",
-              ),
-            )
+          ? record.text.search(new RegExp(params.findText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"))
           : undefined;
         if (match === -1)
           return {
@@ -294,12 +234,9 @@ export function createWebTools(
               nextOffset: null as number | null,
             },
           };
-        const offset =
-          match !== undefined ? Math.max(0, match - 500) : (params.offset ?? 0);
-        const limit =
-          match !== undefined ? 2000 : (params.limit ?? inlineLimit);
-        if (offset > record.text.length)
-          throw new Error("offset 超出实际获取内容的长度。");
+        const offset = match !== undefined ? Math.max(0, match - 500) : (params.offset ?? 0);
+        const limit = match !== undefined ? 2000 : (params.limit ?? inlineLimit);
+        if (offset > record.text.length) throw new Error("offset 超出实际获取内容的长度。");
         const end = Math.min(offset + limit, record.text.length);
         return {
           content: [

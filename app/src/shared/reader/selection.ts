@@ -53,8 +53,7 @@ export function buildSelectionIndex(projection: ReaderProjection): SelectionInde
         break;
       case "table":
         if (item.caption) collect(item.caption);
-        for (const row of item.rows)
-          for (const cell of row) collect(item.cells[cell.unitId]);
+        for (const row of item.rows) for (const cell of row) collect(item.cells[cell.unitId]);
         break;
       default:
         break;
@@ -77,12 +76,7 @@ function elementOf(node: Node): Element | null {
 /** 端点解析：从 DOM 节点向上找投影锚点；atom 内任何深度（含 KaTeX 辅助层）
  * 都整位纳入（起点取 atom 头、终点取 atom 尾）；raw/公式等无 unit 结构块
  * 降级为 block 锚点。 */
-function resolveEndpoint(
-  node: Node,
-  offset: number,
-  index: SelectionIndex,
-  side: "start" | "end",
-): Endpoint | null {
+function resolveEndpoint(node: Node, offset: number, index: SelectionIndex, side: "start" | "end"): Endpoint | null {
   let element = elementOf(node);
   // 先收集句子身份（外层），再解析片段/atom 边界（内层）；
   // 端点直接落在句子/块容器上时按句首/句尾或 block 降级处理。
@@ -113,8 +107,7 @@ function resolveEndpoint(
         return { kind: "sentence", sentenceId: sentenceAttr, edge: offset <= 0 ? "start" : "end" };
       const blockId = element.getAttribute("data-block-id");
       if (blockId && index.blocks.has(blockId)) {
-        if (sentenceId)
-          return { kind: "sentence", sentenceId, edge: offset <= 0 ? "start" : "end" };
+        if (sentenceId) return { kind: "sentence", sentenceId, edge: offset <= 0 ? "start" : "end" };
         return { kind: "block", blockId };
       }
     }
@@ -187,11 +180,7 @@ export function mapDomSelection(range: Range, index: SelectionIndex): ReaderSele
     const toIndex = index.order.get(to.sentenceId)!;
     if (fromIndex > toIndex) return { ranges: [], degraded };
     if (fromIndex === toIndex) {
-      pushRange(
-        from.sentenceId,
-        snap(from.sentenceId, from.offset, index),
-        snap(to.sentenceId, to.offset, index),
-      );
+      pushRange(from.sentenceId, snap(from.sentenceId, from.offset, index), snap(to.sentenceId, to.offset, index));
       return { ranges, degraded };
     }
     // 跨句/跨单元：中间句子全部显式保存；区间内部出现无 unit 结构的块

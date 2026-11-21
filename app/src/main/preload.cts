@@ -10,30 +10,20 @@ import type {
 import type { ParsingCommand } from "../shared/parsing.js";
 
 const desktop: Desktop = {
-  parsing: <T,>(command: ParsingCommand) =>
-    ipcRenderer.invoke("parsing:command", command) as Promise<T>,
-  agent: <T,>(command: AgentCommand) =>
-    ipcRenderer.invoke("agent:command", command) as Promise<T>,
+  parsing: <T,>(command: ParsingCommand) => ipcRenderer.invoke("parsing:command", command) as Promise<T>,
+  agent: <T,>(command: AgentCommand) => ipcRenderer.invoke("agent:command", command) as Promise<T>,
   watchAgent: (listener) => {
-    const changed = (_event: Electron.IpcRendererEvent, state: ChatSession) =>
-      listener(state);
+    const changed = (_event: Electron.IpcRendererEvent, state: ChatSession) => listener(state);
     ipcRenderer.on("agent:changed", changed);
     return () => ipcRenderer.removeListener("agent:changed", changed);
   },
-  invoke: <T,>(command: Command) =>
-    ipcRenderer.invoke("project:command", command) as Promise<T>,
+  invoke: <T,>(command: Command) => ipcRenderer.invoke("project:command", command) as Promise<T>,
   watchProject: (root, listener) => {
-    const changed = (
-      _event: Electron.IpcRendererEvent,
-      changedRoot: string,
-      error?: string,
-    ) => {
+    const changed = (_event: Electron.IpcRendererEvent, changedRoot: string, error?: string) => {
       if (changedRoot === root) listener(error);
     };
     ipcRenderer.on("project:changed", changed);
-    void ipcRenderer
-      .invoke("project:watch", root)
-      .catch((error) => listener(error.message));
+    void ipcRenderer.invoke("project:watch", root).catch((error) => listener(error.message));
     return () => {
       ipcRenderer.removeListener("project:changed", changed);
       void ipcRenderer.invoke("project:watch", null).catch(() => {});
@@ -43,10 +33,7 @@ const desktop: Desktop = {
   choose: (kind) => ipcRenderer.invoke("project:choose", kind),
   openFile: (root, path) => ipcRenderer.invoke("project:openFile", root, path),
   watchPdfUploadConfirm: (listener) => {
-    const changed = (
-      _event: Electron.IpcRendererEvent,
-      confirmation: PdfUploadConfirmation,
-    ) => listener(confirmation);
+    const changed = (_event: Electron.IpcRendererEvent, confirmation: PdfUploadConfirmation) => listener(confirmation);
     ipcRenderer.on("pdf:uploadConfirm", changed);
     return () => ipcRenderer.removeListener("pdf:uploadConfirm", changed);
   },

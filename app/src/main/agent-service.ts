@@ -18,19 +18,8 @@ import { streamSimple as completions } from "@earendil-works/pi-ai/api/openai-co
 import { streamSimple as responses } from "@earendil-works/pi-ai/api/openai-responses";
 import { streamSimple as anthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
-import {
-  Agent,
-  EnvHttpProxyAgent,
-  ProxyAgent,
-  fetch as httpFetch,
-  type Dispatcher,
-} from "undici";
-import type {
-  AgentCommand,
-  ChatMessage,
-  ChatSession,
-  ThinkingLevel,
-} from "../shared/contracts.js";
+import { Agent, EnvHttpProxyAgent, ProxyAgent, fetch as httpFetch, type Dispatcher } from "undici";
+import type { AgentCommand, ChatMessage, ChatSession, ThinkingLevel } from "../shared/contracts.js";
 import type { ModelConfig } from "./agent-settings.js";
 import { ProjectService } from "./project-service.js";
 import { createProjectTools, redactData } from "./agent-tools.js";
@@ -78,8 +67,7 @@ function failure(message?: string) {
     return "context_length_exceeded：上下文超过模型窗口，请压缩后继续。";
   if (/401|403|authentication|api.key|模型认证失败/i.test(message ?? ""))
     return "模型认证失败，请检查 API 密钥与端点。";
-  if (/429|rate.limit|模型服务限流/i.test(message ?? ""))
-    return "模型服务限流，请稍后重试。";
+  if (/429|rate.limit|模型服务限流/i.test(message ?? "")) return "模型服务限流，请稍后重试。";
   return "模型请求失败，请检查端点、模型名称和代理后重试。";
 }
 
@@ -157,8 +145,7 @@ function guardedStream(
         });
         for await (const event of source) {
           if (terminal) break;
-          if ("partial" in event)
-            latest = redactData(event.partial, config.secrets);
+          if ("partial" in event) latest = redactData(event.partial, config.secrets);
           if (event.type === "error") {
             event.error.errorMessage = isContextOverflow(event.error)
               ? "context_length_exceeded：上下文超过模型窗口，请压缩后继续。"
@@ -198,7 +185,10 @@ export class AgentService {
     return root + "\0" + id;
   }
   async withFileMove<T>(root: string, operation: () => Promise<T>): Promise<T> {
-    if (this.movingFiles.has(root) || [...this.conversations.values()].some((c) => c.state.root === root && (c.state.busy || c.initializing)))
+    if (
+      this.movingFiles.has(root) ||
+      [...this.conversations.values()].some((c) => c.state.root === root && (c.state.busy || c.initializing))
+    )
       throw new Error("Agent 正在运行或文件正在移动，请稍后再移动，以免会话链接丢失。");
     this.movingFiles.add(root);
     try {
@@ -209,13 +199,19 @@ export class AgentService {
           if (c.state.root !== root) continue;
           const file = c.manager.getSessionFile();
           if (!file || !c.manager.isPersisted()) continue;
-          c.unsubscribe?.(); c.unsubscribe = undefined;
-          c.session?.dispose(); c.session = undefined;
-          await c.network?.destroy(); c.network = undefined;
+          c.unsubscribe?.();
+          c.unsubscribe = undefined;
+          c.session?.dispose();
+          c.session = undefined;
+          await c.network?.destroy();
+          c.network = undefined;
           c.manager = SessionManager.open(file, path.dirname(file), root);
-          this.sync(c); this.emit(c);
+          this.sync(c);
+          this.emit(c);
         }
-      } finally { this.movingFiles.delete(root); }
+      } finally {
+        this.movingFiles.delete(root);
+      }
     }
   }
   private emit(c: Conversation) {
@@ -273,9 +269,7 @@ export class AgentService {
       });
     }
     c.state.messages = messages;
-    c.state.title =
-      c.state.messages.find((m) => m.role === "user")?.text.slice(0, 40) ||
-      "新会话";
+    c.state.title = c.state.messages.find((m) => m.role === "user")?.text.slice(0, 40) || "新会话";
   }
   private add(root: string, manager: SessionManager) {
     const c: Conversation = {
@@ -300,26 +294,19 @@ export class AgentService {
     for (const dir of [".pi", ".pi/sessions"]) {
       const target = path.join(root, dir);
       await fs.mkdir(target, { recursive: true });
-      if (
-        (await fs.lstat(target)).isSymbolicLink() ||
-        (await fs.realpath(target)) !== path.resolve(target)
-      )
+      if ((await fs.lstat(target)).isSymbolicLink() || (await fs.realpath(target)) !== path.resolve(target))
         throw new Error("会话目录不能链接到工程外。");
     }
     return path.join(root, ".pi", "sessions");
   }
   private async get(root: string, id: string) {
-    if (typeof id !== "string" || !/^[a-zA-Z0-9-]+$/.test(id))
-      throw new Error("会话身份无效。");
+    if (typeof id !== "string" || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error("会话身份无效。");
     const known = this.conversations.get(this.key(root, id));
     if (known) return known;
     const dir = await this.directory(root);
     // list(cwd, dir) filters the stored cwd; listAll(dir) keeps portable project sessions visible after a move.
-    const file = (await SessionManager.listAll(dir)).find(
-      (info) => info.id === id,
-    )?.path;
-    if (!file || (await fs.lstat(file)).isSymbolicLink())
-      throw new Error("找不到此会话。");
+    const file = (await SessionManager.listAll(dir)).find((info) => info.id === id)?.path;
+    if (!file || (await fs.lstat(file)).isSymbolicLink()) throw new Error("找不到此会话。");
     return this.add(root, SessionManager.open(file, dir, root));
   }
   private async prepare(c: Conversation, config: ModelConfig) {
@@ -328,12 +315,8 @@ export class AgentService {
     if (service && config.unreadableKeys.includes(service.id))
       throw new Error("此服务的 API 密钥无法读取，请在设置中替换或移除。");
     const apiKey = service ? config.keys[service.id] : undefined;
-    const secrets = [
-      ...Object.values(config.keys),
-      ...(config.exaKey ? [config.exaKey] : []),
-    ];
-    if (!selected?.model || !service?.baseUrl || !apiKey)
-      throw new Error("请先在设置中配置 Agent 模型与 API 密钥。");
+    const secrets = [...Object.values(config.keys), ...(config.exaKey ? [config.exaKey] : [])];
+    if (!selected?.model || !service?.baseUrl || !apiKey) throw new Error("请先在设置中配置 Agent 模型与 API 密钥。");
     c.unsubscribe?.();
     c.session?.dispose();
     await c.network?.destroy();
@@ -350,20 +333,8 @@ export class AgentService {
       refreshOnCreate: false,
     });
     const stream =
-      service.api === "openai-completions"
-        ? completions
-        : service.api === "openai-responses"
-          ? responses
-          : anthropic;
-    const piLevels: Exclude<ThinkingLevel, "ultra">[] = [
-      "off",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ];
+      service.api === "openai-completions" ? completions : service.api === "openai-responses" ? responses : anthropic;
+    const piLevels: Exclude<ThinkingLevel, "ultra">[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     const thinkingLevelMap = Object.fromEntries(
       piLevels.map((level) => [
         level,
@@ -375,8 +346,7 @@ export class AgentService {
       ]),
     );
     const isDashScope =
-      service.api === "openai-completions" &&
-      new URL(service.baseUrl).hostname === "dashscope.aliyuncs.com";
+      service.api === "openai-completions" && new URL(service.baseUrl).hostname === "dashscope.aliyuncs.com";
     runtime.registerProvider("paper30min", {
       baseUrl: service.baseUrl,
       api: service.api,
@@ -394,9 +364,7 @@ export class AgentService {
           id: selected.model,
           name: selected.name || selected.model,
           api: service.api,
-          reasoning:
-            isDashScope ||
-            selected.availableThinking.some((level) => level !== "off"),
+          reasoning: isDashScope || selected.availableThinking.some((level) => level !== "off"),
           thinkingLevelMap,
           ...(isDashScope
             ? {
@@ -418,7 +386,11 @@ export class AgentService {
     await runtime.setRuntimeApiKey("paper30min", apiKey);
     const settingsManager = SettingsManager.inMemory({
       retry: { enabled: false },
-      compaction: { enabled: true, reserveTokens: Math.min(16384, Math.floor(selected.contextWindow / 4)), keepRecentTokens: Math.min(20000, Math.floor(selected.contextWindow / 4)) },
+      compaction: {
+        enabled: true,
+        reserveTokens: Math.min(16384, Math.floor(selected.contextWindow / 4)),
+        keepRecentTokens: Math.min(20000, Math.floor(selected.contextWindow / 4)),
+      },
       enableAnalytics: false,
       enableInstallTelemetry: false,
     });
@@ -542,9 +514,7 @@ export class AgentService {
         event.type === "tool_execution_end"
       ) {
         if (event.type === "tool_execution_start") this.sync(c);
-        const message = c.state.messages.findLast((m) =>
-          m.tools?.some((t) => t.id === event.toolCallId),
-        );
+        const message = c.state.messages.findLast((m) => m.tools?.some((t) => t.id === event.toolCallId));
         const tool = message?.tools?.find((t) => t.id === event.toolCallId);
         if (tool) {
           const result =
@@ -555,8 +525,7 @@ export class AgentService {
                 : undefined;
           tool.status =
             event.type === "tool_execution_end"
-              ? event.isError ||
-                (result?.details as { failed?: boolean })?.failed
+              ? event.isError || (result?.details as { failed?: boolean })?.failed
                 ? "error"
                 : "done"
               : "running";
@@ -567,19 +536,12 @@ export class AgentService {
           this.emit(c);
         }
       }
-      if (
-        event.type === "message_end" &&
-        event.message.role === "assistant" &&
-        event.message.stopReason === "error"
-      )
+      if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error")
         c.state.error = failure(event.message.errorMessage);
     });
   }
   async dispatch(
-    command: Exclude<
-      AgentCommand,
-      { type: "settings" | "saveSettings" | "selectModel" }
-    >,
+    command: Exclude<AgentCommand, { type: "settings" | "saveSettings" | "selectModel" }>,
     config: ModelConfig,
   ): Promise<ChatSession | ChatSession[] | ChatAttachment[] | ProductSkill | ProductSkill[]> {
     if (this.closing) throw new Error("应用正在退出。");
@@ -609,8 +571,7 @@ export class AgentService {
       const saved = await SessionManager.listAll(dir);
       for (const info of saved) {
         if (this.conversations.has(this.key(root, info.id))) continue;
-        if ((await fs.lstat(info.path)).isSymbolicLink())
-          throw new Error("会话文件不能为符号链接。");
+        if ((await fs.lstat(info.path)).isSymbolicLink()) throw new Error("会话文件不能为符号链接。");
         this.add(root, SessionManager.open(info.path, dir, root));
       }
       return [...this.conversations.values()]
@@ -618,15 +579,13 @@ export class AgentService {
         .sort((a, b) => (b.manager.getHeader()?.timestamp ?? "").localeCompare(a.manager.getHeader()?.timestamp ?? ""))
         .map((c) => c.state);
     }
-    if (command.type === "create")
-      return this.add(root, SessionManager.create(root, dir)).state;
+    if (command.type === "create") return this.add(root, SessionManager.create(root, dir)).state;
     const c = await this.get(root, command.id);
     if (command.type === "open") return c.state;
     if (command.type === "branch") {
       if (c.state.busy) throw new Error("请先停止此会话再分支。");
       const entry = c.manager.getEntry(command.messageId);
-      if (!entry || entry.type !== "message")
-        throw new Error("无法从此消息创建分支。");
+      if (!entry || entry.type !== "message") throw new Error("无法从此消息创建分支。");
       const original = c.manager.getSessionFile()!;
       const branched = c.manager.createBranchedSession(entry.id);
       if (!branched) throw new Error("请先发送消息再分支。");
@@ -643,26 +602,26 @@ export class AgentService {
       command.text.length > 100000
     )
       throw new Error("消息不能为空或超过 100,000 字符。");
-    if (c.state.stopping || c.initializing)
-      throw new Error("会话正在准备或停止，请稍后再试。");
+    if (c.state.stopping || c.initializing) throw new Error("会话正在准备或停止，请稍后再试。");
     const stopRevision = c.stopRevision;
     const prompt = await prepareChatInput(this.projects, root, command.text, command.attachments, this.skills);
-    if (this.closing || this.movingFiles.has(root) || c.state.stopping || c.initializing || c.stopRevision !== stopRevision)
+    if (
+      this.closing ||
+      this.movingFiles.has(root) ||
+      c.state.stopping ||
+      c.initializing ||
+      c.stopRevision !== stopRevision
+    )
       throw new Error("会话正在准备、停止或退出，请稍后再试。");
     if (c.state.busy) {
-      if (c.activeModelId !== config.selectedModelId)
-        throw new Error("已切换模型，请等待当前回复完成后再发送。");
+      if (c.activeModelId !== config.selectedModelId) throw new Error("已切换模型，请等待当前回复完成后再发送。");
       await c.session!.followUp(prompt);
       c.state.queued = c.session!.getFollowUpMessages().slice();
       this.emit(c);
       return c.state;
     }
-    const model = config.models.find(
-      (item) => item.id === config.selectedModelId,
-    );
-    const service = config.services.find(
-      (item) => item.id === model?.serviceId,
-    );
+    const model = config.models.find((item) => item.id === config.selectedModelId);
+    const service = config.services.find((item) => item.id === model?.serviceId);
     if (service && config.unreadableKeys.includes(service.id))
       throw new Error("此服务的 API 密钥无法读取，请在设置中替换或移除。");
     if (!model?.model || !service?.baseUrl || !config.keys[service.id])
@@ -679,12 +638,13 @@ export class AgentService {
       text: prompt,
     });
     this.emit(c);
-    const previousUser = c.manager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "user")?.id;
+    const previousUser = c.manager
+      .getBranch()
+      .findLast((entry) => entry.type === "message" && entry.message.role === "user")?.id;
     c.run = (async () => {
       await this.prepare(c, config);
       c.initializing = false;
-      if (!this.closing && !c.state.stopping)
-        await c.session!.prompt(prompt);
+      if (!this.closing && !c.state.stopping) await c.session!.prompt(prompt);
     })()
       .catch(() => {
         c.state.error = failure();
@@ -692,7 +652,10 @@ export class AgentService {
       .finally(async () => {
         // Pi normally persists at message_start. Keep the accepted input even if
         // preparation fails or stop arrives before that event.
-        if (c.manager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "user")?.id === previousUser)
+        if (
+          c.manager.getBranch().findLast((entry) => entry.type === "message" && entry.message.role === "user")?.id ===
+          previousUser
+        )
           c.manager.appendMessage({ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() });
         this.preserveQueued(c, c.session?.clearQueue().followUp ?? []);
         c.unsubscribe?.();
@@ -730,7 +693,12 @@ export class AgentService {
   }
   private preserveQueued(c: Conversation, messages: string[]) {
     if (!messages.length) return;
-    for (const text of messages) c.manager.appendMessage({ role: "user", content: [{ type: "text", text: "本条排队消息尚未送达模型，未执行。保留提交时的材料：\n\n" + text }], timestamp: Date.now() });
+    for (const text of messages)
+      c.manager.appendMessage({
+        role: "user",
+        content: [{ type: "text", text: "本条排队消息尚未送达模型，未执行。保留提交时的材料：\n\n" + text }],
+        timestamp: Date.now(),
+      });
     this.sync(c);
     this.emit(c);
   }

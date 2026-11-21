@@ -35,14 +35,15 @@ function fatal(
 }
 
 /** current 的 arXiv 谱系（含 PDF 回退回溯）；无 current、无谱系或谱系损坏时返回诊断。 */
-async function currentReference(root: string): Promise<
+async function currentReference(
+  root: string,
+): Promise<
   | { ok: true; reference: ArxivReference & { version: number }; currentRevision: string }
   | { ok: false; diagnostic: ImportDiagnostic }
 > {
   const opened = await openProject(root);
   const current = opened.manifest.paper.currentRevision;
-  if (current === null)
-    return fatal("arxiv-update-current-missing", "arxiv.update.currentMissing", "resolve");
+  if (current === null) return fatal("arxiv-update-current-missing", "arxiv.update.currentMissing", "resolve");
   const revision = await readRevision(opened.root, current);
   let reference: ArxivReference | null;
   try {
@@ -66,9 +67,10 @@ function endpoint(baseUrl: string | undefined, path: string): string {
   return `${(baseUrl ?? "https://arxiv.org").replace(/\/+$/, "")}${path}`;
 }
 
-async function fetchAbs(input: UpdateNetworkInput, url: string): Promise<
-  { ok: true; html: string } | { ok: false; diagnostic: ImportDiagnostic }
-> {
+async function fetchAbs(
+  input: UpdateNetworkInput,
+  url: string,
+): Promise<{ ok: true; html: string } | { ok: false; diagnostic: ImportDiagnostic }> {
   try {
     const response = await input.transport(url, {
       budgetBytes: ABS_BUDGET_BYTES,
@@ -144,7 +146,9 @@ async function assertCandidateBaseline(input: {
   if (snapshot.kind !== "arxiv" || snapshot.baseId !== lineage.reference.baseId)
     return fatal("arxiv-update-identity-mismatch", "arxiv.update.identityMismatch", "resolve");
   if (
-    typeof snapshot.version !== "number" || !Number.isInteger(snapshot.version) || snapshot.version < 1 ||
+    typeof snapshot.version !== "number" ||
+    !Number.isInteger(snapshot.version) ||
+    snapshot.version < 1 ||
     (snapshot.canonicalId !== undefined && snapshot.canonicalId !== `${snapshot.baseId}v${snapshot.version}`)
   )
     return fatal("arxiv-update-source-invalid", "arxiv.update.sourceInvalid", "resolve");
@@ -180,7 +184,9 @@ async function mergeCandidateFromSnapshot(input: {
       candidate: converted.tree,
       derivedAssets: converted.assetBytes,
       // 转换器版本纳入候选身份：升级后重转换形成新候选，不静默复用旧版本存储。
-      revisionId: candidateIdentity(`arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}:v${converted.converterVersion}`),
+      revisionId: candidateIdentity(
+        `arxiv-candidate:${input.sourceSnapshotId}:${input.baseRevision}:v${converted.converterVersion}`,
+      ),
     });
     const candidate: DocumentMergeCandidate = {
       ...merged,
@@ -190,9 +196,13 @@ async function mergeCandidateFromSnapshot(input: {
     };
     const stored = await storeUpdateCandidate(candidate);
     const storedMeta = stored.metadata?.arxiv;
-    const storedWarnings = storedMeta !== null && typeof storedMeta === "object" && "warnings" in storedMeta && Array.isArray(storedMeta.warnings)
-      ? storedMeta.warnings as ImportDiagnostic[]
-      : warnings;
+    const storedWarnings =
+      storedMeta !== null &&
+      typeof storedMeta === "object" &&
+      "warnings" in storedMeta &&
+      Array.isArray(storedMeta.warnings)
+        ? (storedMeta.warnings as ImportDiagnostic[])
+        : warnings;
     return { ok: true, outcome: "candidate", candidate: stored, warnings: storedWarnings };
   } catch (error) {
     return fatal(
@@ -282,7 +292,12 @@ export async function refetchArxivSnapshot(
   });
   if (!snapshot.ok) return snapshot;
   if (snapshot.reused)
-    return { ok: true, outcome: "reused", sourceSnapshotId: snapshot.snapshot.sourceSnapshotId, warnings: snapshot.warnings };
+    return {
+      ok: true,
+      outcome: "reused",
+      sourceSnapshotId: snapshot.snapshot.sourceSnapshotId,
+      warnings: snapshot.warnings,
+    };
   return mergeCandidateFromSnapshot({
     root: input.root,
     sourceSnapshotId: snapshot.snapshot.sourceSnapshotId,
@@ -333,9 +348,10 @@ export async function publishArxivUpdateCandidate(input: {
   try {
     candidate = await loadUpdateCandidate({ root: input.root, revisionId });
     const meta = candidate.metadata?.arxiv;
-    warnings = meta !== null && typeof meta === "object" && "warnings" in meta && Array.isArray(meta.warnings)
-      ? meta.warnings as ImportDiagnostic[]
-      : [];
+    warnings =
+      meta !== null && typeof meta === "object" && "warnings" in meta && Array.isArray(meta.warnings)
+        ? (meta.warnings as ImportDiagnostic[])
+        : [];
   } catch (error) {
     return fatal(
       "arxiv-update-candidate-missing",
@@ -348,13 +364,16 @@ export async function publishArxivUpdateCandidate(input: {
   try {
     for (const resolution of input.resolutions ?? [])
       candidate = resolveDocumentMergeCandidateConflict(candidate, resolution.conflictId, resolution.choice);
-    const revision = await publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
-      root: candidate.root,
-      baseRevision: candidate.baseRevision,
-      revisionId: candidate.revisionId,
-      sourceSnapshotId: candidate.sourceSnapshotId,
-      document: candidate.document,
-    }));
+    const revision = await publishDocumentMergeCandidate(
+      candidate,
+      verificationInheritCommitHooks({
+        root: candidate.root,
+        baseRevision: candidate.baseRevision,
+        revisionId: candidate.revisionId,
+        sourceSnapshotId: candidate.sourceSnapshotId,
+        document: candidate.document,
+      }),
+    );
     return { ok: true, revision, warnings };
   } catch (error) {
     return fatal(
@@ -364,4 +383,3 @@ export async function publishArxivUpdateCandidate(input: {
     );
   }
 }
-

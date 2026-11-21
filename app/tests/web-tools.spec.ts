@@ -30,15 +30,8 @@ function exa(reply: object, requests: any[] = []) {
   };
 }
 
-const invoke = async (
-  tools: ReturnType<typeof createWebTools>,
-  name: string,
-  args: any,
-  signal?: AbortSignal,
-) =>
-  tools
-    .find((tool) => tool.name === name)!
-    .execute("call", args, signal, undefined, {} as any);
+const invoke = async (tools: ReturnType<typeof createWebTools>, name: string, args: any, signal?: AbortSignal) =>
+  tools.find((tool) => tool.name === name)!.execute("call", args, signal, undefined, {} as any);
 
 test("网络资料支持正文分段查阅、会话重开及隔离，密钥只进入请求头", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-web-"));
@@ -69,10 +62,7 @@ test("网络资料支持正文分段查阅、会话重开及隔离，密钥只�
     const fetched = await invoke(tools, "fetch_content", {
       url: "https://example.org/paper",
     });
-    expect(fetched.content[0]).not.toHaveProperty(
-      "text",
-      expect.stringContaining("28.4"),
-    );
+    expect(fetched.content[0]).not.toHaveProperty("text", expect.stringContaining("28.4"));
     expect(JSON.stringify(fetched)).not.toContain("secret-exa");
     const responseId = (fetched.details as any).webContent.responseId;
     manager.appendMessage({
@@ -90,25 +80,15 @@ test("网络资料支持正文分段查阅、会话重开及隔离，密钥只�
       responseId,
       findText: "28.4 BLEU",
     });
-    expect((passage.content[0] as any).text).toContain(
-      "独立验证结果为 28.4 BLEU",
-    );
+    expect((passage.content[0] as any).text).toContain("独立验证结果为 28.4 BLEU");
     const slice = await invoke(reading, "get_search_content", {
       responseId,
       offset: 12000,
       limit: 1000,
     });
     expect((slice.details as any).nextOffset).toBe(13000);
-    const other = createWebTools(
-      SessionManager.inMemory(dir),
-      exa({}),
-      {},
-      [],
-      () => true,
-    );
-    await expect(
-      invoke(other, "get_search_content", { responseId }),
-    ).rejects.toThrow("当前会话");
+    const other = createWebTools(SessionManager.inMemory(dir), exa({}), {}, [], () => true);
+    await expect(invoke(other, "get_search_content", { responseId })).rejects.toThrow("当前会话");
     const call = requests.find((item) => item.request.method === "tools/call");
     expect(call.headers["x-api-key"]).toBe("secret-exa");
     expect(call.url).not.toContain("secret-exa");
@@ -124,8 +104,7 @@ test("网络资料支持正文分段查阅、会话重开及隔离，密钥只�
 test("搜索返回可核查摘录，免费入口、无结果、认证与正常响应内限流均可区分", async () => {
   const manager = SessionManager.inMemory();
   const requests: any[] = [];
-  const make = (reply: object) =>
-    createWebTools(manager, exa(reply, requests), {}, [], () => true);
+  const make = (reply: object) => createWebTools(manager, exa(reply, requests), {}, [], () => true);
   const found = await invoke(
     make({
       content: [
@@ -147,15 +126,11 @@ test("搜索返回可核查摘录，免费入口、无结果、认证与正常�
     { query: "attention paper", numResults: 2 },
   );
   expect((found.content[0] as any).text).toContain("仅为搜索摘录");
-  expect((found.content[0] as any).text).toContain(
-    "https://arxiv.org/abs/1706.03762",
-  );
+  expect((found.content[0] as any).text).toContain("https://arxiv.org/abs/1706.03762");
   expect(requests.every((item) => !item.headers["x-api-key"])).toBe(true);
-  const empty = await invoke(
-    make({ content: [{ type: "text", text: '{"results":[]}' }] }),
-    "web_search",
-    { query: "no results" },
-  );
+  const empty = await invoke(make({ content: [{ type: "text", text: '{"results":[]}' }] }), "web_search", {
+    query: "no results",
+  });
   expect((empty.content[0] as any).text).toContain("没有找到");
   await expect(
     invoke(
@@ -184,12 +159,8 @@ test("搜索返回可核查摘录，免费入口、无结果、认证与正常�
     ["invalid-key"],
     () => true,
   );
-  await expect(
-    invoke(rejected, "web_search", { query: "test" }),
-  ).rejects.toThrow("认证失败");
-  await expect(
-    invoke(make({}), "fetch_content", { url: "http://127.0.0.1/private" }),
-  ).rejects.toThrow("公开");
+  await expect(invoke(rejected, "web_search", { query: "test" })).rejects.toThrow("认证失败");
+  await expect(invoke(make({}), "fetch_content", { url: "http://127.0.0.1/private" })).rejects.toThrow("公开");
 });
 
 test("取消和总超时终止实际网络读取，不产生可查阅内容", async () => {
@@ -214,18 +185,11 @@ test("取消和总超时终止实际网络读取，不产生可查阅内容", as
     });
   const tools = createWebTools(manager, hanging, {}, [], () => true);
   const controller = new AbortController();
-  const canceled = invoke(
-    tools,
-    "web_search",
-    { query: "cancel" },
-    controller.signal,
-  );
+  const canceled = invoke(tools, "web_search", { query: "cancel" }, controller.signal);
   await started;
   controller.abort();
   await expect(canceled).rejects.toThrow("已停止");
   expect(aborted).toBeGreaterThan(0);
-  await expect(
-    invoke(tools, "web_search", { query: "timeout" }),
-  ).rejects.toThrow("超时");
+  await expect(invoke(tools, "web_search", { query: "timeout" })).rejects.toThrow("超时");
   expect(manager.getBranch()).toEqual([]);
 });

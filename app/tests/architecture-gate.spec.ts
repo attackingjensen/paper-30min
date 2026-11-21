@@ -42,25 +42,31 @@ async function runArchitectureGate() {
 
 test("架构 11 条边界逐条阻断：type-only、动态 import、点段路径与 preload 特例均按解析路径判定", async () => {
   await writeFixtures({
-    "app/src/renderer/invalid-main.ts": 'import type { MainThing } from "../main/main.js";\nexport type RendererThing = MainThing;\n',
-    "app/src/renderer/nested/deep/invalid-main.ts": 'import { main } from "../../../main/main.js";\nexport const value = main;\n',
-    "app/src/renderer/invalid-dot-segment.ts": 'import { main } from "../renderer/../main/main.js";\nexport const value = main;\n',
+    "app/src/renderer/invalid-main.ts":
+      'import type { MainThing } from "../main/main.js";\nexport type RendererThing = MainThing;\n',
+    "app/src/renderer/nested/deep/invalid-main.ts":
+      'import { main } from "../../../main/main.js";\nexport const value = main;\n',
+    "app/src/renderer/invalid-dot-segment.ts":
+      'import { main } from "../renderer/../main/main.js";\nexport const value = main;\n',
     "app/src/renderer/invalid-dynamic.ts": 'export const load = () => import("../main/main.js");\n',
     "app/src/renderer/invalid-node.ts": 'import fs from "node:fs";\nexport const value = fs;\n',
     "app/src/renderer/invalid-electron.ts": 'import { app } from "electron";\nexport const value = app;\n',
-    "app/src/main/main.ts": 'export const main = 1;\n',
+    "app/src/main/main.ts": "export const main = 1;\n",
     "app/src/main/invalid-renderer.ts": 'import { view } from "../renderer/view.js";\nexport const value = view;\n',
     "app/src/main/invalid-preload.ts": 'import "./preload.cts";\n',
     "app/src/main/invalid-preload-dot-segment.ts": 'import "./sub/../preload.cts";\n',
-    "app/src/main/sub/placeholder.ts": 'export const placeholder = 1;\n',
-    "app/src/main/preload.cts": 'import path from "node:path";\nimport { worker } from "./worker.js";\nimport { workerAgain } from "../main/worker.js";\nimport { view } from "../renderer/view.js";\nexport const value = [path, worker, workerAgain, view];\n',
-    "app/src/main/worker.ts": 'export const worker = 1;\n',
-    "app/src/main/document/invalid-source.ts": 'import { snapshot } from "../pdf/snapshot.js";\nexport const value = snapshot;\n',
-    "app/src/main/pdf/snapshot.ts": 'export const snapshot = 1;\n',
+    "app/src/main/sub/placeholder.ts": "export const placeholder = 1;\n",
+    "app/src/main/preload.cts":
+      'import path from "node:path";\nimport { worker } from "./worker.js";\nimport { workerAgain } from "../main/worker.js";\nimport { view } from "../renderer/view.js";\nexport const value = [path, worker, workerAgain, view];\n',
+    "app/src/main/worker.ts": "export const worker = 1;\n",
+    "app/src/main/document/invalid-source.ts":
+      'import { snapshot } from "../pdf/snapshot.js";\nexport const value = snapshot;\n',
+    "app/src/main/pdf/snapshot.ts": "export const snapshot = 1;\n",
     "app/src/shared/invalid-process.ts": 'import { main } from "../main/main.js";\nexport const value = main;\n',
     "app/src/shared/invalid-node.ts": 'import path from "path";\nexport const value = path;\n',
-    "app/src/shared/invalid-electron.ts": 'import type { BrowserWindow } from "electron";\nexport type WindowType = BrowserWindow;\n',
-    "app/src/renderer/view.ts": 'export const view = 1;\n',
+    "app/src/shared/invalid-electron.ts":
+      'import type { BrowserWindow } from "electron";\nexport type WindowType = BrowserWindow;\n',
+    "app/src/renderer/view.ts": "export const view = 1;\n",
   });
 
   const result = await runArchitectureGate();
@@ -84,17 +90,22 @@ test("架构 11 条边界逐条阻断：type-only、动态 import、点段路径
 
 test("架构干净样本零违规：shared 内同名目录、preload 合法导入与 src 根 preload 不误报", async () => {
   await writeFixtures({
-    "app/src/preload.cts": 'export const rootPreload = 1;\n',
-    "app/src/renderer/clean.ts": 'import type { Contract } from "../shared/contracts.js";\nimport { helper } from "../shared/main/utils.js";\nexport const value = [helper] as Contract[];\n',
-    "app/src/main/clean.ts": 'import { contract } from "../shared/contracts.js";\nimport { view } from "../shared/renderer/view.js";\nimport { rootPreload } from "../preload.cts";\nexport const value = [contract, view, rootPreload];\n',
-    "app/src/main/preload.cts": 'import { contextBridge } from "electron";\nimport { contract } from "../shared/contracts.js";\nexport const value = [contextBridge, contract];\n',
-    "app/src/main/document/clean.ts": 'import { pdf } from "../../shared/pdf/helpers.js";\nimport { arxiv } from "../../shared/arxiv.js";\nexport const value = [pdf, arxiv];\n',
-    "app/src/shared/clean.ts": 'import { helper } from "./main/utils.js";\nimport { renderer } from "./renderer/view.js";\nexport const value = [helper, renderer];\n',
-    "app/src/shared/contracts.ts": 'export type Contract = unknown;\n',
-    "app/src/shared/main/utils.ts": 'export const helper = 1;\n',
-    "app/src/shared/renderer/view.ts": 'export const view = 1;\n',
-    "app/src/shared/pdf/helpers.ts": 'export const pdf = 1;\n',
-    "app/src/shared/arxiv.ts": 'export const arxiv = 1;\n',
+    "app/src/preload.cts": "export const rootPreload = 1;\n",
+    "app/src/renderer/clean.ts":
+      'import type { Contract } from "../shared/contracts.js";\nimport { helper } from "../shared/main/utils.js";\nexport const value = [helper] as Contract[];\n',
+    "app/src/main/clean.ts":
+      'import { contract } from "../shared/contracts.js";\nimport { view } from "../shared/renderer/view.js";\nimport { rootPreload } from "../preload.cts";\nexport const value = [contract, view, rootPreload];\n',
+    "app/src/main/preload.cts":
+      'import { contextBridge } from "electron";\nimport { contract } from "../shared/contracts.js";\nexport const value = [contextBridge, contract];\n',
+    "app/src/main/document/clean.ts":
+      'import { pdf } from "../../shared/pdf/helpers.js";\nimport { arxiv } from "../../shared/arxiv.js";\nexport const value = [pdf, arxiv];\n',
+    "app/src/shared/clean.ts":
+      'import { helper } from "./main/utils.js";\nimport { renderer } from "./renderer/view.js";\nexport const value = [helper, renderer];\n',
+    "app/src/shared/contracts.ts": "export type Contract = unknown;\n",
+    "app/src/shared/main/utils.ts": "export const helper = 1;\n",
+    "app/src/shared/renderer/view.ts": "export const view = 1;\n",
+    "app/src/shared/pdf/helpers.ts": "export const pdf = 1;\n",
+    "app/src/shared/arxiv.ts": "export const arxiv = 1;\n",
   });
 
   const result = await runArchitectureGate();

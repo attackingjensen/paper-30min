@@ -37,8 +37,7 @@ function assetPaths(trees: DocumentTree[]) {
   const paths = new Set<string>();
   for (const tree of trees) {
     for (const block of tree.blocks) {
-      if ((block.kind === "figure" || block.kind === "formula") && block.asset)
-        paths.add(block.asset.path);
+      if ((block.kind === "figure" || block.kind === "formula") && block.asset) paths.add(block.asset.path);
     }
   }
   return [...paths].sort();
@@ -96,7 +95,9 @@ export async function createDocumentMergeCandidate(input: {
 }): Promise<DocumentMergeCandidate> {
   const opened = await openProject(input.root);
   if (opened.manifest.paper.currentRevision !== input.baseRevision)
-    throw new Error(`baseRevision 已变化：候选基线为 ${input.baseRevision}，current 为 ${opened.manifest.paper.currentRevision}。`);
+    throw new Error(
+      `baseRevision 已变化：候选基线为 ${input.baseRevision}，current 为 ${opened.manifest.paper.currentRevision}。`,
+    );
   const root = opened.root;
   const [base, current, previousTombstones] = await Promise.all([
     readRevisionDocument(root, input.baseRevision, "source-base"),
@@ -136,10 +137,7 @@ export function resolveDocumentMergeCandidateConflict(
 
 /** 发布来源合并候选：通用文档合并不理解来源语义；核验继承等来源侧车逻辑
  * 由调用方经 commit 钩子注入（before-current-replace，串行临界区内执行）。 */
-export async function publishDocumentMergeCandidate(
-  candidate: DocumentMergeCandidate,
-  hooks: ProjectCommitHooks = {},
-) {
+export async function publishDocumentMergeCandidate(candidate: DocumentMergeCandidate, hooks: ProjectCommitHooks = {}) {
   const opened = await openProject(candidate.root);
   const currentRevision = opened.manifest.paper.currentRevision;
   if (!currentRevision) throw new Error("首次正文尚未提交，不能发布来源合并候选。");
@@ -151,18 +149,21 @@ export async function publishDocumentMergeCandidate(
     if (!asset) throw new Error(`合并候选缺少已引用资产：${relative}。`);
     assets[relative] = asset;
   }
-  return commitRevision({
-    root: candidate.root,
-    baseRevision: candidate.baseRevision,
-    sourceSnapshotId: candidate.sourceSnapshotId,
-    revisionId: candidate.revisionId,
-    files: {
-      "document.json": json(candidate.document),
-      "source-base.json": json(candidate.sourceBase),
-      "tombstones.json": json(candidate.tombstones),
-      "changeset.json": json(candidate.changeset),
-      ...assets,
+  return commitRevision(
+    {
+      root: candidate.root,
+      baseRevision: candidate.baseRevision,
+      sourceSnapshotId: candidate.sourceSnapshotId,
+      revisionId: candidate.revisionId,
+      files: {
+        "document.json": json(candidate.document),
+        "source-base.json": json(candidate.sourceBase),
+        "tombstones.json": json(candidate.tombstones),
+        "changeset.json": json(candidate.changeset),
+        ...assets,
+      },
+      metadata: { normalizationVersion: 1, operation: "source-merge", ...candidate.metadata },
     },
-    metadata: { normalizationVersion: 1, operation: "source-merge", ...candidate.metadata },
-  }, hooks);
+    hooks,
+  );
 }

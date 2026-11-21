@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   BookOpen,
@@ -42,11 +36,7 @@ import type { ReadingPosition } from "../shared/reader/position";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { ProductSkillsForm } from "./ProductSkillsForm";
 import { ParsingSettingsForm } from "./ParsingSettingsForm";
-import {
-  useMarkdownDocuments,
-  isMarkdown,
-  isDirty,
-} from "./useMarkdownDocuments";
+import { useMarkdownDocuments, isMarkdown, isDirty } from "./useMarkdownDocuments";
 
 const desktop = window.desktop;
 type Tab = DocumentTab;
@@ -73,13 +63,7 @@ function IconButton({
   disabled?: boolean;
 }) {
   return (
-    <button
-      className="icon"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      disabled={disabled}
-    >
+    <button className="icon" title={label} aria-label={label} onClick={onClick} disabled={disabled}>
       {children}
     </button>
   );
@@ -106,7 +90,13 @@ export function App() {
   const [askDraft, setAskDraft] = useState<{ id: number; text: string } | null>(null);
   const askDraftId = useRef(0);
   async function setSettings(value: string | null) {
-    if (settings === "skills" && value !== settings && skillDirty.current && !window.confirm("放弃尚未保存的提示词编辑并离开？")) return;
+    if (
+      settings === "skills" &&
+      value !== settings &&
+      skillDirty.current &&
+      !window.confirm("放弃尚未保存的提示词编辑并离开？")
+    )
+      return;
     const request = ++navigationRequest.current;
     if (request === navigationRequest.current) setSettingsState(value);
   }
@@ -115,22 +105,23 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
   const [uploadConfirms, setUploadConfirms] = useState<PdfUploadConfirmation[]>([]);
-  useEffect(() =>
-    desktop.watchPdfUploadConfirm((confirmation) =>
-      // 按 confirmationId 排队，不覆盖并发请求；重复投递去重。
-      setUploadConfirms((queue) =>
-        queue.some((entry) => entry.confirmationId === confirmation.confirmationId)
-          ? queue
-          : [...queue, confirmation],
-      )),
-  []);
+  useEffect(
+    () =>
+      desktop.watchPdfUploadConfirm((confirmation) =>
+        // 按 confirmationId 排队，不覆盖并发请求；重复投递去重。
+        setUploadConfirms((queue) =>
+          queue.some((entry) => entry.confirmationId === confirmation.confirmationId)
+            ? queue
+            : [...queue, confirmation],
+        ),
+      ),
+    [],
+  );
   const uploadConfirm = uploadConfirms[0] ?? null;
   const replyUpload = (confirmed: boolean) => {
     if (!uploadConfirm) return;
     const { operationId, confirmationId } = uploadConfirm;
-    setUploadConfirms((queue) =>
-      queue.filter((entry) => entry.confirmationId !== confirmationId),
-    );
+    setUploadConfirms((queue) => queue.filter((entry) => entry.confirmationId !== confirmationId));
     void desktop
       .replyPdfUploadConfirm({ operationId, confirmationId, confirmed })
       .catch((e) => setError((e as Error).message));
@@ -142,23 +133,15 @@ export function App() {
   activeRoot.current = root;
   const documents = useMarkdownDocuments(root, tabs, project);
   const positions = useRef<Record<string, Record<string, PdfPosition>>>({});
-  const agentViews = useRef<Record<string, { active: string; text: string; attachments?: ChatAttachment[] }>>(
-    {},
-  );
+  const agentViews = useRef<Record<string, { active: string; text: string; attachments?: ChatAttachment[] }>>({});
   // Full 阅读器逻辑位置：按工程 root 隔离（tab key 固定为 paper），
   // reader 捕获后经 saveReaderPosition 持久化；重开工程按锚点恢复。
   const readerPositions = useRef<Record<string, ReadingPosition>>({});
   useEffect(() => {
     if (root)
-      void desktop
-        .invoke({ type: "saveWorkspace", root, tabs, active })
-        .catch((e) => setError((e as Error).message));
+      void desktop.invoke({ type: "saveWorkspace", root, tabs, active }).catch((e) => setError((e as Error).message));
   }, [root, tabs, active]);
-  function savePosition(
-    projectRoot: string,
-    file: string,
-    position: PdfPosition,
-  ) {
+  function savePosition(projectRoot: string, file: string, position: PdfPosition) {
     (positions.current[projectRoot] ??= {})[file] = position;
     void desktop
       .invoke({
@@ -176,27 +159,18 @@ export function App() {
       .catch((e) => setError((e as Error).message));
   }, []);
 
-  const run = useCallback(
-    async <T,>(operation: () => Promise<T>): Promise<T | undefined> => {
-      setError("");
-      setBusy(true);
-      try {
-        return await operation();
-      } catch (e) {
-        setError(
-          (e as Error).message.replace(
-            /^Error invoking remote method '[^']+': Error: /,
-            "",
-          ),
-        );
-      } finally {
-        setBusy(false);
-      }
-    },
-    [],
-  );
-  const reloadPreferences = () =>
-    desktop.invoke<Preferences>({ type: "preferences" }).then(setPreferences);
+  const run = useCallback(async <T,>(operation: () => Promise<T>): Promise<T | undefined> => {
+    setError("");
+    setBusy(true);
+    try {
+      return await operation();
+    } catch (e) {
+      setError((e as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  const reloadPreferences = () => desktop.invoke<Preferences>({ type: "preferences" }).then(setPreferences);
   useEffect(() => {
     void run(reloadPreferences);
   }, [run]);
@@ -271,17 +245,19 @@ export function App() {
   async function openTab(tab: Tab, activate?: () => void, request = ++navigationRequest.current) {
     if (request !== navigationRequest.current || activeRoot.current !== root) return;
     activate?.();
-    setTabs((old) =>
-      old.some((t) => t.key === tab.key) ? old : [...old, tab],
-    );
+    setTabs((old) => (old.some((t) => t.key === tab.key) ? old : [...old, tab]));
     setActive(tab.key);
   }
   function openPath(filePath: string, activate?: () => void, request?: number) {
-    return openTab({
-      key: filePath,
-      path: filePath,
-      title: filePath.split("/").at(-1)!,
-    }, activate, request);
+    return openTab(
+      {
+        key: filePath,
+        path: filePath,
+        title: filePath.split("/").at(-1)!,
+      },
+      activate,
+      request,
+    );
   }
   function enter(p: Project) {
     setProject(p);
@@ -294,15 +270,12 @@ export function App() {
     const savedReader = p.reading.reader?.paper;
     if (savedReader) readerPositions.current[p.root] = savedReader;
     const restored = p.reading.tabs.filter(
-      (t) => !["map", "explanations", "translations", "materials", "parsing"].includes(t.key) &&
+      (t) =>
+        !["map", "explanations", "translations", "materials", "parsing"].includes(t.key) &&
         (!t.path || p.files.some((f) => f.path === t.path && !f.directory)),
     );
     setTabs(restored.length ? restored : [tab]);
-    setActive(
-      restored.some((t) => t.key === p.reading.active)
-        ? p.reading.active
-        : (restored[0]?.key ?? tab.key),
-    );
+    setActive(restored.some((t) => t.key === p.reading.active) ? p.reading.active : (restored[0]?.key ?? tab.key));
     setSettingsState(null);
   }
   async function closeTab(key: string) {
@@ -313,7 +286,7 @@ export function App() {
     if (activeRoot.current !== root) return;
     setTabs((currentTabs) => {
       const remaining = currentTabs.filter((t) => t.key !== key);
-      setActive((currentActive) => currentActive === key ? (remaining.at(-1)?.key ?? "") : currentActive);
+      setActive((currentActive) => (currentActive === key ? (remaining.at(-1)?.key ?? "") : currentActive));
       return remaining;
     });
   }
@@ -375,31 +348,19 @@ export function App() {
       saved[to] = saved[from];
       delete saved[from];
     }
-    setTabs((old) =>
-      old.map((t) =>
-        t.path === from
-          ? { ...t, key: to, path: to, title: to.split("/").at(-1)! }
-          : t,
-      ),
-    );
+    setTabs((old) => old.map((t) => (t.path === from ? { ...t, key: to, path: to, title: to.split("/").at(-1)! } : t)));
     setActive((old) => (old === from ? to : old));
   }
   const missingCurrent =
-    current?.path &&
-    project &&
-    !project.files.some((f) => f.path === current.path && !f.directory);
+    current?.path && project && !project.files.some((f) => f.path === current.path && !f.directory);
   const separator =
-    preferences.defaultFolder?.includes("\\") ||
-    (dialog?.type === "create" && dialog.parent.includes("\\"))
+    preferences.defaultFolder?.includes("\\") || (dialog?.type === "create" && dialog.parent.includes("\\"))
       ? "\\"
       : "/";
 
   function nav(label: string, icon: ReactNode, tab: Tab) {
     return (
-      <button
-        className={`nav ${active === tab.key ? "selected" : ""}`}
-        onClick={() => openTab(tab)}
-      >
+      <button className={`nav ${active === tab.key ? "selected" : ""}`} onClick={() => openTab(tab)}>
         {icon}
         <span>{label}</span>
       </button>
@@ -434,8 +395,7 @@ export function App() {
           onPosition={(position) => {
             const updatePosition = (items: Tab[]) =>
               items.map((t) =>
-                t.path === draft.path &&
-                JSON.stringify(t.markdown) !== JSON.stringify(position)
+                t.path === draft.path && JSON.stringify(t.markdown) !== JSON.stringify(position)
                   ? { ...t, markdown: position }
                   : t,
               );
@@ -489,29 +449,20 @@ export function App() {
             <button
               className="borderbtn"
               disabled={busy}
-              onClick={() =>
-                void run(() => desktop.openFile(root!, current.path!))
-              }
+              onClick={() => void run(() => desktop.openFile(root!, current.path!))}
             >
               <FolderOpen /> 在外部应用中打开
             </button>
           )}
         </article>
       );
-    const paths =
-      project?.files
-        .filter((f) => !f.directory && f.path.startsWith("notes/"))
-        .map((f) => f.path) ?? [];
+    const paths = project?.files.filter((f) => !f.directory && f.path.startsWith("notes/")).map((f) => f.path) ?? [];
     return (
       <article className="article">
         <h1>{current.title}</h1>
         {paths.length ? (
           paths.map((p) => (
-            <button
-              className="document-row"
-              key={p}
-              onClick={() => openPath(p)}
-            >
+            <button className="document-row" key={p} onClick={() => openPath(p)}>
               <FileText />
               {p.split("/").at(-1)}
             </button>
@@ -526,10 +477,7 @@ export function App() {
   return (
     <>
       <header className="top">
-        <IconButton
-          label={left ? "收起左侧栏" : "展开左侧栏"}
-          onClick={() => setLeft(!left)}
-        >
+        <IconButton label={left ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeft(!left)}>
           <PanelLeft />
         </IconButton>
         <BookOpen className="brand-mark" />
@@ -538,10 +486,7 @@ export function App() {
         <span>{settings ? "设置" : project ? "工作台" : "本地工程"}</span>
         <span className="spacer" />
         <span className="tiny muted">本地工程</span>
-        <IconButton
-          label={right ? "收起 Agent" : "展开 Agent"}
-          onClick={() => setRight(!right)}
-        >
+        <IconButton label={right ? "收起 Agent" : "展开 Agent"} onClick={() => setRight(!right)}>
           <PanelRight />
         </IconButton>
       </header>
@@ -556,10 +501,7 @@ export function App() {
       {settings ? (
         <section className="settings-workspace">
           <aside className="settings-nav">
-            <button
-              className="nav settings-back"
-              onClick={() => setSettings(null)}
-            >
+            <button className="nav settings-back" onClick={() => setSettings(null)}>
               <ArrowLeft /> 返回{project ? "工作台" : "工程"}
             </button>
             <div className="section-label">设置</div>
@@ -571,18 +513,8 @@ export function App() {
               ["parsing", "解析模型"],
               ["proxy", "代理配置"],
             ].map(([id, name]) => (
-              <button
-                key={id}
-                className={`nav ${settings === id ? "selected" : ""}`}
-                onClick={() => setSettings(id)}
-              >
-                {id === "projects" ? (
-                  <Folder />
-                ) : id === "agent" ? (
-                  <Sparkles />
-                ) : (
-                  <Settings />
-                )}
+              <button key={id} className={`nav ${settings === id ? "selected" : ""}`} onClick={() => setSettings(id)}>
+                {id === "projects" ? <Folder /> : id === "agent" ? <Sparkles /> : <Settings />}
                 <span>{name}</span>
               </button>
             ))}
@@ -598,16 +530,14 @@ export function App() {
                       ? "Agent 网络搜索"
                       : settings === "skills"
                         ? "产品 Skill"
-                      : settings === "parsing"
-                        ? "解析模型"
-                        : "代理配置"}
+                        : settings === "parsing"
+                          ? "解析模型"
+                          : "代理配置"}
               </h1>
               {settings === "projects" ? (
                 <>
                   <label>默认工程文件夹</label>
-                  <div className="setting-value path">
-                    {preferences.defaultFolder ?? "尚未设置"}
-                  </div>
+                  <div className="setting-value path">{preferences.defaultFolder ?? "尚未设置"}</div>
                   <div className="row">
                     <button
                       className="borderbtn"
@@ -646,12 +576,14 @@ export function App() {
                     )}
                   </div>
                 </>
-              ) : settings === "agent" ||
-                settings === "proxy" ||
-                settings === "search" ? (
+              ) : settings === "agent" || settings === "proxy" || settings === "search" ? (
                 <AgentSettingsForm key={settings} section={settings} />
               ) : settings === "skills" ? (
-                <ProductSkillsForm onDirty={dirty => { skillDirty.current = dirty; }} />
+                <ProductSkillsForm
+                  onDirty={(dirty) => {
+                    skillDirty.current = dirty;
+                  }}
+                />
               ) : settings === "parsing" ? (
                 <ParsingSettingsForm />
               ) : (
@@ -670,30 +602,17 @@ export function App() {
             </IconButton>
           </div>
           <div className="row start-actions">
-            <button
-              className="primary"
-              disabled={busy}
-              onClick={() => void newProject()}
-            >
+            <button className="primary" disabled={busy} onClick={() => void newProject()}>
               <Plus /> 从 PDF 新建工程
             </button>
-            <button
-              className="borderbtn"
-              disabled={busy}
-              onClick={() => void openProject()}
-            >
+            <button className="borderbtn" disabled={busy} onClick={() => void openProject()}>
               <FolderOpen /> 打开工程文件夹
             </button>
           </div>
           <h2>最近工程</h2>
           {preferences.recent.length ? (
             preferences.recent.map((r) => (
-              <button
-                className="recent"
-                key={r.root}
-                onClick={() => void openProject(r.root)}
-                disabled={busy}
-              >
+              <button className="recent" key={r.root} onClick={() => void openProject(r.root)} disabled={busy}>
                 <Folder />
                 <span>
                   {r.name}
@@ -732,11 +651,7 @@ export function App() {
                 <Home />
                 <span>所有工程</span>
               </button>
-              <button
-                className="nav"
-                disabled={busy}
-                onClick={() => void newProject()}
-              >
+              <button className="nav" disabled={busy} onClick={() => void newProject()}>
                 <Plus />
                 <span>从 PDF 新建工程</span>
               </button>
@@ -746,32 +661,27 @@ export function App() {
                 {project.manifest.name}
               </div>
               <div className="switch" role="group" aria-label="导航模式">
-                <button
-                  className={navigation === "reading" ? "active" : ""}
-                  onClick={() => setNavigation("reading")}
-                >
+                <button className={navigation === "reading" ? "active" : ""} onClick={() => setNavigation("reading")}>
                   阅读导航
                 </button>
-                <button
-                  className={navigation === "files" ? "active" : ""}
-                  onClick={() => setNavigation("files")}
-                >
+                <button className={navigation === "files" ? "active" : ""} onClick={() => setNavigation("files")}>
                   工程文件
                 </button>
               </div>
-              <nav
-                className="left-nav"
-                aria-label={navigation === "reading" ? "阅读导航" : "工程文件"}
-              >
+              <nav className="left-nav" aria-label={navigation === "reading" ? "阅读导航" : "工程文件"}>
                 {navigation === "reading" ? (
                   <>
-                    {nav("原始论文", <FileText />, project.manifest.paper.path
-                      ? {
-                          key: project.manifest.paper.path,
-                          path: project.manifest.paper.path,
-                          title: project.manifest.paper.path.split("/").at(-1)!,
-                        }
-                      : { key: "paper", title: "原始论文" })}
+                    {nav(
+                      "原始论文",
+                      <FileText />,
+                      project.manifest.paper.path
+                        ? {
+                            key: project.manifest.paper.path,
+                            path: project.manifest.paper.path,
+                            title: project.manifest.paper.path.split("/").at(-1)!,
+                          }
+                        : { key: "paper", title: "原始论文" },
+                    )}
                     {nav("笔记", <FileText />, { key: "notes", title: "笔记" })}
                   </>
                 ) : (
@@ -779,10 +689,7 @@ export function App() {
                 )}
               </nav>
               <footer className="sidebar-footer">
-                <IconButton
-                  label="设置"
-                  onClick={() => setSettings("projects")}
-                >
+                <IconButton label="设置" onClick={() => setSettings("projects")}>
                   <Settings />
                 </IconButton>
                 <span className="spacer" />
@@ -792,40 +699,20 @@ export function App() {
               </footer>
             </aside>
           </div>
-          {left && (
-            <div
-              className="panel-resizer left-resizer"
-              {...layout.separator("left")}
-            />
-          )}
+          {left && <div className="panel-resizer left-resizer" {...layout.separator("left")} />}
           <div className="frame">
             <nav className="tabs" aria-label="文档标签">
               <div className="file-tabs" role="tablist">
                 {tabs.map((t) => (
-                  <div
-                    className={`file-tab ${active === t.key ? "active" : ""}`}
-                    key={t.key}
-                  >
-                    <button
-                      role="tab"
-                      aria-selected={active === t.key}
-                      title={t.title}
-                      onClick={() => void openTab(t)}
-                    >
+                  <div className={`file-tab ${active === t.key ? "active" : ""}`} key={t.key}>
+                    <button role="tab" aria-selected={active === t.key} title={t.title} onClick={() => void openTab(t)}>
                       <FileText />
                       <span>
                         {t.title}
-                        {t.path &&
-                        documents.drafts.get(t.path) &&
-                        isDirty(documents.drafts.get(t.path)!)
-                          ? " •"
-                          : ""}
+                        {t.path && documents.drafts.get(t.path) && isDirty(documents.drafts.get(t.path)!) ? " •" : ""}
                       </span>
                     </button>
-                    <IconButton
-                      label={`关闭 ${t.title}`}
-                      onClick={() => closeTab(t.key)}
-                    >
+                    <IconButton label={`关闭 ${t.title}`} onClick={() => closeTab(t.key)}>
                       <X />
                     </IconButton>
                   </div>
@@ -841,11 +728,7 @@ export function App() {
                   </div>
                   <div className="toolbar-actions">
                     {current?.key === "notes" && (
-                      <button
-                        onClick={() =>
-                          setDialog({ type: "note", name: "新笔记.md" })
-                        }
-                      >
+                      <button onClick={() => setDialog({ type: "note", name: "新笔记.md" })}>
                         <Plus /> 新建笔记
                       </button>
                     )}
@@ -867,11 +750,7 @@ export function App() {
                         <IconButton
                           label="在外部应用中打开"
                           disabled={busy}
-                          onClick={() =>
-                            void run(() =>
-                              desktop.openFile(root!, current.path!),
-                            )
-                          }
+                          onClick={() => void run(() => desktop.openFile(root!, current.path!))}
                         >
                           <FolderOpen />
                         </IconButton>
@@ -881,12 +760,7 @@ export function App() {
                 </div>
                 {contentView()}
               </main>
-              {right && (
-                <div
-                  className="panel-resizer right-resizer"
-                  {...layout.separator("right")}
-                />
-              )}
+              {right && <div className="panel-resizer right-resizer" {...layout.separator("right")} />}
               <div className="right-slot" inert={!right} aria-hidden={!right}>
                 <AgentPanel
                   onOpenFile={openPath}
@@ -910,13 +784,7 @@ export function App() {
             className="modal"
             role="dialog"
             aria-modal="true"
-            aria-label={
-              dialog.type === "create"
-                ? "新建工程"
-                : dialog.type === "note"
-                  ? "新建笔记"
-                  : "改名或移动"
-            }
+            aria-label={dialog.type === "create" ? "新建工程" : dialog.type === "note" ? "新建笔记" : "改名或移动"}
             onSubmit={(event) => {
               event.preventDefault();
               if (dialog.type === "create") void createProject(dialog);
@@ -927,9 +795,7 @@ export function App() {
                     root,
                     name: dialog.name,
                   });
-                  setProject(
-                    await desktop.invoke<Project>({ type: "refresh", root }),
-                  );
+                  setProject(await desktop.invoke<Project>({ type: "refresh", root }));
                   void openPath(path);
                   setDialog(null);
                 });
@@ -947,13 +813,7 @@ export function App() {
                 });
             }}
           >
-            <h2>
-              {dialog.type === "create"
-                ? "新建工程"
-                : dialog.type === "note"
-                  ? "新建笔记"
-                  : "改名或移动"}
-            </h2>
+            <h2>{dialog.type === "create" ? "新建工程" : dialog.type === "note" ? "新建笔记" : "改名或移动"}</h2>
             {dialog.type === "create" ? (
               <>
                 <label htmlFor="project-name">工程名称</label>
@@ -962,18 +822,14 @@ export function App() {
                   autoFocus
                   value={dialog.name}
                   disabled={busy}
-                  onChange={(e) =>
-                    setDialog({ ...dialog, name: e.target.value })
-                  }
+                  onChange={(e) => setDialog({ ...dialog, name: e.target.value })}
                   required
                 />
                 <label>原始 PDF</label>
                 <div className="path source-path">{dialog.source}</div>
                 <label>保存位置</label>
                 <div className="location">
-                  <span className="path">
-                    {dialog.parent || "请选择工程文件夹"}
-                  </span>
+                  <span className="path">{dialog.parent || "请选择工程文件夹"}</span>
                   <button
                     type="button"
                     className="borderbtn"
@@ -990,20 +846,14 @@ export function App() {
                 </div>
                 <label>完整工程路径</label>
                 <output className="path preview" data-testid="project-preview">
-                  {dialog.parent
-                    ? dialog.parent.replace(/[\\/]$/, "") +
-                      separator +
-                      dialog.name
-                    : "尚未选择保存位置"}
+                  {dialog.parent ? dialog.parent.replace(/[\\/]$/, "") + separator + dialog.name : "尚未选择保存位置"}
                 </output>
                 <label className="checkbox">
                   <input
                     type="checkbox"
                     checked={dialog.makeDefault}
                     disabled={busy}
-                    onChange={(e) =>
-                      setDialog({ ...dialog, makeDefault: e.target.checked })
-                    }
+                    onChange={(e) => setDialog({ ...dialog, makeDefault: e.target.checked })}
                   />
                   将此位置设为默认工程文件夹
                 </label>
@@ -1015,9 +865,7 @@ export function App() {
                   id="note-name"
                   autoFocus
                   value={dialog.name}
-                  onChange={(e) =>
-                    setDialog({ ...dialog, name: e.target.value })
-                  }
+                  onChange={(e) => setDialog({ ...dialog, name: e.target.value })}
                   required
                   disabled={busy}
                 />
@@ -1030,9 +878,7 @@ export function App() {
                   autoFocus
                   value={dialog.destination}
                   disabled={busy}
-                  onChange={(e) =>
-                    setDialog({ ...dialog, destination: e.target.value })
-                  }
+                  onChange={(e) => setDialog({ ...dialog, destination: e.target.value })}
                   required
                 />
               </>
@@ -1058,10 +904,7 @@ export function App() {
               <button
                 className="primary"
                 type="submit"
-                disabled={
-                  busy ||
-                  (dialog.type === "create" && (!dialog.parent || !dialog.name))
-                }
+                disabled={busy || (dialog.type === "create" && (!dialog.parent || !dialog.name))}
               >
                 {busy
                   ? "处理中…"
@@ -1077,15 +920,11 @@ export function App() {
       )}
       {uploadConfirm && (
         <div className="modal-backdrop">
-          <div
-            className="modal pdf-upload-confirm"
-            role="dialog"
-            aria-label="确认上传 PDF 到云端解析"
-          >
+          <div className="modal pdf-upload-confirm" role="dialog" aria-label="确认上传 PDF 到云端解析">
             <h2>确认上传 PDF</h2>
             <p>
-              将「{uploadConfirm.request.originalName}」（{uploadConfirm.request.pageCount} 页）
-              上传到 {uploadConfirm.request.provider} 的 {uploadConfirm.request.model} 解析服务，
+              将「{uploadConfirm.request.originalName}」（{uploadConfirm.request.pageCount} 页） 上传到{" "}
+              {uploadConfirm.request.provider} 的 {uploadConfirm.request.model} 解析服务，
               可能产生费用。提交后本机停止不会取消云端任务。
             </p>
             <dl>
@@ -1121,11 +960,7 @@ function FileTree({
   return (
     <div className="filetree">
       {files
-        .filter(
-          (f) =>
-            f.path.startsWith(prefix) &&
-            !f.path.slice(prefix.length).includes("/"),
-        )
+        .filter((f) => f.path.startsWith(prefix) && !f.path.slice(prefix.length).includes("/"))
         .map((f) =>
           f.directory ? (
             <details key={f.path} open>

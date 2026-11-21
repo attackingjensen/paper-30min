@@ -3,7 +3,15 @@ import type { ImportDiagnostic } from "../../shared/arxiv.js";
 import type { ManagedFileContent } from "../../shared/contracts.js";
 import { listSourceSnapshots, publishSourceSnapshot } from "../project-core.js";
 import { assertArxivVersionConsistent } from "./version.js";
-import { ArxivFetchError, fetchDiagnostic, type ArxivFetchResponse, type FetchArxivSnapshotInput, type ArxivSnapshotResult, type ArxivAssetMapping, type ArxivSourceMetadata } from "./fetch.js";
+import {
+  ArxivFetchError,
+  fetchDiagnostic,
+  type ArxivFetchResponse,
+  type FetchArxivSnapshotInput,
+  type ArxivSnapshotResult,
+  type ArxivAssetMapping,
+  type ArxivSourceMetadata,
+} from "./fetch.js";
 
 const ABS_BUDGET_BYTES = 8 * 1024 * 1024;
 const HTML_BUDGET_BYTES = 128 * 1024 * 1024;
@@ -15,8 +23,16 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function fatal(code: string, messageKey: string, stage: ImportDiagnostic["stage"], sourceUrl?: string): ArxivSnapshotResult {
-  return { ok: false, diagnostic: { code, severity: "fatal", stage, messageKey, ...(sourceUrl === undefined ? {} : { sourceUrl }) } };
+function fatal(
+  code: string,
+  messageKey: string,
+  stage: ImportDiagnostic["stage"],
+  sourceUrl?: string,
+): ArxivSnapshotResult {
+  return {
+    ok: false,
+    diagnostic: { code, severity: "fatal", stage, messageKey, ...(sourceUrl === undefined ? {} : { sourceUrl }) },
+  };
 }
 
 function warning(code: string, messageKey: string, sourceUrl: string): ImportDiagnostic {
@@ -66,8 +82,10 @@ function licenseUrl(html: string): string | null {
 
 /** 基本 LaTeXML full-text 容器校验：摘要页、错误页不得冒充正文。 */
 function isFulltextHtml(html: string): boolean {
-  return /<(?:article|div|body)\b[^>]*\bltx_document\b/i.test(html) ||
-    /<article\b[^>]*class=["'][^"']*ltx_document/i.test(html);
+  return (
+    /<(?:article|div|body)\b[^>]*\bltx_document\b/i.test(html) ||
+    /<article\b[^>]*class=["'][^"']*ltx_document/i.test(html)
+  );
 }
 
 function imageSources(html: string): string[] {
@@ -129,11 +147,18 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
   const totalBudget = input.totalAssetBudgetBytes ?? DEFAULT_TOTAL_ASSET_BUDGET_BYTES;
   const concurrency = Math.max(1, input.assetConcurrency ?? DEFAULT_ASSET_CONCURRENCY);
   if (signal?.aborted)
-    return { ok: false, diagnostic: fetchDiagnostic(new ArxivFetchError("arxiv-fetch-cancelled", absUrl), absUrl, "abs") };
+    return {
+      ok: false,
+      diagnostic: fetchDiagnostic(new ArxivFetchError("arxiv-fetch-cancelled", absUrl), absUrl, "abs"),
+    };
 
   let absResponse: ArxivFetchResponse;
   try {
-    absResponse = await transport(absUrl, { budgetBytes: ABS_BUDGET_BYTES, signal, ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}) });
+    absResponse = await transport(absUrl, {
+      budgetBytes: ABS_BUDGET_BYTES,
+      signal,
+      ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
+    });
   } catch (error) {
     return { ok: false, diagnostic: fetchDiagnostic(error, absUrl, "abs") };
   }
@@ -145,7 +170,11 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
 
   let htmlResponse: ArxivFetchResponse;
   try {
-    htmlResponse = await transport(htmlUrl, { budgetBytes: HTML_BUDGET_BYTES, signal, ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}) });
+    htmlResponse = await transport(htmlUrl, {
+      budgetBytes: HTML_BUDGET_BYTES,
+      signal,
+      ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
+    });
   } catch (error) {
     return { ok: false, diagnostic: fetchDiagnostic(error, htmlUrl, "html") };
   }
@@ -201,7 +230,11 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
       if (signal?.aborted) throw new ArxivFetchError("arxiv-fetch-cancelled", url);
       let response: ArxivFetchResponse;
       try {
-        response = await transport(url, { budgetBytes: assetBudget, signal, ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}) });
+        response = await transport(url, {
+          budgetBytes: assetBudget,
+          signal,
+          ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
+        });
       } catch (error) {
         if (error instanceof ArxivFetchError && error.code === "arxiv-fetch-cancelled") throw error;
         if (error instanceof ArxivFetchError && error.code === "arxiv-fetch-budget") {
@@ -243,7 +276,13 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
       assets.set(relative, {
         bytes: response.bytes,
         mime,
-        mapping: { originalUrl: url, path: relative, sha256: hash, size: response.bytes.byteLength, ...(mime === undefined ? {} : { mime }) },
+        mapping: {
+          originalUrl: url,
+          path: relative,
+          sha256: hash,
+          size: response.bytes.byteLength,
+          ...(mime === undefined ? {} : { mime }),
+        },
       });
     }
   }
@@ -251,11 +290,13 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
     await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(queue.length, 1)) }, worker));
   } catch (error) {
     if (signal?.aborted)
-      return { ok: false, diagnostic: fetchDiagnostic(new ArxivFetchError("arxiv-fetch-cancelled", htmlUrl), htmlUrl, "html") };
+      return {
+        ok: false,
+        diagnostic: fetchDiagnostic(new ArxivFetchError("arxiv-fetch-cancelled", htmlUrl), htmlUrl, "html"),
+      };
     return { ok: false, diagnostic: fetchDiagnostic(error, htmlUrl, "html") };
   }
-  if (budgetExceeded !== null)
-    return fatal("arxiv-budget-exceeded", "arxiv.fetch.budget", "fetch", budgetExceeded);
+  if (budgetExceeded !== null) return fatal("arxiv-budget-exceeded", "arxiv.fetch.budget", "fetch", budgetExceeded);
 
   const files: Record<string, ManagedFileContent> = {
     "abs.html": { bytes: absResponse.bytes, mime: "text/html" },
@@ -287,10 +328,12 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
   // 同字节复用：abs、HTML 与全部已接受资产的摘要集合都一致才复用；
   // 任一资产新增、消失或字节变化都建立新快照，不静默丢弃来源变化。
   // 复用前 loadSourceSnapshot 已逐文件核验既有快照登记字节。
-  const newDigests = new Map(Object.entries(files).map(([relative, content]) => {
-    const bytes = content instanceof Uint8Array ? content : content.bytes;
-    return [relative, sha256(bytes)];
-  }));
+  const newDigests = new Map(
+    Object.entries(files).map(([relative, content]) => {
+      const bytes = content instanceof Uint8Array ? content : content.bytes;
+      return [relative, sha256(bytes)];
+    }),
+  );
   for (const existing of await listSourceSnapshots(root)) {
     if (existing.canonicalId !== pinned.canonicalId) continue;
     if (existing.files.length !== newDigests.size) continue;
@@ -302,6 +345,11 @@ export async function fetchArxivSnapshot(input: FetchArxivSnapshotInput): Promis
     const snapshot = await publishSourceSnapshot({ root, files, metadata: { ...metadata } }, input.hooks ?? {});
     return { ok: true, reused: false, snapshot, warnings, bodyReadable: false };
   } catch (error) {
-    return fatal("arxiv-snapshot-publish-failed", "arxiv.snapshot.publishFailed", "snapshot", error instanceof Error ? error.message : String(error));
+    return fatal(
+      "arxiv-snapshot-publish-failed",
+      "arxiv.snapshot.publishFailed",
+      "snapshot",
+      error instanceof Error ? error.message : String(error),
+    );
   }
 }

@@ -3,10 +3,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { MockAgent } from "undici";
-import {
-  arxivFetch,
-  ArxivFetchError,
-} from "../src/main/arxiv/transport";
+import { arxivFetch, ArxivFetchError } from "../src/main/arxiv/transport";
 
 // 受控本地 HTTP 服务：生产 transport 允许 http→https 规范化，
 // 因此本地 fixture 端点走 http://127.0.0.1，不放宽任何生产 TLS/host 检查。
@@ -26,10 +23,14 @@ test.beforeEach(async () => {
   server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     hits.push(url.pathname + url.search);
-    handler(url, (status, headers, body) => {
-      res.writeHead(status, headers);
-      res.end(body);
-    }, res);
+    handler(
+      url,
+      (status, headers, body) => {
+        res.writeHead(status, headers);
+        res.end(body);
+      },
+      res,
+    );
   });
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", listening.resolve);
@@ -58,17 +59,12 @@ test("arxiv-import transport 幂等 GET 返回原始字节、最终 URL 与公�
 });
 
 test("arxiv-import transport 拒绝非法 URL、凭据、协议与非允许 host，且不发起请求", async () => {
-  for (const url of [
-    "https://user:pass@arxiv.org/abs/2401.01234",
-    "ftp://arxiv.org/abs/2401.01234",
-    "not a url",
-  ]) {
+  for (const url of ["https://user:pass@arxiv.org/abs/2401.01234", "ftp://arxiv.org/abs/2401.01234", "not a url"]) {
     const error = await arxivFetch(url, budget).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ArxivFetchError);
     expect((error as ArxivFetchError).code).toBe("arxiv-fetch-invalid-url");
   }
-  const forged = await arxivFetch("https://arxiv.org.evil.com/abs/2401.01234", budget)
-    .catch((e: unknown) => e);
+  const forged = await arxivFetch("https://arxiv.org.evil.com/abs/2401.01234", budget).catch((e: unknown) => e);
   expect((forged as ArxivFetchError).code).toBe("arxiv-fetch-host-rejected");
   expect(hits).toEqual([]);
 });
@@ -88,8 +84,7 @@ test("arxiv-import transport 拒绝到本地/私网地址的重定向（非回�
 
 test("arxiv-import transport 跟随允许清单内的重定向并记录最终 URL", async () => {
   handler = (url, respond) => {
-    if (url.pathname === "/abs/2401.01234")
-      respond(302, { location: `${baseUrl}/abs/2401.01234v2` });
+    if (url.pathname === "/abs/2401.01234") respond(302, { location: `${baseUrl}/abs/2401.01234v2` });
     else respond(200, { "content-type": "text/html" }, "<html>v2</html>");
   };
   const response = await arxivFetch(`${baseUrl}/abs/2401.01234`, budget);
@@ -98,8 +93,7 @@ test("arxiv-import transport 跟随允许清单内的重定向并记录最终 UR
 });
 
 test("arxiv-import transport 重定向超过 5 次即拒绝", async () => {
-  handler = (url, respond) =>
-    respond(302, { location: `${baseUrl}/loop${Number(url.pathname.slice(5) || 0) + 1}` });
+  handler = (url, respond) => respond(302, { location: `${baseUrl}/loop${Number(url.pathname.slice(5) || 0) + 1}` });
   const error = await arxivFetch(`${baseUrl}/loop0`, budget).catch((e: unknown) => e);
   expect((error as ArxivFetchError).code).toBe("arxiv-fetch-redirect-limit");
   expect(hits.length).toBe(6);
@@ -142,7 +136,9 @@ test("arxiv-import transport 尊重有界 Retry-After，超界等待被截断到
   await arxivFetch(`${baseUrl}/html/2401.01234v1`, {
     ...budget,
     retryAfterCapMs: 50,
-    sleep: async (ms) => { waited.push(ms); },
+    sleep: async (ms) => {
+      waited.push(ms);
+    },
   });
   expect(waited).toEqual([50]);
 });
@@ -153,7 +149,9 @@ test("arxiv-import transport 404/403 不重试，直接分类报告", async () =
     handler = (_url, respond) => respond(status, {});
     const error = await arxivFetch(`${baseUrl}/html/2401.01234v9`, {
       ...budget,
-      sleep: async () => { throw new Error("不应等待重试"); },
+      sleep: async () => {
+        throw new Error("不应等待重试");
+      },
     }).catch((e: unknown) => e);
     expect((error as ArxivFetchError).code).toBe("arxiv-fetch-status");
     expect((error as ArxivFetchError).status).toBe(status);
@@ -162,8 +160,7 @@ test("arxiv-import transport 404/403 不重试，直接分类报告", async () =
 });
 
 test("arxiv-import transport 声明大小超预算时不读取正文即中止", async () => {
-  handler = (_url, respond) =>
-    respond(200, { "content-length": String(2 * 1024 * 1024) }, Buffer.alloc(16));
+  handler = (_url, respond) => respond(200, { "content-length": String(2 * 1024 * 1024) }, Buffer.alloc(16));
   const error = await arxivFetch(`${baseUrl}/html/2401.01234v1`, {
     ...budget,
   }).catch((e: unknown) => e);
@@ -177,7 +174,11 @@ test("arxiv-import transport 实际字节超预算即中止，不截断后报成
     let sent = 0;
     const timer = setInterval(() => {
       sent += chunk.length;
-      if (sent > 4 * 1024 * 1024) { clearInterval(timer); raw.end(); return; }
+      if (sent > 4 * 1024 * 1024) {
+        clearInterval(timer);
+        raw.end();
+        return;
+      }
       raw.write(chunk);
     }, 1);
     raw.on("close", () => clearInterval(timer));
@@ -210,7 +211,11 @@ test("arxiv-import transport 活动下载不受短总时限影响，只要持续
     let sent = 0;
     const timer = setInterval(() => {
       sent += chunk.length;
-      if (sent >= 512 * 1024) { clearInterval(timer); raw.end(chunk); return; }
+      if (sent >= 512 * 1024) {
+        clearInterval(timer);
+        raw.end(chunk);
+        return;
+      }
       raw.write(chunk);
     }, 40);
     raw.on("close", () => clearInterval(timer));
@@ -282,7 +287,9 @@ test("arxiv-import transport 生产模式拒绝回环起始与回环重定向，
   // 生产模式跟随到回环的重定向必须被拒绝，本地 /steal 零命中。
   const mock = new MockAgent();
   mock.disableNetConnect();
-  mock.get("https://arxiv.org").intercept({ path: "/abs/2401.01234", method: "GET" })
+  mock
+    .get("https://arxiv.org")
+    .intercept({ path: "/abs/2401.01234", method: "GET" })
     .reply(302, "", { headers: { location: `${baseUrl}/steal` } });
   const redirect = await arxivFetch("https://arxiv.org/abs/2401.01234", {
     ...prod,
@@ -297,7 +304,9 @@ test("arxiv-import transport 生产模式起始 http://arxiv.org 规范化为 ht
   // MockAgent 只登记 https 端点：若起始 http 未被规范化，请求将无法匹配。
   const mock = new MockAgent();
   mock.disableNetConnect();
-  mock.get("https://arxiv.org").intercept({ path: "/abs/2401.01234", method: "GET" })
+  mock
+    .get("https://arxiv.org")
+    .intercept({ path: "/abs/2401.01234", method: "GET" })
     .reply(200, "<html>ok</html>", { headers: { "content-type": "text/html" } });
   const response = await arxivFetch("http://arxiv.org/abs/2401.01234", {
     budgetBytes: 1024 * 1024,
@@ -319,7 +328,10 @@ test("arxiv-import transport 重定向的无界正文被立即断开，不 drain
       sent += chunk.length;
       if (!raw.write(chunk)) clearInterval(timer);
     }, 1);
-    raw.on("close", () => { clearInterval(timer); closed.resolve(); });
+    raw.on("close", () => {
+      clearInterval(timer);
+      closed.resolve();
+    });
   };
   const error = await arxivFetch(`${baseUrl}/abs/2401.01234`, {
     ...budget,

@@ -3,10 +3,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { PNG } from "pngjs";
-import {
-  cropPdfPageRegions,
-  type PdfCropRequest,
-} from "../src/main/pdf/page-crop";
+import { cropPdfPageRegions, type PdfCropRequest } from "../src/main/pdf/page-crop";
 import { parseDocumentTree, validateDocumentAssets } from "../src/shared/document/tree";
 import { testDocumentTree, testDocumentIds } from "./fixtures/document-tree";
 
@@ -49,8 +46,7 @@ function request(overrides: Partial<PdfCropRequest> = {}): PdfCropRequest {
 function inkPixels(png: Buffer): number {
   const image = PNG.sync.read(png);
   let ink = 0;
-  for (let i = 0; i < image.data.length; i += 4)
-    if (image.data[i] < 128) ink++;
+  for (let i = 0; i < image.data.length; i += 4) if (image.data[i] < 128) ink++;
   return ink;
 }
 
@@ -130,10 +126,7 @@ test("page-crop 像素预算超限的单个请求降级为 warning，不拖垮�
   // scale 为每 PDF pt 的设备像素：整页 300x200pt × 20 → 6000x4000 = 24M 像素，超 16M 预算。
   const huge = await cropPdfPageRegions({
     pdf: inkPdf(),
-    requests: [
-      request({ key: "page-1/big", bbox: [0, 0, 1200, 800], scale: 20 }),
-      request({ key: "page-1/b1" }),
-    ],
+    requests: [request({ key: "page-1/big", bbox: [0, 0, 1200, 800], scale: 20 }), request({ key: "page-1/b1" })],
   });
   expect(huge.assets.map((asset) => asset.key)).toEqual(["page-1/b1"]);
   expect(huge.warnings).toHaveLength(1);
@@ -179,15 +172,17 @@ test("page-crop 单请求渲染失败降级 warning，不拖垮其他裁剪", as
 
 test("page-crop 渲染阶段本机中止继续抛出，不降级为 warning", async () => {
   const controller = new AbortController();
-  await expect(cropPdfPageRegions({
-    pdf: inkPdf(),
-    requests: [request()],
-    signal: controller.signal,
-    renderFailure: () => {
-      controller.abort();
-      return true;
-    },
-  })).rejects.toThrow();
+  await expect(
+    cropPdfPageRegions({
+      pdf: inkPdf(),
+      requests: [request()],
+      signal: controller.signal,
+      renderFailure: () => {
+        controller.abort();
+        return true;
+      },
+    }),
+  ).rejects.toThrow();
 });
 
 test("page-crop 损坏 PDF 不抛裸异常：全部请求页级降级", async () => {
@@ -217,9 +212,7 @@ test("document-core 公式块接受可选原页裁剪资产引用并纳入资产
   if (formula.kind !== "formula") throw new Error("formula block missing");
   expect(formula.asset?.path).toBe(assetPath);
   expect(() => validateDocumentAssets(parsed, {})).toThrow(/资产/);
-  expect(() =>
-    validateDocumentAssets(parsed, { [assetPath]: "a".repeat(64) }),
-  ).not.toThrow();
+  expect(() => validateDocumentAssets(parsed, { [assetPath]: "a".repeat(64) })).not.toThrow();
 });
 
 test("document-core 公式块资产路径与摘要不一致时拒绝", () => {

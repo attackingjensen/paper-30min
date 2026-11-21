@@ -137,14 +137,8 @@ test("floor-guard 拦截 Oxlint 抑制注释", async () => {
 test("floor-guard 已登记退役例外按文件豁免删除测试与移除断言", async () => {
   await fixtureRepo();
   await fs.mkdir(path.join(sandbox, "tests"), { recursive: true });
-  await fs.writeFile(
-    path.join(sandbox, "tests/old.spec.ts"),
-    'test("old", () => { expect(1).toBe(1); });\n',
-  );
-  await fs.writeFile(
-    path.join(sandbox, "tests/old2.spec.ts"),
-    'test("old2", () => { expect(2).toBe(2); });\n',
-  );
+  await fs.writeFile(path.join(sandbox, "tests/old.spec.ts"), 'test("old", () => { expect(1).toBe(1); });\n');
+  await fs.writeFile(path.join(sandbox, "tests/old2.spec.ts"), 'test("old2", () => { expect(2).toBe(2); });\n');
   git(sandbox, "add", "-A");
   git(sandbox, "commit", "-qm", "tests");
   await appendException(
@@ -160,10 +154,7 @@ test("floor-guard 已登记退役例外按文件豁免删除测试与移除断�
 test("floor-guard 未登记或过期的退役例外不豁免删除测试", async () => {
   await fixtureRepo();
   await fs.mkdir(path.join(sandbox, "tests"), { recursive: true });
-  await fs.writeFile(
-    path.join(sandbox, "tests/old.spec.ts"),
-    'test("old", () => { expect(1).toBe(1); });\n',
-  );
+  await fs.writeFile(path.join(sandbox, "tests/old.spec.ts"), 'test("old", () => { expect(1).toBe(1); });\n');
   git(sandbox, "add", "-A");
   git(sandbox, "commit", "-qm", "tests");
   await appendException(

@@ -78,13 +78,7 @@ async function initialProject(name: string, tree: DocumentTree) {
   const created = await createProject({ parent: sandbox, name });
   tree.paperId = created.manifest.paper.id;
   const initialSource = await source(created.root);
-  const revision = await commitTree(
-    created.root,
-    null,
-    initialSource.sourceSnapshotId,
-    tree,
-    tree,
-  );
+  const revision = await commitTree(created.root, null, initialSource.sourceSnapshotId, tree, tree);
   return { created, initialSource, revision };
 }
 
@@ -94,13 +88,7 @@ test("document-core 多轮真实发布后 current 保留本地修正，source-ba
   const local = structuredClone(base);
   setFirstTrailingText(local, " local edit");
   const localSource = await source(created.root);
-  const localRevision = await commitTree(
-    created.root,
-    first.revisionId,
-    localSource.sourceSnapshotId,
-    local,
-    base,
-  );
+  const localRevision = await commitTree(created.root, first.revisionId, localSource.sourceSnapshotId, local, base);
 
   const candidateV2 = structuredClone(base);
   setThirdSentence(candidateV2, "source v2");
@@ -124,15 +112,12 @@ test("document-core 多轮真实发布后 current 保留本地修正，source-ba
   });
   const publishedV3 = await publishDocumentMergeCandidate(mergeV3);
 
-  expect((await openProject(created.root)).manifest.paper.currentRevision)
-    .toBe(publishedV3.revisionId);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(publishedV3.revisionId);
   const current = await readRevisionDocument(created.root, publishedV3.revisionId, "document");
   const sourceBase = await readRevisionDocument(created.root, publishedV3.revisionId, "source-base");
-  expect(current.sentences[selectionIds.sentence].content.at(-1))
-    .toEqual({ kind: "text", text: " local edit" });
+  expect(current.sentences[selectionIds.sentence].content.at(-1)).toEqual({ kind: "text", text: " local edit" });
   expect(projectSentenceText(current, selectionIds.thirdSentence)).toBe("source v3");
-  expect(sourceBase.sentences[selectionIds.sentence].content.at(-1))
-    .not.toEqual({ kind: "text", text: " local edit" });
+  expect(sourceBase.sentences[selectionIds.sentence].content.at(-1)).not.toEqual({ kind: "text", text: " local edit" });
   expect(projectSentenceText(sourceBase, selectionIds.thirdSentence)).toBe("source v3");
 });
 
@@ -142,13 +127,7 @@ test("document-core 未解决冲突不推进 current，显式解决后才发布"
   const local = structuredClone(base);
   setThirdSentence(local, "local edit");
   const localSource = await source(created.root);
-  const localRevision = await commitTree(
-    created.root,
-    first.revisionId,
-    localSource.sourceSnapshotId,
-    local,
-    base,
-  );
+  const localRevision = await commitTree(created.root, first.revisionId, localSource.sourceSnapshotId, local, base);
   const candidateTree = structuredClone(base);
   setThirdSentence(candidateTree, "source edit");
   const candidateSource = await source(created.root);
@@ -160,20 +139,17 @@ test("document-core 未解决冲突不推进 current，显式解决后才发布"
   });
 
   await expect(publishDocumentMergeCandidate(candidate)).rejects.toThrow(/未解决|冲突/);
-  expect((await openProject(created.root)).manifest.paper.currentRevision)
-    .toBe(localRevision.revisionId);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(localRevision.revisionId);
 
-  const resolved = resolveDocumentMergeCandidateConflict(
-    candidate,
-    candidate.conflicts[0].id,
-    "candidate",
-  );
+  const resolved = resolveDocumentMergeCandidateConflict(candidate, candidate.conflicts[0].id, "candidate");
   const published = await publishDocumentMergeCandidate(resolved);
   expect(published.revisionId).toBe(candidate.revisionId);
-  expect(projectSentenceText(
-    await readRevisionDocument(created.root, published.revisionId, "document"),
-    selectionIds.thirdSentence,
-  )).toBe("source edit");
+  expect(
+    projectSentenceText(
+      await readRevisionDocument(created.root, published.revisionId, "document"),
+      selectionIds.thirdSentence,
+    ),
+  ).toBe("source edit");
 });
 
 test("document-core 发布前 current 已被其他操作推进时保留旧 current 与候选", async () => {
@@ -191,19 +167,11 @@ test("document-core 发布前 current 已被其他操作推进时保留旧 curre
   const other = structuredClone(base);
   setFirstTrailingText(other, " other current");
   const otherSource = await source(created.root);
-  const otherRevision = await commitTree(
-    created.root,
-    first.revisionId,
-    otherSource.sourceSnapshotId,
-    other,
-    base,
-  );
+  const otherRevision = await commitTree(created.root, first.revisionId, otherSource.sourceSnapshotId, other, base);
 
   await expect(publishDocumentMergeCandidate(candidate)).rejects.toThrow(/baseRevision|current|基线/);
-  expect((await openProject(created.root)).manifest.paper.currentRevision)
-    .toBe(otherRevision.revisionId);
-  expect((await openProject(created.root)).manifest.paper.currentRevision)
-    .not.toBe(candidate.revisionId);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(otherRevision.revisionId);
+  expect((await openProject(created.root)).manifest.paper.currentRevision).not.toBe(candidate.revisionId);
 });
 
 test("document-core 合并发布携带 current 与 source-base 引用的资产并集", async () => {
@@ -229,30 +197,18 @@ test("document-core 合并发布携带 current 与 source-base 引用的资产�
       [`assets/${sourceHash}.png`]: { bytes: sourceAsset, mime: "image/png" },
     },
   });
-  const first = await commitTree(
-    created.root,
-    null,
-    initialSource.sourceSnapshotId,
-    base,
-    base,
-    { [`assets/${sourceHash}.png`]: { bytes: sourceAsset, mime: "image/png" } },
-  );
+  const first = await commitTree(created.root, null, initialSource.sourceSnapshotId, base, base, {
+    [`assets/${sourceHash}.png`]: { bytes: sourceAsset, mime: "image/png" },
+  });
   const local = structuredClone(base);
   const localFigure = local.blocks.find((block) => block.id === figureId);
   if (localFigure?.kind !== "figure") throw new Error("fixture 图片块类型错误");
   localFigure.asset = { path: `assets/${localHash}.png`, sha256: localHash, mime: "image/png" };
   const localSource = await source(created.root);
-  const localRevision = await commitTree(
-    created.root,
-    first.revisionId,
-    localSource.sourceSnapshotId,
-    local,
-    base,
-    {
-      [`assets/${sourceHash}.png`]: { bytes: sourceAsset, mime: "image/png" },
-      [`assets/${localHash}.png`]: { bytes: localAsset, mime: "image/png" },
-    },
-  );
+  const localRevision = await commitTree(created.root, first.revisionId, localSource.sourceSnapshotId, local, base, {
+    [`assets/${sourceHash}.png`]: { bytes: sourceAsset, mime: "image/png" },
+    [`assets/${localHash}.png`]: { bytes: localAsset, mime: "image/png" },
+  });
   const candidateTree = structuredClone(base);
   setThirdSentence(candidateTree, "source edit");
   const candidateSource = await publishSourceSnapshot({
@@ -271,10 +227,9 @@ test("document-core 合并发布携带 current 与 source-base 引用的资产�
 
   const published = await publishDocumentMergeCandidate(candidate);
   const revision = await readRevision(created.root, published.revisionId);
-  expect(revision.files.map((file) => file.path)).toEqual(expect.arrayContaining([
-    `assets/${sourceHash}.png`,
-    `assets/${localHash}.png`,
-  ]));
+  expect(revision.files.map((file) => file.path)).toEqual(
+    expect.arrayContaining([`assets/${sourceHash}.png`, `assets/${localHash}.png`]),
+  );
   const current = await readRevisionDocument(created.root, published.revisionId, "document");
   const sourceBase = await readRevisionDocument(created.root, published.revisionId, "source-base");
   const currentFigure = current.blocks.find((block) => block.id === figureId);

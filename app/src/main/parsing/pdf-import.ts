@@ -1,14 +1,8 @@
 import type { Dispatcher } from "undici";
 import { createHash } from "node:crypto";
 import { readDiagnosticArray, type ImportDiagnostic } from "../../shared/arxiv.js";
-import type {
-  PdfParseSourceSnapshotRecord,
-  ProjectRevisionRecord,
-} from "../../shared/contracts.js";
-import type {
-  BaiduUploadConfirmationRequest,
-  PdfParseTaskRecord,
-} from "../../shared/parsing.js";
+import type { PdfParseSourceSnapshotRecord, ProjectRevisionRecord } from "../../shared/contracts.js";
+import type { BaiduUploadConfirmationRequest, PdfParseTaskRecord } from "../../shared/parsing.js";
 import { openProject, readRevision } from "../project-core.js";
 import {
   executeNewPdfParse,
@@ -30,10 +24,7 @@ import {
   type PublishParseDocumentResult,
 } from "./parse-convert.js";
 import type { DocumentMergeCandidate } from "../document/merge.js";
-import {
-  publishDocumentMergeCandidate,
-  resolveDocumentMergeCandidateConflict,
-} from "../document/merge.js";
+import { publishDocumentMergeCandidate, resolveDocumentMergeCandidateConflict } from "../document/merge.js";
 import { loadUpdateCandidate } from "../document/candidate-store.js";
 import { verificationInheritCommitHooks } from "../pdf/verification.js";
 
@@ -160,8 +151,7 @@ export async function reparsePdfToCandidate(input: {
   return withActive(input.root, input.signal, async ({ signal, setBatch }) => {
     const opened = await openProject(input.root);
     const current = opened.manifest.paper.currentRevision;
-    if (current === null)
-      throw new Error("首次正文尚未发布，请使用首次导入而不是重解析。");
+    if (current === null) throw new Error("首次正文尚未发布，请使用首次导入而不是重解析。");
     if (current !== input.baseRevision)
       throw new Error(`baseRevision 已变化：候选基线为 ${input.baseRevision}，current 为 ${current}。`);
     const started = await executeNewPdfParse(
@@ -181,8 +171,7 @@ export async function reparsePdfToCandidate(input: {
       return { outcome: "incomplete", task: started.task, diagnostic: started.task.diagnostic! };
     // 候选身份在任务受理后固定；恢复沿用同一候选，不重新分配。
     if (started.task.candidateRevisionId === undefined) {
-      started.task.candidateRevisionId =
-        candidateIdentity(`${started.task.parseBatchId}:${input.baseRevision}`);
+      started.task.candidateRevisionId = candidateIdentity(`${started.task.parseBatchId}:${input.baseRevision}`);
       await saveTask(opened.root, started.task);
     }
     const options: ReparseContinueOptions = {
@@ -190,7 +179,13 @@ export async function reparsePdfToCandidate(input: {
       ...(input.config.dispatcher === undefined ? {} : { dispatcher: input.config.dispatcher }),
     };
     if (started.outcome === "downloaded")
-      return continueToCandidate(opened.root, started.task, input.baseRevision, { response: started.response }, options);
+      return continueToCandidate(
+        opened.root,
+        started.task,
+        input.baseRevision,
+        { response: started.response },
+        options,
+      );
     return continueToCandidate(opened.root, started.task, input.baseRevision, { snapshot: started.snapshot }, options);
   });
 }
@@ -323,16 +318,26 @@ export async function importPdfToCurrent(input: {
     if (started.outcome === "incomplete")
       return { outcome: "incomplete", task: started.task, diagnostic: started.task.diagnostic! };
     if (started.outcome === "downloaded") {
-      return continueToCurrent(input.root, started.task, { response: started.response }, {
-        signal,
-        ...(input.config.dispatcher === undefined ? {} : { dispatcher: input.config.dispatcher }),
-        ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
-      });
+      return continueToCurrent(
+        input.root,
+        started.task,
+        { response: started.response },
+        {
+          signal,
+          ...(input.config.dispatcher === undefined ? {} : { dispatcher: input.config.dispatcher }),
+          ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
+        },
+      );
     }
-    return continueToCurrent(input.root, started.task, { snapshot: started.snapshot }, {
-      signal,
-      ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
-    });
+    return continueToCurrent(
+      input.root,
+      started.task,
+      { snapshot: started.snapshot },
+      {
+        signal,
+        ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
+      },
+    );
   });
 }
 
@@ -355,19 +360,14 @@ export async function resumePdfImport(input: {
     if (!task) throw new Error("PDF 云端任务不存在。");
     setBatch(task.parseBatchId);
     if (task.phase === "candidate-complete") {
-      if (
-        task.candidateRevisionId === undefined ||
-        opened.manifest.paper.currentRevision !== task.candidateRevisionId
-      )
+      if (task.candidateRevisionId === undefined || opened.manifest.paper.currentRevision !== task.candidateRevisionId)
         throw new Error("任务记录与 current 不一致，保留现场检查。");
       const revision = await readRevision(opened.root, task.candidateRevisionId);
       if (revision.sourceSnapshotId !== task.parseSourceSnapshotId)
         throw new Error("任务关联的解析快照与 current 来源不一致，保留现场。");
       const metadata = revision.pdfParse;
       const warnings = readDiagnosticArray(
-        metadata !== null && typeof metadata === "object"
-          ? (metadata as Record<string, unknown>).warnings
-          : undefined,
+        metadata !== null && typeof metadata === "object" ? (metadata as Record<string, unknown>).warnings : undefined,
       );
       return { outcome: "published", task, revision, warnings };
     }
@@ -376,13 +376,17 @@ export async function resumePdfImport(input: {
       task.parseSourceSnapshotId = snapshot.sourceSnapshotId;
       task.sanitizedSha256 = snapshot.sanitizedSha256;
       delete task.diagnostic;
-      return continueToCurrent(opened.root, task, { snapshot }, {
-        signal,
-        ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
-      });
+      return continueToCurrent(
+        opened.root,
+        task,
+        { snapshot },
+        {
+          signal,
+          ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
+        },
+      );
     }
-    if (input.config === undefined)
-      throw new Error("恢复未完成云端任务需要本机解析配置；离线重新转换只需已发布快照。");
+    if (input.config === undefined) throw new Error("恢复未完成云端任务需要本机解析配置；离线重新转换只需已发布快照。");
     const resumed = await executeResumePdfParse(
       {
         root: input.root,
@@ -398,16 +402,26 @@ export async function resumePdfImport(input: {
       return { outcome: "incomplete", task: resumed.task, diagnostic: resumed.task.diagnostic! };
     if (resumed.outcome === "cancelled") return { outcome: "cancelled" };
     if (resumed.outcome === "downloaded") {
-      return continueToCurrent(opened.root, resumed.task, { response: resumed.response }, {
-        signal,
-        ...(input.config.dispatcher === undefined ? {} : { dispatcher: input.config.dispatcher }),
-        ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
-      });
+      return continueToCurrent(
+        opened.root,
+        resumed.task,
+        { response: resumed.response },
+        {
+          signal,
+          ...(input.config.dispatcher === undefined ? {} : { dispatcher: input.config.dispatcher }),
+          ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
+        },
+      );
     }
-    return continueToCurrent(opened.root, resumed.task, { snapshot: resumed.snapshot }, {
-      signal,
-      ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
-    });
+    return continueToCurrent(
+      opened.root,
+      resumed.task,
+      { snapshot: resumed.snapshot },
+      {
+        signal,
+        ...(input.convertHooks === undefined ? {} : { convertHooks: input.convertHooks }),
+      },
+    );
   });
 }
 
@@ -465,8 +479,7 @@ export async function resumePdfReparse(input: {
     const tasks = await listBaiduPdfParseTasks(input.root);
     const task = tasks.find((entry) => entry.parseBatchId === input.parseBatchId);
     if (!task) throw new Error("PDF 云端任务不存在。");
-    if (task.baseRevision === undefined)
-      throw new Error("该任务不是重解析／更新任务，请使用首次导入恢复。");
+    if (task.baseRevision === undefined) throw new Error("该任务不是重解析／更新任务，请使用首次导入恢复。");
     setBatch(task.parseBatchId);
     const options: ReparseContinueOptions = {
       signal,
@@ -517,9 +530,10 @@ export async function publishParseCandidate(input: {
   if (!task) throw new Error("PDF 云端任务不存在。");
   if (task.baseRevision !== undefined && task.baseRevision !== input.baseRevision)
     throw new Error(`baseRevision 与任务记录不一致：候选基线为 ${task.baseRevision}，请求为 ${input.baseRevision}。`);
-  const candidateRevisionId = task.baseRevision === undefined
-    ? reconvertIdentity(task.parseBatchId, input.baseRevision)
-    : task.candidateRevisionId ?? reconvertIdentity(task.parseBatchId, input.baseRevision);
+  const candidateRevisionId =
+    task.baseRevision === undefined
+      ? reconvertIdentity(task.parseBatchId, input.baseRevision)
+      : (task.candidateRevisionId ?? reconvertIdentity(task.parseBatchId, input.baseRevision));
   let candidate: DocumentMergeCandidate;
   let stored: DocumentMergeCandidate | null = null;
   try {
@@ -549,11 +563,14 @@ export async function publishParseCandidate(input: {
   for (const resolution of input.resolutions ?? []) {
     resolved = resolveDocumentMergeCandidateConflict(resolved, resolution.conflictId, resolution.choice);
   }
-  return publishDocumentMergeCandidate(resolved, verificationInheritCommitHooks({
-    root: resolved.root,
-    baseRevision: resolved.baseRevision,
-    revisionId: resolved.revisionId,
-    sourceSnapshotId: resolved.sourceSnapshotId,
-    document: resolved.document,
-  }));
+  return publishDocumentMergeCandidate(
+    resolved,
+    verificationInheritCommitHooks({
+      root: resolved.root,
+      baseRevision: resolved.baseRevision,
+      revisionId: resolved.revisionId,
+      sourceSnapshotId: resolved.sourceSnapshotId,
+      document: resolved.document,
+    }),
+  );
 }

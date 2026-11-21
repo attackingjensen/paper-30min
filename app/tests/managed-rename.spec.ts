@@ -43,7 +43,9 @@ test("managed-rename 重试预算耗尽后原样抛错，不静默吞掉", async
   await expect(
     renameManaged("a.tmp", "task.json", {
       rename,
-      delay: async (ms) => { delays.push(ms); },
+      delay: async (ms) => {
+        delays.push(ms);
+      },
     }),
   ).rejects.toMatchObject({ code: "EPERM" });
   expect(calls).toBe(4); // 首次 + 3 次重试
@@ -56,9 +58,9 @@ test("managed-rename 非瞬时错误不重试，立即抛出", async () => {
     calls += 1;
     throw errno("EACCES");
   };
-  await expect(
-    renameManaged("a.tmp", "task.json", { rename, delay: async () => {} }),
-  ).rejects.toMatchObject({ code: "EACCES" });
+  await expect(renameManaged("a.tmp", "task.json", { rename, delay: async () => {} })).rejects.toMatchObject({
+    code: "EACCES",
+  });
   expect(calls).toBe(1);
 });
 

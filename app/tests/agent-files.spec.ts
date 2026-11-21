@@ -6,9 +6,7 @@ import { ProjectService } from "../src/main/project-service";
 import { createProjectTools } from "../src/main/agent-tools";
 
 test("公共工程写入保护基线、取消与所有权", async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "paper30min-tool-files-"),
-  );
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paper30min-tool-files-"));
   const service = new ProjectService(path.join(directory, "config.json"));
   try {
     const project = (await service.dispatch({
@@ -25,14 +23,8 @@ test("公共工程写入保护基线、取消与所有权", async () => {
     const file = path.join(root, "notes", "note.md");
     await fs.writeFile(file, "Original\r\n");
     const tools = createProjectTools(root, service, () => true, []);
-    const run = (
-      name: string,
-      args: unknown,
-      signal = new AbortController().signal,
-    ) =>
-      tools
-        .find((tool) => tool.name === name)!
-        .execute("call", args, signal, undefined, undefined as any);
+    const run = (name: string, args: unknown, signal = new AbortController().signal) =>
+      tools.find((tool) => tool.name === name)!.execute("call", args, signal, undefined, undefined as any);
     await run("read", { path: "notes/note.md" });
     await fs.writeFile(file, "External\r\n");
     const conflict = await run("edit", {
@@ -51,18 +43,14 @@ test("公共工程写入保护基线、取消与所有权", async () => {
     await run("read", { path: "notes/note.md" });
     await run("edit", {
       path: "notes/note.md",
-      edits: [
-        { oldText: "External", newText: "Edited" },
-      ],
+      edits: [{ oldText: "External", newText: "Edited" }],
     });
     expect(await fs.readFile(file, "utf8")).toBe("Edited\r\n");
     await run("write", {
       path: "notes/new/note.md",
       content: "New\r\n",
     });
-    expect(
-      await fs.readFile(path.join(root, "notes/new/note.md"), "utf8"),
-    ).toBe("New\r\n");
+    expect(await fs.readFile(path.join(root, "notes/new/note.md"), "utf8")).toBe("New\r\n");
     const corrected = await run("write", {
       path: "text/parsed.md",
       content: "changed",
@@ -72,15 +60,9 @@ test("公共工程写入保护基线、取消与所有权", async () => {
     expect(blocked.details).toMatchObject({ failed: true });
     const controller = new AbortController();
     controller.abort();
-    await expect(
-      service.writeAgentFile(root, file, "late", null, controller.signal),
-    ).rejects.toThrow();
+    await expect(service.writeAgentFile(root, file, "late", null, controller.signal)).rejects.toThrow();
     expect(await fs.readFile(file, "utf8")).toContain("Edited");
-    await fs.symlink(
-      path.join(root, "text"),
-      path.join(root, "notes/link"),
-      "junction",
-    );
+    await fs.symlink(path.join(root, "text"), path.join(root, "notes/link"), "junction");
     const link = await run("write", {
       path: "notes/link/parsed.md",
       content: "bad",

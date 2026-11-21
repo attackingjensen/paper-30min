@@ -1,2 +1,6 @@
-.parsing-settings { max-width: 640px; }
-.parsing-settings .settings-group-heading h2 { margin: 0; }
+.parsing-settings {
+  max-width: 640px;
+}
+.parsing-settings .settings-group-heading h2 {
+  margin: 0;
+}

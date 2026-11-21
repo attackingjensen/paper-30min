@@ -15,19 +15,19 @@
 
 ## 模块与依赖
 
-| Module id | Responsibility | Depends on |
-|---|---|---|
-| `project-core` | 新工程清单与目录契约、论文与文档身份、普通文件树、来源快照和 revision 的持久化；工程不再强制包含 PDF，不再登记阅读地图 | — |
-| `document-core` | 规范文档树、章节／段落／句子／公式等结构、稳定文本锚点、当前正文版本、候选更新、三方对比与冲突、锚点延续或失效 | `project-core` |
-| `arxiv-import` | arXiv URL／ID 与固定版本导入、LaTeXML HTML 快照、元数据、图片本地化、公式与交叉引用、离线重开、失败诊断及明确 PDF 回退 | `document-core` |
-| `pdf-import` | PDF 云端解析到同一文档树、来源与机器诊断、可选原页、候选重解析、用户／Agent 核验范围及修改后未复核状态 | `document-core` |
-| `reader` | Full 结构化原文渲染、图片／公式／表格／交叉引用、阅读位置、语言视图与正文侧栏的宿主；不实现五级层级 | `document-core` |
-| `translation` | 中英全文翻译、渐进生成、逐段可用、原子保留、缺口补译、缓存、语言切换及正文更新后的 stale 判断 | `document-core`, `reader` |
-| `annotations-results` | 文本高亮与批注、文本锚点链接、Markdown 笔记／精解／记忆卡片的正文侧栏跳转卡片；不含独立问答卡和自动论证关系 | `document-core`, `reader` |
-| `workspace` | 任意中栏页面两栏、独立页签组、当前窗格、侧边打开、标签拖拽、草稿与布局恢复、成果卡片打开偏好 | `reader`, `annotations-results` |
-| `agent-integration` | 保留 Pi 会话与右侧交互，接入当前正文和选区、显式原文修正、Markdown 成果生成、精确任务来源补查；移除完整审阅门禁和旧 PDF 引用工具 | `document-core`, `pdf-import`, `annotations-results` |
-| `pdf-comparison` | 可选 PDF 原页、可重建的 unit→页／区域映射、结构化正文与 PDF 双向点击同步；不恢复正式 PDF 引用字典 | `arxiv-import`, `pdf-import`, `workspace` |
-| `legacy-projects` | 盘点并确定旧 v2 工程的迁移、只读或明确拒绝策略，处理旧成果、会话和引用，不允许静默误读或错误重挂 | `document-core`, `annotations-results`, `agent-integration` |
+| Module id             | Responsibility                                                                                                                   | Depends on                                                  |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `project-core`        | 新工程清单与目录契约、论文与文档身份、普通文件树、来源快照和 revision 的持久化；工程不再强制包含 PDF，不再登记阅读地图           | —                                                           |
+| `document-core`       | 规范文档树、章节／段落／句子／公式等结构、稳定文本锚点、当前正文版本、候选更新、三方对比与冲突、锚点延续或失效                   | `project-core`                                              |
+| `arxiv-import`        | arXiv URL／ID 与固定版本导入、LaTeXML HTML 快照、元数据、图片本地化、公式与交叉引用、离线重开、失败诊断及明确 PDF 回退           | `document-core`                                             |
+| `pdf-import`          | PDF 云端解析到同一文档树、来源与机器诊断、可选原页、候选重解析、用户／Agent 核验范围及修改后未复核状态                           | `document-core`                                             |
+| `reader`              | Full 结构化原文渲染、图片／公式／表格／交叉引用、阅读位置、语言视图与正文侧栏的宿主；不实现五级层级                              | `document-core`                                             |
+| `translation`         | 中英全文翻译、渐进生成、逐段可用、原子保留、缺口补译、缓存、语言切换及正文更新后的 stale 判断                                    | `document-core`, `reader`                                   |
+| `annotations-results` | 文本高亮与批注、文本锚点链接、Markdown 笔记／精解／记忆卡片的正文侧栏跳转卡片；不含独立问答卡和自动论证关系                      | `document-core`, `reader`                                   |
+| `workspace`           | 任意中栏页面两栏、独立页签组、当前窗格、侧边打开、标签拖拽、草稿与布局恢复、成果卡片打开偏好                                     | `reader`, `annotations-results`                             |
+| `agent-integration`   | 保留 Pi 会话与右侧交互，接入当前正文和选区、显式原文修正、Markdown 成果生成、精确任务来源补查；移除完整审阅门禁和旧 PDF 引用工具 | `document-core`, `pdf-import`, `annotations-results`        |
+| `pdf-comparison`      | 可选 PDF 原页、可重建的 unit→页／区域映射、结构化正文与 PDF 双向点击同步；不恢复正式 PDF 引用字典                                | `arxiv-import`, `pdf-import`, `workspace`                   |
+| `legacy-projects`     | 盘点并确定旧 v2 工程的迁移、只读或明确拒绝策略，处理旧成果、会话和引用，不允许静默误读或错误重挂                                 | `document-core`, `annotations-results`, `agent-integration` |
 
 ## Build order
 

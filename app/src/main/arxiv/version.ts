@@ -48,7 +48,7 @@ function citationIdentity(html: string): AbsIdentity | null {
 /** abs 页面 <title> 的 [id] 前缀给出该页面对应的 base ID。 */
 function absTitleBaseId(html: string): string | null {
   const match = /<title>\s*\[([^\]]+)\]/i.exec(html);
-  return match ? identityFromText(match[1])?.baseId ?? null : null;
+  return match ? (identityFromText(match[1])?.baseId ?? null) : null;
 }
 
 interface HistoryEntry {
@@ -105,11 +105,9 @@ export async function resolveArxivVersion(
     if (!entry) return fail("arxiv-version-missing", "arxiv.version.missing", absUrl);
     return { ok: true, reference, absUrl };
   }
-  if (history.length === 0)
-    return fail("arxiv-version-unresolved", "arxiv.version.unresolved", absUrl);
+  if (history.length === 0) return fail("arxiv-version-unresolved", "arxiv.version.unresolved", absUrl);
   const latest = history.reduce((best, entry) => (entry.version > best.version ? entry : best));
-  if (latest.withdrawn)
-    return fail("arxiv-version-withdrawn", "arxiv.version.withdrawn", absUrl);
+  if (latest.withdrawn) return fail("arxiv-version-withdrawn", "arxiv.version.withdrawn", absUrl);
   return {
     ok: true,
     reference: {
@@ -128,16 +126,14 @@ export type ArxivVersionStatus =
   | { ok: false; diagnostic: ImportDiagnostic };
 
 export function arxivVersionStatus(html: string, pinned: ArxivReference, absUrl: string): ArxivVersionStatus {
-  if (pinned.version === null)
-    return fail("arxiv-version-unpinned", "arxiv.version.unpinned", absUrl);
+  if (pinned.version === null) return fail("arxiv-version-unpinned", "arxiv.version.unpinned", absUrl);
   const identity = citationIdentity(html);
   const titleBaseId = absTitleBaseId(html);
   const pageBaseId = identity?.baseId ?? titleBaseId;
   if (pageBaseId !== null && pageBaseId !== pinned.baseId)
     return fail("arxiv-identity-mismatch", "arxiv.identity.mismatch", absUrl);
   const history = submissionHistory(html, pinned.baseId);
-  if (history.length === 0)
-    return fail("arxiv-version-unresolved", "arxiv.version.unresolved", absUrl);
+  if (history.length === 0) return fail("arxiv-version-unresolved", "arxiv.version.unresolved", absUrl);
   if (!history.some((entry) => entry.version === pinned.version))
     return fail("arxiv-version-missing", "arxiv.version.missing", absUrl);
   const latest = history.reduce((best, entry) => (entry.version > best.version ? entry : best));
@@ -156,8 +152,7 @@ export function arxivVersionStatus(html: string, pinned: ArxivReference, absUrl:
 /** 显式目标版本的存在与撤稿核验（SPEC §8.2）：更新候选获取前只读该版本 abs；
  * 撤稿版本拒绝生成候选，不自动采用上一版。 */
 export function assertArxivVersionAvailable(html: string, pinned: ArxivReference, absUrl: string): ArxivVersionGuard {
-  if (pinned.version === null)
-    return fail("arxiv-version-unpinned", "arxiv.version.unpinned", absUrl);
+  if (pinned.version === null) return fail("arxiv-version-unpinned", "arxiv.version.unpinned", absUrl);
   const identity = citationIdentity(html);
   const titleBaseId = absTitleBaseId(html);
   const pageBaseId = identity?.baseId ?? titleBaseId;
@@ -178,8 +173,7 @@ export function assertArxivVersionConsistent(
   finalUrl: string,
   evidence: ArxivVersionEvidence = {},
 ): ArxivVersionGuard {
-  if (pinned.version === null)
-    return fail("arxiv-version-unpinned", "arxiv.version.unpinned", finalUrl);
+  if (pinned.version === null) return fail("arxiv-version-unpinned", "arxiv.version.unpinned", finalUrl);
   let url: URL;
   try {
     url = new URL(finalUrl);

@@ -1,18 +1,11 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type HTMLAttributes,
-} from "react";
+import { useEffect, useRef, useState, type CSSProperties, type HTMLAttributes } from "react";
 
 type Side = "left" | "right";
 type Widths = Partial<Record<Side, number>>;
 const storageKey = "paper30min.panel-widths";
 const minimum = { left: 155, right: 240 };
 const maximum = { left: 360, right: 560 };
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(Math.max(value, min), max);
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 function readWidths(): Widths {
   try {
@@ -20,10 +13,7 @@ function readWidths(): Widths {
     return Object.fromEntries(
       (["left", "right"] as const)
         .filter((side) => Number.isFinite(saved?.[side]))
-        .map((side) => [
-          side,
-          clamp(saved[side], minimum[side], maximum[side]),
-        ]),
+        .map((side) => [side, clamp(saved[side], minimum[side], maximum[side])]),
     );
   } catch {
     return {};
@@ -65,20 +55,11 @@ export function usePanelLayout(leftOpen: boolean, rightOpen: boolean) {
   const rightWidth = clamp(
     preferred.right ?? defaultRight,
     minimum.right,
-    Math.min(
-      maximum.right,
-      Math.max(minimum.right, budget - (leftOpen ? minimum.left : 10)),
-    ),
+    Math.min(maximum.right, Math.max(minimum.right, budget - (leftOpen ? minimum.left : 10))),
   );
-  const leftMax = Math.min(
-    maximum.left,
-    Math.max(minimum.left, budget - (rightOpen && !overlay ? rightWidth : 0)),
-  );
+  const leftMax = Math.min(maximum.left, Math.max(minimum.left, budget - (rightOpen && !overlay ? rightWidth : 0)));
   const leftWidth = clamp(preferred.left ?? defaultLeft, minimum.left, leftMax);
-  const rightMax = Math.min(
-    maximum.right,
-    Math.max(minimum.right, budget - (leftOpen ? leftWidth : 10)),
-  );
+  const rightMax = Math.min(maximum.right, Math.max(minimum.right, budget - (leftOpen ? leftWidth : 10)));
   const widths = { left: leftWidth, right: rightWidth };
   const limits = { left: leftMax, right: rightMax };
 
@@ -116,9 +97,7 @@ export function usePanelLayout(leftOpen: boolean, rightOpen: boolean) {
       onPointerMove(event) {
         const start = drag.current;
         if (start?.pointer !== event.pointerId || start.side !== side) return;
-        update(
-          start.width + (event.clientX - start.x) * (side === "left" ? 1 : -1),
-        );
+        update(start.width + (event.clientX - start.x) * (side === "left" ? 1 : -1));
       },
       onPointerUp: finish,
       onPointerCancel: finish,
@@ -127,12 +106,7 @@ export function usePanelLayout(leftOpen: boolean, rightOpen: boolean) {
         const direction = side === "left" ? 1 : -1;
         if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
           event.preventDefault();
-          update(
-            widths[side] +
-              (event.key === "ArrowRight" ? 1 : -1) *
-                direction *
-                (event.shiftKey ? 40 : 10),
-          );
+          update(widths[side] + (event.key === "ArrowRight" ? 1 : -1) * direction * (event.shiftKey ? 40 : 10));
         } else if (event.key === "Home" || event.key === "End") {
           event.preventDefault();
           update(event.key === "Home" ? minimum[side] : limits[side]);

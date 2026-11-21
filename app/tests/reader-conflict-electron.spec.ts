@@ -2,13 +2,7 @@
 // 受控 fixture 端点（回环 http）驱动检查更新→候选→逐项解决→发布全链路；
 // 未解决不能发布，解决状态落盘，基线被推进时拒绝发布且保留解决结果；
 // 发布成功后 reader 按新 revision 恢复正文。渲染进程零远端请求。
-import {
-  test,
-  expect,
-  _electron as electron,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -47,12 +41,17 @@ function fullRoutes(): Map<string, { bytes: Buffer; mime: string }> {
     [ABS_PATH, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2], latest: 1 })), mime: "text/html" }],
     [`/abs/${ID}v2`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1, 2], latest: 2 })), mime: "text/html" }],
     [HTML_PATH, { bytes: Buffer.from(latexmlDocument()), mime: "text/html" }],
-    [`/html/${ID}v2`, {
-      bytes: Buffer.from(latexmlDocument()
-        .replace('content="2401.01234v1"', 'content="2401.01234v2"')
-        .replace("We study energy and mass.", "We study energy and mass. source rewrite")),
-      mime: "text/html",
-    }],
+    [
+      `/html/${ID}v2`,
+      {
+        bytes: Buffer.from(
+          latexmlDocument()
+            .replace('content="2401.01234v1"', 'content="2401.01234v2"')
+            .replace("We study energy and mass.", "We study energy and mass. source rewrite"),
+        ),
+        mime: "text/html",
+      },
+    ],
     [FIG1_PATH, { bytes: PNG1, mime: "image/png" }],
     [FIG2_PATH, { bytes: PNG2, mime: "image/png" }],
   ]);
@@ -92,9 +91,7 @@ async function launch() {
   const visible = process.env.PAPER30MIN_TEST_WINDOW === "visible";
   const env: Record<string, string> = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
@@ -112,18 +109,12 @@ async function launch() {
 }
 
 async function closeDesktopForCleanup() {
-  if (
-    !desktopProcess ||
-    desktopProcess.exitCode !== null ||
-    desktopProcess.signalCode !== null
-  ) return;
+  if (!desktopProcess || desktopProcess.exitCode !== null || desktopProcess.signalCode !== null) return;
   await desktop.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = (...args: unknown[]) => {
       const options = args.at(-1) as Electron.MessageBoxSyncOptions;
-      if (
-        options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" ||
-        options.buttons?.[1] !== "放弃并关闭"
-      ) throw new Error("测试清理遇到非预期的原生确认框。");
+      if (options.message !== "有未保存的文档，确定放弃编辑并关闭吗？" || options.buttons?.[1] !== "放弃并关闭")
+        throw new Error("测试清理遇到非预期的原生确认框。");
       return 1;
     };
   });
@@ -156,26 +147,42 @@ function invoke<T>(command: CoreCommand): Promise<T> {
 /** 导入 v1 并制造本地修正：摘要句被本地改写，与 v2 来源改写形成 content 冲突。 */
 async function conflictedProject(name: string) {
   const imported = await invoke<ArxivImportCommandResult>({
-    type: "coreArxivImport", parent: sandbox, name, input: `${ID}v1`,
-    operationId: `op-${name}`, baseUrl,
+    type: "coreArxivImport",
+    parent: sandbox,
+    name,
+    input: `${ID}v1`,
+    operationId: `op-${name}`,
+    baseUrl,
   });
   expect(imported.ok, imported.ok ? "" : JSON.stringify(imported.diagnostic)).toBe(true);
   if (!imported.ok) throw new Error(imported.diagnostic.messageKey);
   const root = imported.root;
   const revision = imported.revision;
   const tree = await invoke<DocumentTree>({
-    type: "coreReadDocument", root, revisionId: revision.revisionId, tree: "document",
+    type: "coreReadDocument",
+    root,
+    revisionId: revision.revisionId,
+    tree: "document",
   });
   const sourceBase = await invoke<DocumentTree>({
-    type: "coreReadDocument", root, revisionId: revision.revisionId, tree: "source-base",
+    type: "coreReadDocument",
+    root,
+    revisionId: revision.revisionId,
+    tree: "source-base",
   });
   const unit = Object.values(tree.units).find((candidate) =>
     candidate.sentenceIds.some((id) =>
-      tree.sentences[id].content.some((part) => part.kind === "text" && part.text.includes("We study energy"))))!;
+      tree.sentences[id].content.some((part) => part.kind === "text" && part.text.includes("We study energy")),
+    ),
+  )!;
   const sentenceId = unit.sentenceIds[0];
   tree.sentences[sentenceId].content = [{ kind: "text", text: "We study energy and mass. local rewrite" }];
   // 编辑提交携带基线全部受管资产。
-  const revisionRecord = await invoke<ProjectRevisionRecord>({ type: "coreReadRevision", root, revisionId: revision.revisionId });
+  const revisionRecord = await invoke<ProjectRevisionRecord>({
+    type: "coreReadRevision",
+    root,
+    revisionId: revision.revisionId,
+  });
   const files: Record<string, Uint8Array> = {
     "document.json": new TextEncoder().encode(JSON.stringify(tree)),
     "source-base.json": new TextEncoder().encode(JSON.stringify(sourceBase)),
@@ -186,9 +193,14 @@ async function conflictedProject(name: string) {
     if (!file.path.startsWith("assets/")) continue;
     files[file.path] = new Uint8Array(await fs.readFile(path.join(root, revisionRecord.path, file.path)));
   }
-  const edited = await page.evaluate<ProjectRevisionRecord, { root: string; baseRevision: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }>(({ root, baseRevision, sourceSnapshotId, files }) =>
-    window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
-  { root, baseRevision: revision.revisionId, sourceSnapshotId: revision.sourceSnapshotId, files });
+  const edited = await page.evaluate<
+    ProjectRevisionRecord,
+    { root: string; baseRevision: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }
+  >(
+    ({ root, baseRevision, sourceSnapshotId, files }) =>
+      window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
+    { root, baseRevision: revision.revisionId, sourceSnapshotId: revision.sourceSnapshotId, files },
+  );
   return { root, imported, edited };
 }
 
@@ -295,9 +307,23 @@ test("reader 冲突宿主：发布前 current 被推进时拒绝，解决结果�
   }
   await expect(host.getByRole("button", { name: "发布候选为新 current" })).toBeEnabled();
   // 另一操作经 IPC 推进 current。
-  const tree = await invoke<DocumentTree>({ type: "coreReadDocument", root, revisionId: edited.revisionId, tree: "document" });
-  const sourceBase = await invoke<DocumentTree>({ type: "coreReadDocument", root, revisionId: edited.revisionId, tree: "source-base" });
-  const revisionRecord = await invoke<ProjectRevisionRecord>({ type: "coreReadRevision", root, revisionId: edited.revisionId });
+  const tree = await invoke<DocumentTree>({
+    type: "coreReadDocument",
+    root,
+    revisionId: edited.revisionId,
+    tree: "document",
+  });
+  const sourceBase = await invoke<DocumentTree>({
+    type: "coreReadDocument",
+    root,
+    revisionId: edited.revisionId,
+    tree: "source-base",
+  });
+  const revisionRecord = await invoke<ProjectRevisionRecord>({
+    type: "coreReadRevision",
+    root,
+    revisionId: edited.revisionId,
+  });
   const files: Record<string, Uint8Array> = {
     "document.json": new TextEncoder().encode(JSON.stringify(tree)),
     "source-base.json": new TextEncoder().encode(JSON.stringify(sourceBase)),
@@ -308,9 +334,14 @@ test("reader 冲突宿主：发布前 current 被推进时拒绝，解决结果�
     if (!file.path.startsWith("assets/")) continue;
     files[file.path] = new Uint8Array(await fs.readFile(path.join(root, revisionRecord.path, file.path)));
   }
-  const advanced = await page.evaluate<ProjectRevisionRecord, { root: string; baseRevision: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }>(({ root, baseRevision, sourceSnapshotId, files }) =>
-    window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
-  { root, baseRevision: edited.revisionId, sourceSnapshotId: revisionRecord.sourceSnapshotId, files });
+  const advanced = await page.evaluate<
+    ProjectRevisionRecord,
+    { root: string; baseRevision: string; sourceSnapshotId: string; files: Record<string, Uint8Array> }
+  >(
+    ({ root, baseRevision, sourceSnapshotId, files }) =>
+      window.desktop.invoke({ type: "coreCommit", root, baseRevision, sourceSnapshotId, files }),
+    { root, baseRevision: edited.revisionId, sourceSnapshotId: revisionRecord.sourceSnapshotId, files },
+  );
   // 等待 reader 按新 current 完成重读（watchProject → epoch 刷新），
   // 避免发布点击落在 loading 卸载窗口上丢失。
   await expect(reader).toHaveAttribute("data-revision-id", advanced.revisionId, { timeout: 15000 });
@@ -319,8 +350,7 @@ test("reader 冲突宿主：发布前 current 被推进时拒绝，解决结果�
   await expect(host.locator(".conflict-error").filter({ hasText: "已被另一操作推进" })).toBeVisible();
   await expect(host.locator(".conflict-error").filter({ hasText: "baseMismatch" })).toBeVisible();
   // 解决结果保留：全部项仍是 resolved。
-  for (let index = 0; index < count; index++)
-    await expect(items.nth(index)).toHaveClass(/resolved/);
+  for (let index = 0; index < count; index++) await expect(items.nth(index)).toHaveClass(/resolved/);
   // current 是外部推进结果，正文仍可读。
   const current = await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root });
   expect(current.currentRevision?.revisionId).toBe(advanced.revisionId);

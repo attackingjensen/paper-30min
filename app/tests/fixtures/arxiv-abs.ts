@@ -12,9 +12,7 @@ export function absHtml(options: AbsFixtureOptions): string {
   const latest = options.latest ?? Math.max(...options.versions);
   const history = options.versions
     .map((version) => {
-      const withdrawn = options.withdrawn?.includes(version)
-        ? ' <span>(withdrawn)</span>'
-        : "";
+      const withdrawn = options.withdrawn?.includes(version) ? " <span>(withdrawn)</span>" : "";
       return `<b><a href="/abs/${options.id}v${version}">[v${version}]</a></b> Mon, 1 Jan 2024 00:00:00 UTC (100 KB)${withdrawn}`;
     })
     .join("\n      ");

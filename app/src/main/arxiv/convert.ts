@@ -15,11 +15,7 @@ import {
   type ProjectCommitHooks,
 } from "../project-core.js";
 import type { ArxivAssetMapping, ArxivSourceMetadata } from "./fetch.js";
-import type {
-  ManagedFileContent,
-  ProjectRevisionRecord,
-  SourceSnapshotRecord,
-} from "../../shared/contracts.js";
+import type { ManagedFileContent, ProjectRevisionRecord, SourceSnapshotRecord } from "../../shared/contracts.js";
 
 /** 转换器持久版本：算法变化必须递增（SPEC §4.11 确定性契约）。 */
 const ARXIV_CONVERTER_VERSION = 1;
@@ -29,9 +25,7 @@ type Element = DefaultTreeAdapterMap["element"];
 type ParentNode = DefaultTreeAdapterMap["parentNode"];
 
 type UnitKind = DocumentTree["units"][string]["kind"];
-type AtomInput = AtomValue extends infer T
-  ? T extends AtomValue ? Omit<T, "id" | "unitId"> : never
-  : never;
+type AtomInput = AtomValue extends infer T ? (T extends AtomValue ? Omit<T, "id" | "unitId"> : never) : never;
 
 interface UnitInput {
   kind: UnitKind;
@@ -118,11 +112,7 @@ function fatal(
   };
 }
 
-function warning(
-  code: string,
-  messageKey: string,
-  sourceAlias?: string,
-): ImportDiagnostic {
+function warning(code: string, messageKey: string, sourceAlias?: string): ImportDiagnostic {
   return {
     code,
     severity: "warning",
@@ -249,8 +239,26 @@ const IMAGE_MIME_EXTENSIONS: Record<string, string> = {
 };
 
 const RAW_HTML_TAGS = new Set([
-  "blockquote", "br", "code", "em", "li", "ol", "p", "pre", "span", "strong",
-  "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+  "blockquote",
+  "br",
+  "code",
+  "em",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "ul",
 ]);
 
 function escapeHtml(text: string): string {
@@ -259,8 +267,7 @@ function escapeHtml(text: string): string {
 
 /** 白名单投影：保留允许标签的结构，剥离属性与不支持元素，文本转义。 */
 function projectRawHtml(node: Node): string {
-  if (node.nodeName === "#text")
-    return escapeHtml((node as DefaultTreeAdapterMap["textNode"]).value);
+  if (node.nodeName === "#text") return escapeHtml((node as DefaultTreeAdapterMap["textNode"]).value);
   if (!isElement(node)) return isParent(node) ? node.childNodes.map(projectRawHtml).join("") : "";
   if (!RAW_HTML_TAGS.has(node.tagName)) {
     return isParent(node) ? node.childNodes.map(projectRawHtml).join("") : "";
@@ -508,8 +515,7 @@ export function convertLatexml(input: ConvertLatexmlInput): ConvertLatexmlResult
     return fatal("arxiv-convert-html-invalid", "arxiv.convert.htmlInvalid", "convert");
   }
   const article = findClass(document, "ltx_document");
-  if (!article)
-    return fatal("arxiv-convert-container-missing", "arxiv.convert.containerMissing", "convert");
+  if (!article) return fatal("arxiv-convert-container-missing", "arxiv.convert.containerMissing", "convert");
 
   const sourceIds = new Set<string>();
   collectIds(article, sourceIds);
@@ -528,22 +534,18 @@ export function convertLatexml(input: ConvertLatexmlInput): ConvertLatexmlResult
   try {
     walkChildren(article, context);
   } catch (error) {
-    if (error instanceof CoverageError)
-      return fatal(error.code, error.messageKey, "convert", error.sourceAlias);
+    if (error instanceof CoverageError) return fatal(error.code, error.messageKey, "convert", error.sourceAlias);
     throw error;
   }
 
-  if (!builder.hasBodySections())
-    return fatal("arxiv-convert-body-missing", "arxiv.convert.bodyMissing", "convert");
+  if (!builder.hasBodySections()) return fatal("arxiv-convert-body-missing", "arxiv.convert.bodyMissing", "convert");
 
   resolveReferences(builder, sourceIds);
 
   const systematic = builder.systematicFailure();
-  if (systematic)
-    return fatal(systematic.code, systematic.messageKey, "convert");
+  if (systematic) return fatal(systematic.code, systematic.messageKey, "convert");
 
-  if (!builder.tree.blocks.length)
-    return fatal("arxiv-convert-empty", "arxiv.convert.empty", "convert");
+  if (!builder.tree.blocks.length) return fatal("arxiv-convert-empty", "arxiv.convert.empty", "convert");
 
   try {
     parseDocumentTree(builder.tree, input.paperId);
@@ -608,8 +610,13 @@ function walkNode(node: Node, context: WalkContext): void {
   const element = node;
   if (IGNORED_TAGS.has(element.tagName)) return;
 
-  if (hasClass(element, "ltx_title_document") || hasClass(element, "ltx_authors") ||
-      hasClass(element, "ltx_dates") || hasClass(element, "ltx_creator")) return;
+  if (
+    hasClass(element, "ltx_title_document") ||
+    hasClass(element, "ltx_authors") ||
+    hasClass(element, "ltx_dates") ||
+    hasClass(element, "ltx_creator")
+  )
+    return;
 
   if (hasClass(element, "ltx_abstract")) {
     walkAbstract(element, context);
@@ -619,9 +626,14 @@ function walkNode(node: Node, context: WalkContext): void {
     walkBibliography(element, context);
     return;
   }
-  if (hasClass(element, "ltx_section") || hasClass(element, "ltx_subsection") ||
-      hasClass(element, "ltx_subsubsection") || hasClass(element, "ltx_appendix") ||
-      hasClass(element, "ltx_chapter") || hasClass(element, "ltx_part")) {
+  if (
+    hasClass(element, "ltx_section") ||
+    hasClass(element, "ltx_subsection") ||
+    hasClass(element, "ltx_subsubsection") ||
+    hasClass(element, "ltx_appendix") ||
+    hasClass(element, "ltx_chapter") ||
+    hasClass(element, "ltx_part")
+  ) {
     walkSection(element, context);
     return;
   }
@@ -645,8 +657,11 @@ function walkNode(node: Node, context: WalkContext): void {
     walkTableFigure(element, context);
     return;
   }
-  if (hasClass(element, "ltx_equation") || hasClass(element, "ltx_eqn_table") ||
-      hasClass(element, "ltx_equationgroup")) {
+  if (
+    hasClass(element, "ltx_equation") ||
+    hasClass(element, "ltx_eqn_table") ||
+    hasClass(element, "ltx_equationgroup")
+  ) {
     walkEquation(element, context);
     return;
   }
@@ -730,8 +745,10 @@ function walkAbstract(abstract: Element, context: WalkContext): void {
       walkNode(child, context);
     }
   }
-  context.builder.registerAlias(attr(abstract, "id") ?? "abstract",
-    Object.values(context.builder.tree.units).find((unit) => unit.kind === "abstract")?.id ?? "");
+  context.builder.registerAlias(
+    attr(abstract, "id") ?? "abstract",
+    Object.values(context.builder.tree.units).find((unit) => unit.kind === "abstract")?.id ?? "",
+  );
 }
 
 function walkBibliography(bibliography: Element, context: WalkContext): void {
@@ -864,10 +881,9 @@ function emitFootnote(note: Element, context: WalkContext, parts: InlinePart[], 
   const mark = findClass(note, "ltx_note_mark");
   const content = findClass(note, "ltx_note_content");
   const footnoteText = content ? visibleText(content) : visibleText(note);
-  const footnoteUnitId = context.builder.addUnit(
-    { kind: "footnote", aliases: aliasesOf(note) },
-    [[{ kind: "text", text: footnoteText || " " }]],
-  );
+  const footnoteUnitId = context.builder.addUnit({ kind: "footnote", aliases: aliasesOf(note) }, [
+    [{ kind: "text", text: footnoteText || " " }],
+  ]);
   const atomId = context.builder.addAtom(unitId, {
     kind: "footnote-reference",
     text: mark ? visibleText(mark) : "[note]",
@@ -894,8 +910,7 @@ function emitCitation(cite: Element, context: WalkContext, parts: InlinePart[], 
     ...(targets.length ? { sourceAliases: targets } : {}),
   });
   parts.push({ kind: "atom", atomId });
-  for (const target of targets)
-    context.builder.pendingRefs.push({ atomId, kind: "citation", target });
+  for (const target of targets) context.builder.pendingRefs.push({ atomId, kind: "citation", target });
 }
 
 function emitAnchor(anchor: Element, context: WalkContext, parts: InlinePart[], unitId: string): void {
@@ -929,9 +944,7 @@ function emitAnchor(anchor: Element, context: WalkContext, parts: InlinePart[], 
     return;
   }
   // 危险或不支持的 URL：只保留文本，不进入运行时。
-  context.builder.warnings.push(
-    warning("arxiv-convert-link-blocked", "arxiv.convert.linkBlocked", attr(anchor, "id")),
-  );
+  context.builder.warnings.push(warning("arxiv-convert-link-blocked", "arxiv.convert.linkBlocked", attr(anchor, "id")));
   parts.push({ kind: "text", text });
 }
 
@@ -967,10 +980,11 @@ function walkFigure(figure: Element, context: WalkContext): void {
 
   // 无 caption 的图也要有合法锚定单元：交叉引用只能指向 unit，不能指向 block。
   // 非叶容器（含子图）的 alias 持久化到锚定单元，不只留在临时映射。
-  const anchorUnitId = captionUnitId ?? builder.addUnit(
-    { kind: "paragraph", ...(figureAliases ? { aliases: figureAliases } : {}) },
-    [[{ kind: "text", text: figureAnchorText(figure) }]],
-  );
+  const anchorUnitId =
+    captionUnitId ??
+    builder.addUnit({ kind: "paragraph", ...(figureAliases ? { aliases: figureAliases } : {}) }, [
+      [{ kind: "text", text: figureAnchorText(figure) }],
+    ]);
 
   const images = subfigures.length ? [] : collectImages(figure);
   if (subfigures.length) {
@@ -1003,9 +1017,7 @@ function walkFigure(figure: Element, context: WalkContext): void {
   } else if (image && image.tagName === "svg") {
     // 原始 SVG 保留在快照；revision 不执行其中内容，降级为占位与警告。
     figureWarning = "arxiv.convert.svgNotRendered";
-    builder.warnings.push(
-      warning("arxiv-convert-svg-inline", "arxiv.convert.svgInline", attr(figure, "id")),
-    );
+    builder.warnings.push(warning("arxiv-convert-svg-inline", "arxiv.convert.svgInline", attr(figure, "id")));
   } else {
     figureWarning = "arxiv.convert.assetUnavailable";
   }
@@ -1048,9 +1060,7 @@ function walkFigure(figure: Element, context: WalkContext): void {
   const figureAlias = attr(figure, "id");
   if (figureAlias) builder.registerAlias(figureAlias, anchorUnitId);
   if (asset === null && figureWarning === "arxiv.convert.assetUnavailable") {
-    builder.warnings.push(
-      warning("arxiv-convert-asset-missing", "arxiv.convert.assetMissing", figureAlias),
-    );
+    builder.warnings.push(warning("arxiv-convert-asset-missing", "arxiv.convert.assetMissing", figureAlias));
   }
 }
 
@@ -1121,11 +1131,7 @@ function resolveAsset(image: Element, context: WalkContext): { path: string; sha
   if (!bytes) return null;
   const hash = createHash("sha256").update(bytes).digest("hex");
   if (hash !== mapping.sha256) {
-    throw new CoverageError(
-      "arxiv-convert-asset-digest",
-      "arxiv.convert.assetDigest",
-      mapping.path,
-    );
+    throw new CoverageError("arxiv-convert-asset-digest", "arxiv.convert.assetDigest", mapping.path);
   }
   const mime = mapping.mime ?? "application/octet-stream";
   if (!IMAGE_MIME_EXTENSIONS[mime]) return null;
@@ -1145,14 +1151,11 @@ function walkTableFigure(figure: Element, context: WalkContext): void {
       splitSentences([{ kind: "text", text: captionTextOf(caption) || " " }]),
     );
   }
-  const tabular = findClass(figure, "ltx_tabular") ??
-    (figure.tagName === "table" ? figure : null);
+  const tabular = findClass(figure, "ltx_tabular") ?? (figure.tagName === "table" ? figure : null);
   const rows = tabular ? tableRows(tabular, context) : null;
   // 无 caption 表格也要有合法锚定单元：交叉引用只能指向 unit，不能指向 block。
-  const anchorUnitId = captionUnitId ?? builder.addUnit(
-    { kind: "paragraph" },
-    [[{ kind: "text", text: tableAnchorText(figure) }]],
-  );
+  const anchorUnitId =
+    captionUnitId ?? builder.addUnit({ kind: "paragraph" }, [[{ kind: "text", text: tableAnchorText(figure) }]]);
   const aliases = aliasesOf(figure);
   if (rows) {
     const blockId = randomUUID();
@@ -1165,10 +1168,7 @@ function walkTableFigure(figure: Element, context: WalkContext): void {
       ...(aliases ? { sourceAliases: aliases } : {}),
     };
     // 按块顺序落树：caption 在前，单元格按行序；table block 只 push 一次。
-    const ordered = [
-      ...(captionUnitId ? [captionUnitId] : []),
-      ...rows.flat().map((cell) => cell.unitId),
-    ];
+    const ordered = [...(captionUnitId ? [captionUnitId] : []), ...rows.flat().map((cell) => cell.unitId)];
     for (const [index, unitId] of ordered.entries()) {
       const deferred = builder.takeDeferred(unitId);
       builder.flushUnit(
@@ -1194,9 +1194,7 @@ function walkTableFigure(figure: Element, context: WalkContext): void {
       unitId: captionUnitId,
     });
   }
-  builder.warnings.push(
-    warning("arxiv-convert-table-lossy", "arxiv.convert.tableLossy", attr(figure, "id")),
-  );
+  builder.warnings.push(warning("arxiv-convert-table-lossy", "arxiv.convert.tableLossy", attr(figure, "id")));
   emitRawBlock(figure, context, ["arxiv.convert.tableLossy"]);
   const alias = attr(figure, "id");
   if (alias) builder.registerAlias(alias, anchorUnitId);
@@ -1280,8 +1278,7 @@ function tableRows(tabular: Element, context: WalkContext): CellSpan[][] | null 
       );
       row.push({ unitId, rowSpan, columnSpan });
       for (let dr = 0; dr < rowSpan; dr += 1)
-        for (let dc = 0; dc < columnSpan; dc += 1)
-          occupied.set(key(rowIndex + dr, columnIndex + dc), true);
+        for (let dc = 0; dc < columnSpan; dc += 1) occupied.set(key(rowIndex + dr, columnIndex + dc), true);
       columnIndex += columnSpan;
     }
     rows.push(row);
@@ -1305,8 +1302,7 @@ function walkEquation(equation: Element, context: WalkContext): string | null {
   if (hasClass(equation, "ltx_equationgroup")) {
     const members: Element[] = [];
     const collect = (node: Node): void => {
-      if (isElement(node) && node !== equation &&
-          (hasClass(node, "ltx_equation") || hasClass(node, "ltx_eqn_table"))) {
+      if (isElement(node) && node !== equation && (hasClass(node, "ltx_equation") || hasClass(node, "ltx_eqn_table"))) {
         members.push(node);
         return;
       }
@@ -1353,10 +1349,9 @@ function walkEquation(equation: Element, context: WalkContext): string | null {
   }
   const text = tagText ? `${representation.text} ${tagText}` : representation.text;
   // 编号锚定单元先落树：交叉引用只能指向单元，公式块本身不占用单元。
-  const anchorUnitId = builder.addUnit(
-    { kind: "paragraph" },
-    [[{ kind: "text", text: tagText || representation.text }]],
-  );
+  const anchorUnitId = builder.addUnit({ kind: "paragraph" }, [
+    [{ kind: "text", text: tagText || representation.text }],
+  ]);
   builder.tree.blocks.push({
     id: randomUUID(),
     sectionId: builder.currentSection,
@@ -1389,11 +1384,7 @@ function emitBlockMath(math: Element, context: WalkContext): void {
   });
 }
 
-function emitRawBlock(
-  element: Element,
-  context: WalkContext,
-  limitations: string[],
-): void {
+function emitRawBlock(element: Element, context: WalkContext, limitations: string[]): void {
   const builder = context.builder;
   const html = projectRawHtml(element);
   const text = visibleText(element) || " ";
@@ -1473,12 +1464,10 @@ export async function convertArxivSnapshotTree(input: {
       "convert",
     );
   }
-  if (snapshot.kind !== "arxiv")
-    return fatal("arxiv-convert-snapshot-kind", "arxiv.convert.snapshotKind", "convert");
+  if (snapshot.kind !== "arxiv") return fatal("arxiv-convert-snapshot-kind", "arxiv.convert.snapshotKind", "convert");
   const metadata = snapshot as unknown as ArxivSourceMetadata;
   const htmlRecord = snapshot.files.find((file) => file.path === "document.html");
-  if (!htmlRecord)
-    return fatal("arxiv-convert-html-missing", "arxiv.convert.htmlMissing", "convert");
+  if (!htmlRecord) return fatal("arxiv-convert-html-missing", "arxiv.convert.htmlMissing", "convert");
 
   const readAsset = async (relative: string): Promise<Uint8Array> => {
     const record = snapshot.files.find((file) => file.path === relative);
@@ -1531,9 +1520,7 @@ export async function convertArxivSnapshotTree(input: {
 
 /** 从受管快照离线转换并发布首个 current；不修改快照，不访问网络。
  * current 已存在时拒绝直写：更新候选走 document-core 合并路径（update.ts）。 */
-export async function convertArxivSnapshot(
-  input: ConvertArxivSnapshotInput,
-): Promise<ConvertArxivSnapshotResult> {
+export async function convertArxivSnapshot(input: ConvertArxivSnapshotInput): Promise<ConvertArxivSnapshotResult> {
   // 已发布候选的恢复：不重新转换（节点 UUID 不可复现），核验磁盘字节后只推进 current。
   // 提前到资产读取之前：仅推进指针不需要加载 HTML 与资产字节。
   if (input.completePublished && input.revisionId !== undefined) {
@@ -1542,8 +1529,8 @@ export async function convertArxivSnapshot(
     const validated: { value: { warnings: ImportDiagnostic[]; converterVersion: number } | null } = { value: null };
     const validateMetadata = (revision: ProjectRevisionRecord): void => {
       const arxivMeta = revision.arxiv;
-      const record: Record<string, unknown> = arxivMeta !== null && typeof arxivMeta === "object"
-        ? { ...arxivMeta } : {};
+      const record: Record<string, unknown> =
+        arxivMeta !== null && typeof arxivMeta === "object" ? { ...arxivMeta } : {};
       let warnings: ImportDiagnostic[];
       try {
         warnings = readDiagnosticArray(record.warnings);
@@ -1553,24 +1540,34 @@ export async function convertArxivSnapshot(
           `arxiv.import.recordCorrupt:${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      if (typeof record.converterVersion !== "number" ||
-          !Number.isInteger(record.converterVersion) || record.converterVersion < 1) {
+      if (
+        typeof record.converterVersion !== "number" ||
+        !Number.isInteger(record.converterVersion) ||
+        record.converterVersion < 1
+      ) {
         throw new ArxivMetadataError("arxiv-convert-version-missing", "arxiv.convert.versionMissing");
       }
       validated.value = { warnings, converterVersion: record.converterVersion };
     };
     try {
       const revision = await completePublishedRevision(
-        input.root, input.revisionId, input.hooks?.commitHooks ?? {}, validateMetadata,
+        input.root,
+        input.revisionId,
+        input.hooks?.commitHooks ?? {},
+        validateMetadata,
       );
       if (validated.value === null)
         return fatal("arxiv-convert-version-missing", "arxiv.convert.versionMissing", "convert");
-      return { ok: true, revision, warnings: validated.value.warnings, converterVersion: validated.value.converterVersion };
+      return {
+        ok: true,
+        revision,
+        warnings: validated.value.warnings,
+        converterVersion: validated.value.converterVersion,
+      };
     } catch (error) {
       // 按错误类型分类，不做消息 substring 匹配：无关提交故障即使消息含相同文本
       // 也返回 publish-failed，不冒充元数据校验失败。
-      if (error instanceof ArxivMetadataError)
-        return fatal(error.code, error.messageKey, "convert");
+      if (error instanceof ArxivMetadataError) return fatal(error.code, error.messageKey, "convert");
       const message = error instanceof Error ? error.message : String(error);
       return fatal("arxiv-convert-publish-failed", `arxiv.convert.publishFailed:${message}`, "publish");
     }
@@ -1637,19 +1634,22 @@ export async function convertArxivSnapshot(
     );
   }
   try {
-    const revision = await commitRevision({
-      root: input.root,
-      sourceSnapshotId: input.sourceSnapshotId,
-      baseRevision,
-      revisionId,
-      files,
-      metadata: {
-        arxiv: {
-          converterVersion: converted.converterVersion,
-          warnings: converted.warnings,
+    const revision = await commitRevision(
+      {
+        root: input.root,
+        sourceSnapshotId: input.sourceSnapshotId,
+        baseRevision,
+        revisionId,
+        files,
+        metadata: {
+          arxiv: {
+            converterVersion: converted.converterVersion,
+            warnings: converted.warnings,
+          },
         },
       },
-    }, input.hooks?.commitHooks);
+      input.hooks?.commitHooks,
+    );
     return {
       ok: true,
       revision,

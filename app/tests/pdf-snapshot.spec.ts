@@ -3,18 +3,9 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
-import {
-  createProject,
-  listSourceSnapshots,
-  openProject,
-  readSourceSnapshot,
-} from "../src/main/project-core";
+import { createProject, listSourceSnapshots, openProject, readSourceSnapshot } from "../src/main/project-core";
 import { snapshotLocalPdf, snapshotArxivPdf } from "../src/main/pdf/snapshot";
-import {
-  ArxivFetchError,
-  type ArxivFetchResponse,
-  type ArxivTransport,
-} from "../src/main/arxiv/fetch";
+import { ArxivFetchError, type ArxivFetchResponse, type ArxivTransport } from "../src/main/arxiv/fetch";
 import type { PdfFallbackRequest } from "../src/shared/arxiv";
 
 const SAMPLE = path.resolve("tests/fixtures/sample_paper.pdf");
@@ -252,9 +243,7 @@ test("pdf-import 同字节但本地与 arXiv 来源不复用，且各自保留�
   expect(afterArxiv.ok).toBe(true);
   if (!firstArxiv.ok || !afterArxiv.ok) return;
   expect(afterArxiv.reused).toBe(false);
-  expect(afterArxiv.snapshot.sourceSnapshotId).not.toBe(
-    firstArxiv.snapshot.sourceSnapshotId,
-  );
+  expect(afterArxiv.snapshot.sourceSnapshotId).not.toBe(firstArxiv.snapshot.sourceSnapshotId);
   expect(afterArxiv.snapshot).not.toHaveProperty("arxiv");
   const repeatedLocal = await snapshotLocalPdf({
     root: arxivFirst.root,
@@ -263,9 +252,7 @@ test("pdf-import 同字节但本地与 arXiv 来源不复用，且各自保留�
   expect(repeatedLocal.ok).toBe(true);
   if (!repeatedLocal.ok) return;
   expect(repeatedLocal.reused).toBe(true);
-  expect(repeatedLocal.snapshot.sourceSnapshotId).toBe(
-    afterArxiv.snapshot.sourceSnapshotId,
-  );
+  expect(repeatedLocal.snapshot.sourceSnapshotId).toBe(afterArxiv.snapshot.sourceSnapshotId);
 });
 
 test("pdf-import 同字节但 arXiv 固定版本不同不复用", async () => {
@@ -286,9 +273,7 @@ test("pdf-import 同字节但 arXiv 固定版本不同不复用", async () => {
   expect(first.ok).toBe(true);
   if (!second.ok || !first.ok) return;
   expect(first.reused).toBe(false);
-  expect(first.snapshot.sourceSnapshotId).not.toBe(
-    second.snapshot.sourceSnapshotId,
-  );
+  expect(first.snapshot.sourceSnapshotId).not.toBe(second.snapshot.sourceSnapshotId);
   expect(second.snapshot.arxiv?.version).toBe(2);
   expect(first.snapshot.arxiv?.version).toBe(1);
   expect(await fs.readdir(path.join(root, "sources"))).toHaveLength(2);
@@ -301,9 +286,7 @@ test("pdf-import 同字节但 arXiv 固定版本不同不复用", async () => {
   expect(repeated.ok).toBe(true);
   if (!repeated.ok) return;
   expect(repeated.reused).toBe(true);
-  expect(repeated.snapshot.sourceSnapshotId).toBe(
-    second.snapshot.sourceSnapshotId,
-  );
+  expect(repeated.snapshot.sourceSnapshotId).toBe(second.snapshot.sourceSnapshotId);
 });
 
 test("pdf-import arXiv 传输失败保留 PDF 诊断且不发布", async () => {
@@ -335,9 +318,7 @@ test("pdf-import arXiv 下载内容不是有效 PDF 时不发布", async () => {
   const result = await snapshotArxivPdf({
     root,
     request: fallbackRequest(),
-    transport: pdfTransport(
-      Buffer.from("%PDF-1.7\nbroken download\n"),
-    ).transport,
+    transport: pdfTransport(Buffer.from("%PDF-1.7\nbroken download\n")).transport,
   });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.diagnostic.code).toBe("pdf-invalid");

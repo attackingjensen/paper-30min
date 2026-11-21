@@ -41,38 +41,45 @@ async function committedProject(name = "恢复基线") {
 
 test("project-core 工程目录已创建但清单未提交时保留现场并给出恢复诊断", async () => {
   const root = path.join(sandbox, "创建中断");
-  await expect(createProject({ parent: sandbox, name: "创建中断" }, {
-    onCommitPoint(point) {
-      if (point === "project-manifest") throw new Error("injected manifest failure");
-    },
-  })).rejects.toThrow("injected manifest failure");
+  await expect(
+    createProject(
+      { parent: sandbox, name: "创建中断" },
+      {
+        onCommitPoint(point) {
+          if (point === "project-manifest") throw new Error("injected manifest failure");
+        },
+      },
+    ),
+  ).rejects.toThrow("injected manifest failure");
 
   expect((await fs.stat(root)).isDirectory()).toBe(true);
   await expect(openProject(root)).rejects.toThrow(/清单|未完成创建/);
-  await expect(createProject({ parent: sandbox, name: "创建中断" }))
-    .rejects.toThrow("已存在");
+  await expect(createProject({ parent: sandbox, name: "创建中断" })).rejects.toThrow("已存在");
   expect(await fs.stat(path.join(root, "paper30min.json")).catch(() => null)).toBeNull();
 });
 
 test("project-core 来源保留文件名按可搬迁的大小写规则拒绝", async () => {
   const created = await createProject({ parent: sandbox, name: "保留名" });
-  await expect(publishSourceSnapshot({
-    root: created.root,
-    files: { "Snapshot.json": Buffer.from("user content") },
-  })).rejects.toThrow(/保留|覆盖/);
+  await expect(
+    publishSourceSnapshot({
+      root: created.root,
+      files: { "Snapshot.json": Buffer.from("user content") },
+    }),
+  ).rejects.toThrow(/保留|覆盖/);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 
 test("project-core 元数据写入预算在来源发布前失败", async () => {
   const created = await createProject({ parent: sandbox, name: "元数据预算" });
-  await expect(publishSourceSnapshot({
-    root: created.root,
-    files: { "document.html": Buffer.from("paper") },
-    metadata: { description: "x".repeat(1024 * 1024) },
-  })).rejects.toThrow(/1 MiB|预算/);
+  await expect(
+    publishSourceSnapshot({
+      root: created.root,
+      files: { "document.html": Buffer.from("paper") },
+      metadata: { description: "x".repeat(1024 * 1024) },
+    }),
+  ).rejects.toThrow(/1 MiB|预算/);
 
-  await expect(fs.stat(path.join(created.root, "sources")))
-    .rejects.toMatchObject({ code: "ENOENT" });
+  await expect(fs.stat(path.join(created.root, "sources"))).rejects.toMatchObject({ code: "ENOENT" });
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 
@@ -85,11 +92,10 @@ test("project-core 文件摘要记录保留可选 MIME", async () => {
     },
   });
 
-  expect(source.files).toEqual([
+  expect(source.files).toEqual([expect.objectContaining({ path: "document.html", mime: "text/html" })]);
+  expect((await readSourceSnapshot(created.root, source.sourceSnapshotId)).files).toEqual([
     expect.objectContaining({ path: "document.html", mime: "text/html" }),
   ]);
-  expect((await readSourceSnapshot(created.root, source.sourceSnapshotId)).files)
-    .toEqual([expect.objectContaining({ path: "document.html", mime: "text/html" })]);
 
   const document = Buffer.from(JSON.stringify(testDocumentTree(created.manifest.paper.id, "MIME")));
   const revision = await commitRevision({
@@ -101,12 +107,13 @@ test("project-core 文件摘要记录保留可选 MIME", async () => {
       "document.json": { bytes: document, mime: "application/json" },
     },
   });
-  expect(revision.files.find((file) => file.path === "document.json")?.mime)
-    .toBe("application/json");
-  expect((await readRevision(created.root, revision.revisionId)).files
-    .find((file) => file.path === "document.json")?.mime).toBe("application/json");
-  expect((await openProject(created.root)).currentRevision?.files
-    .find((file) => file.path === "document.json")?.mime).toBe("application/json");
+  expect(revision.files.find((file) => file.path === "document.json")?.mime).toBe("application/json");
+  expect(
+    (await readRevision(created.root, revision.revisionId)).files.find((file) => file.path === "document.json")?.mime,
+  ).toBe("application/json");
+  expect(
+    (await openProject(created.root)).currentRevision?.files.find((file) => file.path === "document.json")?.mime,
+  ).toBe("application/json");
 });
 
 test("project-core 普通计数字段不按凭据字段名误删", async () => {
@@ -125,10 +132,7 @@ test("project-core 普通计数字段不按凭据字段名误删", async () => {
 
 test("project-core current 完整时不让历史首次导入记录阻断阅读", async () => {
   const { created, revision } = await committedProject("历史记录损坏");
-  await fs.writeFile(
-    path.join(created.root, ".paper30min", "imports", "initial.json"),
-    "{",
-  );
+  await fs.writeFile(path.join(created.root, ".paper30min", "imports", "initial.json"), "{");
 
   const reopened = await openProject(created.root);
   expect(reopened.currentRevision).toEqual(revision);
@@ -137,12 +141,13 @@ test("project-core current 完整时不让历史首次导入记录阻断阅读",
 
 test("project-core 同进程同基线并发提交只有一个成功", async () => {
   const { created, source, revision } = await committedProject("进程内并发");
-  const attempt = (title: string) => commitRevision({
-    root: created.root,
-    baseRevision: revision.revisionId,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: testRevisionFiles(created.manifest.paper.id, title, revision.revisionId),
-  });
+  const attempt = (title: string) =>
+    commitRevision({
+      root: created.root,
+      baseRevision: revision.revisionId,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: testRevisionFiles(created.manifest.paper.id, title, revision.revisionId),
+    });
   const results = await Promise.allSettled([attempt("候选 A"), attempt("候选 B")]);
   const fulfilled = results.filter((result) => result.status === "fulfilled");
   const rejected = results.filter((result) => result.status === "rejected");
@@ -162,19 +167,24 @@ test("project-core 首次导入候选发布后故障保留空 current 和完整�
     files: { "document.html": Buffer.from("paper") },
   });
   let candidateId = "";
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: testRevisionFiles(created.manifest.paper.id, "首导入候选"),
-  }, {
-    onCommitPoint(point, context) {
-      if (point === "revision-metadata") {
-        candidateId = context.revisionId!;
-        throw new Error("injected first import failure");
-      }
-    },
-  })).rejects.toThrow("injected first import failure");
+  await expect(
+    commitRevision(
+      {
+        root: created.root,
+        baseRevision: null,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: testRevisionFiles(created.manifest.paper.id, "首导入候选"),
+      },
+      {
+        onCommitPoint(point, context) {
+          if (point === "revision-metadata") {
+            candidateId = context.revisionId!;
+            throw new Error("injected first import failure");
+          }
+        },
+      },
+    ),
+  ).rejects.toThrow("injected first import failure");
 
   const reopened = await openProject(created.root);
   expect(reopened.manifest.paper.currentRevision).toBeNull();
@@ -186,25 +196,28 @@ test("project-core current 替换前复核旧 revision 内容摘要", async () =
   const { created, source, revision } = await committedProject("旧基线篡改");
   const manifestFile = path.join(created.root, "paper30min.json");
   let candidateId = "";
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: revision.revisionId,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: testRevisionFiles(created.manifest.paper.id, "新候选", revision.revisionId),
-  }, {
-    async onCommitPoint(point, context) {
-      if (point === "revision-metadata") {
-        candidateId = context.revisionId!;
-        await fs.writeFile(path.join(created.root, revision.path, "document.json"), "tampered");
-      }
-    },
-  })).rejects.toThrow(/摘要|完整性/);
+  await expect(
+    commitRevision(
+      {
+        root: created.root,
+        baseRevision: revision.revisionId,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: testRevisionFiles(created.manifest.paper.id, "新候选", revision.revisionId),
+      },
+      {
+        async onCommitPoint(point, context) {
+          if (point === "revision-metadata") {
+            candidateId = context.revisionId!;
+            await fs.writeFile(path.join(created.root, revision.path, "document.json"), "tampered");
+          }
+        },
+      },
+    ),
+  ).rejects.toThrow(/摘要|完整性/);
 
-  expect(JSON.parse(await fs.readFile(manifestFile, "utf8")).paper.currentRevision)
-    .toBe(revision.revisionId);
+  expect(JSON.parse(await fs.readFile(manifestFile, "utf8")).paper.currentRevision).toBe(revision.revisionId);
   await expect(openProject(created.root)).rejects.toThrow(/摘要|完整性/);
-  expect((await readRevision(created.root, candidateId)).baseRevision)
-    .toBe(revision.revisionId);
+  expect((await readRevision(created.root, candidateId)).baseRevision).toBe(revision.revisionId);
 });
 
 test("project-core current 指向缺失 revision 时给出可行动诊断", async () => {
@@ -219,44 +232,49 @@ test("project-core current 指向缺失 revision 时给出可行动诊断", asyn
 
 test("project-core 拒绝非法必需 JSON 和覆盖核心元数据字段", async () => {
   const created = await createProject({ parent: sandbox, name: "输入边界" });
-  await expect(publishSourceSnapshot({
-    root: created.root,
-    files: { "document.html": Buffer.from("paper") },
-    metadata: { files: [] },
-  })).rejects.toThrow(/覆盖|核心/);
+  await expect(
+    publishSourceSnapshot({
+      root: created.root,
+      files: { "document.html": Buffer.from("paper") },
+      metadata: { files: [] },
+    }),
+  ).rejects.toThrow(/覆盖|核心/);
   const source = await publishSourceSnapshot({
     root: created.root,
     files: { "document.html": Buffer.from("paper") },
   });
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: { ...testRevisionFiles(created.manifest.paper.id, "非法 JSON"), "changeset.json": Buffer.from("{") },
-  })).rejects.toThrow(/JSON/);
+  await expect(
+    commitRevision({
+      root: created.root,
+      baseRevision: null,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: { ...testRevisionFiles(created.manifest.paper.id, "非法 JSON"), "changeset.json": Buffer.from("{") },
+    }),
+  ).rejects.toThrow(/JSON/);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 
 test("project-core 清单已提交但首次导入记录未提交时保留可诊断现场", async () => {
   const root = path.join(sandbox, "导入记录中断");
-  await expect(createProject({ parent: sandbox, name: "导入记录中断" }, {
-    onCommitPoint(point) {
-      if (point === "import-record") throw new Error("injected import record failure");
-    },
-  })).rejects.toThrow("injected import record failure");
+  await expect(
+    createProject(
+      { parent: sandbox, name: "导入记录中断" },
+      {
+        onCommitPoint(point) {
+          if (point === "import-record") throw new Error("injected import record failure");
+        },
+      },
+    ),
+  ).rejects.toThrow("injected import record failure");
 
   expect(await fs.stat(path.join(root, "paper30min.json"))).toBeTruthy();
   await expect(openProject(root)).rejects.toThrow(/首次导入记录/);
-  await expect(createProject({ parent: sandbox, name: "导入记录中断" }))
-    .rejects.toThrow("已存在");
+  await expect(createProject({ parent: sandbox, name: "导入记录中断" })).rejects.toThrow("已存在");
 });
 
 test("project-core 损坏的 revision 和首次导入 JSON 给出领域诊断", async () => {
   const { created, revision } = await committedProject("损坏 JSON");
-  await fs.writeFile(
-    path.join(created.root, ".paper30min", "revisions", revision.revisionId, "revision.json"),
-    "{",
-  );
+  await fs.writeFile(path.join(created.root, ".paper30min", "revisions", revision.revisionId, "revision.json"), "{");
   await expect(openProject(created.root)).rejects.toThrow(/revision.*(损坏|不完整)/);
 
   const initial = await createProject({ parent: sandbox, name: "损坏导入记录" });
@@ -268,20 +286,25 @@ test("project-core 来源发布前工程身份变化时不得返回成功", asyn
   const created = await createProject({ parent: sandbox, name: "来源身份竞争" });
   const manifestFile = path.join(created.root, "paper30min.json");
   let sourceSnapshotId = "";
-  await expect(publishSourceSnapshot({
-    root: created.root,
-    files: { "document.html": Buffer.from("paper") },
-  }, {
-    async onCommitPoint(point, context) {
-      if (point === "source-content") {
-        sourceSnapshotId = context.sourceSnapshotId!;
-        const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
-        manifest.id = randomUUID();
-        manifest.paper.id = randomUUID();
-        await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2) + "\n");
-      }
-    },
-  })).rejects.toThrow(/身份|清单/);
+  await expect(
+    publishSourceSnapshot(
+      {
+        root: created.root,
+        files: { "document.html": Buffer.from("paper") },
+      },
+      {
+        async onCommitPoint(point, context) {
+          if (point === "source-content") {
+            sourceSnapshotId = context.sourceSnapshotId!;
+            const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
+            manifest.id = randomUUID();
+            manifest.paper.id = randomUUID();
+            await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2) + "\n");
+          }
+        },
+      },
+    ),
+  ).rejects.toThrow(/身份|清单/);
 
   expect(sourceSnapshotId).not.toBe("");
   await expect(readSourceSnapshot(created.root, sourceSnapshotId)).rejects.toThrow(/身份|不匹配/);
@@ -298,8 +321,7 @@ test("project-core 读取端拒绝超过预算的受管 JSON", async () => {
     JSON.stringify({ padding: "x".repeat(1024 * 1024) }),
   );
 
-  await expect(readSourceSnapshot(created.root, source.sourceSnapshotId))
-    .rejects.toThrow(/1 MiB|预算/);
+  await expect(readSourceSnapshot(created.root, source.sourceSnapshotId)).rejects.toThrow(/1 MiB|预算/);
 });
 
 test("project-core 同一 revisionId 的残留候选拒绝不同正文或元数据后仍可原样重试", async () => {
@@ -317,44 +339,50 @@ test("project-core 同一 revisionId 的残留候选拒绝不同正文或元数�
     files: testRevisionFiles(created.manifest.paper.id, "可重试候选"),
   } as const;
 
-  await expect(commitRevision(input, {
-    onCommitPoint(point) {
-      if (point === "before-current-replace") throw new Error("injected retry failure");
-    },
-  })).rejects.toThrow("injected retry failure");
+  await expect(
+    commitRevision(input, {
+      onCommitPoint(point) {
+        if (point === "before-current-replace") throw new Error("injected retry failure");
+      },
+    }),
+  ).rejects.toThrow("injected retry failure");
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 
   const candidate = await readRevision(created.root, revisionId);
   const documentFile = path.join(created.root, candidate.path, "document.json");
-  const metadataFile = path.join(
-    created.root,
-    ".paper30min",
-    "revisions",
-    revisionId,
-    "revision.json",
-  );
+  const metadataFile = path.join(created.root, ".paper30min", "revisions", revisionId, "revision.json");
   const originalDocument = await fs.readFile(documentFile);
   const originalMetadata = await fs.readFile(metadataFile);
 
-  await expect(commitRevision({
-    ...input,
-    files: testRevisionFiles(created.manifest.paper.id, "篡改候选"),
-  })).rejects.toThrow(/受管内容摘要不符|完整性校验失败/);
-  await expect(commitRevision({
-    ...input,
-    metadata: { origin: "tampered" },
-  })).rejects.toThrow(/相同 revisionId|残留候选|拒绝覆盖/);
+  await expect(
+    commitRevision({
+      ...input,
+      files: testRevisionFiles(created.manifest.paper.id, "篡改候选"),
+    }),
+  ).rejects.toThrow(/受管内容摘要不符|完整性校验失败/);
+  await expect(
+    commitRevision({
+      ...input,
+      metadata: { origin: "tampered" },
+    }),
+  ).rejects.toThrow(/相同 revisionId|残留候选|拒绝覆盖/);
   expect(await fs.readFile(documentFile)).toEqual(originalDocument);
   expect(await fs.readFile(metadataFile)).toEqual(originalMetadata);
   expect(await readRevision(created.root, revisionId)).toEqual(candidate);
-  expect(Object.values((await readRevisionDocument(created.root, revisionId, "document")).sections)
-    .map((section) => section.title)).toEqual(["可重试候选"]);
+  expect(
+    Object.values((await readRevisionDocument(created.root, revisionId, "document")).sections).map(
+      (section) => section.title,
+    ),
+  ).toEqual(["可重试候选"]);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 
   await expect(commitRevision(input)).resolves.toMatchObject({ revisionId });
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBe(revisionId);
-  expect(Object.values((await readRevisionDocument(created.root, revisionId, "document")).sections)
-    .map((section) => section.title)).toEqual(["可重试候选"]);
+  expect(
+    Object.values((await readRevisionDocument(created.root, revisionId, "document")).sections).map(
+      (section) => section.title,
+    ),
+  ).toEqual(["可重试候选"]);
 });
 
 test("project-core completePublishedRevision 核验完整候选后只推进 current", async () => {
@@ -365,19 +393,24 @@ test("project-core completePublishedRevision 核验完整候选后只推进 curr
     files: { "document.html": Buffer.from("paper") },
   });
   let candidateId = "";
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: testRevisionFiles(created.manifest.paper.id, "完整候选"),
-  }, {
-    onCommitPoint(point, context) {
-      if (point === "before-current-replace") {
-        candidateId = context.revisionId!;
-        throw new Error("injected current failure");
-      }
-    },
-  })).rejects.toThrow("injected current failure");
+  await expect(
+    commitRevision(
+      {
+        root: created.root,
+        baseRevision: null,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: testRevisionFiles(created.manifest.paper.id, "完整候选"),
+      },
+      {
+        onCommitPoint(point, context) {
+          if (point === "before-current-replace") {
+            candidateId = context.revisionId!;
+            throw new Error("injected current failure");
+          }
+        },
+      },
+    ),
+  ).rejects.toThrow("injected current failure");
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 
   const revision = await completePublishedRevision(created.root, candidateId);
@@ -393,27 +426,34 @@ test("project-core completePublishedRevision 提交窗口内候选被篡改时�
     files: { "document.html": Buffer.from("paper") },
   });
   let candidateId = "";
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: testRevisionFiles(created.manifest.paper.id, "待篡改候选"),
-  }, {
-    onCommitPoint(point, context) {
-      if (point === "before-current-replace") {
-        candidateId = context.revisionId!;
-        throw new Error("injected current failure");
-      }
-    },
-  })).rejects.toThrow("injected current failure");
+  await expect(
+    commitRevision(
+      {
+        root: created.root,
+        baseRevision: null,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: testRevisionFiles(created.manifest.paper.id, "待篡改候选"),
+      },
+      {
+        onCommitPoint(point, context) {
+          if (point === "before-current-replace") {
+            candidateId = context.revisionId!;
+            throw new Error("injected current failure");
+          }
+        },
+      },
+    ),
+  ).rejects.toThrow("injected current failure");
 
-  await expect(completePublishedRevision(created.root, candidateId, {
-    async onCommitPoint(point) {
-      if (point === "before-current-replace") {
-        await fs.writeFile(path.join(created.root, "paper", "revisions", candidateId, "document.json"), "tampered");
-      }
-    },
-  })).rejects.toThrow(/摘要|完整性/);
+  await expect(
+    completePublishedRevision(created.root, candidateId, {
+      async onCommitPoint(point) {
+        if (point === "before-current-replace") {
+          await fs.writeFile(path.join(created.root, "paper", "revisions", candidateId, "document.json"), "tampered");
+        }
+      },
+    }),
+  ).rejects.toThrow(/摘要|完整性/);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 
@@ -425,31 +465,38 @@ test("project-core completePublishedRevision 提交窗口内元数据换源时�
     files: { "document.html": Buffer.from("paper") },
   });
   let candidateId = "";
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: testRevisionFiles(created.manifest.paper.id, "换源候选"),
-  }, {
-    onCommitPoint(point, context) {
-      if (point === "before-current-replace") {
-        candidateId = context.revisionId!;
-        throw new Error("injected current failure");
-      }
-    },
-  })).rejects.toThrow("injected current failure");
+  await expect(
+    commitRevision(
+      {
+        root: created.root,
+        baseRevision: null,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: testRevisionFiles(created.manifest.paper.id, "换源候选"),
+      },
+      {
+        onCommitPoint(point, context) {
+          if (point === "before-current-replace") {
+            candidateId = context.revisionId!;
+            throw new Error("injected current failure");
+          }
+        },
+      },
+    ),
+  ).rejects.toThrow("injected current failure");
 
-  await expect(completePublishedRevision(created.root, candidateId, {
-    async onCommitPoint(point) {
-      if (point === "before-current-replace") {
-        // 只改元数据的 sourceSnapshotId（内容不动）：深度相等核验必须拒绝。
-        const metaFile = path.join(created.root, ".paper30min", "revisions", candidateId, "revision.json");
-        const record = JSON.parse(await fs.readFile(metaFile, "utf8"));
-        record.sourceSnapshotId = randomUUID();
-        await fs.writeFile(metaFile, JSON.stringify(record));
-      }
-    },
-  })).rejects.toThrow(/元数据.*变化|摘要|完整性/);
+  await expect(
+    completePublishedRevision(created.root, candidateId, {
+      async onCommitPoint(point) {
+        if (point === "before-current-replace") {
+          // 只改元数据的 sourceSnapshotId（内容不动）：深度相等核验必须拒绝。
+          const metaFile = path.join(created.root, ".paper30min", "revisions", candidateId, "revision.json");
+          const record = JSON.parse(await fs.readFile(metaFile, "utf8"));
+          record.sourceSnapshotId = randomUUID();
+          await fs.writeFile(metaFile, JSON.stringify(record));
+        }
+      },
+    }),
+  ).rejects.toThrow(/元数据.*变化|摘要|完整性/);
   expect((await openProject(created.root)).manifest.paper.currentRevision).toBeNull();
 });
 
@@ -466,38 +513,50 @@ test("project-core inspectImportCandidate 区分已发布/残留/缺失，残留
 
   // 残留：内容目录存在但元数据未写（revision-content 中断）。
   let residualId = "";
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: testRevisionFiles(created.manifest.paper.id, "残留候选"),
-  }, {
-    onCommitPoint(point, context) {
-      if (point === "revision-content") {
-        residualId = context.revisionId!;
-        throw new Error("injected content failure");
-      }
-    },
-  })).rejects.toThrow("injected content failure");
+  await expect(
+    commitRevision(
+      {
+        root: created.root,
+        baseRevision: null,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: testRevisionFiles(created.manifest.paper.id, "残留候选"),
+      },
+      {
+        onCommitPoint(point, context) {
+          if (point === "revision-content") {
+            residualId = context.revisionId!;
+            throw new Error("injected content failure");
+          }
+        },
+      },
+    ),
+  ).rejects.toThrow("injected content failure");
   expect(await inspectImportCandidate(created.root, residualId)).toBe("residual");
   await expect(fs.access(path.join(created.root, "paper", "revisions", residualId))).rejects.toThrow();
 
   // 已发布：内容与元数据都在（before-current-replace 中断）。
   let publishedId = "";
-  await expect(commitRevision({
-    root: created.root,
-    baseRevision: null,
-    sourceSnapshotId: source.sourceSnapshotId,
-    files: testRevisionFiles(created.manifest.paper.id, "完整候选"),
-  }, {
-    onCommitPoint(point, context) {
-      if (point === "before-current-replace") {
-        publishedId = context.revisionId!;
-        throw new Error("injected current failure");
-      }
-    },
-  })).rejects.toThrow("injected current failure");
+  await expect(
+    commitRevision(
+      {
+        root: created.root,
+        baseRevision: null,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: testRevisionFiles(created.manifest.paper.id, "完整候选"),
+      },
+      {
+        onCommitPoint(point, context) {
+          if (point === "before-current-replace") {
+            publishedId = context.revisionId!;
+            throw new Error("injected current failure");
+          }
+        },
+      },
+    ),
+  ).rejects.toThrow("injected current failure");
   expect(await inspectImportCandidate(created.root, publishedId)).toBe("published");
   // 已发布内容不被清理。
-  await expect(fs.access(path.join(created.root, "paper", "revisions", publishedId, "document.json"))).resolves.toBeUndefined();
+  await expect(
+    fs.access(path.join(created.root, "paper", "revisions", publishedId, "document.json")),
+  ).resolves.toBeUndefined();
 });

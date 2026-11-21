@@ -89,16 +89,16 @@ app/tests/                   授权、工具、恢复和真实 Electron 回归
 
 ### 工具边界
 
-| 工具 | 责任 | 不写／不能替代 |
-|---|---|---|
-| `get_document_context` | 当前 revision、元数据、章节路径、选区和相邻上下文 | 不默认附全文，不读 source-base |
-| `read_current` | 按 anchor／range 读取 current 文本、atom 和结构 | 不等于已读来源快照 |
-| `read_source` | 读取指定 HTML／PDF 来源并生成 SourceReadReceipt | 不读取普通参考文件冒充主来源，不自动下载／重解析 |
-| `create_anchor_link` | 从已验证 ReaderSelection 生成规范 URL | 不让模型手编 base64／ID |
-| `create_correction_candidate` | 生成结构化修正候选与 changeset | 不推进 current |
-| `save_result` | 显式保存普通 Markdown 成果并校验锚点 | 不写受管正文，不创建地图 |
-| `create_annotation` | 显式创建原生高亮／批注 | 不写 PDF 原生批注 |
-| `record_verification` | 按实际来源证据记录覆盖范围 | 不接受 Agent 自述代替证据 |
+| 工具                          | 责任                                              | 不写／不能替代                                   |
+| ----------------------------- | ------------------------------------------------- | ------------------------------------------------ |
+| `get_document_context`        | 当前 revision、元数据、章节路径、选区和相邻上下文 | 不默认附全文，不读 source-base                   |
+| `read_current`                | 按 anchor／range 读取 current 文本、atom 和结构   | 不等于已读来源快照                               |
+| `read_source`                 | 读取指定 HTML／PDF 来源并生成 SourceReadReceipt   | 不读取普通参考文件冒充主来源，不自动下载／重解析 |
+| `create_anchor_link`          | 从已验证 ReaderSelection 生成规范 URL             | 不让模型手编 base64／ID                          |
+| `create_correction_candidate` | 生成结构化修正候选与 changeset                    | 不推进 current                                   |
+| `save_result`                 | 显式保存普通 Markdown 成果并校验锚点              | 不写受管正文，不创建地图                         |
+| `create_annotation`           | 显式创建原生高亮／批注                            | 不写 PDF 原生批注                                |
+| `record_verification`         | 按实际来源证据记录覆盖范围                        | 不接受 Agent 自述代替证据                        |
 
 既有 `read`、`write`、`edit`、`bash`、`web_search`、`fetch_content` 保持普通文件与网络用途，不成为绕过上述专用命令的通道。`publishCorrectionCandidate` 是用户界面命令，不注册给 Agent。
 
@@ -269,20 +269,20 @@ export interface SourceReadReceipt {
 
 ## Error and Recovery Requirements
 
-| 情况 | 必须行为 |
-|---|---|
-| current 未核验或用户只进行普通讨论 | 允许对话，不显示完整审阅门禁 |
-| 附件准备期间 current 改变 | 提示重取，不静默把旧选区挂到新 revision |
-| 精确任务来源缺失、模态不足或范围未覆盖 | 报告限制，不能声称已对照／已核验 |
-| Agent 无正确 receipt 调用 record_verification | 主进程拒绝，不接受自述替代 |
-| 普通 chat 中模型试图写正文／成果／批注 | 拒绝写入，要求用户明确任务 |
-| 修正候选基线变化或验证失败 | 保留候选，用户确认前不推进 current |
-| Agent 试图直接发布修正或解决全部冲突 | 不提供工具／拒绝，交回用户界面 |
-| 成果保存外部冲突或锚点非法 | 保留双方输入，不覆盖或伪报成功 |
-| 对话请求付费解析／翻译／下载 | 转交专门界面，Agent 不自行启动 |
-| 会话压缩／分支后继续任务 | 重新验证当前任务授权和来源证据 |
-| 停止、工程切换或旧工具结果迟到 | 取消／隔离，不写入新任务或 current |
-| 网页含指令、工具输出含凭据 | 视为不可信数据并去敏，不执行或泄露 |
+| 情况                                          | 必须行为                                |
+| --------------------------------------------- | --------------------------------------- |
+| current 未核验或用户只进行普通讨论            | 允许对话，不显示完整审阅门禁            |
+| 附件准备期间 current 改变                     | 提示重取，不静默把旧选区挂到新 revision |
+| 精确任务来源缺失、模态不足或范围未覆盖        | 报告限制，不能声称已对照／已核验        |
+| Agent 无正确 receipt 调用 record_verification | 主进程拒绝，不接受自述替代              |
+| 普通 chat 中模型试图写正文／成果／批注        | 拒绝写入，要求用户明确任务              |
+| 修正候选基线变化或验证失败                    | 保留候选，用户确认前不推进 current      |
+| Agent 试图直接发布修正或解决全部冲突          | 不提供工具／拒绝，交回用户界面          |
+| 成果保存外部冲突或锚点非法                    | 保留双方输入，不覆盖或伪报成功          |
+| 对话请求付费解析／翻译／下载                  | 转交专门界面，Agent 不自行启动          |
+| 会话压缩／分支后继续任务                      | 重新验证当前任务授权和来源证据          |
+| 停止、工程切换或旧工具结果迟到                | 取消／隔离，不写入新任务或 current      |
+| 网页含指令、工具输出含凭据                    | 视为不可信数据并去敏，不执行或泄露      |
 
 错误恢复不得通过降低来源证据要求、伪造 receipt、默认发布候选、覆盖用户草稿或重新引入完整审阅门禁来完成。
 

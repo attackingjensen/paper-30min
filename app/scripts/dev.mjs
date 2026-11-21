@@ -2,15 +2,11 @@ import { spawn } from "node:child_process";
 import { createServer } from "vite";
 import electron from "electron";
 
-const compiler = spawn(
-  process.execPath,
-  ["node_modules/typescript/bin/tsc", "-p", "tsconfig.node.json"],
-  { stdio: "inherit" },
-);
+const compiler = spawn(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.node.json"], {
+  stdio: "inherit",
+});
 await new Promise((resolve, reject) =>
-  compiler.on("exit", (code) =>
-    code ? reject(new Error("Node build failed")) : resolve(),
-  ),
+  compiler.on("exit", (code) => (code ? reject(new Error("Node build failed")) : resolve())),
 );
 const server = await createServer({
   server: { port: Number(process.env.PAPER30MIN_DEV_PORT ?? 5173) },

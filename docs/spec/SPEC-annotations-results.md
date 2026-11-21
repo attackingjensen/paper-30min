@@ -197,14 +197,14 @@ export interface AnchorPayload {
 
 新 current 发布时，先迁移原生记录，再允许旧 revision 清理：
 
-| 变化 | 原生记录处理 |
-|---|---|
-| retained／moved，quote 仍匹配 | 保持 active，可重基 baseRevision，保留原 createdRevision |
-| 原文 changed | 标 source-changed，保留原 range、quote 和 comment |
-| 原文 removed／拆分／合并 | 标 removed，关联 tombstone，不自动转移到新节点 |
-| 无关 translationRevision 改变 | 不制造失效 |
-| 相关译文 range 与 quote 仍匹配 | 重基 translationRevision，保持 active |
-| 相关译文改变或原句已 stale | 标 translation-changed，保留旧译文 quote |
+| 变化                           | 原生记录处理                                             |
+| ------------------------------ | -------------------------------------------------------- |
+| retained／moved，quote 仍匹配  | 保持 active，可重基 baseRevision，保留原 createdRevision |
+| 原文 changed                   | 标 source-changed，保留原 range、quote 和 comment        |
+| 原文 removed／拆分／合并       | 标 removed，关联 tombstone，不自动转移到新节点           |
+| 无关 translationRevision 改变  | 不制造失效                                               |
+| 相关译文 range 与 quote 仍匹配 | 重基 translationRevision，保持 active                    |
+| 相关译文改变或原句已 stale     | 标 translation-changed，保留旧译文 quote                 |
 
 - comment 编辑、卡片读取和缓存重建不能清除 staleReason。
 - 新增原文节点没有旧原生记录；相同文本复制到新节点不会自动继承旧批注。
@@ -274,34 +274,34 @@ export interface AnchorPayload {
 3. 扫描、解析、迁移和卡片更新使用可取消任务或 epoch。工程、current、翻译 revision、路径或草稿变化后，旧结果不得覆盖新状态。
 4. 首版预算：
 
-| 项目 | 上限 |
-|---|---:|
-| 单个 Markdown 文件扫描 | 8 MiB |
-| 单次全量扫描普通 Markdown 合计 | 128 MiB |
-| 单个锚点链接 UTF-8 | 64 KiB |
-| 单链接 ranges | 256 |
-| 单文件有效链接 occurrence | 2,000 |
-| 单文件扫描耗时任务 | 可取消，不阻塞其他文件 |
+| 项目                           |                   上限 |
+| ------------------------------ | ---------------------: |
+| 单个 Markdown 文件扫描         |                  8 MiB |
+| 单次全量扫描普通 Markdown 合计 |                128 MiB |
+| 单个锚点链接 UTF-8             |                 64 KiB |
+| 单链接 ranges                  |                    256 |
+| 单文件有效链接 occurrence      |                  2,000 |
+| 单文件扫描耗时任务             | 可取消，不阻塞其他文件 |
 
 5. 超预算文件或链接产生明确诊断并跳过，其他文件继续；不得截断 quote、链接或 AST 后生成看似有效卡片。
 6. 缓存损坏只触发重建，不删除 Markdown 或原生记录；缓存和 sidecar 的故障必须区分。
 
 ## Error and Recovery Requirements
 
-| 情况 | 必须行为 |
-|---|---|
-| payload 非法、版本未知、quote 缺失或 range 越界 | 标 invalid，提供来源位置，不生成有效卡片 |
-| 链接来自另一 paper.id | 标 wrong-paper，不按标题或 arXiv ID 自动重绑定 |
-| 原文 changed／removed | 保留摘录与失效状态，不调整 range 或相似重挂 |
-| 译文 revision 改变 | quote 匹配才重基，相关变化只影响对应 view |
-| 原生记录外部变化或编辑基线冲突 | 保留用户输入与旧 sidecar，不静默覆盖 |
-| 原生记录删除后 Markdown 仍有链接 | Markdown 卡片继续独立工作 |
-| 文件移动／改名 | 更新路径与 occurrence，不重写原 anchor，不重复建卡 |
-| 未保存草稿与磁盘冲突 | 草稿用于实时卡片并标冲突，不双份展示、不覆盖草稿 |
-| 链接被编辑或删除 | 增量更新／移除卡片，旧异步结果不得复活它 |
-| occurrence 打开时内容已变 | 重扫并校验 ordinal，找不到就报错，不猜相邻位置 |
-| 扫描缓存损坏或超预算 | 缓存重建／明确跳过，正文和原文件继续可用 |
-| current 迁移 sidecar 失败 | 保留旧记录并警告，新 current 不回滚，记录不错挂 |
+| 情况                                            | 必须行为                                           |
+| ----------------------------------------------- | -------------------------------------------------- |
+| payload 非法、版本未知、quote 缺失或 range 越界 | 标 invalid，提供来源位置，不生成有效卡片           |
+| 链接来自另一 paper.id                           | 标 wrong-paper，不按标题或 arXiv ID 自动重绑定     |
+| 原文 changed／removed                           | 保留摘录与失效状态，不调整 range 或相似重挂        |
+| 译文 revision 改变                              | quote 匹配才重基，相关变化只影响对应 view          |
+| 原生记录外部变化或编辑基线冲突                  | 保留用户输入与旧 sidecar，不静默覆盖               |
+| 原生记录删除后 Markdown 仍有链接                | Markdown 卡片继续独立工作                          |
+| 文件移动／改名                                  | 更新路径与 occurrence，不重写原 anchor，不重复建卡 |
+| 未保存草稿与磁盘冲突                            | 草稿用于实时卡片并标冲突，不双份展示、不覆盖草稿   |
+| 链接被编辑或删除                                | 增量更新／移除卡片，旧异步结果不得复活它           |
+| occurrence 打开时内容已变                       | 重扫并校验 ordinal，找不到就报错，不猜相邻位置     |
+| 扫描缓存损坏或超预算                            | 缓存重建／明确跳过，正文和原文件继续可用           |
+| current 迁移 sidecar 失败                       | 保留旧记录并警告，新 current 不回滚，记录不错挂    |
 
 错误恢复不得通过模糊 quote 搜索、全文相似度重锚、删除用户文件、覆盖未保存草稿或默认接受错误 payload 来完成。
 

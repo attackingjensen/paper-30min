@@ -11,11 +11,10 @@ if (!npmCli) {
   console.error("check-dependencies: run through npm so the npm CLI is available");
   process.exit(2);
 }
-const audit = spawnSync(
-  process.execPath,
-  [npmCli, "audit", "--audit-level=high", "--json"],
-  { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-);
+const audit = spawnSync(process.execPath, [npmCli, "audit", "--audit-level=high", "--json"], {
+  encoding: "utf8",
+  maxBuffer: 16 * 1024 * 1024,
+});
 
 if (audit.error) {
   console.error(`check-dependencies: could not start npm audit: ${audit.error.message}`);
@@ -47,20 +46,26 @@ for (const finding of vulnerabilities) {
   actual[severity] += 1;
   actual.total += 1;
 }
-const valid = (audit.status === 0 || audit.status === 1)
-  && findingsValid
-  && Number.isInteger(dependencyTotal) && dependencyTotal >= 1
-  && counts?.total === actual.total
-  && severities.every(level => Number.isInteger(counts?.[level]) && counts[level] === actual[level]);
+const valid =
+  (audit.status === 0 || audit.status === 1) &&
+  findingsValid &&
+  Number.isInteger(dependencyTotal) &&
+  dependencyTotal >= 1 &&
+  counts?.total === actual.total &&
+  severities.every((level) => Number.isInteger(counts?.[level]) && counts[level] === actual[level]);
 
 if (!valid) {
-  console.error(`check-dependencies: npm audit failed or returned an incomplete report (status ${audit.status ?? "unknown"})`);
+  console.error(
+    `check-dependencies: npm audit failed or returned an incomplete report (status ${audit.status ?? "unknown"})`,
+  );
   process.exit(2);
 }
 
 writeFileSync(output, audit.stdout);
 const high = actual.high + actual.critical;
-console.log(`npm audit: ${dependencyTotal} dependencies, ${actual.low + actual.moderate} low/moderate, ${high} high/critical`);
+console.log(
+  `npm audit: ${dependencyTotal} dependencies, ${actual.low + actual.moderate} low/moderate, ${high} high/critical`,
+);
 if (high) process.exitCode = 1;
 else if (audit.status !== 0) {
   console.error("check-dependencies: npm audit failed below the blocking severity threshold");

@@ -2,12 +2,7 @@ import { test, expect } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   commitRevision,
@@ -18,17 +13,14 @@ import {
   readRevisionDocument,
 } from "../src/main/project-core";
 import { snapshotLocalPdf } from "../src/main/pdf/snapshot";
-import { createVerification, readVerificationRecords, verificationInheritCommitHooks } from "../src/main/pdf/verification";
+import {
+  createVerification,
+  readVerificationRecords,
+  verificationInheritCommitHooks,
+} from "../src/main/pdf/verification";
 import type { BaiduPdfParseConfig } from "../src/main/parsing/baidu-task";
-import {
-  importPdfToCurrent,
-  reparsePdfToCandidate,
-  resumePdfReparse,
-} from "../src/main/parsing/pdf-import";
-import {
-  publishDocumentMergeCandidate,
-  resolveDocumentMergeCandidateConflict,
-} from "../src/main/document/merge";
+import { importPdfToCurrent, reparsePdfToCandidate, resumePdfReparse } from "../src/main/parsing/pdf-import";
+import { publishDocumentMergeCandidate, resolveDocumentMergeCandidateConflict } from "../src/main/document/merge";
 import { projectSentenceText } from "../src/shared/document/anchor";
 import type { DocumentTree } from "../src/shared/document/tree";
 import type { PdfParseSourceSnapshotRecord } from "../src/shared/contracts";
@@ -50,9 +42,7 @@ async function drain(request: IncomingMessage) {
   }
 }
 
-async function controlledServer(
-  handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
-) {
+async function controlledServer(handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>) {
   const server = createServer((request, response) => {
     void Promise.resolve(handler(request, response)).catch(() => {
       response.destroy();
@@ -127,10 +117,7 @@ interface ControlledCounts {
 }
 
 /** 受控百度服务：jobId 按 POST 顺序分配，查询与下载按任务号返回对应结果。 */
-async function controlledParseService(
-  results: Array<() => Buffer>,
-  counts: ControlledCounts,
-): Promise<string> {
+async function controlledParseService(results: Array<() => Buffer>, counts: ControlledCounts): Promise<string> {
   const jobs: string[] = [];
   let endpoint = "";
   endpoint = await controlledServer(async (request, response) => {
@@ -150,10 +137,12 @@ async function controlledParseService(
     const query = /^\/jobs\/(job-reparse-\d+)$/.exec(request.url ?? "");
     if (query) {
       counts.queries += 1;
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/${query[1]}` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/${query[1]}` } },
+        }),
+      );
       return;
     }
     const download = /^\/jobs\/result\/(job-reparse-\d+)$/.exec(request.url ?? "");
@@ -190,14 +179,13 @@ function normalized(text: string) {
 }
 
 function unitText(tree: DocumentTree, unitId: string): string {
-  return tree.units[unitId].sentenceIds
-    .map((sentenceId) => projectSentenceText(tree, sentenceId))
-    .join(" ");
+  return tree.units[unitId].sentenceIds.map((sentenceId) => projectSentenceText(tree, sentenceId)).join(" ");
 }
 
 function findSentenceByText(tree: DocumentTree, text: string): string {
-  const unit = Object.values(tree.units).find((entry) =>
-    entry.kind === "paragraph" && normalized(unitText(tree, entry.id)) === text);
+  const unit = Object.values(tree.units).find(
+    (entry) => entry.kind === "paragraph" && normalized(unitText(tree, entry.id)) === text,
+  );
   if (!unit || unit.sentenceIds.length !== 1) throw new Error(`fixture text not found: ${text}`);
   return unit.sentenceIds[0];
 }
@@ -216,9 +204,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
   await fs.rm(sandbox, { recursive: true, force: true });
 });
@@ -389,13 +375,15 @@ test("pdf-import 重解析：baseRevision 已过期时不发起上传", async ()
     },
   });
 
-  await expect(reparsePdfToCandidate({
-    root,
-    sourceSnapshotId,
-    baseRevision: first.revision.revisionId,
-    config: config(endpoint),
-    confirmUpload: async () => true,
-  })).rejects.toThrow(/baseRevision/);
+  await expect(
+    reparsePdfToCandidate({
+      root,
+      sourceSnapshotId,
+      baseRevision: first.revision.revisionId,
+      config: config(endpoint),
+      confirmUpload: async () => true,
+    }),
+  ).rejects.toThrow(/baseRevision/);
   expect(counts.posts).toBe(1);
   expect(await currentRevisionId()).toBe(newer.revisionId);
 });
@@ -528,10 +516,12 @@ test("pdf-import 重解析恢复：提交结果不明时人工关联任务号，
     }
     if (request.url === "/jobs/job-reparse-0") {
       counts.queries += 1;
-      response.end(JSON.stringify({
-        code: 0,
-        data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/job-reparse-0` } },
-      }));
+      response.end(
+        JSON.stringify({
+          code: 0,
+          data: { state: "done", resultUrl: { jsonUrl: `${endpoint}/result/job-reparse-0` } },
+        }),
+      );
       return;
     }
     if (request.url === "/jobs/result/job-reparse-0") {
@@ -629,13 +619,16 @@ test("pdf-import 新 PDF 更新：形成候选不覆盖 current，内容改变�
   for (const conflict of candidate.conflicts)
     candidate = resolveDocumentMergeCandidateConflict(candidate, conflict.id, "candidate");
   // 继承钩子由 PDF 侧调用方注入（wp4）：通用发布本身不含核验语义。
-  const published = await publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
-    root,
-    baseRevision: candidate.baseRevision,
-    revisionId: candidate.revisionId,
-    sourceSnapshotId: candidate.sourceSnapshotId,
-    document: candidate.document,
-  }));
+  const published = await publishDocumentMergeCandidate(
+    candidate,
+    verificationInheritCommitHooks({
+      root,
+      baseRevision: candidate.baseRevision,
+      revisionId: candidate.revisionId,
+      sourceSnapshotId: candidate.sourceSnapshotId,
+      document: candidate.document,
+    }),
+  );
   expect(await currentRevisionId()).toBe(published.revisionId);
   const inherited = await readVerificationRecords(root, published.revisionId);
   expect(inherited).toHaveLength(1);
@@ -692,19 +685,24 @@ test("pdf-import 新 PDF 更新：内容未变节点保留历史来源核验，�
   let candidate = reparse.candidate;
   for (const conflict of candidate.conflicts)
     candidate = resolveDocumentMergeCandidateConflict(candidate, conflict.id, "candidate");
-  const published = await publishDocumentMergeCandidate(candidate, verificationInheritCommitHooks({
-    root,
-    baseRevision: candidate.baseRevision,
-    revisionId: candidate.revisionId,
-    sourceSnapshotId: candidate.sourceSnapshotId,
-    document: candidate.document,
-  }));
+  const published = await publishDocumentMergeCandidate(
+    candidate,
+    verificationInheritCommitHooks({
+      root,
+      baseRevision: candidate.baseRevision,
+      revisionId: candidate.revisionId,
+      sourceSnapshotId: candidate.sourceSnapshotId,
+      document: candidate.document,
+    }),
+  );
   const inherited = await readVerificationRecords(root, published.revisionId);
   expect(inherited).toHaveLength(2);
-  const bySentence = new Map(inherited.map((record) => [
-    record.anchor.kind === "sentence" ? record.anchor.sentenceId : null,
-    record.coverage.find((entry) => entry.nodeType === "sentence")?.validity,
-  ]));
+  const bySentence = new Map(
+    inherited.map((record) => [
+      record.anchor.kind === "sentence" ? record.anchor.sentenceId : null,
+      record.coverage.find((entry) => entry.nodeType === "sentence")?.validity,
+    ]),
+  );
   expect(bySentence.get(firstSentence)).toBe("historical-source");
   expect(bySentence.get(secondSentence)).toBe("removed");
 });
@@ -723,13 +721,15 @@ test("pdf-import 重解析：PDF 快照缺失时不发起上传，current 保持
   const pdfSnapshots = (await listSourceSnapshots(root)).filter((entry) => entry.kind === "pdf");
   await fs.rm(path.join(root, pdfSnapshots[0].path), { recursive: true, force: true });
 
-  await expect(reparsePdfToCandidate({
-    root,
-    sourceSnapshotId,
-    baseRevision: first.revision.revisionId,
-    config: config(endpoint),
-    confirmUpload: async () => true,
-  })).rejects.toThrow();
+  await expect(
+    reparsePdfToCandidate({
+      root,
+      sourceSnapshotId,
+      baseRevision: first.revision.revisionId,
+      config: config(endpoint),
+      confirmUpload: async () => true,
+    }),
+  ).rejects.toThrow();
   expect(counts.posts).toBe(1);
   expect(await currentRevisionId()).toBe(first.revision.revisionId);
 });
@@ -819,13 +819,15 @@ test("pdf-import 重解析：存在未结束任务时拒绝新建云端任务", 
   if (stopped.outcome !== "incomplete") throw new Error("expected stopped task");
   const postsBefore = counts.posts;
 
-  await expect(reparsePdfToCandidate({
-    root,
-    sourceSnapshotId,
-    baseRevision: first.revision.revisionId,
-    config: config(endpoint),
-    confirmUpload: async () => true,
-  })).rejects.toThrow(/恢复原任务|重复付费/);
+  await expect(
+    reparsePdfToCandidate({
+      root,
+      sourceSnapshotId,
+      baseRevision: first.revision.revisionId,
+      config: config(endpoint),
+      confirmUpload: async () => true,
+    }),
+  ).rejects.toThrow(/恢复原任务|重复付费/);
   expect(counts.posts).toBe(postsBefore);
 });
 
@@ -853,17 +855,21 @@ function inkPdf(): Buffer {
 }
 
 function cropVisualResponse(text: string): Buffer {
-  return jsonl([row([{
-    prunedResult: {
-      width: 1200,
-      height: 800,
-      model_settings: { use_doc_preprocessor: false, merge_layout_blocks: true },
-      parsing_res_list: [
-        block(0, text, { block_bbox: [40, 40, 600, 80] }),
-        block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
-      ],
-    },
-  }])]);
+  return jsonl([
+    row([
+      {
+        prunedResult: {
+          width: 1200,
+          height: 800,
+          model_settings: { use_doc_preprocessor: false, merge_layout_blocks: true },
+          parsing_res_list: [
+            block(0, text, { block_bbox: [40, 40, 600, 80] }),
+            block(1, "", { block_label: "image", block_bbox: [80, 120, 400, 240] }),
+          ],
+        },
+      },
+    ]),
+  ]);
 }
 
 test("pdf-import 重解析携带原页裁剪候选：发布后裁剪资产可读，旧 current 不受影响", async () => {
@@ -910,7 +916,10 @@ test("pdf-import 重解析携带原页裁剪候选：发布后裁剪资产可读
   if (figure.kind !== "figure" || !figure.asset) throw new Error("published figure asset missing");
   const crop = await readRevisionAsset(root, published.revisionId, figure.asset.path);
   expect(Buffer.from(crop.bytes).equals(Buffer.from(firstCrop.bytes))).toBe(true);
-  expect(normalized(unitText(publishedTree, Object.values(publishedTree.units)
-    .find((unit) => unit.kind === "paragraph")!.id))).toBe("First page paragraph v2");
+  expect(
+    normalized(
+      unitText(publishedTree, Object.values(publishedTree.units).find((unit) => unit.kind === "paragraph")!.id),
+    ),
+  ).toBe("First page paragraph v2");
   expect(counts.posts).toBe(2);
 });
