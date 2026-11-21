@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Save, RotateCcw } from "lucide-react";
 import type { ProductSkill } from "../shared/product-skills";
 import { Button, IconButton } from "./ui/Button";
@@ -76,10 +77,8 @@ export function ProductSkillsForm({ onDirty }: { onDirty: (dirty: boolean) => vo
     } catch (error) {
       setError((error as Error).message);
     } finally {
-      setBusy(false);
-      requestAnimationFrame(() => {
-        if (reloadTrigger.current?.isConnected) reloadTrigger.current.focus({ preventScroll: true });
-      });
+      flushSync(() => setBusy(false));
+      if (reloadTrigger.current?.isConnected) reloadTrigger.current.focus({ preventScroll: true });
     }
   }
   return (

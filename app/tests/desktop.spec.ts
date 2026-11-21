@@ -2530,15 +2530,22 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   const originalPdf = await fs.readFile(path.join(root, "text/paper.pdf"));
   await expect(pdfPages()).toContainText("2");
   await expectPdfRendered();
-  const pdfText = await page.evaluate(() => {
+  const pdfColors = await page.evaluate(() => {
     const probe = document.createElement("div");
-    probe.style.color = "var(--text)";
     document.body.append(probe);
-    const value = getComputedStyle(probe).color;
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const colors = { text: resolve("--text"), accent: resolve("--accent") };
     probe.remove();
-    return value;
+    return colors;
   });
-  await expect(page.getByRole("button", { name: "光标模式", exact: true })).toHaveCSS("color", pdfText);
+  const cursorMode = page.getByRole("button", { name: "光标模式", exact: true });
+  const cursorSelected = await cursorMode.evaluate((element) => element.classList.contains("bg-interactive-selected"));
+  await expect(cursorMode).toHaveCSS("color", cursorSelected ? pdfColors.accent : pdfColors.text);
   await expect(page.getByRole("button", { name: "批注", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "高亮", exact: true })).toHaveCount(0);
   await setPdfZoom("100");
@@ -2559,7 +2566,8 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   }
   await jumpPdfPage(1);
   await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeLessThan(20);
-  await page.getByRole("button", { name: "光标模式", exact: true }).click();
+  await cursorMode.click();
+  await expect(cursorMode).toHaveCSS("color", pdfColors.accent);
   const bounds = (await pdfImage().boundingBox())!;
   await page.mouse.move(bounds.x + 75, bounds.y + 48);
   await page.mouse.down();
@@ -3254,6 +3262,10 @@ test("UI 未保存提示词重新载入与离开经 renderer 确认", async () =
   await dialog.getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(skill).toHaveValue(edited);
   await reload.click();
+  // 离屏 Windows CI 可暂停动画帧；焦点恢复仍必须在重载完成后发生。
+  await page.evaluate(() => {
+    window.requestAnimationFrame = () => 0;
+  });
   await dialog.getByRole("button", { name: "放弃并重新载入", exact: true }).click();
   await expect(skill).toHaveValue(original);
   await expect(reload).toBeFocused();
