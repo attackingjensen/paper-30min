@@ -9,6 +9,57 @@ import { ViewportPlugin } from "@embedpdf/plugin-viewport";
 import { ZoomPlugin } from "@embedpdf/plugin-zoom";
 import wasmUrl from "@embedpdf/pdfium/pdfium.wasm?url";
 import type { PdfSource, PdfPosition } from "../shared/contracts";
+import { EmptyState, InlineMessage } from "./ui/Feedback";
+
+const pdfViewerTheme = {
+  preference: "light",
+  light: {
+    background: {
+      app: "var(--canvas)",
+      surface: "var(--surface)",
+      surfaceAlt: "var(--surface-subtle)",
+      elevated: "var(--surface)",
+      overlay: "var(--backdrop)",
+      input: "var(--surface)",
+    },
+    foreground: {
+      primary: "var(--text)",
+      secondary: "var(--text-secondary)",
+      muted: "var(--muted)",
+      disabled: "var(--muted)",
+      onAccent: "var(--on-accent)",
+    },
+    border: {
+      default: "var(--border)",
+      subtle: "var(--border)",
+      strong: "var(--border-strong)",
+    },
+    accent: {
+      primary: "var(--accent)",
+      primaryHover: "var(--accent-hover)",
+      primaryActive: "var(--accent-hover)",
+      primaryLight: "var(--accent-soft)",
+      primaryForeground: "var(--on-accent)",
+    },
+    interactive: {
+      hover: "var(--surface-hover)",
+      active: "var(--surface-selected)",
+      selected: "var(--surface-selected)",
+      focus: "var(--focus)",
+      focusRing: "var(--focus)",
+    },
+    state: {
+      error: "var(--danger)",
+      errorLight: "var(--danger-soft)",
+      warning: "var(--warning)",
+      warningLight: "var(--warning-bg)",
+      success: "var(--success)",
+      successLight: "var(--success-soft)",
+      info: "var(--accent-ink)",
+      infoLight: "var(--info-soft)",
+    },
+  },
+} satisfies PDFViewerConfig["theme"];
 
 export function PdfReader({
   root,
@@ -57,17 +108,17 @@ export function PdfReader({
   const saved = initialPosition.current;
   if (error)
     return (
-      <div className="pdf-error" role="alert">
+      <InlineMessage variant="error" className="pdf-error">
         PDF 打开失败：{error}
-      </div>
+      </InlineMessage>
     );
-  if (!source) return <div className="empty">正在打开 PDF…</div>;
+  if (!source) return <EmptyState>正在打开 PDF…</EmptyState>;
   return (
     <section className="pdf-workspace">
       {external && (
-        <div className="notice error" role="alert">
+        <InlineMessage variant="error" className="notice error">
           {external}
-        </div>
+        </InlineMessage>
       )}
       <PdfDocument key={epoch} source={source} path={path} saved={saved} onPosition={onPosition} />
     </section>
@@ -94,6 +145,7 @@ function PdfDocument({
       worker: true,
       fontFallback: null,
       fonts: { ui: null, signature: null },
+      theme: pdfViewerTheme,
       i18n: { defaultLocale: "zh-CN" },
       disabledCategories: ["annotation", "redaction", "document-open"],
       ...(saved && { zoom: { defaultZoomLevel: saved.zoom } }),
@@ -216,7 +268,7 @@ function PdfDocument({
           // Target only its isolated text-selection rectangles, not PDF annotations.
           const style = document.createElement("style");
           style.textContent =
-            '[style*="mix-blend-mode: multiply"][style*="isolation: isolate"] > div { background: rgba(104, 101, 216, 0.28) !important; }';
+            '[style*="mix-blend-mode: multiply"][style*="isolation: isolate"] > div { background: color-mix(in srgb, var(--accent) 28%, transparent) !important; }';
           container.shadowRoot!.appendChild(style);
         }}
         style={{ width: "100%", height: "100%", minHeight: 0 }}

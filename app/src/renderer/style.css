@@ -818,7 +818,7 @@ body:has(.notice) .settings-workspace {
 }
 .pdf-error {
   padding: 20px;
-  color: #a32929;
+  color: var(--danger);
   overflow: auto;
 }
 

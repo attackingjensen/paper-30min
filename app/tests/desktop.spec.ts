@@ -2515,6 +2515,15 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   const originalPdf = await fs.readFile(path.join(root, "text/paper.pdf"));
   await expect(pdfPages()).toContainText("2");
   await expectPdfRendered();
+  const pdfText = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.color = "var(--text)";
+    document.body.append(probe);
+    const value = getComputedStyle(probe).color;
+    probe.remove();
+    return value;
+  });
+  await expect(page.getByRole("button", { name: "光标模式", exact: true })).toHaveCSS("color", pdfText);
   await expect(page.getByRole("button", { name: "批注", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "高亮", exact: true })).toHaveCount(0);
   await setPdfZoom("100");
@@ -2542,6 +2551,17 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   await page.mouse.move(bounds.x + 290, bounds.y + 48, { steps: 12 });
   await page.mouse.up();
   await expect(page.getByRole("button", { name: "复制", exact: true })).toBeVisible();
+  const selectionRect = page.locator('[style*="mix-blend-mode: multiply"][style*="isolation: isolate"] > div').first();
+  await expect(selectionRect).toBeVisible();
+  const expectedSelection = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.backgroundColor = "color-mix(in srgb, var(--accent) 28%, transparent)";
+    document.body.append(probe);
+    const value = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return value;
+  });
+  await expect(selectionRect).toHaveCSS("background-color", expectedSelection);
   await page.getByRole("button", { name: "复制", exact: true }).click();
   await expect.poll(() => desktop.evaluate(({ clipboard }) => clipboard.readText())).toContain("SampleNet");
   await page.keyboard.press("Escape");
@@ -2966,14 +2986,36 @@ test("Markdown 三种视图、真实文件保真、图片公式与多标签草�
   await expect
     .poll(() => page.getByRole("img", { name: "图片", exact: true }).evaluate((e: HTMLImageElement) => e.naturalWidth))
     .toBe(100);
+  const markdownTokens = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const result = { accentInk: resolve("--accent-ink"), accentSoft: resolve("--accent-soft") };
+    probe.remove();
+    return result;
+  });
+  await expect(page.locator(".markdown-preview a")).toHaveCSS("color", markdownTokens.accentInk);
   await page.getByRole("link", { name: "另一篇", exact: true }).click();
   await expect(page.getByRole("tab", { name: "另一篇(1).md" })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "原始.md", exact: true }).click();
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  const editMode = page.getByRole("button", { name: "编辑", exact: true });
+  await editMode.click();
   const editor = page.getByRole("textbox", {
     name: "Markdown 源码",
     exact: true,
   });
+  await expect(editMode).toHaveClass(/\bbutton/);
+  await expect(editMode).toHaveAttribute("aria-pressed", "true");
+  await editor.press("Control+A");
+  const editorSelection = page.locator(".cm-selectionBackground").first();
+  await expect(editorSelection).toBeVisible();
+  await expect(editorSelection).toHaveCSS("background-color", markdownTokens.accentSoft);
+  await editor.press("ArrowRight");
   await editor.press("Control+Home");
   await editor.press("ArrowDown");
   await editor.press("ArrowDown");

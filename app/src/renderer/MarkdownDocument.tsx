@@ -8,6 +8,8 @@ import { markdownRenderer as renderer } from "../shared/markdown-references";
 import "katex/dist/katex.min.css";
 import { isDirty, type MarkdownDraft } from "./useMarkdownDocuments";
 import "./markdown.css";
+import { Button } from "./ui/Button";
+import { EmptyState, InlineMessage } from "./ui/Feedback";
 
 const normalize = (text: string) => text.replace(/\r\n?|\n/g, "\n");
 // Keep original line endings in CM state, including the native undo/redo history.
@@ -121,7 +123,7 @@ export function MarkdownDocument({
             },
             ".cm-content": { padding: "18px 0" },
             "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-              backgroundColor: "#dcd8ef !important",
+              backgroundColor: "var(--accent-soft) !important",
             },
           }),
           EditorView.updateListener.of((update) => {
@@ -214,7 +216,7 @@ export function MarkdownDocument({
       cursor: draft.cursor,
     });
   }
-  if (draft.loading) return <div className="empty">正在读取文档…</div>;
+  if (draft.loading) return <EmptyState>正在读取文档…</EmptyState>;
   return (
     <section className="markdown-document">
       <div className="markdown-actions">
@@ -229,46 +231,51 @@ export function MarkdownDocument({
                 ["split", "分屏"],
               ] as const
             ).map(([id, label]) => (
-              <button
+              <Button
                 key={id}
                 aria-pressed={draft.mode === id}
                 className={draft.mode === id ? "active" : ""}
                 onClick={() => mode(id)}
               >
                 {label}
-              </button>
+              </Button>
             ))}
           </div>
         )}
       </div>
       {(draft.error || linkError) && (
-        <div className="notice error" role="alert">
+        <InlineMessage variant="error" className="notice error">
           {draft.error || linkError}
           {draft.error && draft.external === undefined && isDirty(draft) && (
-            <button onClick={onSave} disabled={draft.saving}>
+            <Button onClick={onSave} disabled={draft.saving}>
               重试自动保存
-            </button>
+            </Button>
           )}
-        </div>
+        </InlineMessage>
       )}
       {draft.external !== undefined && (
-        <div className="markdown-conflict" role="alert">
+        <InlineMessage variant="warning" className="markdown-conflict" role="alert">
           <span>文档已在外部修改。你的编辑已保留，尚未覆盖磁盘文件。</span>
-          <button className="borderbtn" onClick={() => setShowConflict(!showConflict)}>
+          <Button className="borderbtn" onClick={() => setShowConflict(!showConflict)}>
             查看双方内容
-          </button>
+          </Button>
           <small>Agent 整合将在后续接入。</small>
-        </div>
+        </InlineMessage>
       )}
       {showConflict && draft.external !== undefined && (
         <div className="markdown-conflict-inputs">
           <label>
             我的未保存内容
-            <textarea aria-label="我的未保存内容" readOnly value={draft.text} />
+            <textarea className="ui-input" aria-label="我的未保存内容" readOnly value={draft.text} />
           </label>
           <label>
             当前磁盘内容
-            <textarea aria-label="当前磁盘内容" readOnly value={draft.external?.text ?? "文件已不存在"} />
+            <textarea
+              className="ui-input"
+              aria-label="当前磁盘内容"
+              readOnly
+              value={draft.external?.text ?? "文件已不存在"}
+            />
           </label>
         </div>
       )}
