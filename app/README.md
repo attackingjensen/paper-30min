@@ -26,7 +26,7 @@ npm test
 
 真实 Electron 测试只替代系统文件选择器，使用生产 preload、IPC、Node 工程进程和真实磁盘操作。默认测试使用临时配置与可控模型服务，覆盖流式回复、代理、失败恢复、并发停止和迟到事件。失败保留 trace，布局截图位于 `test-results/`。两层分别在 `test-results/timing/non-electron.json` 与 `test-results/timing/electron.json` 写入 JSON 时序报告。
 
-GitHub 的 `Electron CI` 使用 Node.js 24，在 PR 与 `main` push 上启动两条并行路径，不再对同一 PR 同时触发 push matrix。Linux `quality` 安装一次依赖，运行 `check:fast`、`check:architecture`、`check:lint:type-aware`、`check:dependencies`、构建和并行非 Electron 测试；Windows `electron` 安装一次依赖，构建后先补跑两条 `win32` junction 非 Electron 回归，再以隐藏窗口运行完整串行 Electron 套件。Windows 使用受控服务，不配置真实模型或百度服务凭据；HTML 报告、JSON 时序、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天，非 Electron 报告单独上传。可从 Actions 页面手动运行工作流。Linux 构建与非 Electron 通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
+GitHub 的 `Electron CI` 使用 Node.js 24，在 PR 与 `main` push 上启动两条并行路径，不再对同一 PR 同时触发 push matrix。Linux `quality` 安装一次依赖，运行 `check:fast`、`format:check`、`check:architecture`、`check:lint:type-aware`、`check:dependencies`、构建和并行非 Electron 测试；Windows `electron` 安装一次依赖，构建后先补跑两条 `win32` junction 非 Electron 回归，再以隐藏窗口运行完整串行 Electron 套件。Windows 使用受控服务，不配置真实模型或百度服务凭据；HTML 报告、JSON 时序、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天，非 Electron 报告单独上传。可从 Actions 页面手动运行工作流。Linux 构建与非 Electron 通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
 
 ## 质量约束
 
@@ -36,13 +36,15 @@ GitHub 的 `Electron CI` 使用 Node.js 24，在 PR 与 `main` push 上启动两
 npm run check:fast    # 类型、knip、原生 Oxlint、gitleaks、diff floor guard；编辑循环
 npm run check:task    # fast + 架构边界 + type-aware Oxlint + 分层导入/工程契约 Playwright 套件；任务交还前
 npm run check:full    # fast + 架构边界 + type-aware Oxlint + npm audit + 构建 + 完整分层回归；完整本地验证
+npm run format        # oxfmt 全仓格式化（仓库根 .oxfmtrc.json：120 列、LF、不动 markdown 内嵌代码）
+npm run format:check  # 只检查不写回；CI Linux quality 门禁
 ```
 
 `check:task` 的过滤器为 `project-core|document-core|arxiv-import|pdf-import|pdf-reparse|pdf-snapshot|pdf-verification`，不替代其他功能的定向测试；其他改动仍用 `npx playwright test -g '相关用例'` 补充。`npm run check:lint` 可单独运行原生 correctness 与 React Hooks；`npm run check:lint:type-aware` 再加入 floating Promise。根目录 `.oxlintrc.json` 是唯一 lint 配置，依据官方[配置与规则](https://oxc.rs/docs/guide/usage/linter/config)及 [type-aware linting](https://oxc.rs/docs/guide/usage/linter/type-aware)。架构边界由 `npm run check:architecture`（dependency-cruiser + SWC，按解析路径判定 11 条规则）单独承担，与 lint 职责零重叠；等价迁移尝试未通过独立审查，退路依据见 CONSTRAINTS。`npm run check:dependencies` 执行 `npm audit --audit-level=high --json`，校验非空依赖树、报告完整性和严重度，high / critical 阻断，registry 或解析错误非零退出；Dependabot 仅作后台监控，不冒充合并门禁。gitleaks 始终使用 `--redact`，扫描排除 `.local/` 本机私有配置、`.upstream/` 只读副本、依赖和生成物，不排除产品源码中的 finding。floor guard 默认与 `origin/main` 的 merge base 比较，可用 `node scripts/floor-guard.mjs --base <ref>` 指定基线。
 
 repository-level Secret Scanning / Push Protection 状态本次未获 admin 证据；用户于 2026-11-21 确认保留 gitleaks、setup-go 与现有仓库设置，不声称已由 GitHub 推送保护接管。
 
-CI 在 Linux quality 执行 fast（含原生 lint）、架构边界、type-aware lint、npm audit、构建和并行非 Electron，Windows electron 继续运行定向 junction 与完整串行 Electron 回归。安全工具或解析器不可用、扫描报告不完整、架构扫描为 0 modules、lint 扫描为 0 files 都按检查失败处理，不能当作通过。
+CI 在 Linux quality 执行 fast（含原生 lint）、format:check、架构边界、type-aware lint、npm audit、构建和并行非 Electron，Windows electron 继续运行定向 junction 与完整串行 Electron 回归。安全工具或解析器不可用、扫描报告不完整、架构扫描为 0 modules、lint 扫描为 0 files 都按检查失败处理，不能当作通过。
 
 ## 死代码检测
 
@@ -72,15 +74,15 @@ Remove-Item Env:PAPER30MIN_TEST_WINDOW
 
 ## 实现地图
 
-| 领域 | 位置 | 权威规格 | 定向回归 |
-|---|---|---|---|
-| 工程容器与文档树（formatVersion 2） | `src/main/project-core.ts`、`src/shared/document/`、`src/main/document/merge.ts` | [SPEC-project-core](../docs/spec/SPEC-project-core.md)、[SPEC-document-core](../docs/spec/SPEC-document-core.md) | `-g 'project-core\|document-core'` |
-| 命令面与 IPC | `src/main/core-commands.ts`（`core*` 命令族）、`src/main/preload.cts`、`src/main/worker.ts` | [工程文件契约](../docs/project-format.md) | `pdf-core-commands`、真实 Electron 套件 |
-| arXiv 导入与更新编排 | `src/main/arxiv/`（reference／version／transport／snapshot／convert／import／lineage／update） | [SPEC-arxiv-import](../docs/spec/SPEC-arxiv-import.md) | `-g 'arxiv-import'` |
-| PDF 云端解析 | `src/main/parsing/`（baidu-task／parse-snapshot／parse-convert／pdf-import）、`src/main/pdf/`（snapshot／verification／page-crop／fallback-import） | [SPEC-pdf-import](../docs/spec/SPEC-pdf-import.md) | `-g 'pdf-import'` |
-| 界面工程服务（formatVersion 1 过渡形态） | `src/main/project-service.ts` | [工程文件契约](../docs/project-format.md) | `desktop.spec.ts` |
-| Full 阅读器（current 投影、复杂内容渲染、原文选区与阅读位置） | `src/shared/reader/projection.ts`、`src/shared/reader/selection.ts`、`src/shared/reader/position.ts`、`src/renderer/reader/FullReader.tsx` | [SPEC-reader](../docs/spec/SPEC-reader.md) | `-g 'reader'` |
-| Agent 与模型 | `src/main/agent-service.ts`、`agent-tools.ts`、`pdf-tools.ts`、`web-tools.ts` | [SPEC-agent-integration](../docs/spec/SPEC-agent-integration.md) | `agent-files`、`web-tools` 等 |
+| 领域                                                          | 位置                                                                                                                                                | 权威规格                                                                                                         | 定向回归                                |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| 工程容器与文档树（formatVersion 2）                           | `src/main/project-core.ts`、`src/shared/document/`、`src/main/document/merge.ts`                                                                    | [SPEC-project-core](../docs/spec/SPEC-project-core.md)、[SPEC-document-core](../docs/spec/SPEC-document-core.md) | `-g 'project-core\|document-core'`      |
+| 命令面与 IPC                                                  | `src/main/core-commands.ts`（`core*` 命令族）、`src/main/preload.cts`、`src/main/worker.ts`                                                         | [工程文件契约](../docs/project-format.md)                                                                        | `pdf-core-commands`、真实 Electron 套件 |
+| arXiv 导入与更新编排                                          | `src/main/arxiv/`（reference／version／transport／snapshot／convert／import／lineage／update）                                                      | [SPEC-arxiv-import](../docs/spec/SPEC-arxiv-import.md)                                                           | `-g 'arxiv-import'`                     |
+| PDF 云端解析                                                  | `src/main/parsing/`（baidu-task／parse-snapshot／parse-convert／pdf-import）、`src/main/pdf/`（snapshot／verification／page-crop／fallback-import） | [SPEC-pdf-import](../docs/spec/SPEC-pdf-import.md)                                                               | `-g 'pdf-import'`                       |
+| 界面工程服务（formatVersion 1 过渡形态）                      | `src/main/project-service.ts`                                                                                                                       | [工程文件契约](../docs/project-format.md)                                                                        | `desktop.spec.ts`                       |
+| Full 阅读器（current 投影、复杂内容渲染、原文选区与阅读位置） | `src/shared/reader/projection.ts`、`src/shared/reader/selection.ts`、`src/shared/reader/position.ts`、`src/renderer/reader/FullReader.tsx`          | [SPEC-reader](../docs/spec/SPEC-reader.md)                                                                       | `-g 'reader'`                           |
+| Agent 与模型                                                  | `src/main/agent-service.ts`、`agent-tools.ts`、`pdf-tools.ts`、`web-tools.ts`                                                                       | [SPEC-agent-integration](../docs/spec/SPEC-agent-integration.md)                                                 | `agent-files`、`web-tools` 等           |
 
 要点（细节以规格与契约为准）：
 
