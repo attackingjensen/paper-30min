@@ -80,7 +80,7 @@ Phase 3 每个后续切片必须为其实际接管的范围补充边界测试；
 
 ## Measured, not yet enforced
 
-| ID | Metric | Today（2026-11-21，本分支实测） | Direction | 理由与命令 |
+| ID | Metric | Today（2026-11-17，本分支实测） | Direction | 理由与命令 |
 |---|---|---:|---|---|
 | M1 | 默认全量回归环境跳过数 | `3` | 不得增长 | 防止用环境条件静默扩大未测范围；`npm test`，既有 3 项登记为 W2（真实百度门控用例已随旧路径退役删除） |
 | M2 | 历史 OSV low + moderate finding（已退役） | `2`（LOW `1`、MODERATE `1`） | 不得增长 | 历史值为 katex LOW 与 minimatch MODERATE；OSV 已退役，仅保留作覆盖对照，不再执行 |
