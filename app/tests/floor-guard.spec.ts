@@ -9,6 +9,7 @@ const GUARD = path.resolve("scripts/floor-guard.mjs");
 const SUPPRESSION = "@ts-" + "ignore";
 const EXPECT = "ex" + "pect";
 const SKIP = ".s" + "kip";
+const MARKER = "TO" + "DO";
 
 let sandbox: string;
 
@@ -232,4 +233,62 @@ test("floor-guard 混合文件：重排断言豁免而真实删除仍拦截", as
   // 只报被删的那条（删行首行 expect(2)），重排保留的 expect(1) 不报。
   expect(result.stderr).toContain(`${EXPECT}(2)`);
   expect(result.stderr).not.toContain(`${EXPECT}(1)`);
+});
+
+test(`floor-guard 文档提及 ${MARKER} 名词不报，代码 ${MARKER} 桩仍拦截`, async () => {
+  await fixtureRepo();
+  await fs.writeFile(path.join(sandbox, "PROMPT.md"), `- Do not use markdown ${MARKER} files as project task state.\n`);
+  expect(runGuard().status).toBe(0);
+  await fs.writeFile(path.join(sandbox, "src.ts"), `// ${MARKER}: implement validation\nexport const x = 1;\n`);
+  const result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("unfinished-work");
+});
+
+test("floor-guard 非 Floor 章节的文档 bullet 改写不报 rule-removed", async () => {
+  await fixtureRepo();
+  const file = path.join(sandbox, "CONSTRAINTS.md");
+  await fs.writeFile(
+    file,
+    BASE_CONSTRAINTS + "\n## 工具分工\n\n- 格式化排除: ignorePatterns 排除 `.beads/`、`.codegraph/`。\n",
+  );
+  git(sandbox, "add", "-A");
+  git(sandbox, "commit", "-qm", "docs-section");
+  await fs.writeFile(file, BASE_CONSTRAINTS + "\n## 工具分工\n\n- 格式化排除: ignorePatterns 排除 `.beads/`。\n");
+  const result = runGuard();
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("clean");
+});
+
+test("floor-guard Floor 章节规则删除仍拦截，挪动章节标题不能绕过", async () => {
+  await fixtureRepo();
+  const file = path.join(sandbox, "CONSTRAINTS.md");
+  // 直接删除 Floor bullet。
+  await fs.writeFile(file, BASE_CONSTRAINTS.replace(`- 禁止新增抑制注释: 不允许新增 ${SUPPRESSION}。\n`, ""));
+  let result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("rule-removed");
+  // 同一次改动把 Floor 标题改名再删 bullet：章节归属按基线判定，仍拦截。
+  await fs.writeFile(
+    file,
+    BASE_CONSTRAINTS.replace("## Floor（始终阻断）", "## 质量约定").replace(
+      `- 禁止新增抑制注释: 不允许新增 ${SUPPRESSION}。\n`,
+      "",
+    ),
+  );
+  result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("rule-removed");
+});
+
+test("floor-guard 非 Floor 章节的阈值放宽仍被棘轮拦截", async () => {
+  await fixtureRepo();
+  const file = path.join(sandbox, "CONSTRAINTS.md");
+  await fs.writeFile(file, BASE_CONSTRAINTS + "\n## 测量\n\n- 跳过预算: 环境跳过 `4` 不得增长。\n");
+  git(sandbox, "add", "-A");
+  git(sandbox, "commit", "-qm", "metric-doc");
+  await fs.writeFile(file, BASE_CONSTRAINTS + "\n## 测量\n\n- 跳过预算: 环境跳过 `5` 不得增长。\n");
+  const result = runGuard();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("threshold");
 });
