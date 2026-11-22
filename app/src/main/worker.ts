@@ -18,6 +18,7 @@ import { ProductSkills } from "./product-skills.js";
 import { reconvertParseCandidate, publishParseCandidate } from "./parsing/pdf-import.js";
 import { listBaiduPdfParseTasks } from "./parsing/baidu-task.js";
 import type { PdfReparseCommandResult } from "../shared/contracts.js";
+import { settleTranslationTasks } from "./translation/run.js";
 
 const port = process.parentPort!;
 /** 进行中的 PDF 操作：operationId → 取消控制器与完成信号（worker 进程内权威）。
@@ -159,7 +160,18 @@ port.on(
   }: {
     data: {
       id: number;
-      command?: Command | { type: "agent"; command: AgentCommand; config: ModelConfig } | PdfImportWorkerCommand;
+      command?:
+        | Command
+        | { type: "agent"; command: AgentCommand; config: ModelConfig }
+        | {
+            type: "translationStart";
+            command: Extract<
+              CoreCommand,
+              { type: "coreTranslationStart" | "coreTranslationFillGaps" | "coreTranslationUpdateStale" }
+            >;
+            config: ModelConfig;
+          }
+        | PdfImportWorkerCommand;
       shutdown?: boolean;
       pdfUploadConfirmReply?: PdfUploadConfirmationReply;
       error?: string;
@@ -182,6 +194,7 @@ port.on(
         for (const entry of Array.from(pdfConfirmations.values())) entry.resolve(false);
         for (const operation of Array.from(pdfOperations.values())) operation.controller.abort();
         await Promise.allSettled([...pdfOperations.values()].map((operation) => operation.done));
+        await settleTranslationTasks();
         await agent.close();
         await service.close();
         // 落定应答发出后主动退出：主进程等 exit 事件再 app.exit，
@@ -213,6 +226,14 @@ port.on(
         value = await agent.withFileMove(command.root, () => service.dispatch(command));
       } else if (command && (command.type === "corePdfReconvert" || command.type === "corePdfPublishCandidate")) {
         value = await dispatchPdfOffline(command);
+      } else if (command?.type === "translationStart") {
+        value = await dispatchCoreCommand(command.command, undefined, {
+          config: command.config,
+          onCommitted: () =>
+            port.postMessage({
+              translationCommitted: { root: command.command.root, language: command.command.language },
+            }),
+        });
       } else if (command && isCoreCommand(command)) {
         value = await dispatchCoreCommand(command);
       } else value = await service.dispatch(command!);

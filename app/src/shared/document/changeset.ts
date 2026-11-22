@@ -296,9 +296,32 @@ function excerpt(text: string) {
 /** 节点内容指纹（与 changeset changed 判定同一口径）：排除结构引用，只含内容字段。 */
 export function documentNodeContentFingerprint(tree: DocumentTree, nodeType: NodeType, nodeId: string): string {
   const node =
-    nodes(tree, nodeType).find((candidate) => candidate.id === nodeId) ??
+    (nodeType === "section"
+      ? tree.sections[nodeId]
+      : nodeType === "unit"
+        ? tree.units[nodeId]
+        : nodeType === "sentence"
+          ? tree.sentences[nodeId]
+          : nodeType === "atom"
+            ? tree.atoms[nodeId]
+            : tree.blocks.find((candidate) => candidate.id === nodeId)) ??
     invalid(`节点不存在：${nodeType}/${nodeId}。`);
   return contentFingerprint(node, nodeType);
+}
+
+/** 原句内容摘要的确定性输入（译文 sourceSha256 统一口径，提交/迁移/读取共用）：
+ * 原句内容指纹＋按出现顺序的全部引用 atom 内容指纹，\0 分隔。atom-only 修正
+ * （sentence retained、atom changed）也会改变输入；引用 atom 缺失时抛错，
+ * 读取路径据此判 stale。shared 进程中立：哈希由调用方（main 侧 SHA-256）执行。 */
+export function sentenceSourceDigestInput(tree: DocumentTree, sentenceId: string): string {
+  const sentence = tree.sentences[sentenceId] ?? invalid(`节点不存在：sentence/${sentenceId}。`);
+  const parts = [contentFingerprint(sentence, "sentence")];
+  for (const part of sentence.content) {
+    if (part.kind !== "atom") continue;
+    const atom = tree.atoms[part.atomId] ?? invalid(`原句引用 atom 不存在：${part.atomId}。`);
+    parts.push(contentFingerprint(atom, "atom"));
+  }
+  return parts.join("\0");
 }
 
 /** 节点可读文本摘录（上限 500 码点），供核验 quote 与 tombstone 共用口径。 */

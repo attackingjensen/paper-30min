@@ -92,15 +92,16 @@ app/tests/                   转换、恢复、stale 和真实 Electron 回归
 ```text
 .paper30min/revisions/<revisionId>/translations/<language>/
   index.json                # baseRevision、当前 translationRevision、条目索引与状态
-  units/<unitId>.json       # 已提交单元及逐句译文
+  units/<unitId>.<generation>.json # 已提交单元及逐句译文（每代不可变版本化文件名）
   sections/<sectionId>.json # 已提交章节标题等元数据
 ```
 
 - `index.json` 是此语言当前投影的唯一指针，记录 `baseRevision`、`language`、当前 `translationRevision`、条目文件、逐句内容摘要和状态。
-- 单元／章节文件先完整写入并验证，再以同目录临时文件＋替换原子推进 `index.json`。未引用文件不是当前译文，启动时不得按时间或文件名猜测发布。
+- 单元／章节文件先完整写入并验证，再以同目录临时文件＋替换原子推进 `index.json`。每代单元使用不可变版本化文件名，next index 引用新文件；index 推进失败或崩溃时旧 index 仍指向旧文件，旧译文持续可读，新文件只是未引用残留（延迟清理）。未引用文件不是当前译文，启动时不得按时间或文件名猜测发布。
 - 一个提交可以只新增或替换一个 unit／section；无需重写整篇译文。`translationRevision` 随成功 index 提交改变。
 - 初次生成时 `ready` 表示与当前原句一致，`gap` 表示尚无可用译文，`stale` 表示保留的是旧原句译文。运行中的 pending／failed 属于任务记录，不能冒充 ready。
-- 已提交译文中保留实际 generator、prompt／schema 版本、原句摘要和译文摘要；模型 API key、代理和机器配置不得写入。
+- 已提交译文按句保留实际 generator、prompt／schema 版本、原句摘要和译文摘要；句级 merge 只替换目标句事实，kept 句保留原事实。原句摘要统一纳入按出现顺序的全部引用 atom 内容（atom-only 修正也判 stale）。模型 API key、代理和机器配置不得写入。
+- 已提交句保留译文引用的旧 atom 完整快照（可选字段，旧格式缺省时回退当前树，仅适用于未变 atom）；stale 展示与 quote 只从快照重建，不依赖当前树仍存在同 ID atom。
 - 旧原 revision 清理前，先把可继承译文迁移到新 current 的侧车。不承诺完整翻译历史，但 stale 展示所需的旧译文与 quote 必须保留。
 - `.paper30min/cache/` 中可重建的模型响应缓存不是当前译文权威，不能与已提交 index 混用。
 

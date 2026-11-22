@@ -29,6 +29,13 @@ const desktop: Desktop = {
       void ipcRenderer.invoke("project:watch", null).catch(() => {});
     };
   },
+  watchTranslation: (root, listener) => {
+    const changed = (_event: Electron.IpcRendererEvent, changedRoot: string, language: "zh" | "en") => {
+      if (changedRoot === root) listener(language);
+    };
+    ipcRenderer.on("translation:changed", changed);
+    return () => ipcRenderer.removeListener("translation:changed", changed);
+  },
   openLink: (url) => ipcRenderer.invoke("project:openLink", url),
   choose: (kind) => ipcRenderer.invoke("project:choose", kind),
   openFile: (root, path) => ipcRenderer.invoke("project:openFile", root, path),

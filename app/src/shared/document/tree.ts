@@ -78,7 +78,7 @@ const atomFields = {
   text: Type.String(),
   sourceAliases: SourceAliasesSchema,
 };
-const AtomNodeSchema = Type.Union([
+export const AtomNodeSchema = Type.Union([
   Type.Object(
     {
       ...atomFields,
