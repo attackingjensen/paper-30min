@@ -11,7 +11,7 @@ import {
 } from "../../shared/document/correction";
 import type { CorrectionPreview } from "../../shared/document/correction";
 import { summarizeCorrectionChangeset } from "../../shared/document/correction";
-import { getCorrectionDraft, setCorrectionDraft } from "./correction-draft";
+import { getCorrectionDraft, setCorrectionDraft, type CorrectionAtomEditorDraft } from "./correction-draft";
 import { Button } from "../ui/Button";
 import { InlineMessage } from "../ui/Feedback";
 
@@ -33,22 +33,30 @@ function atomPlaceholder(atom: AtomNode): string {
   return atomPlaceholderToken(atom.id);
 }
 
+function createAtomEditorDraft(atom: AtomNode): CorrectionAtomEditorDraft {
+  return {
+    atomId: atom.id,
+    text: atom.text,
+    value:
+      atom.kind === "math" || atom.kind === "inline-object" ? atom.source.value : atom.kind === "link" ? atom.href : "",
+    format: atom.kind === "math" || atom.kind === "inline-object" ? atom.source.format : "text",
+  };
+}
+
 function AtomEditor({
   atom,
+  draft,
+  onChange,
   onSave,
   onCancel,
 }: {
   atom: AtomNode;
+  draft: CorrectionAtomEditorDraft;
+  onChange: (next: CorrectionAtomEditorDraft) => void;
   onSave: (edit: AtomEdit) => void;
   onCancel: () => void;
 }) {
-  const [text, setText] = useState(atom.text);
-  const [value, setValue] = useState(
-    atom.kind === "math" || atom.kind === "inline-object" ? atom.source.value : atom.kind === "link" ? atom.href : "",
-  );
-  const [format, setFormat] = useState<"latex" | "mathml" | "text">(
-    atom.kind === "math" || atom.kind === "inline-object" ? atom.source.format : "text",
-  );
+  const { text, value, format } = draft;
   const [error, setError] = useState("");
   function submit() {
     try {
@@ -87,17 +95,26 @@ function AtomEditor({
       <p className="correction-atom-kind">原子类型：{atom.kind}（类型不可在此改变）</p>
       <label>
         显示文本（占位）
-        <input className="ui-input" value={text} onChange={(e) => setText(e.target.value)} />
+        <input className="ui-input" value={text} onChange={(e) => onChange({ ...draft, text: e.target.value })} />
       </label>
       {(atom.kind === "math" || atom.kind === "inline-object") && (
         <>
           <label>
             来源表示
-            <textarea className="ui-input" value={value} onChange={(e) => setValue(e.target.value)} rows={3} />
+            <textarea
+              className="ui-input"
+              value={value}
+              onChange={(e) => onChange({ ...draft, value: e.target.value })}
+              rows={3}
+            />
           </label>
           <label>
             格式
-            <select className="ui-input" value={format} onChange={(e) => setFormat(e.target.value as typeof format)}>
+            <select
+              className="ui-input"
+              value={format}
+              onChange={(e) => onChange({ ...draft, format: e.target.value as typeof format })}
+            >
               <option value="latex">latex</option>
               <option value="mathml">mathml</option>
               <option value="text">text</option>
@@ -108,7 +125,7 @@ function AtomEditor({
       {atom.kind === "link" && (
         <label>
           链接地址（https/http/mailto）
-          <input className="ui-input" value={value} onChange={(e) => setValue(e.target.value)} />
+          <input className="ui-input" value={value} onChange={(e) => onChange({ ...draft, value: e.target.value })} />
         </label>
       )}
       {(atom.kind === "citation" || atom.kind === "cross-reference" || atom.kind === "footnote-reference") && (
@@ -167,7 +184,8 @@ export function CorrectionHost({
   const [extraEdits, setExtraEdits] = useState<DocumentCorrection[]>(() =>
     usableDraft ? usableDraft.corrections.filter((edit) => edit.type !== "unit-text") : [],
   );
-  const [atomEditing, setAtomEditing] = useState<string | null>(null);
+  const [atomEditor, setAtomEditor] = useState<CorrectionAtomEditorDraft | null>(usableDraft?.atomEditor ?? null);
+  const atomEditing = atomEditor?.atomId ?? null;
   // 预览与固定命令随草稿恢复：reader 重挂载不丢失已预览的发布现场。
   const [previewState, setPreviewState] = useState<CorrectionPreview | null>(
     usableDraft && !staleDraft ? usableDraft.preview : null,
@@ -203,29 +221,39 @@ export function CorrectionHost({
     );
   }
 
-  function corrections(): DocumentCorrection[] {
+  function corrections(operations = extraEdits): DocumentCorrection[] {
     const edits: DocumentCorrection[] = [];
     // 先改字再拆分/删除是合法工作流：文字修正先行，结构命令的预期原内容
     // 取文字修正后的中间文本。拆分按空行切段时 trim 会去掉首尾空白，
-    // 中间文本以各段拼接（单空格连接）为准，与引擎投影口径一致。
-    const split = extraEdits.find((edit) => edit.type === "unit-split");
+    // 中间以各段拼接（单空格连接）为准。
+    const split = operations.find((edit) => edit.type === "unit-split");
     const intermediate = split && split.type === "unit-split" ? split.parts.join(" ") : text;
     if (intermediate !== original) edits.push({ type: "unit-text", unitId, expected: original, text: intermediate });
-    for (const edit of extraEdits) {
+    for (const edit of operations) {
       if (edit.type === "unit-split" || edit.type === "unit-delete") edits.push({ ...edit, expected: intermediate });
       else edits.push(edit);
     }
     return edits;
   }
 
-  function persistDraft(next: DocumentCorrection[], previewValue: CorrectionPreview | null) {
+  function persistDraft(
+    next: DocumentCorrection[],
+    previewValue: CorrectionPreview | null,
+    editor: CorrectionAtomEditorDraft | null = atomEditor,
+  ) {
     setCorrectionDraft(root, tab, {
-      baseRevision,
+      baseRevision: staleDraft && usableDraft ? usableDraft.baseRevision : baseRevision,
       unitId,
       corrections: next,
       previewRevisionId: previewValue?.revisionId ?? null,
       preview: previewValue,
+      atomEditor: editor,
     });
+  }
+
+  function updateAtomEditor(next: CorrectionAtomEditorDraft | null) {
+    setAtomEditor(next);
+    persistDraft(corrections(), preview, next);
   }
 
   async function runPreview() {
@@ -258,6 +286,10 @@ export function CorrectionHost({
   }
 
   async function runPublish() {
+    if (atomEditor) {
+      setError("请先保存或取消当前原子修正，再发布。");
+      return;
+    }
     if (!preview) return;
     setBusy(true);
     setError("");
@@ -330,20 +362,27 @@ export function CorrectionHost({
             <span className="correction-atom-placeholder" data-atom-id={atom.id}>
               {atom.kind}：{atomPlaceholder(atom)}
             </span>
-            <Button type="button" onClick={() => setAtomEditing(atom.id === atomEditing ? null : atom.id)}>
+            <Button
+              type="button"
+              onClick={() => updateAtomEditor(atom.id === atomEditing ? null : createAtomEditorDraft(atom))}
+            >
               {atom.id === atomEditing ? "收起" : "修正原子"}
             </Button>
-            {atom.id === atomEditing && (
+            {atom.id === atomEditing && atomEditor && (
               <AtomEditor
                 atom={atom}
-                onCancel={() => setAtomEditing(null)}
+                draft={atomEditor}
+                onChange={updateAtomEditor}
+                onCancel={() => updateAtomEditor(null)}
                 onSave={(edit) => {
-                  setExtraEdits((edits) => [
-                    ...edits.filter((entry) => !(entry.type === "atom" && entry.atomId === edit.atomId)),
+                  const next = [
+                    ...extraEdits.filter((entry) => !(entry.type === "atom" && entry.atomId === edit.atomId)),
                     edit,
-                  ]);
-                  setAtomEditing(null);
+                  ];
+                  setExtraEdits(next);
+                  setAtomEditor(null);
                   setPreview(null);
+                  persistDraft(corrections(next), null, null);
                 }}
               />
             )}
@@ -364,8 +403,13 @@ export function CorrectionHost({
               setError("拆分需要至少两段：请用空行分隔单元文本。");
               return;
             }
-            setExtraEdits((edits) => [...edits, { type: "unit-split", unitId, expected: original, parts }]);
+            const next: DocumentCorrection[] = [
+              ...extraEdits,
+              { type: "unit-split", unitId, expected: original, parts },
+            ];
+            setExtraEdits(next);
             setPreview(null);
+            persistDraft(corrections(next), null);
             setError("");
           }}
         >
@@ -374,8 +418,10 @@ export function CorrectionHost({
         <Button
           type="button"
           onClick={() => {
-            setExtraEdits((edits) => [...edits, { type: "unit-delete", unitId, expected: original }]);
+            const next: DocumentCorrection[] = [...extraEdits, { type: "unit-delete", unitId, expected: original }];
+            setExtraEdits(next);
             setPreview(null);
+            persistDraft(corrections(next), null);
           }}
         >
           删除该单元
@@ -386,6 +432,7 @@ export function CorrectionHost({
             onClick={() => {
               setExtraEdits([]);
               setPreview(null);
+              persistDraft(corrections([]), null);
             }}
           >
             清除结构操作
@@ -411,7 +458,11 @@ export function CorrectionHost({
         <Button type="button" variant="primary" disabled={busy || baselineBroken} onClick={() => void runPreview()}>
           预览 changeset
         </Button>
-        <Button type="button" disabled={busy || !preview || baselineBroken} onClick={() => void runPublish()}>
+        <Button
+          type="button"
+          disabled={busy || !preview || baselineBroken || atomEditor !== null}
+          onClick={() => void runPublish()}
+        >
           确认发布新 revision
         </Button>
       </div>
