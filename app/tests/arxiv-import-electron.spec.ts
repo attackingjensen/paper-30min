@@ -206,7 +206,7 @@ test("arxiv-import renderer 通过 URL 创建无 PDF 工程并渲染正文", asy
   expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
   const preferences = JSON.parse(await fs.readFile(path.join(sandbox, "profile", "preferences.json"), "utf8"));
   expect(preferences.defaultFolder).toBe(sandbox);
-  expect(preferences.recent[0].root).toBe(root);
+  expect(preferences.recent[0].root).toBe(await fs.realpath(root));
 });
 
 test("arxiv-import renderer 失败后重启仍可打开恢复界面并保持工程身份", async () => {

@@ -324,10 +324,15 @@ export function App() {
       const selected = folder ?? (await desktop.choose("folder"));
       if (!selected) return;
       const p = await desktop.invoke<Project>({ type: "open", root: selected });
-      const core =
-        p.manifest.paper.path === ""
-          ? await desktop.invoke<ProjectCoreSnapshot>({ type: "coreOpen", root: p.root })
-          : null;
+      let core: ProjectCoreSnapshot | null = null;
+      if (p.manifest.paper.path === "") {
+        try {
+          core = await desktop.invoke<ProjectCoreSnapshot>({ type: "coreOpen", root: p.root });
+        } catch {
+          // current 损坏仍交给 FullReader 的恢复界面；恢复探测不能阻止工程打开。
+          core = null;
+        }
+      }
       const recovery = core?.importRecord?.arxiv;
       if (core && core.manifest.paper.currentRevision === null && recovery) {
         const pdfTasks = await desktop.invoke<PdfParseTaskRecord[]>({ type: "corePdfTasks", root: core.root });
