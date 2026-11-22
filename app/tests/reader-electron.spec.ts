@@ -223,17 +223,22 @@ test("reader UI 保持正文排版并复用来源与修正控件语义基线", a
     probe.remove();
     return result;
   });
-  const typography = await reader.evaluate((element) => {
-    const style = getComputedStyle(element);
-    return {
-      color: style.color,
-      fontSize: style.fontSize,
-      lineHeight: style.lineHeight,
-      maxWidth: style.maxWidth,
-    };
-  });
-  expect(typography).toEqual({ color: tokens.text, fontSize: "15px", lineHeight: "26.25px", maxWidth: "860px" });
-  expect(await sourceToggle.evaluate((element) => getComputedStyle(element).borderTopColor)).toBe(tokens.borderStrong);
+  await expect
+    .poll(() =>
+      reader.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          color: style.color,
+          fontSize: style.fontSize,
+          lineHeight: style.lineHeight,
+          maxWidth: style.maxWidth,
+        };
+      }),
+    )
+    .toEqual({ color: tokens.text, fontSize: "15px", lineHeight: "26.25px", maxWidth: "860px" });
+  await expect
+    .poll(() => sourceToggle.evaluate((element) => getComputedStyle(element).borderTopColor))
+    .toBe(tokens.borderStrong);
 
   await sourceToggle.click();
   const allFilter = page.getByRole("button", { name: /^全部 \d+$/ });

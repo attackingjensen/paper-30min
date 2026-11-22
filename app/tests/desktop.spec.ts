@@ -854,6 +854,19 @@ test("read_pdf 经真实 Electron 和 Pi 传送完整页图，保留视口且不
     await create(source, path.join(sandbox, "projects"), "PDF 工具工程");
     const root = path.join(sandbox, "projects", "PDF 工具工程");
     await expectPdfRendered();
+    // save() 在首次恢复完成前不写位置；等初始页落盘再跳转，避免恢复覆盖后续输入。
+    await expect
+      .poll(async () => {
+        try {
+          return JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf[
+            "text/paper.pdf"
+          ]?.page;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+          throw error;
+        }
+      })
+      .toBe(1);
     await jumpPdfPage(2);
     await setPdfZoom("125");
     await page.getByRole("button", { name: "关闭 paper.pdf", exact: true }).click();
