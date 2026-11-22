@@ -24,6 +24,7 @@ import { createTranslationModelSession } from "./model-request.js";
 import {
   commitTranslationUnit,
   readTranslationProjection,
+  readTranslationTaskRecord,
   translationSentenceDigests,
   writeTranslationTaskRecord,
 } from "./store.js";
@@ -214,8 +215,17 @@ async function execute(
       }),
     )
     .digest("hex");
-  if (mode === "generate" && autoFillFingerprints.has(fingerprint))
-    return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
+  if (mode === "generate") {
+    if (autoFillFingerprints.has(fingerprint))
+      return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
+    // 重开应用后同指纹不再自动补试（SPEC §6.2/§6.6）：持久化任务记录是限次依据，
+    // 内存 Set 只覆盖同会话；手动 fill-gaps 不受此限制。
+    const previousTask = await readTranslationTaskRecord(root, baseRevision, input.language);
+    if (previousTask?.autoAttemptFingerprint === fingerprint) {
+      autoFillFingerprints.add(fingerprint);
+      return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
+    }
+  }
 
   const session = createTranslationModelSession(input.config);
   const modelBudget = {
@@ -236,7 +246,11 @@ async function execute(
     return true;
   };
   try {
-    await writeTranslationTaskRecord(root, baseRevision, input.language, { status: "running", gaps: [] });
+    await writeTranslationTaskRecord(root, baseRevision, input.language, {
+      status: "running",
+      gaps: [],
+      ...(mode === "generate" ? { autoAttemptFingerprint: fingerprint } : {}),
+    });
     if (mode === "generate") {
       // 在实际开始自动网络尝试时登记指纹：全失败（无 index）与用户停止同样受限。
       autoFillFingerprints.add(fingerprint);
@@ -331,7 +345,11 @@ async function execute(
             diagnostic: `[${failure.kind}] 句子 ${failure.sentenceId}：${failure.diagnostic}`,
           })),
     );
-    await writeTranslationTaskRecord(root, baseRevision, input.language, { status: "finished", gaps });
+    await writeTranslationTaskRecord(root, baseRevision, input.language, {
+      status: "finished",
+      gaps,
+      ...(mode === "generate" ? { autoAttemptFingerprint: fingerprint } : {}),
+    });
     const projection = await readTranslationProjection(root, baseRevision, input.language);
     return {
       status: "finished",

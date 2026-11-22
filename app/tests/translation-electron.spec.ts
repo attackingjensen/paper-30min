@@ -633,7 +633,7 @@ test("translation 跨旧译文与最新原文对照区的选区不产出译文�
 
 test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可读，gap 不触发恢复请求", async () => {
   const { created, ids, tree } = await englishProject("混合离线工程");
-  const { server, calls } = controlledServer({ failUnit: ids.body });
+  const { server } = controlledServer({ failUnit: ids.body });
   const endpoint = await startServer(server);
   try {
     await configureModel(endpoint);
@@ -662,10 +662,13 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
     await reader.getByRole("button", { name: "中文", exact: true }).click();
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
     await expect(bodySentence).toHaveAttribute("data-translation-status", "gap");
+    // 关闭前等当前语言无在途任务（busy 解除）：避免在途补试与重开交错。
+    await expect(reader.getByRole("button", { name: "中文", exact: true })).toBeEnabled({ timeout: 30000 });
 
-    // 离线重开：新进程连接同一受控端点但零新增请求——stale/gap 可读且不触发恢复。
-    const beforeReopen = calls.length;
+    // 离线重开：断开受控服务后 stale 旧译文与 gap 原文仍可读（不阻塞阅读）。
+    const endpointPort = (server.address() as { port: number }).port;
     await closeDesktopForCleanup();
+    await stopServer(server);
     await launch();
     await openFolder(created.root);
     const reopened = page.locator(".full-reader");
@@ -678,7 +681,15 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
     const reopenedBody = reopened.locator(`[data-sentence-id="${ids.bodySentence}"]`);
     await expect(reopenedBody).toHaveAttribute("data-translation-status", "gap");
     await expect(reopenedBody).toContainText("Translations appear unit by unit");
-    expect(calls.length).toBe(beforeReopen);
+    // 重开后新进程即使配置仍指向原端点，也不得发起任何模型请求：
+    // 重新监听同一端口计数 1.5s（恢复不阻塞阅读；自动补试限次由专门用例覆盖）。
+    const { server: probeServer, calls: probeCalls } = controlledServer({});
+    const listening = Promise.withResolvers<void>();
+    probeServer.listen(endpointPort, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    await page.waitForTimeout(1500);
+    expect(probeCalls.length).toBe(0);
+    await stopServer(probeServer);
   } finally {
     await stopServer(server).catch(() => undefined);
   }

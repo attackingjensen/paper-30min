@@ -544,6 +544,9 @@ export interface TranslationTaskRecord {
   status: "running" | "finished";
   updatedAt: string;
   gaps: Array<{ unitId: string; diagnostic: string }>;
+  /** 本记录对应自动尝试的 gap 指纹（SPEC §6.2 每会话限次的持久化依据）：
+   * 重开应用后同 baseRevision＋language＋model＋gap 内容不再自动补试。 */
+  autoAttemptFingerprint?: string;
 }
 
 const TaskRecordSchema = Type.Object(
@@ -559,6 +562,7 @@ const TaskRecordSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    autoAttemptFingerprint: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
   },
   { additionalProperties: false },
 );
@@ -568,7 +572,7 @@ export async function writeTranslationTaskRecord(
   root: string,
   baseRevision: string,
   language: TranslationLanguage,
-  record: Pick<TranslationTaskRecord, "status" | "gaps">,
+  record: Pick<TranslationTaskRecord, "status" | "gaps"> & { autoAttemptFingerprint?: string },
 ): Promise<void> {
   if (!uuid.test(baseRevision)) throw new Error("baseRevision 必须是 revision ID。");
   const directory = await managedDirectory(
@@ -587,7 +591,7 @@ export async function writeTranslationTaskRecord(
   await atomicWriteJson(path.join(directory, "task.json"), value, indexBudget, "翻译任务记录");
 }
 
-async function readTranslationTaskRecord(
+export async function readTranslationTaskRecord(
   root: string,
   baseRevision: string,
   language: TranslationLanguage,
