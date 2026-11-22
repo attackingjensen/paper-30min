@@ -2,7 +2,7 @@
 // 受控 fixture 端点（回环 http）驱动检查更新→候选→逐项解决→发布全链路；
 // 未解决不能发布，解决状态落盘，基线被推进时拒绝发布且保留解决结果；
 // 发布成功后 reader 按新 revision 恢复正文。渲染进程零远端请求。
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { test, expect, _electron as electron, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -211,6 +211,16 @@ async function openFolder(root: string) {
   await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
 }
 
+async function conflictCount(host: Locator): Promise<number> {
+  // 候选登记会触发工程 watcher 和 reader 重读；宿主加载态卸载时裸 count() 可读为 0。
+  // 冲突项由保留在 FullReader 的候选状态决定，重挂后数量稳定，取值必须受挂载闸门保护。
+  let count = 0;
+  await expect
+    .poll(async () => (count = await host.locator(".conflict-item").count()), { timeout: 30000 })
+    .toBeGreaterThan(0);
+  return count;
+}
+
 test("reader 冲突宿主：逐项解决前不能发布，采用 candidate 后发布并恢复新正文", async () => {
   const { root, edited } = await conflictedProject("冲突解决");
   await openFolder(root);
@@ -223,7 +233,8 @@ test("reader 冲突宿主：逐项解决前不能发布，采用 candidate 后�
   await expect(host).toBeVisible({ timeout: 30000 });
   await expect(host.locator(".conflict-count")).toContainText("未解决");
   const items = host.locator(".conflict-item");
-  expect(await items.count()).toBeGreaterThan(0);
+  const count = await conflictCount(host);
+  expect(count).toBeGreaterThan(0);
   // 冲突呈现 base/current/candidate 三方内容。
   const first = items.first();
   await expect(first).toContainText("内容冲突");
@@ -233,7 +244,6 @@ test("reader 冲突宿主：逐项解决前不能发布，采用 candidate 后�
   const publishButton = host.getByRole("button", { name: "发布候选为新 current" });
   await expect(publishButton).toBeDisabled();
   // 逐项解决：全部采用 candidate。
-  const count = await items.count();
   for (let index = 0; index < count; index++) {
     await items.nth(index).getByRole("button", { name: "采用 candidate" }).click();
     await expect(items.nth(index)).toHaveClass(/resolved/);
@@ -263,6 +273,7 @@ test("reader 冲突宿主：保留 current 的解决落盘，重开候选后状�
   await reader.getByRole("button", { name: "检查来源更新" }).click();
   const host = reader.locator(".conflict-host");
   await expect(host).toBeVisible({ timeout: 30000 });
+  await conflictCount(host);
   const first = host.locator(".conflict-item").first();
   const conflictId = await first.getAttribute("data-conflict-id");
   await first.getByRole("button", { name: "保留 current" }).click();
@@ -298,7 +309,7 @@ test("reader 冲突宿主：发布前 current 被推进时拒绝，解决结果�
   await expect(host).toBeVisible({ timeout: 30000 });
   const items = host.locator(".conflict-item");
   await expect(items.first()).toBeVisible();
-  const count = await items.count();
+  const count = await conflictCount(host);
   expect(count).toBeGreaterThan(0);
   // 逐项解决并等待落盘呈现：慢 runner 上不得把未消费的点击当成已解决。
   for (let index = 0; index < count; index++) {
