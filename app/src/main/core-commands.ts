@@ -51,6 +51,9 @@ import {
 } from "./arxiv/update.js";
 import { arxivFetch } from "./arxiv/transport.js";
 import type { ArxivFetchOptions, ArxivFetchResponse, ArxivTransport } from "./arxiv/fetch.js";
+import type { ModelConfig } from "./agent-settings.js";
+import { readTranslationProjection } from "./translation/store.js";
+import { runProjectTranslation } from "./translation/run.js";
 
 /** 进行中的 arXiv 导入/恢复：operationId → 取消控制器（worker 进程内权威）。 */
 const arxivOperations = new Map<string, AbortController>();
@@ -108,6 +111,8 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   corePdfResumeReparse: true,
   corePdfVerify: true,
   corePdfReadVerification: true,
+  coreTranslationRead: true,
+  coreTranslationStart: true,
 };
 
 export function isCoreCommand(command: { type: string }): command is CoreCommand {
@@ -121,8 +126,22 @@ export interface PdfCommandContext {
   signal: AbortSignal;
 }
 
-export async function dispatchCoreCommand(command: CoreCommand, pdf?: PdfCommandContext): Promise<unknown> {
+export async function dispatchCoreCommand(
+  command: CoreCommand,
+  pdf?: PdfCommandContext,
+  translation?: { config: ModelConfig; onCommitted?: () => void },
+): Promise<unknown> {
   switch (command.type) {
+    case "coreTranslationRead":
+      return readTranslationProjection(command.root, command.revisionId, command.language);
+    case "coreTranslationStart":
+      if (!translation) throw new Error("翻译任务缺少模型配置上下文。");
+      return runProjectTranslation({
+        root: command.root,
+        language: command.language,
+        config: translation.config,
+        ...(translation.onCommitted ? { onCommitted: translation.onCommitted } : {}),
+      });
     case "coreCreate":
       return createProject({ parent: command.parent, name: command.name });
     case "coreOpen":

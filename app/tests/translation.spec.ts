@@ -559,4 +559,100 @@ test.describe("translation 按需任务与模型 I/O", () => {
     expect(result.units.map((unit) => unit.status)).toEqual(["gap", "ready"]);
     expect(result.units[0]).toMatchObject({ diagnostic: "翻译模型请求失败，请检查模型配置后重试。" });
   });
+
+  test("合法单元完成即回调发布，失败单元留 gap 不阻塞后续", async () => {
+    const fixture = translationFixture();
+    const contents = validContents(fixture);
+    const published: string[] = [];
+    const result = await runTranslationTask({
+      baseRevision: "revision-current",
+      modelBudget: testModelBudget,
+      sourceLanguage: "en",
+      selectedLanguage: "zh",
+      units: [fixture.abstract, fixture.intro, fixture.target],
+      onUnitReady: async (unit) => {
+        published.push(unit.unitId);
+      },
+      generate: async (input) => {
+        // 第二个单元请求时，第一个合法单元必须已经发布（渐进可见）。
+        if (input.unit.unitId === fixture.intro.unitId) expect(published).toEqual([fixture.abstract.unitId]);
+        if (input.unit.unitId === fixture.abstract.unitId)
+          return response(fixture.abstract.unitId, [fixture.ids.inlineMathSentence], [contents.abstract]);
+        if (input.unit.unitId === fixture.intro.unitId)
+          return response(fixture.intro.unitId, [fixture.intro.sentences[0].sentenceId], [contents.intro[0]]);
+        return response(fixture.target.unitId, [fixture.target.sentences[0].sentenceId], ["这是跳转目标段落。"]);
+      },
+    });
+
+    expect(result.units.map((unit) => unit.status)).toEqual(["ready", "gap", "ready"]);
+    expect(published).toEqual([fixture.abstract.unitId, fixture.target.unitId]);
+  });
+
+  test("恢复任务跳过已提交且摘要一致的原句，不重复请求", async () => {
+    const fixture = translationFixture();
+    const committed = new Map([[fixture.abstract.unitId, new Set([fixture.ids.inlineMathSentence])]]);
+    const calls: string[] = [];
+    const result = await runTranslationTask({
+      baseRevision: "revision-current",
+      modelBudget: testModelBudget,
+      sourceLanguage: "en",
+      selectedLanguage: "zh",
+      units: [fixture.abstract, fixture.target],
+      committedSentences: committed,
+      generate: async (input) => {
+        calls.push(input.unit.unitId);
+        return response(fixture.target.unitId, [fixture.target.sentences[0].sentenceId], ["这是跳转目标段落。"]);
+      },
+    });
+
+    expect(calls).toEqual([fixture.target.unitId]);
+    expect(result.units.map((unit) => unit.status)).toEqual(["ready", "ready"]);
+    expect(result.units[0]).toMatchObject({ status: "ready", committed: true });
+    expect(result.units[1]).toMatchObject({ status: "ready", committed: false });
+  });
+
+  test("原句摘要变化的已提交单元不再视为完成，重新请求", async () => {
+    const fixture = translationFixture();
+    const contents = validContents(fixture);
+    const calls: string[] = [];
+    const result = await runTranslationTask({
+      baseRevision: "revision-current",
+      modelBudget: testModelBudget,
+      sourceLanguage: "en",
+      selectedLanguage: "zh",
+      units: [fixture.abstract],
+      // 已提交集合缺少当前原句（内容变化后摘要失配）：不得冒充 ready。
+      committedSentences: new Map([[fixture.abstract.unitId, new Set<string>()]]),
+      generate: async (input) => {
+        calls.push(input.unit.unitId);
+        return response(fixture.abstract.unitId, [fixture.ids.inlineMathSentence], [contents.abstract]);
+      },
+    });
+
+    expect(calls).toEqual([fixture.abstract.unitId]);
+    expect(result.units[0]).toMatchObject({ status: "ready", committed: false });
+  });
+
+  test("发布回调失败使该单元记为 gap，旧译文由存储层保留", async () => {
+    const fixture = translationFixture();
+    const contents = validContents(fixture);
+    const result = await runTranslationTask({
+      baseRevision: "revision-current",
+      modelBudget: testModelBudget,
+      sourceLanguage: "en",
+      selectedLanguage: "zh",
+      units: [fixture.abstract, fixture.target],
+      onUnitReady: async (unit) => {
+        if (unit.unitId === fixture.abstract.unitId) throw new Error("受控写入失败");
+      },
+      generate: async (input) => {
+        if (input.unit.unitId === fixture.abstract.unitId)
+          return response(fixture.abstract.unitId, [fixture.ids.inlineMathSentence], [contents.abstract]);
+        return response(fixture.target.unitId, [fixture.target.sentences[0].sentenceId], ["这是跳转目标段落。"]);
+      },
+    });
+
+    expect(result.units.map((unit) => unit.status)).toEqual(["gap", "ready"]);
+    expect(result.units[0]).toMatchObject({ diagnostic: expect.stringMatching(/受控写入失败|写入/) });
+  });
 });

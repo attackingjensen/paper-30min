@@ -12,7 +12,7 @@ import {
 } from "./model-io.js";
 
 type TranslationUnitResult =
-  | { status: "ready"; unit: TranslationUnitContent }
+  | { status: "ready"; unit: TranslationUnitContent; committed: boolean }
   | { status: "gap"; unitId: string; diagnostic: string };
 
 export type TranslationTaskResult =
@@ -30,11 +30,15 @@ export interface TranslationTaskOptions {
   selectedLanguage?: TranslationLanguage;
   generatedLanguages?: readonly TranslationLanguage[];
   units: readonly ReaderUnitContent[];
+  /** 已提交且与当前原句摘要一致的单元→句子集合；恢复时跳过，不重复请求。 */
+  committedSentences?: ReadonlyMap<string, ReadonlySet<string>>;
   context?: {
     paperTitle?: string;
     sectionPath?: readonly string[];
   };
   generate: (input: TranslationModelInput) => Promise<string>;
+  /** 单元完整通过校验后立即发布（原子存储）；抛错使该单元记为 gap。 */
+  onUnitReady?: (unit: TranslationUnitContent) => Promise<void>;
 }
 
 const maximumLanguageContentBytes = 64 * 1024 * 1024;
@@ -80,6 +84,23 @@ export async function runTranslationTask(options: TranslationTaskOptions): Promi
   const results: TranslationUnitResult[] = [];
   let languageContentBytes = 0;
   for (const sourceUnit of options.units) {
+    const committed = options.committedSentences?.get(sourceUnit.unitId);
+    if (
+      committed &&
+      sourceUnit.sentences.length > 0 &&
+      sourceUnit.sentences.every((sentence) => committed.has(sentence.sentenceId))
+    ) {
+      // 已提交内容以存储为权威；这里只报告完成，不重发请求。
+      results.push({
+        status: "ready",
+        committed: true,
+        unit: {
+          unitId: sourceUnit.unitId,
+          sentences: sourceUnit.sentences.map((sentence) => ({ sentenceId: sentence.sentenceId, content: [] })),
+        },
+      });
+      continue;
+    }
     try {
       const requestOptions = {
         baseRevision: options.baseRevision,
@@ -102,7 +123,17 @@ export async function runTranslationTask(options: TranslationTaskOptions): Promi
       if (languageContentBytes + unitContentBytes > maximumLanguageContentBytes)
         throw new TranslationModelBudgetError("单元译文使单语言逻辑内容超过 64 MiB 预算。");
       languageContentBytes += unitContentBytes;
-      results.push({ status: "ready", unit });
+      try {
+        await options.onUnitReady?.(unit);
+      } catch (error) {
+        results.push({
+          status: "gap",
+          unitId: sourceUnit.unitId,
+          diagnostic: `译文写入失败，旧译文保持不变：${(error as Error).message}`,
+        });
+        continue;
+      }
+      results.push({ status: "ready", unit, committed: false });
     } catch (error) {
       results.push({
         status: "gap",

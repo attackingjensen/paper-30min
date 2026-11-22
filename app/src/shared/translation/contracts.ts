@@ -13,3 +13,98 @@ export interface TranslationUnitContent {
   unitId: string;
   sentences: TranslationSentenceContent[];
 }
+
+/** 译文行内片段：atom 只引用原 ID，内部结构由原文树权威提供。 */
+export type TranslationInlinePart = TranslationUnitContent["sentences"][number]["content"][number];
+
+export type TranslationSentenceStatus = "ready" | "gap" | "stale";
+
+/** 已提交译文的 generator 事实；不含 API key、代理或机器配置。 */
+export interface TranslationGenerator {
+  provider: string;
+  model: string;
+  promptVersion: number;
+  schemaVersion: number;
+}
+
+/** 磁盘单元文件（units/<unitId>.json）：只保存完整通过校验的 ready 句。
+ * stale/gap 是读取时对照当前原文推导的投影状态，不回写单元文件。 */
+export interface TranslationUnitFile {
+  formatVersion: 1;
+  unitId: string;
+  generator: TranslationGenerator;
+  sentences: Array<{
+    sentenceId: string;
+    sourceSha256: string;
+    translationSha256: string;
+    content: TranslationInlinePart[];
+  }>;
+}
+
+export interface TranslationUnitIndexEntry {
+  unitId: string;
+  file: string;
+  generator: TranslationGenerator;
+  logicalBytes: number;
+  sentences: Array<{ sentenceId: string; sourceSha256: string; translationSha256: string }>;
+}
+
+/** index.json：此语言当前投影的唯一指针；未引用文件不是当前译文。 */
+export interface TranslationIndex {
+  formatVersion: 1;
+  baseRevision: string;
+  language: TranslationLanguage;
+  translationRevision: string;
+  logicalContentBytes: number;
+  units: TranslationUnitIndexEntry[];
+}
+
+/** 主进程读取路径输出的只读投影：状态已对照当前原文树推导。 */
+export interface TranslationSentenceProjection {
+  sentenceId: string;
+  status: TranslationSentenceStatus;
+  /** null 只用于 gap；stale 保留旧译文内容。 */
+  content: TranslationInlinePart[] | null;
+  staleReason?: "source-changed";
+}
+
+export interface TranslationUnitProjection {
+  unitId: string;
+  generator: TranslationGenerator;
+  sentences: TranslationSentenceProjection[];
+}
+
+export interface TranslationProjection {
+  baseRevision: string;
+  language: TranslationLanguage;
+  /** null 表示尚无已提交 index；gap 不触发阻塞阅读的恢复。 */
+  translationRevision: string | null;
+  /** 确定性源语言判断；无法确定时为 null，不创建翻译任务。 */
+  sourceLanguage: TranslationLanguage | null;
+  units: TranslationUnitProjection[];
+  /** 任务记录事实（task.json）：pending/failed 不冒充 ready；无记录为 null。 */
+  task: { status: "running" | "finished"; gaps: Array<{ unitId: string; diagnostic: string }> } | null;
+}
+
+/** 确定性源语言判断：按正文逻辑文本的 CJK 与 ASCII 字母占比。
+ * 混合语言论文仍归入占比更高的一侧；无法确定时返回 null，不创建任务。
+ * 进程中立：主进程任务启动与 renderer 语言入口共用同一口径。 */
+export function detectSourceLanguage(tree: DocumentTree): TranslationLanguage | null {
+  let cjk = 0;
+  let latin = 0;
+  for (const sentence of Object.values(tree.sentences)) {
+    for (const part of sentence.content) {
+      if (part.kind !== "text") continue;
+      for (const character of part.text) {
+        const code = character.codePointAt(0)!;
+        if (code >= 0x4e00 && code <= 0x9fff) cjk++;
+        else if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) latin++;
+      }
+    }
+  }
+  const total = cjk + latin;
+  if (total < 20) return null;
+  if (cjk / total >= 0.3) return "zh";
+  if (latin / total >= 0.7) return "en";
+  return null;
+}

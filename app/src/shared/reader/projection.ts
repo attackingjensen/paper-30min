@@ -13,7 +13,7 @@ export type ReaderAtom =
   | (Omit<Extract<Atom, { kind: "link" }>, "href"> & { href: string | null; warning?: string })
   | (Exclude<Atom, { kind: "link" }> & { warning?: string });
 
-type ReaderInlinePart =
+export type ReaderInlinePart =
   | { kind: "text"; text: string; start: number; end: number }
   | { kind: "atom"; atom: ReaderAtom; start: number; end: number };
 

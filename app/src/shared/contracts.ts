@@ -12,6 +12,7 @@ import type { DocumentMergeResult } from "./document/merge.js";
 import type { VerificationActorInput } from "./verification.js";
 import type { DocumentChangeset, Tombstone } from "./document/changeset.js";
 import type { ReadingPosition } from "./reader/position.js";
+import type { TranslationProjection } from "./translation/contracts.js";
 
 export interface DocumentRecord {
   id: string;
@@ -321,6 +322,17 @@ export type CoreCommand =
       operationId: string;
       /** 受控端点基址（同 coreArxivImport）：生产省略即 https://arxiv.org。 */
       baseUrl?: string;
+    }
+  | {
+      type: "coreTranslationRead";
+      root: string;
+      revisionId: string;
+      language: "zh" | "en";
+    }
+  | {
+      type: "coreTranslationStart";
+      root: string;
+      language: "zh" | "en";
     };
 
 /** arXiv 组合入口经生产 IPC 的结果（SPEC-arxiv-import §6–7）。 */
@@ -363,6 +375,24 @@ export type ArxivUpdateCandidateCommandResult =
 export type ArxivUpdatePublishCommandResult =
   | { ok: true; revision: ProjectRevisionRecord; warnings: ImportDiagnostic[] }
   | { ok: false; diagnostic: ImportDiagnostic };
+
+/** 翻译读取经生产 IPC 的投影：主进程已对照当前树推导 ready/gap/stale。 */
+export type TranslationReadCommandResult = TranslationProjection;
+
+/** 翻译任务经生产 IPC 的结果：skipped 不产生模型请求；finished 携带逐单元事实。 */
+export type TranslationStartCommandResult =
+  | {
+      status: "skipped";
+      reason: "not-selected" | "same-language" | "already-generated" | "no-current" | "unknown-language" | "busy";
+      projection: TranslationProjection | null;
+    }
+  | {
+      status: "finished";
+      units: Array<
+        { status: "ready"; unitId: string; committed: boolean } | { status: "gap"; unitId: string; diagnostic: string }
+      >;
+      projection: TranslationProjection;
+    };
 
 /** 主进程注入的本机解析配置：Token 与代理只存在于进程内存，不经 renderer。
  * custom 代理必须携带 proxyUrl；direct／environment 不接受 proxyUrl。 */
@@ -540,6 +570,8 @@ export interface Desktop {
   invoke<T>(command: Command): Promise<T>;
   choose(kind: "pdf" | "folder"): Promise<string | null>;
   watchProject(root: string, listener: (error?: string) => void): () => void;
+  /** 译文 index 原子推进通知（只携带身份，不携带内容）；renderer 据此重读投影。 */
+  watchTranslation(root: string, listener: (language: "zh" | "en") => void): () => void;
   openLink(url: string): Promise<void>;
   openFile(root: string, path: string): Promise<void>;
   /** 订阅 worker 发起的上传确认请求；返回取消订阅函数。 */

@@ -29,6 +29,18 @@ import { Button } from "../ui/Button";
 import { EmptyState, InlineMessage } from "../ui/Feedback";
 import type { ArxivUpdateCandidateCommandResult, ArxivUpdateCheckCommandResult } from "../../shared/contracts";
 import type { DocumentMergeResult } from "../../shared/document/merge";
+import {
+  detectSourceLanguage,
+  type TranslationLanguage,
+  type TranslationProjection,
+} from "../../shared/translation/contracts";
+import {
+  buildTranslationUnitViews,
+  readerProjectionUnits,
+  type TranslationSentenceView,
+  type TranslationUnitView,
+} from "../../shared/reader/translation-view";
+import type { TranslationReadCommandResult, TranslationStartCommandResult } from "../../shared/contracts";
 
 const desktop = window.desktop;
 /** raw block 白名单（与 document-core rawHtmlTags 一致）：渲染层独立消毒，
@@ -141,21 +153,50 @@ function sourceFacts(snapshot: Record<string, unknown>): ReaderSourceFacts {
   };
 }
 
-/** 单元正文：句子携带稳定 ID；文本片段按逻辑顺序渲染，atom 独立锚定。 */
-function UnitBody({ unit, onNavigate }: { unit: ReaderUnitContent; onNavigate: (unitId: string) => void }) {
+/** 单元正文：句子携带稳定 ID；文本片段按逻辑顺序渲染，atom 独立锚定。
+ * 语言视图按句替换为译文片段；gap 句保留原文锚点，stale 句显著标识。 */
+function UnitBody({
+  unit,
+  onNavigate,
+  translation,
+}: {
+  unit: ReaderUnitContent;
+  onNavigate: (unitId: string) => void;
+  translation?: TranslationUnitView;
+}) {
+  const translated = new Map(translation?.sentences.map((sentence) => [sentence.sentenceId, sentence]) ?? []);
   return (
     <>
       {unit.sentences.map((sentence) => (
-        <SentenceBody key={sentence.sentenceId} sentence={sentence} onNavigate={onNavigate} />
+        <SentenceBody
+          key={sentence.sentenceId}
+          sentence={sentence}
+          onNavigate={onNavigate}
+          translation={translated.get(sentence.sentenceId)}
+        />
       ))}
     </>
   );
 }
 
-function SentenceBody({ sentence, onNavigate }: { sentence: ReaderSentence; onNavigate: (unitId: string) => void }) {
+function SentenceBody({
+  sentence,
+  onNavigate,
+  translation,
+}: {
+  sentence: ReaderSentence;
+  onNavigate: (unitId: string) => void;
+  translation?: TranslationSentenceView;
+}) {
+  const status = translation?.status ?? "ready";
+  const parts = translation && translation.status !== "gap" ? translation.parts : sentence.parts;
   return (
-    <span data-sentence-id={sentence.sentenceId}>
-      {sentence.parts.map((part, index) =>
+    <span
+      data-sentence-id={sentence.sentenceId}
+      data-translation-status={translation ? status : undefined}
+      className={status === "stale" ? "reader-sentence-stale" : undefined}
+    >
+      {parts.map((part, index) =>
         part.kind === "text" ? (
           <span key={index} data-start={part.start} data-end={part.end}>
             {part.text}
@@ -163,6 +204,20 @@ function SentenceBody({ sentence, onNavigate }: { sentence: ReaderSentence; onNa
         ) : (
           <AtomView key={part.atom.id} atom={part.atom} start={part.start} end={part.end} onNavigate={onNavigate} />
         ),
+      )}
+      {translation?.status === "gap" && (
+        <span className="reader-translation-note" role="note">
+          未翻译
+        </span>
+      )}
+      {translation?.status === "stale" && (
+        <span
+          className="reader-translation-note stale"
+          role="note"
+          title="原句已修改，显示的是旧译文；可查看最新原文。"
+        >
+          已过期
+        </span>
       )}
     </span>
   );
@@ -336,11 +391,13 @@ function FigureView({
   root,
   revisionPath,
   onNavigate,
+  translatedUnit,
 }: {
   item: Extract<ReaderItem, { kind: "figure" }>;
   root: string;
   revisionPath: string;
   onNavigate: (unitId: string) => void;
+  translatedUnit?: (unitId: string) => TranslationUnitView | undefined;
 }) {
   const [failed, setFailed] = useState(false);
   const captionText =
@@ -365,7 +422,7 @@ function FigureView({
       )}
       {item.caption && (
         <figcaption data-unit-id={item.caption.unitId}>
-          <UnitBody unit={item.caption} onNavigate={onNavigate} />
+          <UnitBody unit={item.caption} onNavigate={onNavigate} translation={translatedUnit?.(item.caption.unitId)} />
         </figcaption>
       )}
     </figure>
@@ -375,16 +432,18 @@ function FigureView({
 function TableView({
   item,
   onNavigate,
+  translatedUnit,
 }: {
   item: Extract<ReaderItem, { kind: "table" }>;
   onNavigate: (unitId: string) => void;
+  translatedUnit?: (unitId: string) => TranslationUnitView | undefined;
 }) {
   return (
     <div className="reader-table-scroll" data-block-id={item.blockId}>
       <table className="reader-table">
         {item.caption && (
           <caption data-unit-id={item.caption.unitId}>
-            <UnitBody unit={item.caption} onNavigate={onNavigate} />
+            <UnitBody unit={item.caption} onNavigate={onNavigate} translation={translatedUnit?.(item.caption.unitId)} />
           </caption>
         )}
         <tbody>
@@ -397,7 +456,11 @@ function TableView({
                   rowSpan={cell.rowSpan > 1 ? cell.rowSpan : undefined}
                   colSpan={cell.columnSpan > 1 ? cell.columnSpan : undefined}
                 >
-                  <UnitBody unit={item.cells[cell.unitId]} onNavigate={onNavigate} />
+                  <UnitBody
+                    unit={item.cells[cell.unitId]}
+                    onNavigate={onNavigate}
+                    translation={translatedUnit?.(cell.unitId)}
+                  />
                 </td>
               ))}
             </tr>
@@ -429,15 +492,17 @@ function UnitView({
   item,
   onCorrect,
   onNavigate,
+  translation,
 }: {
   item: Extract<ReaderItem, { kind: "unit" }>;
   onCorrect?: (unitId: string) => void;
   onNavigate: (unitId: string) => void;
+  translation?: TranslationUnitView;
 }) {
   const Tag = item.unitKind === "reference" || item.unitKind === "footnote" ? "div" : "p";
   return (
     <Tag className={`reader-unit reader-unit-${item.unitKind}`} data-unit-id={item.unitId} data-block-id={item.blockId}>
-      <UnitBody unit={item} onNavigate={onNavigate} />
+      <UnitBody unit={item} onNavigate={onNavigate} translation={translation} />
       {onCorrect && (
         <Button
           className="reader-correct-entry"
@@ -491,6 +556,13 @@ export function FullReader({
   const [updateStatus, setUpdateStatus] = useState("");
   const [updateBusy, setUpdateBusy] = useState(false);
   const [localEpoch, setLocalEpoch] = useState(0);
+  // 语言视图（SPEC-translation §5）：null 为原文；译文投影由主进程验证后只读消费。
+  const [language, setLanguage] = useState<TranslationLanguage | null>(null);
+  const [translation, setTranslation] = useState<TranslationProjection | null>(null);
+  const [translationBusy, setTranslationBusy] = useState(false);
+  const [translationStatus, setTranslationStatus] = useState("");
+  const translationEpoch = useRef(0);
+  const translationRootRef = useRef<string | null>(null);
   const requestRef = useRef(0);
   const articleRef = useRef<HTMLElement | null>(null);
   // 恢复请求代际：用户滚动即失效，迟到布局结果不得覆盖新位置。
@@ -517,12 +589,23 @@ export function FullReader({
   onPositionRef.current = onPosition;
   const stateRef = useRef<ReaderState | null>(null);
   stateRef.current = state;
+  const languageRef = useRef<TranslationLanguage | null>(null);
+  languageRef.current = language;
 
   useEffect(() => {
     const request = ++requestRef.current;
     let disposed = false;
     setState(null);
     setStatus("loading");
+    // 工程切换：旧语言投影不得冒充新工程的译文。同工程内的 revision 推进
+    // 不在此清空（译文提交本身会触发 project:changed）；由代际与 revision 守卫兜底。
+    if (translationRootRef.current !== root) {
+      translationRootRef.current = root;
+      translationEpoch.current++;
+      setTranslation(null);
+      setLanguage(null);
+      setTranslationStatus("");
+    }
     (async () => {
       let core: ProjectCoreSnapshot;
       try {
@@ -602,11 +685,38 @@ export function FullReader({
     };
   }, [root, epoch, localEpoch]);
 
+  // 渐进刷新：译文 index 每次原子推进即重读当前语言投影；
+  // 只替换句级内容，不重排阅读位置、不强制 reload。
+  useEffect(() => {
+    if (status !== "ready" || !state || language === null) return;
+    const revisionId = state.revisionId;
+    let disposed = false;
+    const stop = desktop.watchTranslation(root, (changedLanguage) => {
+      if (changedLanguage !== language || disposed) return;
+      void desktop
+        .invoke<TranslationReadCommandResult>({ type: "coreTranslationRead", root, revisionId, language })
+        .then((projection) => {
+          if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === language)
+            setTranslation(projection);
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, [status, state, root, language]);
+
   // 选区交互：DOM 只承担交互，权威偏移经投影索引映射；工具条不破坏原生选择。
   const refreshSelection = useCallback(() => {
     const article = articleRef.current;
     const current = state;
     if (!article || !current) return;
+    // 译文精确选区与重基由 crd.4 承担；语言视图下不产出原文 range 冒充译文选区。
+    if (language !== null) {
+      setToolbar(null);
+      return;
+    }
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
       setToolbar(null);
@@ -640,7 +750,7 @@ export function FullReader({
     const x = Math.min(Math.max(8, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 8);
     const y = rect.bottom + 8 + 40 > window.innerHeight ? Math.max(8, rect.top - 48) : rect.bottom + 8;
     setToolbar({ x, y, quote, context, degraded: degraded || quote === "" });
-  }, [state]);
+  }, [state, language]);
 
   useEffect(() => {
     if (status !== "ready") return;
@@ -681,7 +791,7 @@ export function FullReader({
     const excerpt = (chosen.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
     return {
       revisionId: current.revisionId,
-      view: "source",
+      view: languageRef.current === null ? "source" : "translation",
       anchor,
       parentSectionId: parentSectionOf(current.tree, anchor),
       excerpt,
@@ -985,6 +1095,98 @@ export function FullReader({
     }
   }
 
+  // 语言切换（SPEC-translation §1/§5）：原文即回；首次进入无译文语言才启动任务，
+  // 已有译文只切换视图。任务期间渐进刷新投影，不重排阅读位置、不强制 reload。
+  async function switchLanguage(target: TranslationLanguage | null) {
+    if (!state) return;
+    const epochAtStart = ++translationEpoch.current;
+    const current = state;
+    if (target === null) {
+      setLanguage(null);
+      setTranslation(null);
+      setTranslationStatus("");
+      setToolbar(null);
+      return;
+    }
+    setLanguage(target);
+    setToolbar(null);
+    setTranslationBusy(true);
+    setTranslationStatus("正在读取译文…");
+    const stale = () => epochAtStart !== translationEpoch.current || stateRef.current !== current;
+    try {
+      const existing = await desktop.invoke<TranslationReadCommandResult>({
+        type: "coreTranslationRead",
+        root,
+        revisionId: current.revisionId,
+        language: target,
+      });
+      if (stale()) return;
+      setTranslation(existing);
+      const sourceLanguage = existing.sourceLanguage ?? detectSourceLanguage(current.tree);
+      if (sourceLanguage === null) {
+        setTranslationStatus("无法确定原文语言，未启动翻译；正文仍以原文显示。");
+        return;
+      }
+      if (sourceLanguage === target) {
+        setTranslationStatus("目标语言与原文相同，不创建翻译任务。");
+        return;
+      }
+      // 已有译文只切换视图：全部原文单元的句子都 ready 才算完成；
+      // 未提交单元（gap）不在 index 中，不能因“已提交部分全 ready”误判完成。
+      const sourceUnits = readerProjectionUnits(current.projection);
+      const readyByUnit = new Map(
+        existing.units.map((unit) => [
+          unit.unitId,
+          unit.sentences.filter((sentence) => sentence.status === "ready").map((sentence) => sentence.sentenceId),
+        ]),
+      );
+      const allReady =
+        existing.translationRevision !== null &&
+        sourceUnits.length > 0 &&
+        sourceUnits.every((unit) => {
+          const ready = readyByUnit.get(unit.unitId);
+          return (
+            ready !== undefined &&
+            unit.sentences.length > 0 &&
+            unit.sentences.every((sentence) => ready.includes(sentence.sentenceId))
+          );
+        });
+      if (allReady) {
+        setTranslationStatus("");
+        return;
+      }
+      setTranslationStatus(`正在生成${target === "zh" ? "中文" : "英文"}译文（可能产生模型费用）…`);
+      const started = await desktop.invoke<TranslationStartCommandResult>({
+        type: "coreTranslationStart",
+        root,
+        language: target,
+      });
+      if (stale()) return;
+      if (started.status === "finished") {
+        setTranslation(started.projection);
+        const gaps = started.units.filter((unit) => unit.status === "gap");
+        setTranslationStatus(gaps.length > 0 ? `译文已渐进发布；${gaps.length} 个单元暂为缺口，可稍后补译。` : "");
+      } else if (started.projection) {
+        setTranslation(started.projection);
+        const gaps = started.projection.task?.gaps ?? [];
+        setTranslationStatus(
+          started.reason === "busy"
+            ? "该语言已有翻译任务在运行，译文将渐进出现。"
+            : gaps.length > 0
+              ? `译文已渐进发布；${gaps.length} 个单元暂为缺口，可稍后补译。`
+              : "",
+        );
+      } else {
+        setTranslationStatus("翻译任务未启动：正文尚未发布或已有同语言任务。");
+      }
+    } catch (error) {
+      if (stale()) return;
+      setTranslationStatus((error as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
+    } finally {
+      if (!stale()) setTranslationBusy(false);
+    }
+  }
+
   if (status === "loading") return <EmptyState>正在读取正文…</EmptyState>;
   if (status === "empty")
     return (
@@ -1001,10 +1203,19 @@ export function FullReader({
 
   const { projection, facts } = state;
   const revisionPath = `paper/revisions/${state.revisionId}`;
+  // 语言视图：按原文全部可读单元构建句级投影；未提交单元全部为 gap。
+  const translationViews =
+    language !== null && translation
+      ? new Map(
+          buildTranslationUnitViews(readerProjectionUnits(projection), translation).map((view) => [view.unitId, view]),
+        )
+      : null;
+  const translatedUnit = translationViews ? (unitId: string) => translationViews.get(unitId) : undefined;
   return (
     <article
       className="full-reader"
       data-revision-id={state.revisionId}
+      data-language-view={language ?? "source"}
       ref={articleRef}
       onMouseUp={refreshSelection}
       onKeyUp={refreshSelection}
@@ -1022,6 +1233,36 @@ export function FullReader({
           </Button>
         )}
         {updateStatus && <InlineMessage className="reader-update-status">{updateStatus}</InlineMessage>}
+        <div className="reader-language" role="group" aria-label="阅读语言">
+          <Button
+            className={`reader-language-option${language === null ? " active" : ""}`}
+            aria-pressed={language === null}
+            onClick={() => void switchLanguage(null)}
+          >
+            原文
+          </Button>
+          <Button
+            className={`reader-language-option${language === "zh" ? " active" : ""}`}
+            aria-pressed={language === "zh"}
+            disabled={translationBusy}
+            onClick={() => void switchLanguage("zh")}
+          >
+            中文
+          </Button>
+          <Button
+            className={`reader-language-option${language === "en" ? " active" : ""}`}
+            aria-pressed={language === "en"}
+            disabled={translationBusy}
+            onClick={() => void switchLanguage("en")}
+          >
+            English
+          </Button>
+        </div>
+        {language !== null && translationStatus && (
+          <InlineMessage className="reader-translation-status" role="status">
+            {translationStatus}
+          </InlineMessage>
+        )}
       </header>
       {panelOpen && (
         <SourcePanel
@@ -1095,8 +1336,9 @@ export function FullReader({
               <UnitView
                 key={item.blockId}
                 item={item}
-                onCorrect={(unitId) => setCorrectingUnit(unitId)}
+                onCorrect={language === null ? (unitId) => setCorrectingUnit(unitId) : undefined}
                 onNavigate={navigateUnit}
+                translation={translatedUnit?.(item.unitId)}
               />
             );
           case "formula":
@@ -1109,10 +1351,13 @@ export function FullReader({
                 root={root}
                 revisionPath={revisionPath}
                 onNavigate={navigateUnit}
+                translatedUnit={translatedUnit}
               />
             );
           case "table":
-            return <TableView key={item.blockId} item={item} onNavigate={navigateUnit} />;
+            return (
+              <TableView key={item.blockId} item={item} onNavigate={navigateUnit} translatedUnit={translatedUnit} />
+            );
           case "raw":
             return <RawView key={item.blockId} item={item} />;
         }
