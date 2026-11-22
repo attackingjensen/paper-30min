@@ -18,7 +18,6 @@ import { createTranslationModelSession } from "./model-request.js";
 import {
   commitTranslationUnit,
   readTranslationProjection,
-  readTranslationTaskRecord,
   translationSentenceDigests,
   writeTranslationTaskRecord,
 } from "./store.js";

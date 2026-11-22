@@ -27,6 +27,7 @@ import type { DocumentMergeCandidate } from "../document/merge.js";
 import { publishDocumentMergeCandidate, resolveDocumentMergeCandidateConflict } from "../document/merge.js";
 import { loadUpdateCandidate } from "../document/candidate-store.js";
 import { verificationInheritCommitHooks } from "../pdf/verification.js";
+import { translationInheritCommitHooks } from "../translation/migrate.js";
 
 /** 端到端 PDF 导入结果：published 表示 current 已原子推进，正文可离线阅读。 */
 export type PdfImportResult =
@@ -563,14 +564,23 @@ export async function publishParseCandidate(input: {
   for (const resolution of input.resolutions ?? []) {
     resolved = resolveDocumentMergeCandidateConflict(resolved, resolution.conflictId, resolution.choice);
   }
-  return publishDocumentMergeCandidate(
-    resolved,
-    verificationInheritCommitHooks({
-      root: resolved.root,
-      baseRevision: resolved.baseRevision,
-      revisionId: resolved.revisionId,
-      sourceSnapshotId: resolved.sourceSnapshotId,
-      document: resolved.document,
-    }),
-  );
+  return publishDocumentMergeCandidate(resolved, {
+    onCommitPoint: async (point, context) => {
+      await verificationInheritCommitHooks({
+        root: resolved.root,
+        baseRevision: resolved.baseRevision,
+        revisionId: resolved.revisionId,
+        sourceSnapshotId: resolved.sourceSnapshotId,
+        document: resolved.document,
+      }).onCommitPoint?.(point, context);
+      await translationInheritCommitHooks({
+        root: resolved.root,
+        baseRevision: resolved.baseRevision,
+        revisionId: resolved.revisionId,
+        document: resolved.document,
+        changeset: resolved.changeset,
+        tombstones: resolved.tombstones,
+      }).onCommitPoint?.(point, context);
+    },
+  });
 }

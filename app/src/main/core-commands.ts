@@ -54,6 +54,9 @@ import type { ArxivFetchOptions, ArxivFetchResponse, ArxivTransport } from "./ar
 import type { ModelConfig } from "./agent-settings.js";
 import { readTranslationProjection } from "./translation/store.js";
 import { runProjectTranslation } from "./translation/run.js";
+import { translationInheritCommitHooks } from "./translation/migrate.js";
+import { createDocumentChangeset, type Tombstone } from "../shared/document/changeset.js";
+import type { ProjectCommitHooks } from "./project-core.js";
 
 /** 进行中的 arXiv 导入/恢复：operationId → 取消控制器（worker 进程内权威）。 */
 const arxivOperations = new Map<string, AbortController>();
@@ -119,6 +122,16 @@ export function isCoreCommand(command: { type: string }): command is CoreCommand
   return command.type in coreCommandTypes;
 }
 
+/** 组合来源侧车钩子：同一提交点按序执行（核验继承、译文迁移等）；
+ * 任一失败即拒绝发布，不产生孤儿侧车。 */
+function composeCommitHooks(...hooks: ProjectCommitHooks[]): ProjectCommitHooks {
+  return {
+    onCommitPoint: async (point, context) => {
+      for (const hook of hooks) await hook.onCommitPoint?.(point, context);
+    },
+  };
+}
+
 /** PDF 云端命令的进程内上下文：配置与确认由主进程／worker 注入，renderer 不持有。 */
 export interface PdfCommandContext {
   config: BaiduPdfParseConfig;
@@ -160,13 +173,35 @@ export async function dispatchCoreCommand(
         const bytes = content instanceof Uint8Array ? content : content?.bytes;
         if (!bytes) throw new Error("coreCommit 缺少 document.json，不能发布新 current。");
         const document = parseDocumentTree(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
-        hooks = verificationInheritCommitHooks({
-          root: command.root,
+        const baseDocument = await readRevisionDocument(command.root, command.baseRevision, "document");
+        const changeset = createDocumentChangeset({
+          base: baseDocument,
+          current: document,
           baseRevision: command.baseRevision,
           revisionId,
-          sourceSnapshotId: command.sourceSnapshotId,
-          document,
         });
+        const tombstonesValue = command.files["tombstones.json"];
+        const tombstoneBytes = tombstonesValue instanceof Uint8Array ? tombstonesValue : tombstonesValue?.bytes;
+        const tombstones: Tombstone[] = tombstoneBytes
+          ? (JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(tombstoneBytes)) as Tombstone[])
+          : [];
+        hooks = composeCommitHooks(
+          verificationInheritCommitHooks({
+            root: command.root,
+            baseRevision: command.baseRevision,
+            revisionId,
+            sourceSnapshotId: command.sourceSnapshotId,
+            document,
+          }),
+          translationInheritCommitHooks({
+            root: command.root,
+            baseRevision: command.baseRevision,
+            revisionId,
+            document,
+            changeset,
+            tombstones,
+          }),
+        );
       }
       return commitRevision(
         {
@@ -197,8 +232,7 @@ export async function dispatchCoreCommand(
       });
     case "coreCorrectionPublish": {
       const revision = await readRevision(command.root, command.baseRevision);
-      // 钩子在临界区内需要修正后的树：先以基线树占位，发布重放完成后替换。
-      let hookDocument = await readRevisionDocument(command.root, command.baseRevision, "document");
+      // 钩子在临界区内读取修正后的树与 tombstones，迁移与核验继承同一提交点执行。
       const published = await publishDocumentCorrections({
         root: command.root,
         baseRevision: command.baseRevision,
@@ -206,15 +240,33 @@ export async function dispatchCoreCommand(
         corrections: command.corrections,
         hooks: {
           onCommitPoint: async (point, context) => {
-            if (point === "before-current-replace")
-              hookDocument = await readRevisionDocument(command.root, command.revisionId, "document");
-            await verificationInheritCommitHooks({
-              root: command.root,
+            if (point !== "before-current-replace") return;
+            const hookDocument = await readRevisionDocument(command.root, command.revisionId, "document");
+            const baseDocument = await readRevisionDocument(command.root, command.baseRevision, "document");
+            const changeset = createDocumentChangeset({
+              base: baseDocument,
+              current: hookDocument,
               baseRevision: command.baseRevision,
               revisionId: command.revisionId,
-              sourceSnapshotId: revision.sourceSnapshotId,
-              document: hookDocument,
-            }).onCommitPoint?.(point, context);
+            });
+            const { tombstones } = await readRevisionContext(command.root, command.revisionId);
+            await composeCommitHooks(
+              verificationInheritCommitHooks({
+                root: command.root,
+                baseRevision: command.baseRevision,
+                revisionId: command.revisionId,
+                sourceSnapshotId: revision.sourceSnapshotId,
+                document: hookDocument,
+              }),
+              translationInheritCommitHooks({
+                root: command.root,
+                baseRevision: command.baseRevision,
+                revisionId: command.revisionId,
+                document: hookDocument,
+                changeset,
+                tombstones,
+              }),
+            ).onCommitPoint?.(point, context);
           },
         },
       });
@@ -350,13 +402,23 @@ async function mergePublish(command: Extract<CoreCommand, { type: "coreMergePubl
   }
   return publishDocumentMergeCandidate(
     candidate,
-    verificationInheritCommitHooks({
-      root: candidate.root,
-      baseRevision: candidate.baseRevision,
-      revisionId: candidate.revisionId,
-      sourceSnapshotId: candidate.sourceSnapshotId,
-      document: candidate.document,
-    }),
+    composeCommitHooks(
+      verificationInheritCommitHooks({
+        root: candidate.root,
+        baseRevision: candidate.baseRevision,
+        revisionId: candidate.revisionId,
+        sourceSnapshotId: candidate.sourceSnapshotId,
+        document: candidate.document,
+      }),
+      translationInheritCommitHooks({
+        root: candidate.root,
+        baseRevision: candidate.baseRevision,
+        revisionId: candidate.revisionId,
+        document: candidate.document,
+        changeset: candidate.changeset,
+        tombstones: candidate.tombstones,
+      }),
+    ),
   );
 }
 

@@ -57,6 +57,20 @@ export interface TranslationIndex {
   translationRevision: string;
   logicalContentBytes: number;
   units: TranslationUnitIndexEntry[];
+  /** 迁移保留的失效诊断（removed/split/merge 旧译文）；可选，缺省为空。 */
+  retired?: TranslationRetiredEntry[];
+}
+
+/** 失效诊断条目（SPEC-translation §7）：removed/split/merge 的旧译文只保留于此，
+ * 不挂到相似或相邻新句；随迁移 index 持久化，离线重开一致。 */
+export interface TranslationRetiredEntry {
+  sentenceId: string;
+  unitId: string;
+  reason: "removed" | "split" | "merged";
+  /** 旧原句可读摘录（document-core 同一口径，上限 500 码点）。 */
+  excerpt: string;
+  content: TranslationInlinePart[];
+  generator: TranslationGenerator;
 }
 
 /** 主进程读取路径输出的只读投影：状态已对照当前原文树推导。 */
@@ -84,6 +98,8 @@ export interface TranslationProjection {
   units: TranslationUnitProjection[];
   /** 任务记录事实（task.json）：pending/failed 不冒充 ready；无记录为 null。 */
   task: { status: "running" | "finished"; gaps: Array<{ unitId: string; diagnostic: string }> } | null;
+  /** 迁移保留的失效诊断；无已提交 index 或无退役句时省略。 */
+  retired?: TranslationRetiredEntry[];
 }
 
 /** 确定性源语言判断：按正文逻辑文本的 CJK 与 ASCII 字母占比。

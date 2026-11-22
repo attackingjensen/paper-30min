@@ -68,6 +68,17 @@ const UnitFileSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+const RetiredEntrySchema = Type.Object(
+  {
+    sentenceId: Type.String({ minLength: 1 }),
+    unitId: Type.String({ minLength: 1 }),
+    reason: Type.Union([Type.Literal("removed"), Type.Literal("split"), Type.Literal("merged")]),
+    excerpt: Type.String(),
+    content: Type.Array(InlinePartSchema, { minItems: 1 }),
+    generator: GeneratorSchema,
+  },
+  { additionalProperties: false },
+);
 const IndexSchema = Type.Object(
   {
     formatVersion: Type.Literal(1),
@@ -87,6 +98,7 @@ const IndexSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    retired: Type.Optional(Type.Array(RetiredEntrySchema)),
   },
   { additionalProperties: false },
 );
@@ -192,7 +204,12 @@ async function atomicWriteJson(destination: string, value: unknown, budget: numb
   }
 }
 
-function parseIndex(value: unknown, baseRevision: string, language: TranslationLanguage): TranslationIndex {
+/** index 契约校验（读取与迁移共用）：损坏或与请求不一致时明确拒绝。 */
+export function parseTranslationIndex(
+  value: unknown,
+  baseRevision: string,
+  language: TranslationLanguage,
+): TranslationIndex {
   if (!indexSchema.Check(value)) throw new Error("译文 index 损坏或不符合契约。");
   if (value.baseRevision !== baseRevision || value.language !== language || !uuid.test(value.translationRevision))
     throw new Error("译文 index 与请求的 revision／语言不一致。");
@@ -205,7 +222,8 @@ function parseIndex(value: unknown, baseRevision: string, language: TranslationL
   return value;
 }
 
-function parseUnitFile(value: unknown, entry: TranslationUnitIndexEntry): TranslationUnitFile {
+/** 单元文件契约校验（读取与迁移共用）：身份与逐句摘要必须与 index 一致。 */
+export function parseTranslationUnitFile(value: unknown, entry: TranslationUnitIndexEntry): TranslationUnitFile {
   if (!unitFileSchema.Check(value)) throw new Error(`译文单元文件损坏：${entry.unitId}。`);
   if (value.unitId !== entry.unitId) throw new Error(`译文单元文件身份与 index 不一致：${entry.unitId}。`);
   if (
@@ -275,7 +293,7 @@ export async function commitTranslationUnit(
 
     let previous: TranslationIndex | null = null;
     try {
-      previous = parseIndex(
+      previous = parseTranslationIndex(
         await readJsonFile(path.join(directory, "index.json"), indexBudget, "译文 index"),
         input.baseRevision,
         input.language,
@@ -307,7 +325,7 @@ export async function commitTranslationUnit(
       ? path.join(unitsDirectory, `.paper30min-${randomUUID()}.staged.json`)
       : finalUnitFile;
     await atomicWriteJson(stagedUnitFile, unitFile, maximumUnitBytes, "译文单元文件");
-    parseUnitFile(await readJsonFile(stagedUnitFile, maximumUnitBytes, "译文单元文件"), entry);
+    parseTranslationUnitFile(await readJsonFile(stagedUnitFile, maximumUnitBytes, "译文单元文件"), entry);
 
     const translationRevision = randomUUID();
     const next: TranslationIndex = {
@@ -371,7 +389,7 @@ export async function readTranslationProjection(
   if (!directory) return empty;
   let index: TranslationIndex;
   try {
-    index = parseIndex(
+    index = parseTranslationIndex(
       await readJsonFile(path.join(directory, "index.json"), indexBudget, "译文 index"),
       baseRevision,
       language,
@@ -383,7 +401,7 @@ export async function readTranslationProjection(
 
   const units: TranslationProjection["units"] = [];
   for (const entry of index.units) {
-    const file = parseUnitFile(
+    const file = parseTranslationUnitFile(
       await readJsonFile(path.join(directory, entry.file), maximumUnitBytes, "译文单元文件"),
       entry,
     );
@@ -413,6 +431,7 @@ export async function readTranslationProjection(
     sourceLanguage: null,
     units,
     task: taskFacts,
+    retired: index.retired ?? [],
   };
 }
 
