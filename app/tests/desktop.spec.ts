@@ -2389,6 +2389,10 @@ test.describe("Pi 并发会话", () => {
     await expect(page.locator(".message-text").last()).toHaveText("独立回复已完成");
     lateResponse.resolve();
     await lateResponseClosed.promise;
+    await page.getByLabel("Agent 消息").fill("迟到响应后的客户端屏障");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".chat-message.assistant")).toHaveCount(2);
+    await expect(page.getByRole("button", { name: "停止回复", exact: true })).toHaveCount(0);
     const all = await page.evaluate((root) => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
     expect(all.find((s) => s.id === a)?.messages.at(-1)?.text).toBe("等待中的片段");
     for (const file of await fs.readdir(path.join(root, ".pi", "sessions"))) {
