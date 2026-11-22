@@ -2,7 +2,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { connect } from "node:net";
 import type { AgentSettings, ChatSession } from "../src/shared/contracts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -219,51 +219,63 @@ test("窗口关闭保护保留草稿，测试清理自动放弃临时编辑", as
   expect(await fs.readFile(note, "utf8")).toBe(original);
 });
 
-test("多服务模型选择、思考流与会话恢复", async () => {
-  const requests: { path: string; key: string; model: string; body: any }[] = [];
-  let release: () => void = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const server = createServer(async (request, response) => {
-    let raw = "";
-    for await (const part of request) raw += part;
-    const body = JSON.parse(raw);
-    requests.push({
-      path: request.url ?? "",
-      key: request.headers.authorization ?? "",
-      model: body.model,
-      body,
+test.describe("多服务模型", () => {
+  let requests: { path: string; key: string; model: string; reasoningEffort: string | undefined }[];
+  let held: PromiseWithResolvers<void>;
+  let server: Server;
+
+  test.beforeEach(async () => {
+    requests = [];
+    held = Promise.withResolvers<void>();
+    server = createServer(async (request, response) => {
+      let raw = "";
+      for await (const part of request) raw += part;
+      const body: unknown = JSON.parse(raw);
+      if (!body || typeof body !== "object" || !("model" in body) || typeof body.model !== "string") {
+        throw new Error("受控模型请求缺少字符串 model");
+      }
+      const model = body.model;
+      const reasoningEffort =
+        "reasoning_effort" in body && typeof body.reasoning_effort === "string"
+          ? body.reasoning_effort
+          : undefined;
+      const enableThinking = "enable_thinking" in body && body.enable_thinking === true;
+      requests.push({
+        path: request.url ?? "",
+        key: request.headers.authorization ?? "",
+        model,
+        reasoningEffort,
+      });
+      if (model === "ultra-d") {
+        response.writeHead(400, { "Content-Type": "application/json" });
+        response.end(
+          JSON.stringify({
+            error: { message: "unsupported reasoning_effort ultra" },
+          }),
+        );
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      const emit = (delta: object, finish_reason: string | null = null) =>
+        response.write(
+          `data: ${JSON.stringify({
+            id: "multi",
+            object: "chat.completion.chunk",
+            model,
+            choices: [{ index: 0, delta, finish_reason }],
+          })}\n\n`,
+        );
+      if (model === "reasoning-b") {
+        emit({ reasoning_content: "先核对证据。" });
+        await held.promise;
+      } else if (enableThinking) emit({ reasoning_content: "继续分析。" });
+      emit({ content: `来自 ${model}` });
+      emit({}, "stop");
+      response.end("data: [DONE]\n\n");
     });
-    if (body.model === "ultra-d") {
-      response.writeHead(400, { "Content-Type": "application/json" });
-      response.end(
-        JSON.stringify({
-          error: { message: "unsupported reasoning_effort ultra" },
-        }),
-      );
-      return;
-    }
-    response.writeHead(200, { "Content-Type": "text/event-stream" });
-    const emit = (delta: object, finish_reason: string | null = null) =>
-      response.write(
-        `data: ${JSON.stringify({
-          id: "multi",
-          object: "chat.completion.chunk",
-          model: body.model,
-          choices: [{ index: 0, delta, finish_reason }],
-        })}\n\n`,
-      );
-    if (body.model === "reasoning-b") {
-      emit({ reasoning_content: "先核对证据。" });
-      await held;
-    } else if (body.enable_thinking) emit({ reasoning_content: "继续分析。" });
-    emit({ content: `来自 ${body.model}` });
-    emit({}, "stop");
-    response.end("data: [DONE]\n\n");
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  try {
+    const listening = Promise.withResolvers<void>();
+    server.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
     const address = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     await create(fixture, path.join(sandbox, "projects"), "多模型工程");
     await page.evaluate(
@@ -364,6 +376,17 @@ test("多服务模型选择、思考流与会话恢复", async () => {
     await expect(page.locator(".agent-service-choice")).toHaveCount(2);
     await expect(page.locator(".agent-model-row")).toHaveCount(5);
     await page.getByRole("button", { name: "返回工作台" }).click();
+  });
+
+  test.afterEach(async () => {
+    held.resolve();
+    server.closeAllConnections();
+    const closed = Promise.withResolvers<void>();
+    server.close(() => closed.resolve());
+    await closed.promise;
+  });
+
+  test("模型选择、思考流与切换期间补充", async () => {
     await page.getByRole("button", { name: "选择模型" }).click();
     await page.getByLabel("搜索模型").fill("模型 B");
     await page.screenshot({ path: "test-results/models-menu.png" });
@@ -396,33 +419,37 @@ test("多服务模型选择、思考流与会话恢复", async () => {
     await page.getByLabel("Agent 消息").fill("切换期间补充");
     await page.getByRole("button", { name: "补充消息" }).click();
     await expect(page.getByRole("alert")).toContainText("等待当前回复完成");
-    release();
-    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    held.resolve();
+    await expect(stop).toHaveCount(0);
     await page.getByLabel("Agent 消息").fill("第二轮");
     await page.getByRole("button", { name: "发送消息" }).click();
     await expect(page.locator(".chat-message.assistant")).toHaveCount(2);
-    expect(requests.slice(0, 2).map((r) => [r.path, r.key, r.model])).toEqual([
+    expect(requests.map((r) => [r.path, r.key, r.model])).toEqual([
       ["/one/chat/completions", "Bearer shared-secret", "reasoning-b"],
       ["/one/chat/completions", "Bearer shared-secret", "answer-a"],
     ]);
-    expect(requests[0].body.reasoning_effort).toBe("low");
+    expect(requests[0].reasoningEffort).toBe("low");
+    await expect(page.locator(".thinking-card")).toHaveCount(1);
+  });
+
+  test("服务密钥与思考等级按所选模型路由", async () => {
     await page.getByRole("button", { name: "选择模型" }).click();
     await page.getByLabel("搜索模型").fill("模型 C");
     await page.getByRole("button", { name: /模型 C.*独立服务/ }).click();
     await page.getByLabel("Agent 消息").fill("第三轮");
     await page.getByRole("button", { name: "发送消息" }).click();
-    await expect(page.locator(".chat-message.assistant")).toHaveCount(3);
-    expect(requests[2].key).toBe("Bearer isolated-secret");
-    expect(requests[2].path).toBe("/two/chat/completions");
-    await expect(page.locator(".thinking-card")).toHaveCount(1);
+    await expect(page.locator(".chat-message.assistant")).toHaveCount(1);
+    expect(requests[0].key).toBe("Bearer isolated-secret");
+    expect(requests[0].path).toBe("/two/chat/completions");
+    await expect(page.locator(".thinking-card")).toHaveCount(0);
     await page.getByRole("button", { name: "选择模型" }).click();
     await page.getByLabel("搜索模型").fill("模型 D");
     await page.getByRole("button", { name: /模型 D.*共享服务/ }).click();
     await page.getByLabel("Agent 消息").fill("测试 ultra");
     await page.getByRole("button", { name: "发送消息" }).click();
     await expect(page.getByRole("alert")).toContainText("模型请求失败");
-    expect(requests[3].body.reasoning_effort).toBe("ultra");
-    expect(requests).toHaveLength(4);
+    expect(requests[1].reasoningEffort).toBe("ultra");
+    expect(requests).toHaveLength(2);
     for (const [name, level] of [
       ["模型 E", "xhigh"],
       ["模型 F", "max"],
@@ -433,8 +460,19 @@ test("多服务模型选择、思考流与会话恢复", async () => {
       await page.getByLabel("Agent 消息").fill(`测试 ${level}`);
       await page.getByRole("button", { name: "发送消息" }).click();
       await expect(page.locator(".chat-message.assistant").last()).toContainText(`来自 ${level}-`);
-      expect(requests.at(-1)?.body.reasoning_effort).toBe(level);
+      expect(requests.at(-1)?.reasoningEffort).toBe(level);
     }
+  });
+
+  test("思考内容在会话重开和分支中保留", async () => {
+    await page.getByRole("button", { name: "选择模型" }).click();
+    await page.getByLabel("搜索模型").fill("模型 B");
+    await page.getByRole("button", { name: /模型 B.*共享服务/ }).click();
+    await page.getByLabel("Agent 消息").fill("第一轮");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.locator(".thinking-card")).toBeVisible();
+    held.resolve();
+    await expect(page.locator(".chat-message.assistant")).toContainText("来自 reasoning-b");
     const sessionId = await page.getByLabel("会话", { exact: true }).inputValue();
     await desktop.close();
     await launch();
@@ -464,11 +502,7 @@ test("多服务模型选择、思考流与会话恢复", async () => {
       },
     );
     expect(branch.messages.some((message) => message.thinking === "先核对证据。")).toBe(true);
-  } finally {
-    release();
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
+  });
 });
 
 test("百炼思考配置保持 system 角色，关闭档显式关闭且始终显示", async () => {
