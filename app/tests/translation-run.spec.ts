@@ -13,6 +13,7 @@ import { dispatchCoreCommand } from "../src/main/core-commands";
 import { runProjectTranslation, stopTranslationTasks, translationSourceUnits } from "../src/main/translation/run";
 import { detectSourceLanguage } from "../src/shared/translation/contracts";
 import {
+  commitTranslationMeta,
   commitTranslationUnit,
   readTranslationProjection,
   translationSentenceDigests,
@@ -20,7 +21,7 @@ import {
 import { parseDocumentTree, type DocumentTree } from "../src/shared/document/tree";
 import { createDocumentChangeset } from "../src/shared/document/changeset";
 import { buildReaderProjection } from "../src/shared/reader/projection";
-import { defaultAgentSettings } from "../src/shared/contracts";
+import { defaultAgentSettings, type TranslationStartCommandResult } from "../src/shared/contracts";
 import type { ModelConfig } from "../src/main/agent-settings";
 
 let sandbox: string;
@@ -532,4 +533,220 @@ test.describe("translation 任务编排", () => {
       await stopServer(server);
     }
   });
+});
+
+/** 标题/raw 元数据受控端点：unit 与 meta 请求分别记录与响应。 */
+function metaModelServer(options: { failMeta?: boolean } = {}) {
+  const calls: Array<{ kind: "unit" | "meta"; id: string }> = [];
+  const server: Server = createServer(async (request, response) => {
+    let raw = "";
+    for await (const part of request) raw += part;
+    const body = JSON.parse(raw) as { messages: Array<{ role: string; content: string }> };
+    const prompt = JSON.parse(body.messages.find((message) => message.role === "user")!.content) as {
+      unit?: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      paperTitle?: string | null;
+      sections?: Array<{ sectionId: string; title: string }>;
+      rawBlocks?: Array<{ blockId: string; text: string }>;
+    };
+    let content: string;
+    if (prompt.unit) {
+      calls.push({ kind: "unit", id: prompt.unit.unitId });
+      content = JSON.stringify({
+        unitId: prompt.unit.unitId,
+        sentences: prompt.unit.sentences.map((sentence) => ({
+          sentenceId: sentence.sentenceId,
+          content: `译文：${sentence.content}`,
+        })),
+      });
+    } else {
+      calls.push({ kind: "meta", id: "meta" });
+      if (options.failMeta) {
+        response.writeHead(500, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "受控元数据失败" } }));
+        return;
+      }
+      content = JSON.stringify({
+        paperTitle: prompt.paperTitle === null ? null : `译文：${prompt.paperTitle}`,
+        sections: (prompt.sections ?? []).map((section) => ({
+          sectionId: section.sectionId,
+          title: `译文：${section.title}`,
+        })),
+        rawBlocks: (prompt.rawBlocks ?? []).map((block) => ({
+          blockId: block.blockId,
+          text: `译文：${block.text}`,
+        })),
+      });
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(
+      `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`,
+    );
+    response.write(
+      `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+    );
+    response.end("data: [DONE]\n\n");
+  });
+  return { server, calls };
+}
+
+/** 带标题与 raw block 的工程树（单句正文，便于聚焦元数据路径）。 */
+function metaTree(paperId: string) {
+  const ids = { section: randomUUID(), unit: randomUUID(), sentence: randomUUID(), rawBlock: randomUUID() };
+  const tree: DocumentTree = {
+    documentFormatVersion: 1,
+    paperId,
+    sections: {
+      [ids.section]: {
+        id: ids.section,
+        parentSectionId: null,
+        title: "1 Introduction",
+        childSectionIds: [],
+        unitIds: [ids.unit],
+      },
+    },
+    units: { [ids.unit]: { id: ids.unit, sectionId: ids.section, kind: "paragraph", sentenceIds: [ids.sentence] } },
+    sentences: {
+      [ids.sentence]: {
+        id: ids.sentence,
+        unitId: ids.unit,
+        content: [{ kind: "text", text: "We study progressive reading." }],
+      },
+    },
+    atoms: {},
+    blocks: [
+      { id: randomUUID(), sectionId: ids.section, kind: "unit", unitId: ids.unit },
+      {
+        id: ids.rawBlock,
+        sectionId: ids.section,
+        kind: "raw",
+        html: "<blockquote><p>Quoted source line.</p></blockquote>",
+        text: "Quoted source line.",
+        limitations: ["复杂排版按白名单投影。"],
+      },
+    ],
+  };
+  return { tree: parseDocumentTree(tree, paperId), ids };
+}
+
+async function metaProject(name: string) {
+  const created = await createProject({ parent: sandbox, name });
+  const placeholder = randomUUID();
+  const draft = metaTree(placeholder);
+  const source = await publishSourceSnapshot({
+    root: created.root,
+    files: { "document.html": Buffer.from("<html>paper</html>") },
+    metadata: { kind: "arxiv", canonicalId: "2401.00001v1", title: "Progressive Reading" },
+  });
+  const committedTree = { ...draft.tree, paperId: created.manifest.paper.id };
+  const revision = await commitRevision({
+    root: created.root,
+    baseRevision: null,
+    sourceSnapshotId: source.sourceSnapshotId,
+    files: {
+      "document.json": json(committedTree),
+      "source-base.json": json(committedTree),
+      "tombstones.json": json([]),
+      "changeset.json": json({ baseRevision: null }),
+    },
+    metadata: { normalizationVersion: 1 },
+  });
+  return { created, revision, ids: draft.ids };
+}
+
+test.describe("translation 标题与 raw 元数据编排", () => {
+  test("generate 同时翻译标题/raw 与单元；重开同指纹零新增请求", async () => {
+    const { created, ids } = await metaProject("元数据编排工程");
+    const { server, calls } = metaModelServer();
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const result = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(result.status).toBe("finished");
+      if (result.status !== "finished") throw new Error("任务未完成。");
+      expect(result.projection.paperTitle).toMatchObject({ status: "ready", content: "译文：Progressive Reading" });
+      expect(result.projection.sections).toEqual([
+        { sectionId: ids.section, status: "ready", source: "1 Introduction", content: "译文：1 Introduction" },
+      ]);
+      expect(result.projection.rawBlocks).toEqual([
+        { blockId: ids.rawBlock, status: "ready", source: "Quoted source line.", content: "译文：Quoted source line." },
+      ]);
+      expect(calls.filter((call) => call.kind === "meta")).toHaveLength(1);
+
+      const before = calls.length;
+      const again = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(again).toMatchObject({ status: "skipped", reason: "already-generated" });
+      expect(calls.length).toBe(before);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("元数据失败不丢弃已提交单元；诊断可见且手动补译可重试", async () => {
+    const { created } = await metaProject("元数据失败工程");
+    const { server } = metaModelServer({ failMeta: true });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const result = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(result.status).toBe("finished");
+      if (result.status !== "finished") throw new Error("任务未完成。");
+      expect(result.units.some((unit) => unit.status === "ready")).toBe(true);
+      const metaGap = result.units.find((unit) => unit.unitId === "meta");
+      expect(metaGap).toMatchObject({ status: "gap" });
+      expect(result.projection.paperTitle?.status).toBe("gap");
+      await stopServer(server);
+      const healthy = metaModelServer();
+      const healthyEndpoint = await startServer(healthy.server);
+      try {
+        const manual = (await dispatchCoreCommand(
+          { type: "coreTranslationFillGaps", root: created.root, language: "zh" },
+          undefined,
+          { config: modelConfig(healthyEndpoint) },
+        )) as TranslationStartCommandResult;
+        expect(manual).toMatchObject({ status: "finished" });
+        if (manual.status !== "finished") throw new Error("补译未完成。");
+        expect(manual.projection.paperTitle).toMatchObject({ status: "ready", content: "译文：Progressive Reading" });
+        expect(healthy.calls.filter((call) => call.kind === "meta")).toHaveLength(1);
+        // 单元已提交：补译只重试元数据，不重发单元请求。
+        expect(healthy.calls.filter((call) => call.kind === "unit")).toHaveLength(0);
+      } finally {
+        await stopServer(healthy.server);
+      }
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+});
+
+test("generate 只请求 gap 元数据：ready 的论文标题不重译、不被覆盖", async () => {
+  const { created, revision, ids } = await metaProject("混合元数据工程");
+  // 预置论文标题 ready；section/raw 仍 gap。
+  await commitTranslationMeta({
+    root: created.root,
+    baseRevision: revision.revisionId,
+    language: "zh",
+    generator: { provider: "controlled", model: "old-model", promptVersion: 3, schemaVersion: 2 },
+    sources: { paperTitle: "Progressive Reading", sections: [], rawBlocks: [] },
+    translated: { paperTitle: "旧标题译文", sections: [], rawBlocks: [] },
+  });
+  const { server, calls } = metaModelServer();
+  const endpoint = await startServer(server);
+  process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+  try {
+    const result = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+    expect(result.status).toBe("finished");
+    if (result.status !== "finished") throw new Error("任务未完成。");
+    // 论文标题非目标：保留旧译文与旧 generator，不被本次模型覆盖。
+    expect(result.projection.paperTitle).toMatchObject({ status: "ready", content: "旧标题译文" });
+    expect(result.projection.sections).toEqual([
+      { sectionId: ids.section, status: "ready", source: "1 Introduction", content: "译文：1 Introduction" },
+    ]);
+    expect(result.projection.rawBlocks?.[0]).toMatchObject({ status: "ready", content: "译文：Quoted source line." });
+    expect(calls.filter((call) => call.kind === "meta")).toHaveLength(1);
+  } finally {
+    delete process.env.PAPER30MIN_TEST_WINDOW;
+    await stopServer(server);
+  }
 });

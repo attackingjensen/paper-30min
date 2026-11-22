@@ -73,7 +73,6 @@ export interface TranslationTaskOptions {
   /** 每个新 fragment/unit 调度前复核 current 与取消状态；false 即停止调度。 */
   ensureCurrent?: () => Promise<boolean>;
   generate: (input: TranslationModelInput) => Promise<string>;
-  /** 单元（或句级目标）完整通过校验后立即发布（原子存储）；抛错使对应目标记为 gap。 */
   onUnitReady?: (unit: TranslationUnitContent) => Promise<void>;
 }
 

@@ -16,10 +16,17 @@ import type {
   TranslationIndex,
   TranslationLanguage,
   TranslationRetiredEntry,
+  TranslationSectionFile,
+  TranslationSectionIndexEntry,
   TranslationUnitFile,
 } from "../../shared/translation/contracts.js";
 import { maximumUnitBytes } from "./model-io.js";
-import { parseTranslationIndex, parseTranslationUnitFile, storedLogicalText } from "./store.js";
+import {
+  parseTranslationIndex,
+  parseTranslationSectionFile,
+  parseTranslationUnitFile,
+  storedLogicalText,
+} from "./store.js";
 
 const languages: TranslationLanguage[] = ["zh", "en"];
 const indexBudget = 64 * 1024 * 1024;
@@ -135,7 +142,7 @@ async function migrateLanguage(input: {
   }
 
   const units: TranslationIndex["units"] = [];
-  const staged: Array<{ file: string; bytes: Buffer }> = [];
+  const staged: Array<{ directory: string; file: string; bytes: Buffer }> = [];
   let logicalContentBytes = 0;
   for (const [unitId, kept] of keptByUnit) {
     const currentUnit = input.document.units[unitId];
@@ -154,7 +161,7 @@ async function migrateLanguage(input: {
     const bytes = Buffer.from(JSON.stringify(unitFile, null, 2) + "\n");
     if (bytes.byteLength > maximumUnitBytes) throw new Error(`迁移译文单元超过 2 MiB 预算：${unitId}。`);
     const file = `units/${unitId}.${randomUUID()}.json`;
-    staged.push({ file, bytes });
+    staged.push({ directory: "units", file, bytes });
     units.push({
       unitId,
       file,
@@ -168,7 +175,48 @@ async function migrateLanguage(input: {
     });
     logicalContentBytes += logicalBytes;
   }
-  if (units.length === 0 && retired.length === 0) return;
+  // 标题/raw 元数据继承：标题依赖旧 section 存活；raw 按当前 blockId→sectionId
+  // 重新分组（moved 保持 ready，旧 section 删除也不丢弃仍存在的 raw 译文）。
+  const currentRawSection = new Map(
+    input.document.blocks.flatMap((block) => (block.kind === "raw" ? [[block.id, block.sectionId] as const] : [])),
+  );
+  const titleBySection = new Map<string, TranslationSectionFile["title"]>();
+  const rawBySection = new Map<string, TranslationSectionFile["rawBlocks"]>();
+  for (const entry of index.sections ?? []) {
+    const old = parseTranslationSectionFile(
+      await readJsonFile(path.join(source, entry.file), maximumUnitBytes, "译文 section 文件"),
+      entry,
+    );
+    const currentSection = input.document.sections[entry.sectionId];
+    if (currentSection && currentSection.title.trim() && old.title) titleBySection.set(entry.sectionId, old.title);
+    for (const raw of old.rawBlocks) {
+      const sectionId = currentRawSection.get(raw.blockId);
+      if (!sectionId) continue;
+      const bucket = rawBySection.get(sectionId) ?? [];
+      bucket.push(raw);
+      rawBySection.set(sectionId, bucket);
+    }
+  }
+  const sections: TranslationSectionIndexEntry[] = [];
+  const affectedSections = new Set([...titleBySection.keys(), ...rawBySection.keys()]);
+  for (const sectionId of affectedSections) {
+    const file: TranslationSectionFile = {
+      formatVersion: 1,
+      sectionId,
+      title: titleBySection.get(sectionId) ?? null,
+      rawBlocks: rawBySection.get(sectionId) ?? [],
+    };
+    const logicalBytes = Buffer.byteLength(
+      [file.title?.content ?? "", ...file.rawBlocks.map((raw) => raw.content)].join(""),
+      "utf8",
+    );
+    const generation = randomUUID();
+    const sectionFile = `sections/${sectionId}.${generation}.json`;
+    staged.push({ directory: "sections", file: sectionFile, bytes: Buffer.from(JSON.stringify(file, null, 2) + "\n") });
+    sections.push({ sectionId, file: sectionFile, logicalBytes });
+    logicalContentBytes += logicalBytes;
+  }
+  if (units.length === 0 && retired.length === 0 && sections.length === 0 && !index.paperTitle) return;
   if (logicalContentBytes > maximumLanguageContentBytes)
     throw new Error("迁移使单语言逻辑内容超过 64 MiB 预算，未发布。");
 
@@ -177,9 +225,12 @@ async function migrateLanguage(input: {
   if (!target) throw new Error("译文侧车目录不可用。");
   const unitsDirectory = await managedDirectory(input.root, `${targetRelative}/units`, true);
   if (!unitsDirectory) throw new Error("译文单元目录不可用。");
-  // 单元文件先完整写入；index 推进前崩溃时未引用文件不作为当前投影。
-  for (const { file, bytes } of staged) {
-    const temporary = path.join(unitsDirectory, `.paper30min-${randomUUID()}.tmp`);
+  const sectionsDirectory = await managedDirectory(input.root, `${targetRelative}/sections`, true);
+  if (!sectionsDirectory) throw new Error("译文 section 目录不可用。");
+  // 单元/section 文件先完整写入；index 推进前崩溃时未引用文件不作为当前投影。
+  for (const { directory, file, bytes } of staged) {
+    const base = directory === "units" ? unitsDirectory : sectionsDirectory;
+    const temporary = path.join(base, `.paper30min-${randomUUID()}.tmp`);
     try {
       const handle = await fs.open(temporary, "wx");
       try {
@@ -188,7 +239,7 @@ async function migrateLanguage(input: {
       } finally {
         await handle.close();
       }
-      await renameManaged(temporary, path.join(unitsDirectory, path.basename(file)));
+      await renameManaged(temporary, path.join(base, path.basename(file)));
     } finally {
       await fs.rm(temporary, { force: true });
     }
@@ -201,6 +252,8 @@ async function migrateLanguage(input: {
     logicalContentBytes,
     units,
     ...(retired.length > 0 ? { retired } : {}),
+    ...(index.paperTitle ? { paperTitle: index.paperTitle } : {}),
+    ...(sections.length > 0 ? { sections } : {}),
   };
   const bytes = Buffer.from(JSON.stringify(next, null, 2) + "\n");
   if (bytes.byteLength > indexBudget) throw new Error("迁移译文 index 超过 64 MiB 写入预算，未发布。");

@@ -10,8 +10,10 @@ import { randomUUID } from "node:crypto";
 import { commitRevision, createProject, openProject, publishSourceSnapshot } from "../src/main/project-core";
 import { dispatchCoreCommand } from "../src/main/core-commands";
 import {
+  commitTranslationMeta,
   commitTranslationUnit,
   readTranslationProjection,
+  translationMetaSources,
   translationSentenceDigests,
 } from "../src/main/translation/store";
 import { translationSourceUnits } from "../src/main/translation/run";
@@ -517,4 +519,101 @@ test.describe("translation 正文更新后的局部 stale 迁移", () => {
     expect(afterById.get(ids.s1)).toMatchObject({ status: "stale", content: a.sentences[0].content, generator });
     expect(afterById.get(ids.s3)).toMatchObject({ status: "ready", generator });
   });
+});
+
+test("raw 跨 section moved 且旧 section 删除：译文按新归属继承保持 ready", async () => {
+  const ids = {
+    sectionA: randomUUID(),
+    sectionB: randomUUID(),
+    unitA: randomUUID(),
+    sentenceA: randomUUID(),
+    unitB: randomUUID(),
+    sentenceB: randomUUID(),
+    rawBlock: randomUUID(),
+  };
+  const rawBlock = {
+    id: ids.rawBlock,
+    sectionId: ids.sectionA,
+    kind: "raw" as const,
+    html: "<blockquote><p>Quoted source line.</p></blockquote>",
+    text: "Quoted source line.",
+    limitations: ["复杂排版按白名单投影。"],
+  };
+  const base: DocumentTree = {
+    documentFormatVersion: 1,
+    paperId: randomUUID(),
+    sections: {
+      [ids.sectionA]: {
+        id: ids.sectionA,
+        parentSectionId: null,
+        title: "1 Old",
+        childSectionIds: [ids.sectionB],
+        unitIds: [ids.unitA],
+      },
+      [ids.sectionB]: {
+        id: ids.sectionB,
+        parentSectionId: ids.sectionA,
+        title: "2 New",
+        childSectionIds: [],
+        unitIds: [ids.unitB],
+      },
+    },
+    units: {
+      [ids.unitA]: { id: ids.unitA, sectionId: ids.sectionA, kind: "paragraph", sentenceIds: [ids.sentenceA] },
+      [ids.unitB]: { id: ids.unitB, sectionId: ids.sectionB, kind: "paragraph", sentenceIds: [ids.sentenceB] },
+    },
+    sentences: {
+      [ids.sentenceA]: { id: ids.sentenceA, unitId: ids.unitA, content: [{ kind: "text", text: "Old body." }] },
+      [ids.sentenceB]: { id: ids.sentenceB, unitId: ids.unitB, content: [{ kind: "text", text: "New body." }] },
+    },
+    atoms: {},
+    blocks: [
+      { id: randomUUID(), sectionId: ids.sectionA, kind: "unit", unitId: ids.unitA },
+      rawBlock,
+      { id: randomUUID(), sectionId: ids.sectionB, kind: "unit", unitId: ids.unitB },
+    ],
+  };
+  const { created, revision, source, tree } = await projectWithTree("raw迁移工程", base);
+  const sources = translationMetaSources(tree, null);
+  await commitTranslationMeta({
+    root: created.root,
+    baseRevision: revision.revisionId,
+    language: "zh",
+    generator,
+    sources,
+    translated: {
+      paperTitle: null,
+      sections: [{ sectionId: ids.sectionA, title: "1 旧" }],
+      rawBlocks: [{ blockId: ids.rawBlock, text: "引用的来源行。" }],
+    },
+  });
+  // 删除旧 section：unitA 移入 sectionB，raw block 也移入 sectionB。
+  const next: DocumentTree = {
+    ...base,
+    sections: {
+      [ids.sectionB]: {
+        id: ids.sectionB,
+        parentSectionId: null,
+        title: "2 New",
+        childSectionIds: [],
+        unitIds: [ids.unitA, ids.unitB],
+      },
+    },
+    units: {
+      [ids.unitA]: { ...base.units[ids.unitA], sectionId: ids.sectionB },
+      [ids.unitB]: base.units[ids.unitB],
+    },
+    blocks: [
+      { id: randomUUID(), sectionId: ids.sectionB, kind: "unit", unitId: ids.unitA },
+      { ...rawBlock, sectionId: ids.sectionB },
+      { id: randomUUID(), sectionId: ids.sectionB, kind: "unit", unitId: ids.unitB },
+    ],
+  };
+  const published = await publishNext(created.root, revision.revisionId, source.sourceSnapshotId, tree, next);
+  const projection = await readTranslationProjection(created.root, published.revisionId, "zh");
+  // raw 译文按新 section 归属继承，保持 ready；旧 section 标题译文随 section 删除丢弃。
+  expect(projection.rawBlocks).toEqual([
+    { blockId: ids.rawBlock, status: "ready", source: "Quoted source line.", content: "引用的来源行。" },
+  ]);
+  expect(projection.sections).toEqual([{ sectionId: ids.sectionB, status: "gap", source: "2 New", content: null }]);
 });

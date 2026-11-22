@@ -93,7 +93,7 @@ app/tests/                   转换、恢复、stale 和真实 Electron 回归
 .paper30min/revisions/<revisionId>/translations/<language>/
   index.json                # baseRevision、当前 translationRevision、条目索引与状态
   units/<unitId>.<generation>.json # 已提交单元及逐句译文（每代不可变版本化文件名）
-  sections/<sectionId>.json # 已提交章节标题等元数据
+  sections/<sectionId>.<generation>.json # 已提交章节标题与 raw 文本译文（每代不可变版本化文件名）
 ```
 
 - `index.json` 是此语言当前投影的唯一指针，记录 `baseRevision`、`language`、当前 `translationRevision`、条目文件、逐句内容摘要和状态。

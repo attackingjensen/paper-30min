@@ -33,6 +33,7 @@ import {
   detectSourceLanguage,
   type TranslationLanguage,
   type TranslationProjection,
+  type TranslationRawProjection,
 } from "../../shared/translation/contracts";
 import {
   buildTranslationUnitViews,
@@ -272,12 +273,25 @@ function TableView({
   );
 }
 
-function RawView({ item }: { item: Extract<ReaderItem, { kind: "raw" }> }) {
+function RawView({
+  item,
+  translation,
+}: {
+  item: Extract<ReaderItem, { kind: "raw" }>;
+  translation?: TranslationRawProjection;
+}) {
   // 渲染层按白名单独立消毒；结构限制必须可见，文本投影保证辅助技术可读。
   const html = sanitizeRawHtml(item.html);
   return (
     <div className="reader-raw" data-block-id={item.blockId}>
       <div className="reader-raw-html" dangerouslySetInnerHTML={{ __html: html }} />
+      {translation && translation.status !== "gap" && (
+        <p className="reader-raw-translation" data-raw-translation-status={translation.status}>
+          {translation.content}
+          {translation.status === "stale" && <span className="reader-translation-note stale">已过期</span>}
+          <span className="reader-translation-note">raw 仅文本投影，结构以原文为准</span>
+        </p>
+      )}
       <ul className="reader-raw-limitations">
         {item.limitations.map((limitation, index) => (
           <li key={index} className="reader-raw-limit">
@@ -499,8 +513,10 @@ export function FullReader({
       void desktop
         .invoke<TranslationReadCommandResult>({ type: "coreTranslationRead", root, revisionId, language })
         .then((projection) => {
-          if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === language)
+          if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === language) {
             setTranslation(projection);
+            setTranslationBusy(projection.running === true);
+          }
         })
         .catch((error: Error) => {
           if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === language)
@@ -541,6 +557,17 @@ export function FullReader({
       disposed = true;
     };
   }, [status, state, root, language]);
+
+  // 元数据与正文共用同一身份守卫：revision 推进或语言互切后，旧投影的
+  // 标题/raw 不得在新读取完成前按 ready 显示。
+  const activeTranslation =
+    language !== null &&
+    translation &&
+    state &&
+    translation.language === language &&
+    translation.baseRevision === state.revisionId
+      ? translation
+      : null;
 
   // 语言视图句级投影：选区索引与渲染共用同一 memo，translation:changed 渐进刷新。
   // 投影身份显式键控 (revisionId, language)：语言互切或 revision 推进后，
@@ -1042,6 +1069,7 @@ export function FullReader({
       });
       if (stale()) return;
       setTranslation(existing);
+      setTranslationBusy(existing.running === true);
       const sourceLanguage = existing.sourceLanguage ?? detectSourceLanguage(current.tree);
       if (sourceLanguage === null) {
         setTranslationStatus("无法确定原文语言，未启动翻译；正文仍以原文显示。");
@@ -1062,9 +1090,15 @@ export function FullReader({
           ),
         ]),
       );
+      const metaStatuses = [
+        ...(existing.paperTitle ? [existing.paperTitle.status] : []),
+        ...(existing.sections ?? []).map((section) => section.status),
+        ...(existing.rawBlocks ?? []).map((raw) => raw.status),
+      ];
       const allReady =
         existing.translationRevision !== null &&
         sourceUnits.length > 0 &&
+        metaStatuses.every((status) => status === "ready") &&
         sourceUnits.every((unit) => {
           const ready = readyByUnit.get(unit.unitId);
           return (
@@ -1086,10 +1120,12 @@ export function FullReader({
       if (stale()) return;
       if (started.status === "finished") {
         setTranslation(started.projection);
+        setTranslationBusy(started.projection.running === true);
         const gaps = started.units.filter((unit) => unit.status === "gap");
         setTranslationStatus(gaps.length > 0 ? `译文已渐进发布；${gaps.length} 个单元暂为缺口，可稍后补译。` : "");
       } else if (started.projection) {
         setTranslation(started.projection);
+        setTranslationBusy(started.projection.running === true);
         const gaps = started.projection.task?.gaps ?? [];
         setTranslationStatus(
           started.reason === "busy"
@@ -1100,6 +1136,7 @@ export function FullReader({
         );
       } else {
         setTranslationStatus("翻译任务未启动：正文尚未发布或已有同语言任务。");
+        if (epochAtStart === translationEpoch.current) setTranslationBusy(false);
       }
     } catch (error) {
       if (stale()) return;
@@ -1133,6 +1170,7 @@ export function FullReader({
       if (stale()) return;
       if (result.status === "finished") {
         setTranslation(result.projection);
+        setTranslationBusy(result.projection.running === true);
         const gaps = result.units.filter((unit) => unit.status === "gap");
         setTranslationStatus(
           gaps.length > 0
@@ -1145,6 +1183,7 @@ export function FullReader({
         );
       } else if (result.projection) {
         setTranslation(result.projection);
+        setTranslationBusy(result.projection.running === true);
         setTranslationStatus(
           result.reason === "busy"
             ? "该语言已有翻译任务在运行，译文将渐进出现。"
@@ -1176,7 +1215,10 @@ export function FullReader({
         revisionId: stateRef.current!.revisionId,
         language: target,
       });
-      if (languageRef.current === target) setTranslation(projection);
+      if (languageRef.current === target) {
+        setTranslation(projection);
+        setTranslationBusy(projection.running === true);
+      }
       setTranslationStatus("已停止翻译：未发送批次已取消；已完成的译文保留，在途请求可能已产生费用。");
     } catch (error) {
       setTranslationStatus((error as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
@@ -1204,19 +1246,26 @@ export function FullReader({
   // 语言视图：句级投影 memo 与选区索引共用；未提交单元全部为 gap。
   const translationViewMap = translationViews ? new Map(translationViews.map((view) => [view.unitId, view])) : null;
   const translatedUnit = translationViewMap ? (unitId: string) => translationViewMap.get(unitId) : undefined;
-  // 缺口与过期句计数：显式动作入口只在存在目标状态时出现。
-  const translationCounts = translationViewMap
-    ? Array.from(translationViewMap.values()).reduce(
-        (counts, view) => {
-          for (const sentence of view.sentences) {
-            if (sentence.status === "gap") counts.gaps++;
-            else if (sentence.status === "stale") counts.stale++;
-          }
-          return counts;
-        },
-        { gaps: 0, stale: 0 },
-      )
-    : { gaps: 0, stale: 0 };
+  // 缺口与过期计数（含标题/raw 元数据）：显式动作入口只在存在目标状态时出现。
+  const translationCounts = (() => {
+    const counts = { gaps: 0, stale: 0 };
+    if (translationViewMap)
+      for (const view of translationViewMap.values())
+        for (const sentence of view.sentences) {
+          if (sentence.status === "gap") counts.gaps++;
+          else if (sentence.status === "stale") counts.stale++;
+        }
+    const metaStatuses = [
+      ...(activeTranslation?.paperTitle ? [activeTranslation.paperTitle.status] : []),
+      ...(activeTranslation?.sections ?? []).map((section) => section.status),
+      ...(activeTranslation?.rawBlocks ?? []).map((raw) => raw.status),
+    ];
+    for (const status of metaStatuses) {
+      if (status === "gap") counts.gaps++;
+      else if (status === "stale") counts.stale++;
+    }
+    return counts;
+  })();
   return (
     <article
       className="full-reader"
@@ -1227,7 +1276,19 @@ export function FullReader({
       onKeyUp={refreshSelection}
     >
       <header className="reader-header">
-        <h1>{facts.title ?? "未命名论文"}</h1>
+        <h1 data-paper-title>
+          {activeTranslation?.paperTitle && activeTranslation.paperTitle.status !== "gap"
+            ? activeTranslation.paperTitle.content
+            : (facts.title ?? "未命名论文")}
+          {activeTranslation?.paperTitle?.status === "stale" && (
+            <span className="reader-translation-note stale">已过期</span>
+          )}
+        </h1>
+        {activeTranslation?.paperTitle?.status === "stale" && (
+          <p className="reader-stale-source" data-paper-title-source>
+            最新原文：{activeTranslation.paperTitle.source}
+          </p>
+        )}
         {facts.authors.length > 0 && <p className="reader-authors">{facts.authors.join("、")}</p>}
         {facts.canonicalId && <p className="reader-source muted">arXiv {facts.canonicalId}</p>}
         <Button className="reader-source-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen(!panelOpen)}>
@@ -1312,9 +1373,16 @@ export function FullReader({
           case "section": {
             if (!item.title) return null;
             const Level = (item.depth <= 5 ? `h${item.depth + 1}` : "h6") as "h2" | "h3" | "h4" | "h5" | "h6";
+            const sectionTranslation = activeTranslation?.sections?.find((entry) => entry.sectionId === item.sectionId);
             return (
               <Level key={`section-${item.sectionId}`} data-section-id={item.sectionId}>
-                {item.title}
+                {sectionTranslation && sectionTranslation.status !== "gap" ? sectionTranslation.content : item.title}
+                {sectionTranslation?.status === "stale" && (
+                  <span className="reader-translation-note stale">已过期</span>
+                )}
+                {sectionTranslation?.status === "stale" && (
+                  <span className="reader-stale-source">最新原文：{sectionTranslation.source}</span>
+                )}
               </Level>
             );
           }
@@ -1346,7 +1414,13 @@ export function FullReader({
               <TableView key={item.blockId} item={item} onNavigate={navigateUnit} translatedUnit={translatedUnit} />
             );
           case "raw":
-            return <RawView key={item.blockId} item={item} />;
+            return (
+              <RawView
+                key={item.blockId}
+                item={item}
+                translation={activeTranslation?.rawBlocks?.find((entry) => entry.blockId === item.blockId)}
+              />
+            );
         }
       })}
       {toolbar && (

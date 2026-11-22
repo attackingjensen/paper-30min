@@ -286,8 +286,8 @@ test.describe("translation 缓存、凭据与机器配置边界", () => {
     expect(session.generator).toEqual({
       provider: "openai-completions",
       model: "controlled-translate",
-      promptVersion: 2,
-      schemaVersion: 1,
+      promptVersion: 3,
+      schemaVersion: 2,
     });
     void session.close();
     expect(() => createTranslationModelSession({ ...config, keys: {} })).toThrow(/API 密钥/);
