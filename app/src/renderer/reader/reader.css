@@ -753,3 +753,63 @@ span.reader-warning {
     transition: none;
   }
 }
+
+/* 语言视图（SPEC-translation §5）：切换入口、gap/stale 句级标识。 */
+.reader-language {
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+.reader-language-option.active {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.reader-translation-status {
+  margin-top: 8px;
+}
+.reader-translation-stop {
+  margin-left: 8px;
+}
+.reader-translation-note {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--info-soft);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+.reader-translation-note.stale {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.reader-sentence-stale {
+  border-bottom: 1px dashed var(--warning-border);
+}
+.reader-stale-source-toggle {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--warning-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--warning);
+  font-size: 10.5px;
+  cursor: pointer;
+  vertical-align: 1px;
+}
+.reader-stale-source {
+  display: block;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--text-secondary);
+  font-size: 0.92em;
+}
+.reader-translation-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-top: 8px;
+}

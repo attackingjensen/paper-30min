@@ -7,7 +7,7 @@ import type { DocumentAnchor } from "../document/anchor.js";
 import { type ReaderProjection, type ReaderUnitContent } from "./projection.js";
 
 type SelectionRange = Extract<DocumentAnchor, { kind: "range" }>["ranges"][number];
-type SentenceInfo = {
+export type SentenceInfo = {
   unitId: string;
   length: number;
   /** 文本片段逻辑边界（atom 位置无条目，端点落入时整位纳入）。 */
@@ -207,7 +207,10 @@ export function mapDomSelection(range: Range, index: SelectionIndex): ReaderSele
     pushRange(from.sentenceId, snap(from.sentenceId, from.offset, index), index.sentences.get(from.sentenceId)!.length);
     for (const [sentenceId, order] of index.order) {
       if (order <= fromIndex || order >= toIndex) continue;
-      pushRange(sentenceId, 0, index.sentences.get(sentenceId)!.length);
+      // 语言视图索引中 gap 句在读取顺序里但不可精确选区：跨 gap 不拼接伪连续 ranges。
+      const info = index.sentences.get(sentenceId);
+      if (!info) return { ranges: [], degraded };
+      pushRange(sentenceId, 0, info.length);
     }
     pushRange(to.sentenceId, 0, snap(to.sentenceId, to.offset, index));
     return { ranges, degraded };

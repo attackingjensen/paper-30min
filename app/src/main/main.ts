@@ -34,7 +34,19 @@ let workerExited = false;
 let nextId = 0;
 const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 function request(
-  command: Command | { type: "agent"; command: AgentCommand; config: ModelConfig } | PdfImportWorkerCommand | null,
+  command:
+    | Command
+    | { type: "agent"; command: AgentCommand; config: ModelConfig }
+    | {
+        type: "translationStart";
+        command: Extract<
+          Command,
+          { type: "coreTranslationStart" | "coreTranslationFillGaps" | "coreTranslationUpdateStale" }
+        >;
+        config: ModelConfig;
+      }
+    | PdfImportWorkerCommand
+    | null,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (workerExited || !worker?.pid) {
@@ -121,6 +133,11 @@ async function start() {
       if (state.busy) running.set(key, state);
       else running.delete(key);
       if (window && !window.isDestroyed()) window.webContents.send("agent:changed", message.agentState);
+      return;
+    }
+    if (message.translationCommitted) {
+      const { root, language } = message.translationCommitted as { root: string; language: "zh" | "en" };
+      if (window && !window.isDestroyed()) window.webContents.send("translation:changed", root, language);
       return;
     }
     if (message.pdfUploadConfirm) {
@@ -246,6 +263,15 @@ async function start() {
       if (starting) cancelledStartingPdfOperations.add(command.operationId);
       const result = (await request(command)) as { cancelled: boolean };
       return { cancelled: result.cancelled || starting };
+    }
+    if (
+      command.type === "coreTranslationStart" ||
+      command.type === "coreTranslationFillGaps" ||
+      command.type === "coreTranslationUpdateStale"
+    ) {
+      // 翻译模型配置与凭据只从主进程设置读取；renderer 命令不携带 Token。
+      await settingsWrite;
+      return request({ type: "translationStart", command, config: await agentSettings.read() });
     }
     return request(command);
   });

@@ -14,6 +14,7 @@ import {
 } from "../document/merge.js";
 import { loadUpdateCandidate, storeUpdateCandidate } from "../document/candidate-store.js";
 import { verificationInheritCommitHooks } from "../pdf/verification.js";
+import { translationInheritCommitHooks } from "../translation/migrate.js";
 import { convertArxivSnapshotTree, convertLatexml } from "./convert.js";
 import { fetchDiagnostic, type ArxivTransport } from "./fetch.js";
 import { arxivLineageReference } from "./lineage.js";
@@ -364,16 +365,25 @@ export async function publishArxivUpdateCandidate(input: {
   try {
     for (const resolution of input.resolutions ?? [])
       candidate = resolveDocumentMergeCandidateConflict(candidate, resolution.conflictId, resolution.choice);
-    const revision = await publishDocumentMergeCandidate(
-      candidate,
-      verificationInheritCommitHooks({
-        root: candidate.root,
-        baseRevision: candidate.baseRevision,
-        revisionId: candidate.revisionId,
-        sourceSnapshotId: candidate.sourceSnapshotId,
-        document: candidate.document,
-      }),
-    );
+    const revision = await publishDocumentMergeCandidate(candidate, {
+      onCommitPoint: async (point, context) => {
+        await verificationInheritCommitHooks({
+          root: candidate.root,
+          baseRevision: candidate.baseRevision,
+          revisionId: candidate.revisionId,
+          sourceSnapshotId: candidate.sourceSnapshotId,
+          document: candidate.document,
+        }).onCommitPoint?.(point, context);
+        await translationInheritCommitHooks({
+          root: candidate.root,
+          baseRevision: candidate.baseRevision,
+          revisionId: candidate.revisionId,
+          document: candidate.document,
+          changeset: candidate.changeset,
+          tombstones: candidate.tombstones,
+        }).onCommitPoint?.(point, context);
+      },
+    });
     return { ok: true, revision, warnings };
   } catch (error) {
     return fatal(
