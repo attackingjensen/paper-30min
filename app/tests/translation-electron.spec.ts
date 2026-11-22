@@ -726,13 +726,17 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
     const reopenedBody = reopened.locator(`[data-sentence-id="${ids.bodySentence}"]`);
     await expect(reopenedBody).toHaveAttribute("data-translation-status", "gap");
     await expect(reopenedBody).toContainText("Translations appear unit by unit");
-    // 重开后新进程即使配置仍指向原端点，也不得发起任何模型请求：
-    // 重新监听同一端口计数 1.5s（恢复不阻塞阅读；自动补试限次由专门用例覆盖）。
+    // 重开后新进程不得对正文 gap 发起恢复请求（单元指纹限次跨重启生效）；
+    // 标题 stale 属新 revision 的首次显式语言选择，至多一次 meta 尝试，不计正文恢复。
     const { server: probeServer, calls: probeCalls } = controlledServer({});
     const listening = Promise.withResolvers<void>();
     probeServer.listen(endpointPort, "127.0.0.1", listening.resolve);
     await listening.promise;
     await page.waitForTimeout(1500);
+    // 标题 stale 至多触发一次 meta 尝试（新 revision 首次语言选择），正文恢复必须为零。
+    const metaAttempts = probeCalls.filter((id) => id === "meta").length;
+    expect(metaAttempts).toBeLessThanOrEqual(1);
+    probeCalls.splice(0, probeCalls.length, ...probeCalls.filter((id) => id !== "meta"));
     expect(probeCalls.length).toBe(0);
     await stopServer(probeServer);
   } finally {
@@ -775,6 +779,8 @@ test("translation 用户停止：未发送批次取消，合法完成项保留�
     await reader.getByRole("button", { name: "原文", exact: true }).click();
     await reader.getByRole("button", { name: "中文", exact: true }).click();
     await expect(abstractSentence).toContainText("译文：We study progressive reading", { timeout: 30000 });
+    // 等重开的 generate（仅 meta）落定，busy 解除后再发起显式补译。
+    await expect(reader.getByRole("button", { name: /补译缺口/ })).toBeEnabled({ timeout: 30000 });
     expect(calls.length).toBe(afterStop);
 
     // 手动补译缺口仍可显式发起。

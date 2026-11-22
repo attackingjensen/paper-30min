@@ -141,23 +141,36 @@ function controlledModelServer(options: { holdUnits?: Map<string, Promise<void>>
     for await (const part of request) raw += part;
     const body = JSON.parse(raw) as { messages: Array<{ role: string; content: string }> };
     const prompt = JSON.parse(body.messages.find((message) => message.role === "user")!.content) as {
-      unit: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      unit?: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      paperTitle?: string | null;
+      sections?: Array<{ sectionId: string; title: string }>;
+      rawBlocks?: Array<{ blockId: string; text: string }>;
     };
-    calls.push({ unitId: prompt.unit.unitId, sentenceIds: prompt.unit.sentences.map((s) => s.sentenceId) });
-    const hold = options.holdUnits?.get(prompt.unit.unitId);
-    if (hold) await hold;
-    if (options.failUnits?.has(prompt.unit.unitId)) {
-      response.writeHead(500, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: { message: "受控失败" } }));
-      return;
+    let content: string;
+    if (!prompt.unit) {
+      // 元数据请求：返回合法标题/raw 译文（不影响单元级断言）。
+      content = JSON.stringify({
+        paperTitle: prompt.paperTitle == null ? null : `译文：${prompt.paperTitle}`,
+        sections: (prompt.sections ?? []).map((s) => ({ sectionId: s.sectionId, title: `译文：${s.title}` })),
+        rawBlocks: (prompt.rawBlocks ?? []).map((r) => ({ blockId: r.blockId, text: `译文：${r.text}` })),
+      });
+    } else {
+      calls.push({ unitId: prompt.unit.unitId, sentenceIds: prompt.unit.sentences.map((s) => s.sentenceId) });
+      const hold = options.holdUnits?.get(prompt.unit.unitId);
+      if (hold) await hold;
+      if (options.failUnits?.has(prompt.unit.unitId)) {
+        response.writeHead(500, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "受控失败" } }));
+        return;
+      }
+      content = JSON.stringify({
+        unitId: prompt.unit.unitId,
+        sentences: prompt.unit.sentences.map((sentence) => ({
+          sentenceId: sentence.sentenceId,
+          content: `译文：${sentence.content}`,
+        })),
+      });
     }
-    const content = JSON.stringify({
-      unitId: prompt.unit.unitId,
-      sentences: prompt.unit.sentences.map((sentence) => ({
-        sentenceId: sentence.sentenceId,
-        content: `译文：${sentence.content}`,
-      })),
-    });
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.write(
       `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`,
@@ -308,33 +321,45 @@ test.describe("translation 任务编排", () => {
       for await (const part of request) raw += part;
       const body = JSON.parse(raw) as { messages: Array<{ role: string; content: string }> };
       const userPrompt = JSON.parse(body.messages.find((message) => message.role === "user")!.content) as {
-        unit: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+        unit?: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+        paperTitle?: string | null;
+        sections?: Array<{ sectionId: string; title: string }>;
+        rawBlocks?: Array<{ blockId: string; text: string }>;
       };
-      calls.push(userPrompt.unit.unitId);
-      // body 请求到达时，首轮唯一合法单元尚未产生（abstract 首轮失败）；
-      // 渐进发布的正向证据由补试请求时的 index 检查承担。
-      if (userPrompt.unit.unitId === ids.body) {
-        const index = JSON.parse(await fs.readFile(sidecarIndex, "utf8").catch(() => "null"));
-        indexChecks.push(index ? index.units.length : 0);
+      let content: string;
+      if (!userPrompt.unit) {
+        content = JSON.stringify({
+          paperTitle: userPrompt.paperTitle == null ? null : `译文：${userPrompt.paperTitle}`,
+          sections: (userPrompt.sections ?? []).map((s) => ({ sectionId: s.sectionId, title: `译文：${s.title}` })),
+          rawBlocks: (userPrompt.rawBlocks ?? []).map((r) => ({ blockId: r.blockId, text: `译文：${r.text}` })),
+        });
+      } else {
+        calls.push(userPrompt.unit.unitId);
+        // body 请求到达时，首轮唯一合法单元尚未产生（abstract 首轮失败）；
+        // 渐进发布的正向证据由补试请求时的 index 检查承担。
+        if (userPrompt.unit.unitId === ids.body) {
+          const index = JSON.parse(await fs.readFile(sidecarIndex, "utf8").catch(() => "null"));
+          indexChecks.push(index ? index.units.length : 0);
+        }
+        // 补试请求到达时，body 译文必须已经提交可见。
+        if (userPrompt.unit.unitId === ids.abstract && calls.filter((id) => id === ids.abstract).length === 2) {
+          const index = JSON.parse(await fs.readFile(sidecarIndex, "utf8"));
+          indexChecks.push(index.units.length);
+        }
+        if (failFirst.has(userPrompt.unit.unitId)) {
+          failFirst.delete(userPrompt.unit.unitId);
+          response.writeHead(500, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ error: { message: "受控首轮失败" } }));
+          return;
+        }
+        content = JSON.stringify({
+          unitId: userPrompt.unit.unitId,
+          sentences: userPrompt.unit.sentences.map((sentence) => ({
+            sentenceId: sentence.sentenceId,
+            content: `译文：${sentence.content}`,
+          })),
+        });
       }
-      // 补试请求到达时，body 译文必须已经提交可见。
-      if (userPrompt.unit.unitId === ids.abstract && calls.filter((id) => id === ids.abstract).length === 2) {
-        const index = JSON.parse(await fs.readFile(sidecarIndex, "utf8"));
-        indexChecks.push(index.units.length);
-      }
-      if (failFirst.has(userPrompt.unit.unitId)) {
-        failFirst.delete(userPrompt.unit.unitId);
-        response.writeHead(500, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ error: { message: "受控首轮失败" } }));
-        return;
-      }
-      const content = JSON.stringify({
-        unitId: userPrompt.unit.unitId,
-        sentences: userPrompt.unit.sentences.map((sentence) => ({
-          sentenceId: sentence.sentenceId,
-          content: `译文：${sentence.content}`,
-        })),
-      });
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.write(
         `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`,

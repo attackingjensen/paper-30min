@@ -124,26 +124,14 @@ async function abortTasks(matches: (task: ActiveTranslationTask) => boolean, reg
             .map((sentence) => sentence.sentenceId),
         }))
         .filter((unit) => unit.sentenceIds.length > 0);
-      const sectionStatus = new Map((projection.sections ?? []).map((section) => [section.sectionId, section.status]));
-      const rawStatus = new Map((projection.rawBlocks ?? []).map((raw) => [raw.blockId, raw.status]));
-      const meta = {
-        paperTitle:
-          task.metaSources.paperTitle !== null && (projection.paperTitle?.status ?? "gap") === "gap"
-            ? task.metaSources.paperTitle
-            : null,
-        sections: task.metaSources.sections.filter((s) => (sectionStatus.get(s.sectionId) ?? "gap") === "gap"),
-        rawBlocks: task.metaSources.rawBlocks.filter((r) => (rawStatus.get(r.blockId) ?? "gap") === "gap"),
-        targetStatus: "gap" as const,
-      };
-      const metaHasWork = meta.paperTitle !== null || meta.sections.length > 0 || meta.rawBlocks.length > 0;
-      if (gaps.length === 0 && !metaHasWork) continue;
+      if (gaps.length === 0) continue;
       const fingerprint = autoAttemptFingerprint({
         root: task.root,
         baseRevision: task.baseRevision,
         language: task.language,
         model: task.model,
         gaps,
-        meta: metaHasWork ? meta : null,
+        meta: null,
       });
       autoFillFingerprints.add(fingerprint);
       // 持久化停止指纹：重开应用后同指纹 generate 同样不再自动启动。
@@ -269,27 +257,27 @@ async function execute(
   const selected = input.config.models.find((model) => model.id === input.config.selectedModelId)!;
   task.model = selected.model;
   task.metaSources = metaSources;
-  // 自动尝试指纹：同会话同 root＋baseRevision＋language＋model＋gap＋meta 内容最多一次。
+  // 正文自动尝试指纹：同会话同 root＋baseRevision＋language＋model＋gap 内容最多一次。
+  // meta 目标独立按状态筛选（每次 generate 至多一次），不并入正文指纹，
+  // 避免 meta 提交后指纹变化导致正文限次失效。
   const fingerprint = autoAttemptFingerprint({
     root,
     baseRevision,
     language: input.language,
     model: selected.model,
     gaps: targets.map((unit) => ({ unitId: unit.unitId, sentenceIds: unit.sentences.map((s) => s.sentenceId) })),
-    meta: metaNeedsWork ? { ...metaTargets, targetStatus } : null,
+    meta: null,
   });
   const previousTask = await readTranslationTaskRecord(root, baseRevision, input.language);
   task.previousFingerprint = previousTask?.autoAttemptFingerprint;
-  if (mode === "generate") {
-    if (autoFillFingerprints.has(fingerprint))
-      return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
-    // 重开应用后同指纹不再自动补试（SPEC §6.2/§6.6）：持久化任务记录是限次依据，
-    // 内存 Set 只覆盖同会话；手动 fill-gaps 不受此限制。
-    if (previousTask?.autoAttemptFingerprint === fingerprint) {
-      autoFillFingerprints.add(fingerprint);
-      return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
-    }
-  }
+  const unitSkipped =
+    mode === "generate" &&
+    (autoFillFingerprints.has(fingerprint) || previousTask?.autoAttemptFingerprint === fingerprint);
+  if (unitSkipped) autoFillFingerprints.add(fingerprint);
+  if (targets.length === 0 && !metaNeedsWork)
+    return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
+  if (unitSkipped && !metaNeedsWork)
+    return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
 
   const session = createTranslationModelSession(input.config);
   const modelBudget = {
@@ -313,7 +301,7 @@ async function execute(
     await writeTranslationTaskRecord(root, baseRevision, input.language, {
       status: "running",
       gaps: [],
-      ...(mode === "generate"
+      ...(mode === "generate" && !unitSkipped
         ? { autoAttemptFingerprint: fingerprint }
         : task.previousFingerprint
           ? { autoAttemptFingerprint: task.previousFingerprint }
@@ -328,7 +316,7 @@ async function execute(
       modelBudget,
       sourceLanguage,
       selectedLanguage: input.language,
-      units: targets,
+      units: unitSkipped ? [] : targets,
       // 对已有 unit 的 fill-gaps/update-stale 按目标句独立计划、校验、merge 提交；
       // 初次 generate 的新 unit 保持整单元原子。
       sentenceAtomic: mode !== "generate",
@@ -396,10 +384,10 @@ async function execute(
       }
     }
     // 首轮：合法单元（或句级目标）完成即发布；失败项记 gap。
-    const first = await runTranslationTask(options);
-    let results = first.status === "finished" ? first.units : [];
+    const first = unitSkipped ? null : await runTranslationTask(options);
+    let results = first && first.status === "finished" ? first.units : [];
     // 首轮结束后对失败目标自动补试一次；已保存内容与停止/revision 失效不重发。
-    if (results.some((unit) => unit.status !== "ready") && (await ensureCurrent())) {
+    if (!unitSkipped && results.some((unit) => unit.status !== "ready") && (await ensureCurrent())) {
       const refreshed = await readTranslationProjection(root, baseRevision, input.language);
       const refreshedStatus = new Map(
         refreshed.units.map((unit) => [
@@ -456,7 +444,7 @@ async function execute(
     await writeTranslationTaskRecord(root, baseRevision, input.language, {
       status: "finished",
       gaps,
-      ...(mode === "generate"
+      ...(mode === "generate" && !unitSkipped
         ? { autoAttemptFingerprint: fingerprint }
         : task.previousFingerprint
           ? { autoAttemptFingerprint: task.previousFingerprint }

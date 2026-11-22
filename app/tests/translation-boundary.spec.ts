@@ -89,15 +89,24 @@ function recordingServer() {
     for await (const part of request) raw += part;
     requests.push({ authorization: request.headers.authorization, body: raw });
     const prompt = JSON.parse(JSON.parse(raw).messages.find((m: { role: string }) => m.role === "user").content) as {
-      unit: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      unit?: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      paperTitle?: string | null;
+      sections?: Array<{ sectionId: string; title: string }>;
+      rawBlocks?: Array<{ blockId: string; text: string }>;
     };
-    const content = JSON.stringify({
-      unitId: prompt.unit.unitId,
-      sentences: prompt.unit.sentences.map((sentence) => ({
-        sentenceId: sentence.sentenceId,
-        content: `译文：${sentence.content}`,
-      })),
-    });
+    const content = prompt.unit
+      ? JSON.stringify({
+          unitId: prompt.unit.unitId,
+          sentences: prompt.unit.sentences.map((sentence) => ({
+            sentenceId: sentence.sentenceId,
+            content: `译文：${sentence.content}`,
+          })),
+        })
+      : JSON.stringify({
+          paperTitle: prompt.paperTitle == null ? null : `译文：${prompt.paperTitle}`,
+          sections: (prompt.sections ?? []).map((s) => ({ sectionId: s.sectionId, title: `译文：${s.title}` })),
+          rawBlocks: (prompt.rawBlocks ?? []).map((r) => ({ blockId: r.blockId, text: `译文：${r.text}` })),
+        });
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.write(
       `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`,
