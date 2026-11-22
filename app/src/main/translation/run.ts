@@ -1,9 +1,12 @@
-// 翻译任务编排（SPEC-translation §1/§4/§6，paper-30min-crd.2）：
+// 翻译任务编排（SPEC-translation §1/§4/§6/§8，paper-30min-crd.2/crd.3）：
 // 按需启动、逐单元原子发布、首轮失败自动补试一次、恢复不重复提交。
+// 任务只处理 gap，不自动覆盖 ready/stale；显式 stale 更新以句为最小提交；
+// 打开缺口按 baseRevision＋language＋model＋gap 指纹每会话最多自动补试一次。
 // 同一 baseRevision＋language 只运行一个任务；任务固定开始时的模型配置。
 import { buildReaderProjection } from "../../shared/reader/projection.js";
 import { readerProjectionUnits } from "../../shared/reader/translation-view.js";
 import type { DocumentTree } from "../../shared/document/tree.js";
+import { createHash } from "node:crypto";
 import type { TranslationStartCommandResult } from "../../shared/contracts.js";
 import {
   detectSourceLanguage,
@@ -28,10 +31,14 @@ export function translationSourceUnits(tree: DocumentTree) {
   return readerProjectionUnits(buildReaderProjection(tree));
 }
 
+export type TranslationRunMode = "generate" | "fill-gaps" | "update-stale";
+
 export interface TranslationRunInput {
   root: string;
   language: TranslationLanguage;
   config: ModelConfig;
+  /** generate：按需生成（只处理 gap）；fill-gaps：手动补译；update-stale：显式更新过期译文。 */
+  mode?: TranslationRunMode;
   signal?: AbortSignal;
   /** 每次 index 原子推进后通知（worker → 主进程 → renderer 渐进刷新）。 */
   onCommitted?: () => void;
@@ -82,7 +89,12 @@ export async function runProjectTranslation(input: TranslationRunInput): Promise
   }
 }
 
+/** 打开缺口自动补试的会话指纹登记：同 baseRevision＋language＋model＋gap 内容
+ * 最多自动补试一次；手动补译与显式 stale 更新不受此限制。 */
+const autoFillFingerprints = new Set<string>();
+
 async function execute(input: TranslationRunInput, root: string, baseRevision: string): Promise<TranslationRunResult> {
+  const mode = input.mode ?? "generate";
   const tree = await readRevisionDocument(root, baseRevision, "document");
   const sourceLanguage = detectSourceLanguage(tree);
   const before = await readTranslationProjection(root, baseRevision, input.language);
@@ -93,11 +105,42 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
 
   const units = translationSourceUnits(tree);
   const committed = committedSentenceMap(before);
-  if (units.every((unit) => committed.has(unit.unitId)))
+  const statusByUnit = new Map(
+    before.units.map((unit) => [
+      unit.unitId,
+      new Map(unit.sentences.map((sentence) => [sentence.sentenceId, sentence.status])),
+    ]),
+  );
+  // 目标句筛选：generate/fill-gaps 只处理 gap（stale/ready 不自动覆盖）；
+  // update-stale 只处理 stale。未提交单元的全部句子都是 gap。
+  const targetStatus = mode === "update-stale" ? "stale" : "gap";
+  const targets = units
+    .map((unit) => {
+      const statuses = statusByUnit.get(unit.unitId);
+      const sentences = unit.sentences.filter(
+        (sentence) => (statuses?.get(sentence.sentenceId) ?? "gap") === targetStatus,
+      );
+      return { ...unit, sentences };
+    })
+    .filter((unit) => unit.sentences.length > 0);
+  if (targets.length === 0) return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
+
+  const selected = input.config.models.find((model) => model.id === input.config.selectedModelId)!;
+  // 自动补试指纹：同会话同 baseRevision＋language＋model＋gap 内容最多一次。
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        baseRevision,
+        language: input.language,
+        model: selected.model,
+        gaps: targets.map((unit) => ({ unitId: unit.unitId, sentenceIds: unit.sentences.map((s) => s.sentenceId) })),
+      }),
+    )
+    .digest("hex");
+  if (mode === "generate" && before.translationRevision !== null && autoFillFingerprints.has(fingerprint))
     return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
 
   const session = createTranslationModelSession(input.config);
-  const selected = input.config.models.find((model) => model.id === input.config.selectedModelId)!;
   const modelBudget = {
     contextWindow: selected.contextWindow,
     maxTokens: selected.maxTokens,
@@ -111,7 +154,8 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
       modelBudget,
       sourceLanguage,
       selectedLanguage: input.language,
-      units,
+      units: targets,
+      // 部分提交：目标句之外的已提交 ready 句不重发；stale 句不属于 gap 任务目标。
       committedSentences: committed,
       generate: async (modelInput: Parameters<typeof session.generate>[0]) => {
         input.signal?.throwIfAborted();
@@ -126,32 +170,52 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
           generator: session.generator,
           unit,
           digests: translationSentenceDigests(tree, sourceUnit, unit.sentences),
+          // 句级合并：只替换本次目标句，保留同单元其他已提交句（含 stale）。
+          merge: true,
         });
         input.onCommitted?.();
       },
     };
     // 首轮：合法单元完成即发布；失败单元记 gap。
     let task = await runTranslationTask(options);
-    // 首轮结束后对失败单元自动补试一次；已保存 unit 不重发。
+    // 首轮结束后对失败单元自动补试一次；已保存内容不重发。
     const failedIds = new Set(task.units.flatMap((unit) => (unit.status === "gap" ? [unit.unitId] : [])));
     if (failedIds.size > 0 && !input.signal?.aborted) {
       const refreshed = await readTranslationProjection(root, baseRevision, input.language);
-      const retry = await runTranslationTask({
-        ...options,
-        units: units.filter((unit) => failedIds.has(unit.unitId)),
-        committedSentences: committedSentenceMap(refreshed),
-      });
-      const retried = new Map(
-        retry.units.map((unit) => [unit.status === "ready" ? unit.unit.unitId : unit.unitId, unit]),
+      const refreshedStatus = new Map(
+        refreshed.units.map((unit) => [
+          unit.unitId,
+          new Map(unit.sentences.map((sentence) => [sentence.sentenceId, sentence.status])),
+        ]),
       );
-      task = {
-        status: "finished",
-        units: task.units.map((unit) => {
-          const id = unit.status === "ready" ? unit.unit.unitId : unit.unitId;
-          return retried.get(id) ?? unit;
-        }),
-      };
+      const retryTargets = targets
+        .filter((unit) => failedIds.has(unit.unitId))
+        .map((unit) => ({
+          ...unit,
+          sentences: unit.sentences.filter(
+            (sentence) => (refreshedStatus.get(unit.unitId)?.get(sentence.sentenceId) ?? "gap") === targetStatus,
+          ),
+        }))
+        .filter((unit) => unit.sentences.length > 0);
+      if (retryTargets.length > 0) {
+        const retry = await runTranslationTask({
+          ...options,
+          units: retryTargets,
+          committedSentences: committedSentenceMap(refreshed),
+        });
+        const retried = new Map(
+          retry.units.map((unit) => [unit.status === "ready" ? unit.unit.unitId : unit.unitId, unit]),
+        );
+        task = {
+          status: "finished",
+          units: task.units.map((unit) => {
+            const id = unit.status === "ready" ? unit.unit.unitId : unit.unitId;
+            return retried.get(id) ?? unit;
+          }),
+        };
+      }
     }
+    if (mode === "generate" && before.translationRevision !== null) autoFillFingerprints.add(fingerprint);
     const gaps = task.units.flatMap((unit) =>
       unit.status === "gap" ? [{ unitId: unit.unitId, diagnostic: unit.diagnostic }] : [],
     );

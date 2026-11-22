@@ -165,7 +165,10 @@ port.on(
         | { type: "agent"; command: AgentCommand; config: ModelConfig }
         | {
             type: "translationStart";
-            command: Extract<CoreCommand, { type: "coreTranslationStart" }>;
+            command: Extract<
+              CoreCommand,
+              { type: "coreTranslationStart" | "coreTranslationFillGaps" | "coreTranslationUpdateStale" }
+            >;
             config: ModelConfig;
           }
         | PdfImportWorkerCommand;

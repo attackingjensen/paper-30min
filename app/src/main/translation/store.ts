@@ -150,6 +150,9 @@ export interface CommitTranslationUnitInput {
   generator: TranslationGenerator;
   unit: TranslationUnitContent;
   digests: Array<{ sentenceId: string; sourceSha256: string; translationSha256: string }>;
+  /** 句级合并提交：只替换本次提供的句子，保留同单元其他已提交句（含 stale）。
+   * 缺省为整单元提交：句子 ID、数量与顺序必须与 current 单元完全一致。 */
+  merge?: boolean;
   hooks?: TranslationCommitHooks;
 }
 
@@ -242,7 +245,8 @@ export function parseTranslationUnitFile(value: unknown, entry: TranslationUnitI
 }
 
 /** 单元原子提交：unit 文件完整写入并核验后，才以临时文件＋替换推进 index。
- * 一次提交只新增或替换一个 unit；失败保留旧 index 与已提交内容。 */
+ * 整单元提交要求句子与 current 完全一致；merge 提交只替换目标句（局部 stale
+ * 更新与补译的最小提交单位），其余已提交句原样保留。失败保留旧 index 与旧译文。 */
 export async function commitTranslationUnit(
   input: CommitTranslationUnitInput,
 ): Promise<{ translationRevision: string; logicalContentBytes: number }> {
@@ -255,9 +259,10 @@ export async function commitTranslationUnit(
   const tree = await readRevisionDocument(root, input.baseRevision, "document");
   const sourceUnit = tree.units[input.unit.unitId];
   if (!sourceUnit) throw new Error(`译文单元不存在于 current 树：${input.unit.unitId}。`);
+  if (input.unit.sentences.length === 0) throw new Error("译文提交不能为空单元。");
 
   const digestBySentence = new Map(input.digests.map((entry) => [entry.sentenceId, entry]));
-  const sentences = input.unit.sentences.map((sentence) => {
+  const incoming = input.unit.sentences.map((sentence) => {
     const digests = digestBySentence.get(sentence.sentenceId);
     if (!digests || !sourceUnit.sentenceIds.includes(sentence.sentenceId))
       throw new Error(`译文句子缺少摘要或不属于该单元：${sentence.sentenceId}。`);
@@ -267,22 +272,15 @@ export async function commitTranslationUnit(
       throw new Error(`译文摘要与提交内容不一致：${sentence.sentenceId}。`);
     return { ...sentence, sourceSha256, translationSha256 };
   });
-  if (
-    sentences.length !== sourceUnit.sentenceIds.length ||
-    sentences.some((sentence, index) => sentence.sentenceId !== sourceUnit.sentenceIds[index])
-  )
-    throw new Error("译文句子 ID、数量或顺序与 current 单元不一致。");
-
-  const unitFile: TranslationUnitFile = {
-    formatVersion: 1,
-    unitId: input.unit.unitId,
-    generator: input.generator,
-    sentences,
-  };
-  const logicalBytes = Buffer.byteLength(
-    sentences.map((sentence) => translationLogicalContent(sentence.content, tree)).join(""),
-    "utf8",
-  );
+  const incomingIds = new Set(incoming.map((sentence) => sentence.sentenceId));
+  if (incomingIds.size !== incoming.length) throw new Error("译文提交包含重复句子。");
+  if (!input.merge) {
+    if (
+      incoming.length !== sourceUnit.sentenceIds.length ||
+      incoming.some((sentence, index) => sentence.sentenceId !== sourceUnit.sentenceIds[index])
+    )
+      throw new Error("译文句子 ID、数量或顺序与 current 单元不一致。");
+  }
 
   return withProjectWriteLock(root, async () => {
     const relative = `.paper30min/revisions/${input.baseRevision}/translations/${input.language}`;
@@ -302,6 +300,36 @@ export async function commitTranslationUnit(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     const previousEntry = previous?.units.find((entry) => entry.unitId === input.unit.unitId);
+    let previousFile: TranslationUnitFile | null = null;
+    if (previousEntry) {
+      previousFile = parseTranslationUnitFile(
+        await readJsonFile(path.join(directory, previousEntry.file), maximumUnitBytes, "译文单元文件"),
+        previousEntry,
+      );
+    }
+    // 合并提交：以旧文件为底，只替换目标句；句子顺序以 current 单元为权威。
+    // 旧文件中不属于 current 单元的句子（迁移残留）不进入新文件。
+    const kept = (previousFile?.sentences ?? []).filter(
+      (sentence) => sourceUnit.sentenceIds.includes(sentence.sentenceId) && !incomingIds.has(sentence.sentenceId),
+    );
+    const byId = new Map([...kept, ...incoming].map((sentence) => [sentence.sentenceId, sentence]));
+    const sentences = sourceUnit.sentenceIds.flatMap((sentenceId) => {
+      const sentence = byId.get(sentenceId);
+      return sentence ? [sentence] : [];
+    });
+    if (!input.merge && sentences.length !== sourceUnit.sentenceIds.length)
+      throw new Error("译文句子 ID、数量或顺序与 current 单元不一致。");
+
+    const unitFile: TranslationUnitFile = {
+      formatVersion: 1,
+      unitId: input.unit.unitId,
+      generator: input.generator,
+      sentences,
+    };
+    const logicalBytes = Buffer.byteLength(
+      sentences.map((sentence) => translationLogicalContent(sentence.content, tree)).join(""),
+      "utf8",
+    );
     const logicalContentBytes =
       (previous?.logicalContentBytes ?? 0) - (previousEntry?.logicalBytes ?? 0) + logicalBytes;
     if (logicalContentBytes > maximumLanguageContentBytes)
@@ -335,6 +363,7 @@ export async function commitTranslationUnit(
       translationRevision,
       logicalContentBytes,
       units: [...(previous?.units.filter((candidate) => candidate.unitId !== input.unit.unitId) ?? []), entry],
+      ...(previous?.retired && previous.retired.length > 0 ? { retired: previous.retired } : {}),
     };
     const indexFile = path.join(directory, "index.json");
     const bytes = Buffer.from(JSON.stringify(next, null, 2) + "\n");

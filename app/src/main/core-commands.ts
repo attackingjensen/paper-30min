@@ -116,6 +116,8 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   corePdfReadVerification: true,
   coreTranslationRead: true,
   coreTranslationStart: true,
+  coreTranslationFillGaps: true,
+  coreTranslationUpdateStale: true,
 };
 
 export function isCoreCommand(command: { type: string }): command is CoreCommand {
@@ -148,11 +150,19 @@ export async function dispatchCoreCommand(
     case "coreTranslationRead":
       return readTranslationProjection(command.root, command.revisionId, command.language);
     case "coreTranslationStart":
+    case "coreTranslationFillGaps":
+    case "coreTranslationUpdateStale":
       if (!translation) throw new Error("翻译任务缺少模型配置上下文。");
       return runProjectTranslation({
         root: command.root,
         language: command.language,
         config: translation.config,
+        mode:
+          command.type === "coreTranslationFillGaps"
+            ? "fill-gaps"
+            : command.type === "coreTranslationUpdateStale"
+              ? "update-stale"
+              : "generate",
         ...(translation.onCommitted ? { onCommitted: translation.onCommitted } : {}),
       });
     case "coreCreate":

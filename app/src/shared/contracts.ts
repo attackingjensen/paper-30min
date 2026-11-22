@@ -333,6 +333,16 @@ export type CoreCommand =
       type: "coreTranslationStart";
       root: string;
       language: "zh" | "en";
+    }
+  | {
+      type: "coreTranslationFillGaps";
+      root: string;
+      language: "zh" | "en";
+    }
+  | {
+      type: "coreTranslationUpdateStale";
+      root: string;
+      language: "zh" | "en";
     };
 
 /** arXiv 组合入口经生产 IPC 的结果（SPEC-arxiv-import §6–7）。 */

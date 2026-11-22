@@ -36,7 +36,10 @@ function request(
     | { type: "agent"; command: AgentCommand; config: ModelConfig }
     | {
         type: "translationStart";
-        command: Extract<Command, { type: "coreTranslationStart" }>;
+        command: Extract<
+          Command,
+          { type: "coreTranslationStart" | "coreTranslationFillGaps" | "coreTranslationUpdateStale" }
+        >;
         config: ModelConfig;
       }
     | PdfImportWorkerCommand
@@ -236,7 +239,11 @@ async function start() {
         },
       });
     }
-    if (command.type === "coreTranslationStart") {
+    if (
+      command.type === "coreTranslationStart" ||
+      command.type === "coreTranslationFillGaps" ||
+      command.type === "coreTranslationUpdateStale"
+    ) {
       // 翻译模型配置与凭据只从主进程设置读取；renderer 命令不携带 Token。
       await settingsWrite;
       return request({ type: "translationStart", command, config: await agentSettings.read() });
