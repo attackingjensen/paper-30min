@@ -183,34 +183,42 @@ export async function dispatchCoreCommand(
         const bytes = content instanceof Uint8Array ? content : content?.bytes;
         if (!bytes) throw new Error("coreCommit 缺少 document.json，不能发布新 current。");
         const document = parseDocumentTree(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
-        const baseDocument = await readRevisionDocument(command.root, command.baseRevision, "document");
-        const changeset = createDocumentChangeset({
-          base: baseDocument,
-          current: document,
-          baseRevision: command.baseRevision,
-          revisionId,
-        });
         const tombstonesValue = command.files["tombstones.json"];
         const tombstoneBytes = tombstonesValue instanceof Uint8Array ? tombstonesValue : tombstonesValue?.bytes;
         const tombstones: Tombstone[] = tombstoneBytes
           ? (JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(tombstoneBytes)) as Tombstone[])
           : [];
+        const baseRevision = command.baseRevision;
         hooks = composeCommitHooks(
           verificationInheritCommitHooks({
             root: command.root,
-            baseRevision: command.baseRevision,
+            baseRevision,
             revisionId,
             sourceSnapshotId: command.sourceSnapshotId,
             document,
           }),
-          translationInheritCommitHooks({
-            root: command.root,
-            baseRevision: command.baseRevision,
-            revisionId,
-            document,
-            changeset,
-            tombstones,
-          }),
+          {
+            // changeset 在临界区内按已核验基线计算：stale base 由 commitRevision
+            // 先行拒绝，不在命令面提前读取不存在的 revision。
+            onCommitPoint: async (point, context) => {
+              if (point !== "before-current-replace") return;
+              const baseDocument = await readRevisionDocument(command.root, baseRevision, "document");
+              const changeset = createDocumentChangeset({
+                base: baseDocument,
+                current: document,
+                baseRevision,
+                revisionId,
+              });
+              await translationInheritCommitHooks({
+                root: command.root,
+                baseRevision,
+                revisionId,
+                document,
+                changeset,
+                tombstones,
+              }).onCommitPoint?.(point, context);
+            },
+          },
         );
       }
       return commitRevision(
