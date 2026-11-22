@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { createServer, type Server } from "node:http";
 import { connect } from "node:net";
+import type { Duplex } from "node:stream";
 import type { AgentSettings, ChatSession } from "../src/shared/contracts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -2222,81 +2223,101 @@ test("Pi 原生对话流式回复、补充、分支及搬迁重开，密钥留�
   }
 });
 
-test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖住退出", async () => {
+test.describe("Pi 并发会话", () => {
   const secret = "controlled-private-key";
-  let tunneled = 0;
-  let failNext = true;
-  const timers = new Set<ReturnType<typeof setTimeout>>();
-  const server = createServer(async (request, response) => {
-    let body = "";
-    for await (const chunk of request) body += chunk;
-    const payload = JSON.parse(body);
-    const content = payload.messages.filter((m: { role: string }) => m.role === "user").at(-1).content;
-    const last =
-      typeof content === "string"
-        ? content
-        : content
-            .filter((c: { type: string }) => c.type === "text")
-            .map((c: { text: string }) => c.text)
-            .join("");
-    if (last === "触发失败" && failNext) {
-      failNext = false;
-      response.writeHead(401, { "Content-Type": "application/json" });
-      response.end(
-        JSON.stringify({
-          error: {
-            message: "Invalid key " + secret,
-            type: "authentication_error",
-          },
-        }),
-      );
-      return;
-    }
-    response.writeHead(200, { "Content-Type": "text/event-stream" });
-    const chunk = (text: string | null) =>
-      response.write(
-        `data: ${JSON.stringify({ id: "controlled", choices: [{ index: 0, delta: text ? { content: text } : {}, finish_reason: text ? null : "stop" }] })}\n\n`,
-      );
-    chunk(last.includes("停滞") ? "等待中的片段" : "独立回复");
-    const timer = setTimeout(
-      () => {
-        chunk(last.includes("停滞") ? "迟到内容不得落盘" : "已完成");
+  let tunneled: number;
+  let failNext: boolean;
+  let timers: Set<NodeJS.Timeout>;
+  let sockets: Set<Duplex>;
+  let server: Server;
+  let proxy: Server;
+  let lateResponse: PromiseWithResolvers<void>;
+  let lateResponseClosed: PromiseWithResolvers<void>;
+
+  test.beforeEach(async () => {
+    tunneled = 0;
+    failNext = true;
+    timers = new Set();
+    sockets = new Set();
+    lateResponse = Promise.withResolvers<void>();
+    lateResponseClosed = Promise.withResolvers<void>();
+    server = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const payload = JSON.parse(body);
+      const content = payload.messages.filter((m: { role: string }) => m.role === "user").at(-1).content;
+      const last =
+        typeof content === "string"
+          ? content
+          : content
+              .filter((c: { type: string }) => c.type === "text")
+              .map((c: { text: string }) => c.text)
+              .join("");
+      if (last === "触发失败" && failNext) {
+        failNext = false;
+        response.writeHead(401, { "Content-Type": "application/json" });
+        response.end(
+          JSON.stringify({
+            error: {
+              message: "Invalid key " + secret,
+              type: "authentication_error",
+            },
+          }),
+        );
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      const chunk = (text: string | null) =>
+        response.write(
+          `data: ${JSON.stringify({ id: "controlled", choices: [{ index: 0, delta: text ? { content: text } : {}, finish_reason: text ? null : "stop" }] })}\n\n`,
+        );
+      chunk(last.includes("停滞") ? "等待中的片段" : "独立回复");
+      if (last.includes("停滞")) {
+        // 停止会中止 socket，end 回调不保证触发；close 同时覆盖正常结束与中止。
+        response.once("close", () => lateResponseClosed.resolve());
+        await lateResponse.promise;
+        chunk("迟到内容不得落盘");
+        chunk(null);
+        response.end("data: [DONE]\n\n");
+        return;
+      }
+      const timer = setTimeout(() => {
+        chunk("已完成");
         chunk(null);
         response.end("data: [DONE]\n\n");
         timers.delete(timer);
-      },
-      last.includes("停滞") ? 3000 : 500,
-    );
-    timers.add(timer);
-  });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const port = (server.address() as { port: number }).port;
-  const proxy = createServer();
-  const sockets = new Set<import("node:stream").Duplex>();
-  proxy.on("connect", (_request, client, head) => {
-    tunneled++;
-    const upstream = connect(port, "127.0.0.1", () => {
-      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      if (head.length) upstream.write(head);
-      client.pipe(upstream);
-      upstream.pipe(client);
+      }, 500);
+      timers.add(timer);
     });
-    sockets.add(upstream);
-    sockets.add(client);
-    upstream.on("error", () => client.destroy());
-    client.on("error", () => upstream.destroy());
-    client.on("close", () => {
-      upstream.destroy();
-      sockets.delete(client);
-      sockets.delete(upstream);
+    const listening = Promise.withResolvers<void>();
+    server.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const port = (server.address() as { port: number }).port;
+    proxy = createServer();
+    proxy.on("connect", (_request, client, head) => {
+      tunneled++;
+      const upstream = connect(port, "127.0.0.1", () => {
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head.length) upstream.write(head);
+        client.pipe(upstream);
+        upstream.pipe(client);
+      });
+      sockets.add(upstream);
+      sockets.add(client);
+      upstream.on("error", () => client.destroy());
+      client.on("error", () => upstream.destroy());
+      client.on("close", () => {
+        upstream.destroy();
+        sockets.delete(client);
+        sockets.delete(upstream);
+      });
     });
-  });
-  await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
-  const proxyPort = (proxy.address() as { port: number }).port;
-  try {
+    const proxyListening = Promise.withResolvers<void>();
+    proxy.listen(0, "127.0.0.1", proxyListening.resolve);
+    await proxyListening.promise;
+    const proxyPort = (proxy.address() as { port: number }).port;
     const parent = path.join(sandbox, "projects");
     await create(fixture, parent, "并发会话工程");
-    const root = path.join(parent, "并发会话工程");
     await page.evaluate(
       async ({ port, proxyPort, secret }) => {
         const settings = await window.desktop.agent<AgentSettings>({
@@ -2322,6 +2343,22 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
       },
       { port, proxyPort, secret },
     );
+  });
+
+  test.afterEach(async () => {
+    lateResponse.resolve();
+    for (const timer of timers) clearTimeout(timer);
+    for (const socket of sockets) socket.destroy();
+    server.closeAllConnections();
+    proxy.closeAllConnections();
+    const serverClosed = Promise.withResolvers<void>();
+    const proxyClosed = Promise.withResolvers<void>();
+    server.close(() => serverClosed.resolve());
+    proxy.close(() => proxyClosed.resolve());
+    await Promise.all([serverClosed.promise, proxyClosed.promise]);
+  });
+
+  test("失败恢复经代理持久化", async () => {
     await page.getByLabel("Agent 消息").fill("触发失败");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await expect(page.locator(".agent-error")).toContainText("模型认证失败");
@@ -2333,6 +2370,10 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
     await page.getByLabel("Agent 消息").fill("失败后继续");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await expect(page.locator(".message-text").last()).toHaveText("独立回复已完成");
+  });
+
+  test("停止会话后迟到响应不得落盘", async () => {
+    const root = path.join(sandbox, "projects", "并发会话工程");
     await page.getByRole("button", { name: "新会话", exact: true }).click();
     await page.getByLabel("Agent 消息").fill("会话 A 停滞");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
@@ -2348,7 +2389,8 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
     await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
     await page.getByLabel("会话", { exact: true }).selectOption(b);
     await expect(page.locator(".message-text").last()).toHaveText("独立回复已完成");
-    await page.waitForTimeout(3100);
+    lateResponse.resolve();
+    await lateResponseClosed.promise;
     const all = await page.evaluate((root) => window.desktop.agent<ChatSession[]>({ type: "list", root }), root);
     expect(all.find((s) => s.id === a)?.messages.at(-1)?.text).toBe("等待中的片段");
     for (const file of await fs.readdir(path.join(root, ".pi", "sessions"))) {
@@ -2356,6 +2398,9 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
       expect(raw).not.toContain(secret);
       expect(raw).not.toContain("迟到内容不得落盘");
     }
+  });
+
+  test("工程隔离、停滞关闭与异常退出保持终态", async () => {
     await page.getByRole("button", { name: "新会话", exact: true }).click();
     await page.getByLabel("Agent 消息").fill("关闭期间停滞");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
@@ -2370,9 +2415,9 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
     await page.getByLabel("Agent 消息").fill("窗口退出时停滞");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await expect(page.locator(".message-text").last()).toHaveText("等待中的片段");
-    const started = Date.now();
-    await desktop.close();
-    expect(Date.now() - started).toBeLessThan(4000);
+    const closing = desktop.close();
+    await expect.poll(() => desktopProcess.exitCode, { timeout: 4000 }).toBe(0);
+    await closing;
     await launch();
     await page.getByRole("button", { name: /^另一工程/ }).click();
     await page.getByRole("button", { name: "新会话", exact: true }).click();
@@ -2386,16 +2431,7 @@ test("Pi 并发会话隔离停止、失败恢复与代理，停滞关闭不拖�
     });
     await expect(page.locator(".agent-error")).toContainText("工程进程已退出");
     await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
-  } finally {
-    for (const timer of timers) clearTimeout(timer);
-    for (const socket of sockets) socket.destroy();
-    server.closeAllConnections();
-    proxy.closeAllConnections();
-    await Promise.all([
-      new Promise<void>((r) => server.close(() => r())),
-      new Promise<void>((r) => proxy.close(() => r())),
-    ]);
-  }
+  });
 });
 
 test("Responses 与 Anthropic 文本协议及损坏配置恢复通过真实 Electron 接线", async () => {
