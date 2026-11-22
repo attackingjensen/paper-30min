@@ -379,6 +379,9 @@ export function FullReader({
   const [translationBusy, setTranslationBusy] = useState(false);
   const [translationStatus, setTranslationStatus] = useState("");
   const translationEpoch = useRef(0);
+  // 显式动作排队：在途任务期间点击补译/更新不丢弃，落定后自动执行一次。
+  const [pendingAction, setPendingAction] = useState<"fill-gaps" | "update-stale" | null>(null);
+  const pendingActionRef = useRef<"fill-gaps" | "update-stale" | null>(null);
   const translationRootRef = useRef<string | null>(null);
   const requestRef = useRef(0);
   const articleRef = useRef<HTMLElement | null>(null);
@@ -1043,6 +1046,8 @@ export function FullReader({
   // 已有译文只切换视图。任务期间渐进刷新投影，不重排阅读位置、不强制 reload。
   async function switchLanguage(target: TranslationLanguage | null) {
     if (!state) return;
+    pendingActionRef.current = null;
+    setPendingAction(null);
     const epochAtStart = ++translationEpoch.current;
     const current = state;
     if (target === null) {
@@ -1150,7 +1155,13 @@ export function FullReader({
   // 显式补译／更新过期译文（SPEC-translation §8）：只处理目标状态，
   // 费用提示与任务状态可见；渐进刷新由 translation:changed 承担。
   async function runTranslationAction(action: "fill-gaps" | "update-stale") {
-    if (!state || language === null || translationBusy) return;
+    if (!state || language === null) return;
+    if (translationBusy) {
+      // 在途任务期间不丢弃显式动作：排队待落定后执行。
+      pendingActionRef.current = action;
+      setPendingAction(action);
+      return;
+    }
     const target = language;
     const epochAtStart = ++translationEpoch.current;
     const current = state;
@@ -1200,11 +1211,24 @@ export function FullReader({
     }
   }
 
+  // 在途任务落定（busy 解除）后执行排队的显式动作，避免点击被静默丢弃。
+  const runActionRef = useRef(runTranslationAction);
+  runActionRef.current = runTranslationAction;
+  useEffect(() => {
+    if (!translationBusy && pendingAction) {
+      const action = pendingAction;
+      pendingActionRef.current = null;
+      setPendingAction(null);
+      void runActionRef.current(action);
+    }
+  }, [translationBusy, pendingAction]);
   // 用户停止（SPEC-translation §6.5）：取消未发送批次；已在途请求可能已产生
   // 费用，完成且合法的结果仍会保存。停止后同指纹不再自动补试，手动补译可再发起。
   async function stopTranslation() {
     if (!state || language === null) return;
     const target = language;
+    pendingActionRef.current = null;
+    setPendingAction(null);
     ++translationEpoch.current;
     try {
       await desktop.invoke({ type: "coreTranslationStop", root, language: target });

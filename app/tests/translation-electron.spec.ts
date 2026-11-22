@@ -294,6 +294,23 @@ async function stopServer(server: Server) {
   await closed.promise;
 }
 
+/** 等主进程翻译任务真正落定（running=false），避免显式动作被 busy-skip。 */
+async function waitTranslationIdle(root: string, revisionId: string) {
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          ({ r, rev }) =>
+            window.desktop
+              .invoke<{ running?: boolean }>({ type: "coreTranslationRead", root: r, revisionId: rev, language: "zh" })
+              .then((p) => p.running === true),
+          { r: root, rev: revisionId },
+        ),
+      { timeout: 30000 },
+    )
+    .toBe(false);
+}
+
 test("translation 语言切换渐进阅读：ready 译文、gap 原文回退、离线重开与不重复请求", async () => {
   const { created, ids } = await englishProject("翻译工程", { long: true });
   const abstractHold = Promise.withResolvers<void>();
@@ -480,6 +497,7 @@ test("translation 正文修正后局部 stale：旧译文可对照最新原文�
     await expect(comparison).toHaveCount(0);
 
     // 显式更新过期译文：只请求 stale 句，body 不重发。
+    await waitTranslationIdle(created.root, revision.revisionId);
     await reader.getByRole("button", { name: /更新过期译文/ }).click();
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
     await expect(abstractSentence).toContainText("译文：We study progressive close reading");
@@ -745,7 +763,7 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
 });
 
 test("translation 用户停止：未发送批次取消，合法完成项保留，同指纹不再自动请求", async () => {
-  const { created, ids } = await englishProject("停止工程");
+  const { created, ids, revision } = await englishProject("停止工程");
   const abstractHold = Promise.withResolvers<void>();
   const bodyHold = Promise.withResolvers<void>();
   const { server, calls } = controlledServer({
@@ -779,8 +797,8 @@ test("translation 用户停止：未发送批次取消，合法完成项保留�
     await reader.getByRole("button", { name: "原文", exact: true }).click();
     await reader.getByRole("button", { name: "中文", exact: true }).click();
     await expect(abstractSentence).toContainText("译文：We study progressive reading", { timeout: 30000 });
-    // 等重开的 generate（仅 meta）落定，busy 解除后再发起显式补译。
-    await expect(reader.getByRole("button", { name: /补译缺口/ })).toBeEnabled({ timeout: 30000 });
+    // 等主进程任务真正落定（running=false），避免显式补译被 busy-skip。
+    await waitTranslationIdle(created.root, revision.revisionId);
     expect(calls.length).toBe(afterStop);
 
     // 手动补译缺口仍可显式发起。
