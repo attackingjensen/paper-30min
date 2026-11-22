@@ -695,7 +695,7 @@ test("translation 跨旧译文与最新原文对照区的选区不产出译文�
 });
 
 test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可读，gap 不触发恢复请求", async () => {
-  const { created, ids, tree } = await englishProject("混合离线工程");
+  const { created, ids, tree, revision } = await englishProject("混合离线工程");
   const { server } = controlledServer({ failUnit: ids.body });
   const endpoint = await startServer(server);
   try {
@@ -725,13 +725,22 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
     await reader.getByRole("button", { name: "中文", exact: true }).click();
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
     await expect(bodySentence).toHaveAttribute("data-translation-status", "gap");
-    // 关闭前等当前语言无在途任务（busy 解除）：避免在途补试与重开交错。
     await expect(reader.getByRole("button", { name: "中文", exact: true })).toBeEnabled({ timeout: 30000 });
+    // 等当前 revision 的首次 generate（含自动补试）落定并持久化指纹。
+    await waitTranslationIdle(created.root, revision.revisionId);
 
-    // 离线重开：断开受控服务后 stale 旧译文与 gap 原文仍可读（不阻塞阅读）。
+    // 第一次重开：消费该 revision 的首次自动尝试（指纹落盘）。
     const endpointPort = (server.address() as { port: number }).port;
     await closeDesktopForCleanup();
+    await launch();
+    await openFolder(created.root);
+    await page.locator(".full-reader").getByRole("button", { name: "中文", exact: true }).click();
+    await waitTranslationIdle(created.root, revision.revisionId);
+    await closeDesktopForCleanup();
     await stopServer(server);
+
+    // 第二次重开（指纹已落盘）：断开受控服务后 stale 旧译文与 gap 原文仍可读，
+    // 且不得对正文 gap 发起恢复请求。
     await launch();
     await openFolder(created.root);
     const reopened = page.locator(".full-reader");
