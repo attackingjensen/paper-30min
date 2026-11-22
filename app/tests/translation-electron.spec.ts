@@ -645,6 +645,8 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
     const bodySentence = reader.locator(`[data-sentence-id="${ids.bodySentence}"]`);
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
     await expect(bodySentence).toHaveAttribute("data-translation-status", "gap", { timeout: 30000 });
+    // 等首轮＋自动补试落定（task finished）：避免关闭应用与在途补试的计数竞态。
+    await expect(reader.locator(".reader-translation-status")).toContainText("缺口", { timeout: 30000 });
 
     // 修正 abstract 原文：迁移后 abstract stale、body 仍 gap。
     await reader.getByRole("button", { name: "原文", exact: true }).click();
@@ -661,10 +663,9 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
     await expect(bodySentence).toHaveAttribute("data-translation-status", "gap");
 
-    // 离线重开：断开受控服务后 stale 旧译文与 gap 原文都可读，不发起任何模型请求。
+    // 离线重开：新进程连接同一受控端点但零新增请求——stale/gap 可读且不触发恢复。
     const beforeReopen = calls.length;
     await closeDesktopForCleanup();
-    await stopServer(server);
     await launch();
     await openFolder(created.root);
     const reopened = page.locator(".full-reader");
