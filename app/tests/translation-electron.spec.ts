@@ -406,3 +406,88 @@ test("translation 正文修正后局部 stale：旧译文可对照最新原文�
     await stopServer(server).catch(() => undefined);
   }
 });
+
+/** 在译文句内设置真实 DOM 选区（文本片段按 data-start 定位）。 */
+async function selectTranslated(sentenceId: string, start: number, from: number, to: number) {
+  const sentence = page.locator(`[data-sentence-id="${sentenceId}"]`);
+  await sentence.scrollIntoViewIfNeeded();
+  await page.evaluate(
+    ({ sentenceId, start, from, to }) => {
+      const span = document.querySelector(`[data-sentence-id="${sentenceId}"] [data-start="${start}"]`);
+      if (!span?.firstChild) throw new Error(`译文片段不存在：${start}`);
+      const range = document.createRange();
+      range.setStart(span.firstChild, from);
+      range.setEnd(span.firstChild, to);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.querySelector(".full-reader")!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    },
+    { sentenceId, start, from, to },
+  );
+}
+
+test("translation 译文精确选区：quote 来自译文投影，gap 原文不冒充译文 range", async () => {
+  const { created, ids } = await englishProject("译文选区工程");
+  const { server } = controlledServer({ failUnit: ids.body });
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await expect(reader.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toHaveAttribute(
+      "data-translation-status",
+      "gap",
+      { timeout: 30000 },
+    );
+
+    // ready 译文句内选区："译文：We study progressive reading of scientific papers."
+    // 偏移 3..9 = "We stu"：quote 必须是译文逻辑文本，不是原文偏移互换。
+    await selectTranslated(ids.abstractSentence, 0, 3, 9);
+    const toolbar = page.locator(".reader-selection-toolbar");
+    await expect(toolbar).toBeVisible();
+    await toolbar.getByRole("button", { name: "解释" }).click();
+    const composer = page.getByRole("textbox", { name: "Agent 消息" });
+    await expect(composer).toContainText("请解释以下译文选区：");
+    const value = await composer.inputValue();
+    expect(value.split("\n").find((line) => line.startsWith("> "))).toBe("> We stu");
+
+    // gap 句显示原文但不在译文选区集：选中它不产出译文工具条。
+    await page.evaluate(
+      ({ sentenceId }) => {
+        const span = document.querySelector(`[data-sentence-id="${sentenceId}"] [data-start="0"]`);
+        if (!span?.firstChild) throw new Error("gap 原文片段不存在");
+        const range = document.createRange();
+        range.setStart(span.firstChild, 0);
+        range.setEnd(span.firstChild, 12);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.querySelector(".full-reader")!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      },
+      { sentenceId: ids.bodySentence },
+    );
+    await expect(toolbar).toHaveCount(0);
+
+    // 切回原文：同一 DOM 交互恢复原文精确选区（原文 quote，不是译文）。
+    await page.evaluate(() => window.getSelection()!.removeAllRanges());
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    await selectTranslated(ids.abstractSentence, 0, 3, 9);
+    await expect(toolbar).toBeVisible();
+    await toolbar.getByRole("button", { name: "提问" }).click();
+    await expect(composer).toContainText("关于以下原文选区，我想提问：");
+    const sourceValue = await composer.inputValue();
+    expect(
+      sourceValue
+        .split("\n")
+        .filter((line) => line.startsWith("> "))
+        .at(-1),
+    ).toBe("> study ");
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});

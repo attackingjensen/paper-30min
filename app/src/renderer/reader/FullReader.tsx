@@ -20,6 +20,11 @@ import {
   type ReaderUnitContent,
 } from "../../shared/reader/projection";
 import { buildSelectionIndex, mapDomSelection, type SelectionIndex } from "../../shared/reader/selection";
+import {
+  buildTranslationSelectionIndex,
+  translationQuote,
+  type TranslationSelectionIndex,
+} from "../../shared/reader/translation-selection";
 import { resolveReadingPosition, type ReadingPosition, type ReadingPositionAnchor } from "../../shared/reader/position";
 import { collectReaderDiagnostics, type ReaderDiagnostic } from "../../shared/reader/diagnostics";
 import { summarizeVerification, type VerificationRecord } from "../../shared/verification";
@@ -538,13 +543,15 @@ function UnitView({
   );
 }
 
-/** 选区工具条状态：逻辑映射结果＋视口坐标；revision/代际切换即失效。 */
+/** 选区工具条状态：逻辑映射结果＋视口坐标；revision/代际切换即失效。
+ * view 区分原文/译文选区：译文 quote 不得冒充原文锚点写入原 anchor。 */
 interface SelectionToolbarState {
   x: number;
   y: number;
   quote: string;
   context: string;
   degraded: boolean;
+  view: "source" | "translation";
 }
 
 export function FullReader({
@@ -748,16 +755,28 @@ export function FullReader({
     };
   }, [status, state, root, language]);
 
+  // 语言视图句级投影：选区索引与渲染共用同一 memo，translation:changed 渐进刷新。
+  const translationViews = useMemo(
+    () =>
+      language !== null && translation && state
+        ? buildTranslationUnitViews(readerProjectionUnits(state.projection), translation)
+        : null,
+    [language, translation, state],
+  );
+  const translationIndex = useMemo<TranslationSelectionIndex | null>(
+    () => (translationViews && state ? buildTranslationSelectionIndex(translationViews, state.projection) : null),
+    [translationViews, state],
+  );
+  const translationIndexRef = useRef<TranslationSelectionIndex | null>(null);
+  translationIndexRef.current = translationIndex;
+
   // 选区交互：DOM 只承担交互，权威偏移经投影索引映射；工具条不破坏原生选择。
+  // 语言视图选区只覆盖 ready/stale 译文片段（crd.4）：gap 原文与 stale 对照区
+  // 不冒充译文 range；跨语言只按原句软映射，不做偏移互换。
   const refreshSelection = useCallback(() => {
     const article = articleRef.current;
     const current = state;
     if (!article || !current) return;
-    // 译文精确选区与重基由 crd.4 承担；语言视图下不产出原文 range 冒充译文选区。
-    if (language !== null) {
-      setToolbar(null);
-      return;
-    }
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
       setToolbar(null);
@@ -768,7 +787,22 @@ export function FullReader({
       setToolbar(null);
       return;
     }
-    const mapping = mapDomSelection(range, current.index);
+    const inTranslation = languageRef.current !== null;
+    // stale 对照区展示最新原文（原文锚点）：在语言视图中不参与译文选区。
+    if (inTranslation) {
+      const node = range.commonAncestorContainer;
+      const element = node instanceof Element ? node : node.parentElement;
+      if (element?.closest("[data-stale-source]")) {
+        setToolbar(null);
+        return;
+      }
+    }
+    const index = inTranslation ? translationIndexRef.current : current.index;
+    if (!index) {
+      setToolbar(null);
+      return;
+    }
+    const mapping = mapDomSelection(range, index);
     if (mapping.ranges.length === 0 && mapping.degraded.length === 0) {
       setToolbar(null);
       return;
@@ -778,11 +812,13 @@ export function FullReader({
     let degraded = mapping.degraded.length > 0;
     if (mapping.ranges.length > 0) {
       try {
-        const anchor = createRangeAnchor(current.tree, mapping.ranges);
-        quote = anchor.quote.text;
-        context = [anchor.quote.before, anchor.quote.text, anchor.quote.after].filter(Boolean).join("");
+        const snapshot = inTranslation
+          ? translationQuote(translationIndexRef.current!, mapping.ranges)
+          : createRangeAnchor(current.tree, mapping.ranges).quote;
+        quote = snapshot.text;
+        context = [snapshot.before, snapshot.text, snapshot.after].filter(Boolean).join("");
       } catch {
-        // 映射与树不一致（受损字节）：不伪造 quote，按降级处理。
+        // 映射与树/译文投影不一致（受损字节或投影已推进）：不伪造 quote，按降级处理。
         degraded = true;
       }
     }
@@ -790,8 +826,15 @@ export function FullReader({
     const width = 220;
     const x = Math.min(Math.max(8, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 8);
     const y = rect.bottom + 8 + 40 > window.innerHeight ? Math.max(8, rect.top - 48) : rect.bottom + 8;
-    setToolbar({ x, y, quote, context, degraded: degraded || quote === "" });
-  }, [state, language]);
+    setToolbar({
+      x,
+      y,
+      quote,
+      context,
+      degraded: degraded || quote === "",
+      view: inTranslation ? "translation" : "source",
+    });
+  }, [state]);
 
   useEffect(() => {
     if (status !== "ready") return;
@@ -998,7 +1041,8 @@ export function FullReader({
 
   function ask(mode: "解释" | "提问") {
     if (!toolbar || !onAsk) return;
-    const header = mode === "解释" ? "请解释以下原文选区：" : "关于以下原文选区，我想提问：";
+    const target = toolbar.view === "translation" ? "译文" : "原文";
+    const header = mode === "解释" ? `请解释以下${target}选区：` : `关于以下${target}选区，我想提问：`;
     const body = toolbar.quote
       ? `> ${toolbar.quote.split("\n").join("\n> ")}\n\n（上下文：${toolbar.context}）`
       : "（该选区包含无法精确映射的内容，已按块级锚点降级。）";
@@ -1297,17 +1341,12 @@ export function FullReader({
 
   const { projection, facts } = state;
   const revisionPath = `paper/revisions/${state.revisionId}`;
-  // 语言视图：按原文全部可读单元构建句级投影；未提交单元全部为 gap。
-  const translationViews =
-    language !== null && translation
-      ? new Map(
-          buildTranslationUnitViews(readerProjectionUnits(projection), translation).map((view) => [view.unitId, view]),
-        )
-      : null;
-  const translatedUnit = translationViews ? (unitId: string) => translationViews.get(unitId) : undefined;
+  // 语言视图：句级投影 memo 与选区索引共用；未提交单元全部为 gap。
+  const translationViewMap = translationViews ? new Map(translationViews.map((view) => [view.unitId, view])) : null;
+  const translatedUnit = translationViewMap ? (unitId: string) => translationViewMap.get(unitId) : undefined;
   // 缺口与过期句计数：显式动作入口只在存在目标状态时出现。
-  const translationCounts = translationViews
-    ? Array.from(translationViews.values()).reduce(
+  const translationCounts = translationViewMap
+    ? Array.from(translationViewMap.values()).reduce(
         (counts, view) => {
           for (const sentence of view.sentences) {
             if (sentence.status === "gap") counts.gaps++;
