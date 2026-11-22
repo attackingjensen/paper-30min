@@ -174,6 +174,62 @@ async function convertAndRecord(
   };
 }
 
+/** 固定版本并持久化 resolve 进度；首次导入与 resolve 失败后的恢复共用。 */
+async function resolveImportProgress(
+  root: string,
+  reference: ArxivReference,
+  input: {
+    transport: ArxivTransport;
+    baseUrl?: string;
+    signal?: AbortSignal;
+    allowFixtureLoopback?: boolean;
+  },
+): Promise<{ ok: true; progress: ArxivImportProgress } | { ok: false; diagnostic: ImportDiagnostic }> {
+  const resolved = await resolveArxivVersion(
+    reference,
+    async (url) => {
+      const response = await input.transport(url, {
+        budgetBytes: ABS_BUDGET_BYTES,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
+      });
+      return Buffer.from(response.bytes).toString("utf8");
+    },
+    endpointUrl(input.baseUrl, "abs", reference),
+  );
+  if (!resolved.ok) {
+    try {
+      await updateArxivImportProgress(root, {
+        reference,
+        stage: "resolve",
+        diagnostic: resolved.diagnostic,
+        nextAction: "fetch-snapshot",
+      });
+    } catch {
+      // 失败记录写入也失败：保留原结构化诊断。
+    }
+    return { ok: false, diagnostic: resolved.diagnostic };
+  }
+  const progress: ArxivImportProgress = {
+    reference: resolved.reference,
+    stage: "resolve",
+    nextAction: "fetch-snapshot",
+  };
+  try {
+    await updateArxivImportProgress(root, progress);
+  } catch (error) {
+    return {
+      ok: false,
+      diagnostic: fatal(
+        "arxiv-import-progress-failed",
+        `arxiv.import.progressFailed:${error instanceof Error ? error.message : String(error)}`,
+        "resolve",
+      ),
+    };
+  }
+  return { ok: true, progress };
+}
+
 /** 获取并发布快照，然后转换发布首个 current；失败保留工程与恢复记录。 */
 async function fetchConvertPipeline(
   root: string,
@@ -259,52 +315,9 @@ export async function importArxivPaper(input: ImportArxivPaperInput): Promise<Ar
     };
   }
   const root = created.root;
-  const absUrl = endpointUrl(input.baseUrl, "abs", parsed.reference);
-  const resolved = await resolveArxivVersion(
-    parsed.reference,
-    async (url) => {
-      const response = await input.transport(url, {
-        budgetBytes: ABS_BUDGET_BYTES,
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
-        ...(input.allowFixtureLoopback ? { allowFixtureLoopback: true } : {}),
-      });
-      return Buffer.from(response.bytes).toString("utf8");
-    },
-    absUrl,
-  );
-  if (!resolved.ok) {
-    const diagnostic = resolved.diagnostic;
-    try {
-      await updateArxivImportProgress(root, {
-        reference: parsed.reference,
-        stage: "resolve",
-        diagnostic,
-        nextAction: "fetch-snapshot",
-      });
-    } catch {
-      // 失败记录写入也失败：保留原结构化诊断。
-    }
-    return { ok: false, root, diagnostic };
-  }
-  const progress: ArxivImportProgress = {
-    reference: resolved.reference,
-    stage: "resolve",
-    nextAction: "fetch-snapshot",
-  };
-  try {
-    await updateArxivImportProgress(root, progress);
-  } catch (error) {
-    return {
-      ok: false,
-      root,
-      diagnostic: fatal(
-        "arxiv-import-progress-failed",
-        `arxiv.import.progressFailed:${error instanceof Error ? error.message : String(error)}`,
-        "resolve",
-      ),
-    };
-  }
-  return fetchConvertPipeline(root, progress, input);
+  const resolved = await resolveImportProgress(root, parsed.reference, input);
+  if (!resolved.ok) return { ok: false, root, diagnostic: resolved.diagnostic };
+  return fetchConvertPipeline(root, resolved.progress, input);
 }
 
 /**
@@ -411,7 +424,16 @@ export async function resumeArxivImport(input: ResumeArxivImportInput): Promise<
       root,
       diagnostic: fatal("arxiv-import-transport-required", "arxiv.import.transportRequired", "fetch"),
     };
-  return fetchConvertPipeline(root, progress, {
+  let resumedProgress = progress;
+  if (progress.reference.version === null) {
+    const resolved = await resolveImportProgress(root, progress.reference, {
+      ...input,
+      transport: input.transport,
+    });
+    if (!resolved.ok) return { ok: false, root, diagnostic: resolved.diagnostic };
+    resumedProgress = resolved.progress;
+  }
+  return fetchConvertPipeline(root, resumedProgress, {
     transport: input.transport,
     ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),

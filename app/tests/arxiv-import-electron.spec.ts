@@ -251,6 +251,18 @@ test("arxiv-import renderer 版本未固定时不提供 PDF 回退", async () =>
   await expect(dialog.getByText("arxiv-version-unresolved", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "改用此版本 PDF 解析", exact: true })).toHaveCount(0);
   expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+
+  // abs 服务恢复后，同一工程必须从 resolve 阶段重试，而不是把 null 版本交给快照守卫。
+  routes.set(`/abs/${ID}`, {
+    bytes: Buffer.from(absHtml({ id: ID, versions: [1] })),
+    mime: "text/html",
+  });
+  await dialog.getByRole("button", { name: "恢复导入", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "原始论文", exact: true })).toBeVisible({ timeout: 30000 });
+  const recovered = await open(path.join(sandbox, "未固定版本"));
+  expect(recovered.manifest.paper.currentRevision).toEqual(expect.any(String));
+  expect(requests.filter((url) => url === `/abs/${ID}`)).toHaveLength(2);
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
 });
 
 test("arxiv-import 真实 Electron 裸 ID 创建无 PDF 工程，断网重开后完整阅读", async () => {
