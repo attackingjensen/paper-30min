@@ -206,6 +206,12 @@ span.reader-warning {
   border-left: 3px solid var(--border-strong);
   color: var(--text-secondary);
 }
+.reader-raw-translation {
+  margin: 6px 0 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--accent);
+  color: var(--text);
+}
 .reader-raw-limitations {
   margin: 6px 0 0;
   padding-left: 18px;

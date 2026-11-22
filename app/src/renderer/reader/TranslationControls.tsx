@@ -56,12 +56,12 @@ export function TranslationControls({
         <div className="reader-translation-actions" role="group" aria-label="译文维护">
           {gaps > 0 && (
             <Button className="reader-translation-action" disabled={busy} onClick={() => onAction("fill-gaps")}>
-              补译缺口（{gaps} 句）
+              补译缺口（{gaps} 项）
             </Button>
           )}
           {stale > 0 && (
             <Button className="reader-translation-action" disabled={busy} onClick={() => onAction("update-stale")}>
-              更新过期译文（{stale} 句）
+              更新过期译文（{stale} 项）
             </Button>
           )}
         </div>

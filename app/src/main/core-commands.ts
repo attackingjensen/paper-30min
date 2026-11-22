@@ -54,7 +54,7 @@ import { isArxivFixtureEnvironment } from "./arxiv/fixture-command.js";
 import type { ArxivFetchOptions, ArxivFetchResponse, ArxivTransport } from "./arxiv/fetch.js";
 import type { ModelConfig } from "./agent-settings.js";
 import { readTranslationProjection } from "./translation/store.js";
-import { runProjectTranslation, stopTranslationTasks } from "./translation/run.js";
+import { hasActiveTranslationTask, runProjectTranslation, stopTranslationTasks } from "./translation/run.js";
 import { translationInheritCommitHooks } from "./translation/migrate.js";
 import { createDocumentChangeset, type Tombstone } from "../shared/document/changeset.js";
 import type { ProjectCommitHooks } from "./project-core.js";
@@ -157,8 +157,10 @@ export async function dispatchCoreCommand(
   translation?: { config: ModelConfig; onCommitted?: () => void },
 ): Promise<unknown> {
   switch (command.type) {
-    case "coreTranslationRead":
-      return readTranslationProjection(command.root, command.revisionId, command.language);
+    case "coreTranslationRead": {
+      const projection = await readTranslationProjection(command.root, command.revisionId, command.language);
+      return { ...projection, running: hasActiveTranslationTask(command.root, command.revisionId, command.language) };
+    }
     case "coreTranslationStart":
     case "coreTranslationFillGaps":
     case "coreTranslationUpdateStale":

@@ -10,7 +10,12 @@ import { streamSimple as anthropic } from "@earendil-works/pi-ai/api/anthropic-m
 import { Agent, EnvHttpProxyAgent, ProxyAgent, fetch as httpFetch, type Dispatcher } from "undici";
 import type { ModelConfig } from "../agent-settings.js";
 import type { TranslationGenerator } from "../../shared/translation/contracts.js";
-import { maximumUnitBytes, translationProtocolVersions, type TranslationModelInput } from "./model-io.js";
+import {
+  maximumUnitBytes,
+  translationProtocolVersions,
+  type TranslationMetaInput,
+  type TranslationModelInput,
+} from "./model-io.js";
 
 /** 请求失败分类：诊断只保存类别与安全文案，不保存原始服务错误或凭据。 */
 export type TranslationRequestFailureKind = "network" | "rate-limit" | "timeout" | "auth" | "aborted" | "output";
@@ -41,7 +46,7 @@ function translationFixtureGate(baseUrl: string): boolean {
 
 export interface TranslationModelSession {
   generator: TranslationGenerator;
-  generate: (input: TranslationModelInput, signal?: AbortSignal) => Promise<string>;
+  generate: (input: TranslationModelInput | TranslationMetaInput, signal?: AbortSignal) => Promise<string>;
   close: () => Promise<void>;
 }
 

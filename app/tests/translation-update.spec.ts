@@ -191,24 +191,36 @@ function controlledServer(options: { failUnits?: Set<string>; failSentences?: Se
     for await (const part of request) raw += part;
     const body = JSON.parse(raw) as { messages: Array<{ role: string; content: string }> };
     const prompt = JSON.parse(body.messages.find((message) => message.role === "user")!.content) as {
-      unit: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      unit?: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      paperTitle?: string | null;
+      sections?: Array<{ sectionId: string; title: string }>;
+      rawBlocks?: Array<{ blockId: string; text: string }>;
     };
-    calls.push({ unitId: prompt.unit.unitId, sentenceIds: prompt.unit.sentences.map((s) => s.sentenceId) });
-    const fail =
-      options.failUnits?.has(prompt.unit.unitId) ||
-      prompt.unit.sentences.some((sentence) => options.failSentences?.has(sentence.sentenceId));
-    if (fail) {
-      response.writeHead(500, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: { message: "受控失败" } }));
-      return;
+    let content: string;
+    if (!prompt.unit) {
+      content = JSON.stringify({
+        paperTitle: prompt.paperTitle == null ? null : `新译：${prompt.paperTitle}`,
+        sections: (prompt.sections ?? []).map((s) => ({ sectionId: s.sectionId, title: `新译：${s.title}` })),
+        rawBlocks: (prompt.rawBlocks ?? []).map((r) => ({ blockId: r.blockId, text: `新译：${r.text}` })),
+      });
+    } else {
+      calls.push({ unitId: prompt.unit.unitId, sentenceIds: prompt.unit.sentences.map((s) => s.sentenceId) });
+      const fail =
+        options.failUnits?.has(prompt.unit.unitId) ||
+        prompt.unit.sentences.some((sentence) => options.failSentences?.has(sentence.sentenceId));
+      if (fail) {
+        response.writeHead(500, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "受控失败" } }));
+        return;
+      }
+      content = JSON.stringify({
+        unitId: prompt.unit.unitId,
+        sentences: prompt.unit.sentences.map((sentence) => ({
+          sentenceId: sentence.sentenceId,
+          content: `新译：${sentence.content}`,
+        })),
+      });
     }
-    const content = JSON.stringify({
-      unitId: prompt.unit.unitId,
-      sentences: prompt.unit.sentences.map((sentence) => ({
-        sentenceId: sentence.sentenceId,
-        content: `新译：${sentence.content}`,
-      })),
-    });
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.write(
       `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`,

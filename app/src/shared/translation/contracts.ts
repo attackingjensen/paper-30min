@@ -70,6 +70,10 @@ export interface TranslationIndex {
   units: TranslationUnitIndexEntry[];
   /** 迁移保留的失效诊断（removed/split/merge 旧译文）；可选，缺省为空。 */
   retired?: TranslationRetiredEntry[];
+  /** 论文标题元数据译文（不制造新正文 unit）；可选，旧格式缺省。 */
+  paperTitle?: TranslationPaperTitleEntry;
+  /** 标题/raw 元数据 section 文件条目；可选，旧格式缺省。 */
+  sections?: TranslationSectionIndexEntry[];
 }
 
 /** 失效诊断条目（SPEC-translation §7）：removed/split/merge 的旧译文只保留于此，
@@ -81,6 +85,57 @@ export interface TranslationRetiredEntry {
   /** 旧原句可读摘录（document-core 同一口径，上限 500 码点）。 */
   excerpt: string;
   content: TranslationInlinePart[];
+  generator: TranslationGenerator;
+}
+
+/** 标题/raw 元数据译文状态（SPEC §3.4/§3.7/§7）：与句子同口径的三态。 */
+interface TranslationMetaProjection {
+  status: TranslationSentenceStatus;
+  /** 当前原文标题或 raw 安全文本（stale 时是最新原文，可对照旧译文）。 */
+  source: string;
+  /** 已提交译文文本；gap 为 null。 */
+  content: string | null;
+  staleReason?: "source-changed";
+}
+
+export interface TranslationRawProjection extends TranslationMetaProjection {
+  blockId: string;
+}
+
+/** 磁盘 section 文件（sections/<sectionId>.<generation>.json）：标题与 raw 文本译文。
+ * 每代不可变版本化文件名；无标题 section 不落盘，raw 只存安全文本投影。 */
+export interface TranslationSectionFile {
+  formatVersion: 1;
+  sectionId: string;
+  title: {
+    source: string;
+    sourceSha256: string;
+    content: string;
+    translationSha256: string;
+    generator: TranslationGenerator;
+  } | null;
+  rawBlocks: Array<{
+    blockId: string;
+    source: string;
+    sourceSha256: string;
+    content: string;
+    translationSha256: string;
+    generator: TranslationGenerator;
+  }>;
+}
+
+export interface TranslationSectionIndexEntry {
+  sectionId: string;
+  file: string;
+  logicalBytes: number;
+}
+
+/** index.json 的论文标题元数据；缺省表示未提交。 */
+export interface TranslationPaperTitleEntry {
+  source: string;
+  sourceSha256: string;
+  content: string;
+  translationSha256: string;
   generator: TranslationGenerator;
 }
 
@@ -118,6 +173,15 @@ export interface TranslationProjection {
   task: { status: "running" | "finished"; gaps: Array<{ unitId: string; diagnostic: string }> } | null;
   /** 迁移保留的失效诊断；无已提交 index 或无退役句时省略。 */
   retired?: TranslationRetiredEntry[];
+  /** 论文标题元数据译文投影；来源无标题或未提交时省略。 */
+  paperTitle?: TranslationMetaProjection;
+  /** 有标题 section 的标题译文投影（无标题 section 不出现）。 */
+  sections?: Array<TranslationMetaProjection & { sectionId: string }>;
+  /** raw block 安全文本译文投影；无 raw block 时省略。 */
+  rawBlocks?: TranslationRawProjection[];
+  /** 该 root＋baseRevision＋language 是否有在途任务（主进程 activeTasks 权威）；
+   * renderer 以此落定 busy，不依赖 invoke 生命周期。缺省（旧格式/离线）为 false。 */
+  running?: boolean;
 }
 
 /** 确定性源语言判断：按正文逻辑文本的 CJK 与 ASCII 字母占比。

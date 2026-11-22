@@ -81,6 +81,7 @@ function englishTree(paperId: string, options: { long?: boolean } = {}) {
     abstractSentence: randomUUID(),
     body: randomUUID(),
     bodySentence: randomUUID(),
+    rawBlock: randomUUID(),
   };
   const abstractSentenceIds = [ids.abstractSentence];
   const sentences: DocumentTree["sentences"] = {
@@ -137,6 +138,14 @@ function englishTree(paperId: string, options: { long?: boolean } = {}) {
     blocks: [
       { id: randomUUID(), sectionId: ids.section, kind: "unit", unitId: ids.abstract },
       { id: randomUUID(), sectionId: ids.section, kind: "unit", unitId: ids.body },
+      {
+        id: ids.rawBlock,
+        sectionId: ids.section,
+        kind: "raw",
+        html: "<blockquote><p>Quoted <strong>source</strong> line.</p></blockquote>",
+        text: "Quoted source line.",
+        limitations: ["复杂排版按白名单投影，交互结构未保留。"],
+      },
     ],
   };
   return { tree, ids };
@@ -191,6 +200,7 @@ async function openFolder(root: string) {
  * hold：全局门控；holdUnit：按单元独立门控（验证逐单元渐进可见）。 */
 function controlledServer(options: { hold?: Promise<void>; holdUnit?: Map<string, Promise<void>>; failUnit?: string }) {
   const calls: string[] = [];
+  const metaCalls: string[] = [];
   const server: Server = createServer(async (request, response) => {
     let raw = "";
     for await (const part of request) raw += part;
@@ -198,8 +208,35 @@ function controlledServer(options: { hold?: Promise<void>; holdUnit?: Map<string
     const userMessage = body.messages.find((message) => message.role === "user");
     if (!userMessage) throw new Error("受控请求缺少 user 消息");
     const prompt = JSON.parse(userMessage.content) as {
-      unit: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      unit?: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+      paperTitle?: string | null;
+      sections?: Array<{ sectionId: string; title: string }>;
+      rawBlocks?: Array<{ blockId: string; text: string }>;
     };
+    if (!prompt.unit) {
+      metaCalls.push("meta");
+      if (options.hold) await options.hold;
+      const metaContent = JSON.stringify({
+        paperTitle: prompt.paperTitle == null ? null : `译文：${prompt.paperTitle}`,
+        sections: (prompt.sections ?? []).map((section) => ({
+          sectionId: section.sectionId,
+          title: `译文：${section.title}`,
+        })),
+        rawBlocks: (prompt.rawBlocks ?? []).map((block) => ({
+          blockId: block.blockId,
+          text: `译文：${block.text}`,
+        })),
+      });
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write(
+        `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: { content: metaContent }, finish_reason: null }] })}\n\n`,
+      );
+      response.write(
+        `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+      );
+      response.end("data: [DONE]\n\n");
+      return;
+    }
     calls.push(prompt.unit.unitId);
     if (options.hold) await options.hold;
     const unitHold = options.holdUnit?.get(prompt.unit.unitId);
@@ -225,7 +262,7 @@ function controlledServer(options: { hold?: Promise<void>; holdUnit?: Map<string
     );
     response.end("data: [DONE]\n\n");
   });
-  return { server, calls };
+  return { server, calls, metaCalls };
 }
 
 async function configureModel(endpoint: string) {
@@ -257,11 +294,28 @@ async function stopServer(server: Server) {
   await closed.promise;
 }
 
+/** 等主进程翻译任务真正落定（running=false），避免显式动作被 busy-skip。 */
+async function waitTranslationIdle(root: string, revisionId: string) {
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          ({ r, rev }) =>
+            window.desktop
+              .invoke<{ running?: boolean }>({ type: "coreTranslationRead", root: r, revisionId: rev, language: "zh" })
+              .then((p) => p.running === true),
+          { r: root, rev: revisionId },
+        ),
+      { timeout: 30000 },
+    )
+    .toBe(false);
+}
+
 test("translation 语言切换渐进阅读：ready 译文、gap 原文回退、离线重开与不重复请求", async () => {
   const { created, ids } = await englishProject("翻译工程", { long: true });
   const abstractHold = Promise.withResolvers<void>();
   const bodyHold = Promise.withResolvers<void>();
-  const { server, calls } = controlledServer({
+  const { server, calls, metaCalls } = controlledServer({
     holdUnit: new Map([
       [ids.abstract, abstractHold.promise],
       [ids.body, bodyHold.promise],
@@ -321,6 +375,7 @@ test("translation 语言切换渐进阅读：ready 译文、gap 原文回退、�
     }, anchorBefore.id);
     expect(Math.abs(anchorAfter - anchorBefore.rel)).toBeLessThanOrEqual(4);
     expect(calls.sort()).toEqual([ids.abstract, ids.body].sort());
+    expect(metaCalls).toHaveLength(1);
 
     // 切回原文再切中文：已有译文只切换视图，不重复请求。
     await reader.getByRole("button", { name: "原文", exact: true }).click();
@@ -354,7 +409,7 @@ test("translation 语言切换渐进阅读：ready 译文、gap 原文回退、�
 
 test("translation 单单元失败不阻塞其他单元：gap 保留原文与诊断，补试一次后仍失败不无限请求", async () => {
   const { created, ids } = await englishProject("缺口工程");
-  const { server, calls } = controlledServer({ failUnit: ids.abstract });
+  const { server, calls, metaCalls } = controlledServer({ failUnit: ids.abstract });
   const endpoint = await startServer(server);
   try {
     await configureModel(endpoint);
@@ -375,14 +430,20 @@ test("translation 单单元失败不阻塞其他单元：gap 保留原文与诊�
 
     // 同会话同指纹再次打开：不再自动请求（crd.3 每会话限次）。
     await reader.getByRole("button", { name: "原文", exact: true }).click();
-    const before = calls.length;
     await reader.getByRole("button", { name: "中文", exact: true }).click();
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "gap");
-    expect(calls.length).toBe(before);
+    // 等语言切换的 generate 完全落定：同指纹限次返回 skipped，状态为缺口摘要
+    // （而非在途的"可能产生模型费用"），此时 busy 已解除，显式动作不会被 busy-skip。
+    await expect(reader.locator(".reader-translation-status")).toContainText("个单元暂为缺口", { timeout: 30000 });
+    // 旧停止指纹不含 meta：重开按新口径对正文 gap 补试一次；meta 首轮已 ready 不重发。
+    expect(metaCalls.length).toBe(1);
 
     // 手动补译缺口：显式动作可再次发起（仍失败，但请求确实发出）。
+    const before = calls.length;
     await reader.getByRole("button", { name: /补译缺口/ }).click();
+    await expect(reader.locator(".reader-translation-status")).toContainText("补译完成", { timeout: 30000 });
     await expect(reader.locator(".reader-translation-status")).toContainText("缺口", { timeout: 30000 });
+    // 元数据已 ready：补译只重试 gap 单元（首轮＋补试），不重发 meta。
     expect(calls.length).toBe(before + 2);
     expect(calls.slice(before).every((id) => id === ids.abstract)).toBe(true);
   } finally {
@@ -392,7 +453,7 @@ test("translation 单单元失败不阻塞其他单元：gap 保留原文与诊�
 
 test("translation 正文修正后局部 stale：旧译文可对照最新原文，显式更新只替换目标句", async () => {
   const { created, ids, tree, revision } = await englishProject("局部stale工程");
-  const { server, calls } = controlledServer({});
+  const { server, calls, metaCalls } = controlledServer({});
   const endpoint = await startServer(server);
   try {
     await configureModel(endpoint);
@@ -405,6 +466,7 @@ test("translation 正文修正后局部 stale：旧译文可对照最新原文�
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
     await expect(bodySentence).toHaveAttribute("data-translation-status", "ready");
     expect(calls.sort()).toEqual([ids.abstract, ids.body].sort());
+    expect(metaCalls).toHaveLength(1);
 
     // 显式修正 abstract 单元文字（保留句边界与 atom）：发布新 current。
     await reader.getByRole("button", { name: "原文", exact: true }).click();
@@ -435,6 +497,7 @@ test("translation 正文修正后局部 stale：旧译文可对照最新原文�
     await expect(comparison).toHaveCount(0);
 
     // 显式更新过期译文：只请求 stale 句，body 不重发。
+    await waitTranslationIdle(created.root, revision.revisionId);
     await reader.getByRole("button", { name: /更新过期译文/ }).click();
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
     await expect(abstractSentence).toContainText("译文：We study progressive close reading");
@@ -632,7 +695,7 @@ test("translation 跨旧译文与最新原文对照区的选区不产出译文�
 });
 
 test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可读，gap 不触发恢复请求", async () => {
-  const { created, ids, tree } = await englishProject("混合离线工程");
+  const { created, ids, tree, revision } = await englishProject("混合离线工程");
   const { server } = controlledServer({ failUnit: ids.body });
   const endpoint = await startServer(server);
   try {
@@ -662,13 +725,22 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
     await reader.getByRole("button", { name: "中文", exact: true }).click();
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
     await expect(bodySentence).toHaveAttribute("data-translation-status", "gap");
-    // 关闭前等当前语言无在途任务（busy 解除）：避免在途补试与重开交错。
     await expect(reader.getByRole("button", { name: "中文", exact: true })).toBeEnabled({ timeout: 30000 });
+    // 等当前 revision 的首次 generate（含自动补试）落定并持久化指纹。
+    await waitTranslationIdle(created.root, revision.revisionId);
 
-    // 离线重开：断开受控服务后 stale 旧译文与 gap 原文仍可读（不阻塞阅读）。
+    // 第一次重开：消费该 revision 的首次自动尝试（指纹落盘）。
     const endpointPort = (server.address() as { port: number }).port;
     await closeDesktopForCleanup();
+    await launch();
+    await openFolder(created.root);
+    await page.locator(".full-reader").getByRole("button", { name: "中文", exact: true }).click();
+    await waitTranslationIdle(created.root, revision.revisionId);
+    await closeDesktopForCleanup();
     await stopServer(server);
+
+    // 第二次重开（指纹已落盘）：断开受控服务后 stale 旧译文与 gap 原文仍可读，
+    // 且不得对正文 gap 发起恢复请求。
     await launch();
     await openFolder(created.root);
     const reopened = page.locator(".full-reader");
@@ -681,13 +753,17 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
     const reopenedBody = reopened.locator(`[data-sentence-id="${ids.bodySentence}"]`);
     await expect(reopenedBody).toHaveAttribute("data-translation-status", "gap");
     await expect(reopenedBody).toContainText("Translations appear unit by unit");
-    // 重开后新进程即使配置仍指向原端点，也不得发起任何模型请求：
-    // 重新监听同一端口计数 1.5s（恢复不阻塞阅读；自动补试限次由专门用例覆盖）。
+    // 重开后新进程不得对正文 gap 发起恢复请求（单元指纹限次跨重启生效）；
+    // 标题 stale 属新 revision 的首次显式语言选择，至多一次 meta 尝试，不计正文恢复。
     const { server: probeServer, calls: probeCalls } = controlledServer({});
     const listening = Promise.withResolvers<void>();
     probeServer.listen(endpointPort, "127.0.0.1", listening.resolve);
     await listening.promise;
     await page.waitForTimeout(1500);
+    // 标题 stale 至多触发一次 meta 尝试（新 revision 首次语言选择），正文恢复必须为零。
+    const metaAttempts = probeCalls.filter((id) => id === "meta").length;
+    expect(metaAttempts).toBeLessThanOrEqual(1);
+    probeCalls.splice(0, probeCalls.length, ...probeCalls.filter((id) => id !== "meta"));
     expect(probeCalls.length).toBe(0);
     await stopServer(probeServer);
   } finally {
@@ -696,7 +772,7 @@ test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可�
 });
 
 test("translation 用户停止：未发送批次取消，合法完成项保留，同指纹不再自动请求", async () => {
-  const { created, ids } = await englishProject("停止工程");
+  const { created, ids, revision } = await englishProject("停止工程");
   const abstractHold = Promise.withResolvers<void>();
   const bodyHold = Promise.withResolvers<void>();
   const { server, calls } = controlledServer({
@@ -730,6 +806,8 @@ test("translation 用户停止：未发送批次取消，合法完成项保留�
     await reader.getByRole("button", { name: "原文", exact: true }).click();
     await reader.getByRole("button", { name: "中文", exact: true }).click();
     await expect(abstractSentence).toContainText("译文：We study progressive reading", { timeout: 30000 });
+    // 等主进程任务真正落定（running=false），避免显式补译被 busy-skip。
+    await waitTranslationIdle(created.root, revision.revisionId);
     expect(calls.length).toBe(afterStop);
 
     // 手动补译缺口仍可显式发起。
@@ -740,6 +818,82 @@ test("translation 用户停止：未发送批次取消，合法完成项保留�
   } finally {
     abstractHold.resolve();
     bodyHold.resolve();
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 语言视图显示标题与 raw 文本投影；标题修正后仅标题 stale", async () => {
+  const { created, ids, tree, revision, source } = await englishProject("标题视图工程");
+  const { server, calls, metaCalls } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(reader.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toHaveAttribute(
+      "data-translation-status",
+      "ready",
+      { timeout: 30000 },
+    );
+    // 论文标题、section 标题与 raw 文本投影进入语言视图。
+    await expect(reader.locator("[data-paper-title]")).toContainText("译文：Progressive Reading");
+    await expect(reader.locator(`[data-section-id="${ids.section}"]`)).toContainText("译文：1 Introduction");
+    const rawTranslation = reader.locator(`[data-block-id="${ids.rawBlock}"] .reader-raw-translation`);
+    await expect(rawTranslation).toHaveAttribute("data-raw-translation-status", "ready");
+    await expect(rawTranslation).toContainText("译文：Quoted source line.");
+    await expect(rawTranslation).toContainText("raw 仅文本投影");
+    expect(metaCalls).toHaveLength(1);
+
+    // 标题修正发布新 current：仅标题 stale，正文句与 raw 不受影响。
+    const changed: DocumentTree = {
+      ...tree,
+      sections: {
+        ...tree.sections,
+        [ids.section]: { ...tree.sections[ids.section], title: "1 Introduction and Motivation" },
+      },
+    };
+    const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    await page.evaluate(
+      ({ root, baseRevision, sourceSnapshotId, files }) =>
+        window.desktop.invoke<ProjectRevisionRecord>({
+          type: "coreCommit",
+          root,
+          baseRevision,
+          sourceSnapshotId,
+          files,
+        }),
+      {
+        root: created.root,
+        baseRevision: revision.revisionId,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: {
+          "document.json": json(changed),
+          "source-base.json": json(changed),
+          "tombstones.json": json([]),
+          "changeset.json": json({ baseRevision: revision.revisionId }),
+        },
+      },
+    );
+    const sectionHeading = reader.locator(`[data-section-id="${ids.section}"]`);
+    await expect(sectionHeading.locator(".reader-translation-note.stale")).toHaveText("已过期", { timeout: 15000 });
+    await expect(sectionHeading).toContainText("译文：1 Introduction");
+    await expect(reader.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toHaveAttribute(
+      "data-translation-status",
+      "ready",
+    );
+    await expect(rawTranslation).toHaveAttribute("data-raw-translation-status", "ready");
+
+    // 显式更新过期译文：标题恢复 ready，正文不重发。
+    const beforeUpdate = calls.length;
+    const beforeMetaUpdate = metaCalls.length;
+    await reader.getByRole("button", { name: /更新过期译文/ }).click();
+    await expect(sectionHeading).toContainText("译文：1 Introduction and Motivation", { timeout: 30000 });
+    await expect(sectionHeading.locator(".reader-translation-note.stale")).toHaveCount(0);
+    expect(calls.length).toBe(beforeUpdate);
+    expect(metaCalls.length).toBe(beforeMetaUpdate + 1);
+  } finally {
     await stopServer(server).catch(() => undefined);
   }
 });
