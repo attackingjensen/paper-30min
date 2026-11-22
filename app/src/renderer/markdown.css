@@ -18,13 +18,31 @@
   align-items: center;
   gap: 12px;
   padding: 8px 20px;
-  border-bottom: 1px solid #e8e8ec;
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 .markdown-actions .switch {
   margin: 0;
   width: auto;
   min-width: 180px;
+  border-radius: var(--radius-control);
+  background: var(--surface-selected);
+}
+.markdown-actions .switch .button {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.markdown-actions .switch .button:hover {
+  background: var(--surface-hover);
+}
+.markdown-actions .switch .button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--control-shadow);
+}
+.markdown-actions .switch .button.active:hover {
+  background: var(--surface);
 }
 .markdown-panes {
   display: flex;
@@ -42,7 +60,7 @@
   height: 100%;
 }
 .markdown-panes.split > .markdown-editor {
-  border-right: 1px solid #e4e2e8;
+  border-right: 1px solid var(--border);
 }
 .markdown-preview {
   padding: 24px 32px;
@@ -62,9 +80,9 @@
 .markdown-preview pre {
   white-space: pre;
   overflow: auto;
-  background: #f5f4f8;
+  background: var(--surface-subtle);
   padding: 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-panel);
 }
 .markdown-preview code {
   font-family: Consolas, monospace;
@@ -77,20 +95,20 @@
 .markdown-preview th,
 .markdown-preview td {
   padding: 8px 12px;
-  border: 1px solid #dedce4;
+  border: 1px solid var(--border);
 }
 .markdown-preview blockquote {
-  border-left: 3px solid #c4bedb;
+  border-left: 3px solid var(--border-strong);
   margin-left: 0;
   padding-left: 18px;
-  color: #666;
+  color: var(--text-secondary);
 }
 .markdown-preview .katex-display {
   overflow: auto;
   padding: 8px 0;
 }
 .markdown-preview a {
-  color: #70619b;
+  color: var(--accent-ink);
 }
 .markdown-conflict {
   display: flex;
@@ -98,11 +116,11 @@
   align-items: center;
   flex-wrap: wrap;
   padding: 12px 20px;
-  background: #fff4d9;
+  background: var(--warning-bg);
 }
 .markdown-conflict small {
   width: 100%;
-  color: #665b43;
+  color: var(--warning);
 }
 .markdown-conflict-inputs {
   display: flex;

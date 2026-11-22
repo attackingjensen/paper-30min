@@ -372,6 +372,21 @@ test("多服务模型选择、思考流与会话恢复", async () => {
     await page.getByLabel("Agent 消息").fill("第一轮");
     await page.getByRole("button", { name: "发送消息" }).click();
     await expect(page.locator(".thinking-card")).toBeVisible();
+    const stop = page.getByRole("button", { name: "停止回复", exact: true });
+    const supplement = page.getByRole("button", { name: "补充消息", exact: true });
+    await expect(stop).toBeVisible();
+    const stopGeometry = await stop.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { width: style.width, height: style.height, borderRadius: style.borderTopLeftRadius };
+    });
+    const supplementGeometry = await supplement.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { width: style.width, height: style.height, borderRadius: style.borderTopLeftRadius };
+    });
+    expect(stopGeometry).toEqual(supplementGeometry);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(page.locator(".process-chevron").first()).toHaveCSS("transition-property", "none");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.locator(".thinking-card summary").click();
     await expect(page.locator(".thinking-content")).toHaveText("先核对证据。");
     await page.screenshot({ path: "test-results/thinking-expanded.png" });
@@ -2515,6 +2530,22 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   const originalPdf = await fs.readFile(path.join(root, "text/paper.pdf"));
   await expect(pdfPages()).toContainText("2");
   await expectPdfRendered();
+  const pdfColors = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const colors = { text: resolve("--text"), accent: resolve("--accent") };
+    probe.remove();
+    return colors;
+  });
+  const cursorMode = page.getByRole("button", { name: "光标模式", exact: true });
+  const cursorSelected = await cursorMode.evaluate((element) => element.classList.contains("bg-interactive-selected"));
+  await expect(cursorMode).toHaveCSS("color", cursorSelected ? pdfColors.accent : pdfColors.text);
   await expect(page.getByRole("button", { name: "批注", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "高亮", exact: true })).toHaveCount(0);
   await setPdfZoom("100");
@@ -2524,10 +2555,17 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
       e.scrollTop = y;
     }, offset);
     await expect
-      .poll(
-        async () =>
-          JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf["text/paper.pdf"]?.y,
-      )
+      .poll(async () => {
+        try {
+          return JSON.parse(await fs.readFile(path.join(root, ".paper30min-reading.json"), "utf8")).pdf[
+            "text/paper.pdf"
+          ]?.y;
+        } catch (error) {
+          // 首次滚动持久化前状态文件可能尚未创建；仅该情况继续等待。
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+          throw error;
+        }
+      })
       .toBe(offset);
     await page.getByRole("button", { name: "笔记", exact: true }).click();
     await page.getByRole("tab", { name: "paper.pdf", exact: true }).click();
@@ -2535,13 +2573,25 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   }
   await jumpPdfPage(1);
   await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeLessThan(20);
-  await page.getByRole("button", { name: "光标模式", exact: true }).click();
+  await cursorMode.click();
+  await expect(cursorMode).toHaveCSS("color", pdfColors.accent);
   const bounds = (await pdfImage().boundingBox())!;
   await page.mouse.move(bounds.x + 75, bounds.y + 48);
   await page.mouse.down();
   await page.mouse.move(bounds.x + 290, bounds.y + 48, { steps: 12 });
   await page.mouse.up();
   await expect(page.getByRole("button", { name: "复制", exact: true })).toBeVisible();
+  const selectionRect = page.locator('[style*="mix-blend-mode: multiply"][style*="isolation: isolate"] > div').first();
+  await expect(selectionRect).toBeVisible();
+  const expectedSelection = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.backgroundColor = "color-mix(in srgb, var(--accent) 28%, transparent)";
+    document.body.append(probe);
+    const value = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return value;
+  });
+  await expect(selectionRect).toHaveCSS("background-color", expectedSelection);
   await page.getByRole("button", { name: "复制", exact: true }).click();
   await expect.poll(() => desktop.evaluate(({ clipboard }) => clipboard.readText())).toContain("SampleNet");
   await page.keyboard.press("Escape");
@@ -2966,14 +3016,36 @@ test("Markdown 三种视图、真实文件保真、图片公式与多标签草�
   await expect
     .poll(() => page.getByRole("img", { name: "图片", exact: true }).evaluate((e: HTMLImageElement) => e.naturalWidth))
     .toBe(100);
+  const markdownTokens = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const result = { accentInk: resolve("--accent-ink"), accentSoft: resolve("--accent-soft") };
+    probe.remove();
+    return result;
+  });
+  await expect(page.locator(".markdown-preview a")).toHaveCSS("color", markdownTokens.accentInk);
   await page.getByRole("link", { name: "另一篇", exact: true }).click();
   await expect(page.getByRole("tab", { name: "另一篇(1).md" })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "原始.md", exact: true }).click();
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  const editMode = page.getByRole("button", { name: "编辑", exact: true });
+  await editMode.click();
   const editor = page.getByRole("textbox", {
     name: "Markdown 源码",
     exact: true,
   });
+  await expect(editMode).toHaveClass(/\bbutton/);
+  await expect(editMode).toHaveAttribute("aria-pressed", "true");
+  await editor.press("Control+A");
+  const editorSelection = page.locator(".cm-selectionBackground").first();
+  await expect(editorSelection).toBeVisible();
+  await expect(editorSelection).toHaveCSS("background-color", markdownTokens.accentSoft);
+  await editor.press("ArrowRight");
   await editor.press("Control+Home");
   await editor.press("ArrowDown");
   await editor.press("ArrowDown");
@@ -3016,6 +3088,8 @@ test("Markdown 外部变更自动同步，冲突与文件消失保留用户输�
   await page.getByLabel("笔记名称").fill("协作.md");
   await page.getByRole("button", { name: "创建笔记", exact: true }).click();
   const note = path.join(root, "notes/协作.md");
+  await expect(page.getByRole("dialog", { name: "新建笔记", exact: true })).toHaveCount(0);
+  await expect(page.locator(".markdown-preview")).toBeVisible();
   await fs.writeFile(note, "# Agent 首次写入\n");
   await expect(page.locator(".markdown-preview")).toContainText("Agent 首次写入");
   await page.getByRole("button", { name: "编辑", exact: true }).click();
@@ -3038,12 +3112,13 @@ test("Markdown 外部变更自动同步，冲突与文件消失保留用户输�
   await expect(page.getByRole("button", { name: "外部改名.md", exact: true })).toBeVisible();
   await expect(editor).toContainText("用户未保存内容");
   await expect(page.getByRole("alert").first()).toContainText("文件已被删除或移动");
-  page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "关闭 协作.md", exact: true }).click();
+  const discard = page.getByRole("dialog", { name: "放弃未保存的编辑", exact: true });
+  await discard.getByRole("button", { name: "继续编辑", exact: true }).click();
   await expect(editor).toBeVisible();
   // Clear the draft through the explicit discard confirmation for test shutdown.
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "关闭 协作.md", exact: true }).click();
+  await discard.getByRole("button", { name: "放弃并离开", exact: true }).click();
 });
 
 test("Markdown 组合输入、撤销与保存失败不破坏原文件", async () => {
@@ -3122,4 +3197,233 @@ test("Markdown 长文视图往返和两个工程的同路径位置独立", async
   await page.getByRole("button", { name: "所有工程", exact: true }).click();
   await page.getByRole("button", { name: /工程乙/ }).click();
   await expect.poll(() => previewPane.evaluate((e) => e.scrollTop)).toBe(0);
+});
+
+test("UI 创建工程弹窗圈定焦点并在 Escape 后恢复触发按钮", async () => {
+  const trigger = page.getByRole("button", { name: "从 PDF 新建工程", exact: true });
+  await choose(fixture);
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "新建工程", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByLabel("工程名称", { exact: true })).toBeFocused();
+  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  const box = await dialog.boundingBox();
+  expect(box).not.toBeNull();
+  expect(Math.abs(box!.x + box!.width / 2 - viewport.width / 2)).toBeLessThan(2);
+  expect(Math.abs(box!.y + box!.height / 2 - viewport.height / 2)).toBeLessThan(2);
+  await page.screenshot({ path: "test-results/ou7-create-dialog.png" });
+  for (let index = 0; index < 12; index++) {
+    await page.keyboard.press("Tab");
+    expect(
+      await page.evaluate(() => {
+        const current = document.querySelector('dialog, [role="dialog"]');
+        const active = document.activeElement;
+        // Chromium 原生 dialog 循环焦点会经过 body；背景可交互控件仍不得获得焦点。
+        return active === document.body || (!!current && current.contains(active));
+      }),
+    ).toBe(true);
+  }
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("UI 未保存 Markdown 关闭标签经 renderer 确认", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  const root = path.join(sandbox, "projects/研究工程");
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "新建笔记", exact: true }).click();
+  await page.getByLabel("笔记名称").fill("确认.md");
+  await page.getByRole("button", { name: "创建笔记", exact: true }).click();
+  const note = path.join(root, "notes/确认.md");
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Markdown 源码", exact: true });
+  await editor.press("Control+End");
+  await editor.pressSequentially("未保存草稿");
+  await fs.writeFile(note, "# 外部版本\n");
+  await expect(page.getByText("文档已在外部修改。你的编辑已保留，尚未覆盖磁盘文件。")).toBeVisible();
+
+  const close = page.getByRole("button", { name: "关闭 确认.md", exact: true });
+  const dialog = page.getByRole("dialog", { name: "放弃未保存的编辑", exact: true });
+  await close.click();
+  await expect(dialog).toBeVisible();
+  await page.screenshot({ path: "test-results/ou7-unsaved-confirm.png" });
+  await dialog.getByRole("button", { name: "继续编辑", exact: true }).click();
+  await expect(editor).toContainText("未保存草稿");
+  await close.click();
+  await dialog.getByRole("button", { name: "放弃并离开", exact: true }).click();
+  await expect(close).toHaveCount(0);
+});
+
+test("UI 未保存提示词重新载入与离开经 renderer 确认", async () => {
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "产品 Skill", exact: true }).click();
+  const skill = page.getByLabel("提示词", { exact: true });
+  await expect(skill).toBeEnabled();
+  const original = await skill.inputValue();
+  const edited = original + "\n临时修改";
+  await skill.fill(edited);
+
+  const reload = page.getByRole("button", { name: "重新载入提示词", exact: true });
+  const dialog = page.getByRole("dialog", { name: "未保存的提示词", exact: true });
+  await reload.click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "继续编辑", exact: true }).click();
+  await expect(skill).toHaveValue(edited);
+  await reload.click();
+  // 离屏 Windows CI 可暂停动画帧；焦点恢复仍必须在重载完成后发生。
+  await page.evaluate(() => {
+    window.requestAnimationFrame = () => 0;
+  });
+  await dialog.getByRole("button", { name: "放弃并重新载入", exact: true }).click();
+  await expect(skill).toHaveValue(original);
+  await expect(reload).toBeFocused();
+
+  await skill.fill(edited);
+  const parsing = page.getByRole("button", { name: "解析模型", exact: true });
+  await parsing.click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "继续编辑", exact: true }).click();
+  await expect(skill).toHaveValue(edited);
+  await parsing.click();
+  await dialog.getByRole("button", { name: "放弃并离开", exact: true }).click();
+  await expect(page.getByLabel("百度任务地址", { exact: true })).toBeVisible();
+});
+
+test("UI Select 键盘选择与统一浮层语义色", async () => {
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "代理配置", exact: true }).click();
+  const proxy = page.getByLabel("连接方式", { exact: true });
+  await proxy.focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(proxy).toHaveValue("environment");
+  await expect(page.getByText("使用应用启动时的环境代理配置。")).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(proxy).toHaveValue("custom");
+  await expect(page.getByLabel("代理地址", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Agent 模型", exact: true }).click();
+  await expect(page.getByRole("button", { name: "编辑服务名称", exact: true })).toHaveCSS("width", "32px");
+  const api = page.getByLabel("接口协议", { exact: true });
+  await expect(api).toHaveValue("openai-completions");
+  await api.click();
+  const pickerColors = await api.evaluate((element) => {
+    const style = getComputedStyle(element, "::picker(select)");
+    return { background: style.backgroundColor, color: style.color, border: style.borderTopColor };
+  });
+  const tokens = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const result = {
+      surface: resolve("--surface"),
+      textSecondary: resolve("--text-secondary"),
+      borderStrong: resolve("--border-strong"),
+    };
+    probe.remove();
+    return result;
+  });
+  expect(pickerColors.background).toBe(tokens.surface);
+  expect(pickerColors.color).toBe(tokens.textSecondary);
+  expect(pickerColors.border).toBe(tokens.borderStrong);
+  // 鼠标点开时焦点已在选中项，一次 ArrowDown 即移到下一项。
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(api).toHaveValue("openai-responses");
+  await page.screenshot({ path: "test-results/ou7-agent-settings.png" });
+  await page.setViewportSize({ width: 560, height: 780 });
+  await api.click();
+  const overflow = await api.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { doc: document.documentElement.scrollWidth <= innerWidth, triggerRight: rect.right <= innerWidth };
+  });
+  expect(overflow.doc).toBe(true);
+  expect(overflow.triggerRight).toBe(true);
+  await page.screenshot({ path: "test-results/ou7-agent-settings-narrow.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1440, height: 960 });
+});
+
+test("UI Field 原生校验错误与控件关联", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  await page.getByRole("button", { name: "笔记", exact: true }).click();
+  await page.getByRole("button", { name: "新建笔记", exact: true }).click();
+  const name = page.getByLabel("笔记名称", { exact: true });
+  await expect(name).toBeFocused();
+  await name.fill("");
+  await page.getByRole("button", { name: "创建笔记", exact: true }).click();
+
+  const error = page.getByText("请输入笔记名称。", { exact: true });
+  await expect(error).toBeVisible();
+  await expect(name).toHaveAttribute("aria-invalid", "true");
+  const errorId = await error.getAttribute("id");
+  expect(errorId).not.toBeNull();
+  await expect(name).toHaveAttribute("aria-describedby", new RegExp(errorId!));
+  await name.fill("修正名称");
+  await expect(error).toBeHidden();
+});
+
+test("UI 工作台选中态与装饰图标消费统一语义色", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  const tokens = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const result = {
+      accentInk: resolve("--accent-ink"),
+      accentSoft: resolve("--accent-soft"),
+      surfaceSelected: resolve("--surface-selected"),
+      text: resolve("--text"),
+    };
+    probe.remove();
+    return result;
+  });
+  const avatar = page.locator(".avatar");
+  await expect(avatar).toHaveCSS("background-color", tokens.accentSoft);
+  await expect(avatar).toHaveCSS("color", tokens.accentInk);
+  const selectedNav = page.locator(".nav.selected").first();
+  await expect(selectedNav).toHaveCSS("color", tokens.text);
+  await expect(selectedNav).toHaveCSS("background-color", tokens.surfaceSelected);
+  await expect(page.locator('.file-tab.active > button[role="tab"] svg')).toHaveCSS("color", tokens.accentInk);
+});
+
+test("UI reduced-motion 与三种窗口宽度保持焦点和布局", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await choose(fixture);
+  const trigger = page.getByRole("button", { name: "从 PDF 新建工程", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "新建工程", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveCSS("animation-name", "none");
+  await expect(dialog.getByRole("button", { name: "创建工程", exact: true })).toHaveCSS("transition-property", "none");
+  await expect(page.locator(".sidebar-slot")).toHaveCSS("transition-property", "none");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  for (const [width, height] of [
+    [1440, 960],
+    [1000, 780],
+    [560, 780],
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    await expectPdfRendered();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(page.locator(".main")).toBeVisible();
+    await page.screenshot({ path: `test-results/ou7-workbench-${width}.png`, animations: "disabled" });
+  }
 });

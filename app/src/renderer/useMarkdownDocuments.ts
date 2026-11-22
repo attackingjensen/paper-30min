@@ -23,7 +23,13 @@ export interface MarkdownDraft {
 export const isMarkdown = (path?: string) => !!path && /\.(md|markdown)$/i.test(path);
 export const isDirty = (draft: MarkdownDraft) => !!draft.file && draft.text !== draft.file.text;
 
-export function useMarkdownDocuments(root: string | undefined, tabs: DocumentTab[], revision: unknown) {
+export function useMarkdownDocuments(
+  root: string | undefined,
+  tabs: DocumentTab[],
+  revision: unknown,
+  confirmDiscard: () => Promise<boolean>,
+  notifySaving: (message: string) => void,
+) {
   const [, render] = useReducer((n) => n + 1, 0);
   const store = useRef<{ root?: string; drafts: Map<string, MarkdownDraft> }>({
     drafts: new Map(),
@@ -174,10 +180,10 @@ export function useMarkdownDocuments(root: string | undefined, tabs: DocumentTab
     if (await flush(path)) return true;
     const selected = path ? [drafts.get(path)].filter((d): d is MarkdownDraft => !!d) : [...drafts.values()];
     if (selected.some((d) => d.saving)) {
-      window.alert("文档正在保存，请稍后再关闭。");
+      notifySaving("文档正在保存，请稍后再关闭。");
       return false;
     }
-    return !selected.some(isDirty) || window.confirm("有未保存的编辑。确定放弃这些编辑并离开吗？");
+    return !selected.some(isDirty) || (await confirmDiscard());
   }
   return {
     drafts,

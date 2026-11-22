@@ -15,6 +15,8 @@ import {
   Brain,
 } from "lucide-react";
 import { AgentMessage } from "./AgentMessage";
+import { IconButton } from "./ui/Button";
+import { InlineMessage } from "./ui/Feedback";
 import type { ChatAttachment } from "../shared/chat-input";
 import "./agent.css";
 import type { AgentCommand, AgentSettings, ChatSession, ThinkingLevel, ChatTool } from "../shared/contracts";
@@ -239,10 +241,8 @@ export function AgentPanel({
             </>
           )}
         </div>
-        <button
-          className="icon"
-          title="新会话"
-          aria-label="新会话"
+        <IconButton
+          label="新会话"
           disabled={pending}
           onClick={() => {
             setText("");
@@ -253,7 +253,7 @@ export function AgentPanel({
           }}
         >
           <Plus />
-        </button>
+        </IconButton>
       </div>
       <div
         className="chat"
@@ -289,10 +289,8 @@ export function AgentPanel({
                 )}
               </span>
               {m.id !== "streaming" && m.id !== "pending-user" && !current.busy && (
-                <button
-                  className="icon"
-                  title="从此消息分支"
-                  aria-label="从此消息分支"
+                <IconButton
+                  label="从此消息分支"
                   disabled={pending}
                   onClick={() =>
                     void command(
@@ -307,7 +305,7 @@ export function AgentPanel({
                   }
                 >
                   <GitBranch />
-                </button>
+                </IconButton>
               )}
             </div>
             {m.role === "assistant" && m.thinking && (
@@ -334,9 +332,9 @@ export function AgentPanel({
           </div>
         ))}
         {(error || current?.error) && (
-          <p className="agent-error" role="alert">
+          <InlineMessage variant="error" className="agent-error">
             {error || current?.error}
-          </p>
+          </InlineMessage>
         )}
       </div>
       <div className="composer-wrap">
@@ -529,31 +527,28 @@ export function AgentPanel({
                   ))}
                 </select>
               )}
-              <button className="model-settings-link" onClick={onSettings} title="Agent 模型设置" aria-label="模型设置">
+              <IconButton label="模型设置" className="model-settings-link" onClick={onSettings}>
                 <Settings2 />
-              </button>
+              </IconButton>
             </div>
             <div className="row">
               {current?.busy && (
-                <button
-                  className="icon stop-response"
-                  title="停止回复"
-                  aria-label="停止回复"
+                <IconButton
+                  label="停止回复"
+                  className="stop-response"
                   disabled={current.stopping}
                   onClick={() => void command({ type: "stop", root, id: current.id })}
                 >
                   <Square />
-                </button>
+                </IconButton>
               )}
-              <button
-                className="icon"
-                title={current?.busy ? "补充消息" : "发送消息"}
-                aria-label={current?.busy ? "补充消息" : "发送消息"}
+              <IconButton
+                label={current?.busy ? "补充消息" : "发送消息"}
                 disabled={pending || (!text.trim() && !attachments.length) || current?.stopping}
                 onClick={() => void send()}
               >
                 <ArrowUp />
-              </button>
+              </IconButton>
             </div>
           </div>
         </div>

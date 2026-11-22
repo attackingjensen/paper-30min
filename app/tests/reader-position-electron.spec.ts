@@ -313,12 +313,26 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
   // 真实用户输入优先：滚轮（重发防丢帧）→ 键盘 Home。
   // 离屏 runner 输入管线可能整段不派发（CI trace 证实 wheel/keydown 均无事件）：
   // 显式降级为主线程滚动＋合成 wheel 事件驱动产品用户意图路径，附件记录降级。
+  await page.locator(".main").evaluate((container) => {
+    let count = 0;
+    const record = () => {
+      count += 1;
+      container.dataset.readerInputEventCount = String(count);
+    };
+    container.addEventListener("wheel", record);
+    container.addEventListener("scroll", record);
+    window.addEventListener("keydown", record);
+  });
+  const inputEventCount = async () =>
+    Number((await page.locator(".main").getAttribute("data-reader-input-event-count")) ?? 0);
   let mode = "wheel";
   let reached = false;
   for (let attempt = 0; attempt < 3 && !reached; attempt += 1) {
+    const before = await inputEventCount();
     await page.mouse.wheel(0, -100000);
     try {
       await expect.poll(scrollTop, { timeout: 1500 }).toBe(0);
+      await expect.poll(inputEventCount, { timeout: 500 }).toBeGreaterThan(before);
       reached = true;
     } catch {
       /* 重发滚轮 */
@@ -327,9 +341,11 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
   if (!reached) {
     mode = "keyboard";
     await page.locator(".main").click({ position: { x: 10, y: 10 } });
+    const before = await inputEventCount();
     await page.keyboard.press("Home");
     try {
       await expect.poll(scrollTop, { timeout: 3000 }).toBe(0);
+      await expect.poll(inputEventCount, { timeout: 500 }).toBeGreaterThan(before);
       reached = true;
     } catch {
       /* 降级 */

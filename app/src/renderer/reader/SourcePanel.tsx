@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import type { ImportDiagnostic } from "../../shared/arxiv";
 import type { ReaderDiagnostic } from "../../shared/reader/diagnostics";
 import type { VerificationRecord } from "../../shared/verification";
+import { Button } from "../ui/Button";
+import { EmptyState, InlineMessage } from "../ui/Feedback";
 
 export interface SourcePanelFacts {
   kind: string | null;
@@ -132,7 +134,7 @@ export function SourcePanel({
       </dl>
       <h3>来源警告（{warnings.length}）</h3>
       {warnings.length === 0 ? (
-        <p className="source-empty">来源快照未记录警告。</p>
+        <EmptyState className="source-empty">来源快照未记录警告。</EmptyState>
       ) : (
         <ul className="source-warnings">
           {warnings.map((warning, index) => (
@@ -146,17 +148,26 @@ export function SourcePanel({
       )}
       <h3>正文诊断（{diagnostics.length}）</h3>
       <div className="source-filter" role="group" aria-label="诊断筛选">
-        <button type="button" className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
+        <Button
+          className={filter === "all" ? "active" : ""}
+          aria-pressed={filter === "all"}
+          onClick={() => setFilter("all")}
+        >
           全部 {diagnostics.length}
-        </button>
+        </Button>
         {codes.map((code) => (
-          <button key={code} type="button" className={filter === code ? "active" : ""} onClick={() => setFilter(code)}>
+          <Button
+            key={code}
+            className={filter === code ? "active" : ""}
+            aria-pressed={filter === code}
+            onClick={() => setFilter(code)}
+          >
             {code} {diagnostics.filter((entry) => entry.code === code).length}
-          </button>
+          </Button>
         ))}
       </div>
       {visible.length === 0 ? (
-        <p className="source-empty">当前筛选下没有诊断。</p>
+        <EmptyState className="source-empty">当前筛选下没有诊断。</EmptyState>
       ) : (
         <ul className="source-diagnostics">
           {visible.map((entry, index) => (
@@ -171,11 +182,11 @@ export function SourcePanel({
       )}
       <h3>PDF 核验状态</h3>
       {verificationError !== null ? (
-        <p className="source-empty" role="note">
+        <InlineMessage variant="warning" className="source-empty" role="note">
           核验记录读取失败（{verificationError}）：无法确认核验状态，不代表无核验记录；正文阅读不受影响。
-        </p>
+        </InlineMessage>
       ) : verification === null ? (
-        <p className="source-empty">无核验记录；核验不影响阅读、选区与 Agent 入口。</p>
+        <EmptyState className="source-empty">无核验记录；核验不影响阅读、选区与 Agent 入口。</EmptyState>
       ) : (
         <>
           <ul className="source-verification-counts">
@@ -189,14 +200,13 @@ export function SourcePanel({
           <p className="source-verification-note">核验状态只描述实际核验范围，不代表全文质量结论。</p>
           {verification.records.length > 0 && (
             <>
-              <button
-                type="button"
+              <Button
                 className="source-records-toggle"
                 aria-expanded={showRecords}
                 onClick={() => setShowRecords(!showRecords)}
               >
                 {showRecords ? "收起核验详情" : `查看核验详情（${verification.records.length} 条记录）`}
-              </button>
+              </Button>
               {showRecords && (
                 <ul className="source-verification-records">
                   {verification.records.map((record) => (

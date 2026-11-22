@@ -1,0 +1,310 @@
+#root {
+  isolation: isolate;
+}
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  box-shadow: var(--control-shadow);
+  transition:
+    background-color var(--control-transition),
+    border-color var(--control-transition),
+    box-shadow var(--control-transition),
+    color var(--control-transition);
+}
+.button:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.button:active {
+  background: var(--surface-selected);
+  box-shadow: var(--control-inset);
+}
+.button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.button.primary:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  color: var(--on-accent);
+}
+.button.primary:active {
+  background: var(--accent-hover);
+  box-shadow: var(--primary-inset);
+}
+.button.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent-ink);
+  box-shadow: none;
+}
+.button.ghost:hover {
+  background: var(--accent-soft);
+}
+.button.danger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--danger);
+  box-shadow: none;
+}
+.button.danger:hover {
+  background: var(--danger-soft);
+}
+.button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+.button.icon {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 5px;
+  color: var(--muted);
+}
+.button:focus-visible,
+.ui-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.ui-field-label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+.ui-input {
+  width: 100%;
+  min-height: 35px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  transition:
+    background-color var(--control-transition),
+    border-color var(--control-transition),
+    box-shadow var(--control-transition);
+}
+.ui-input:hover {
+  border-color: var(--muted);
+}
+.ui-input[data-invalid] {
+  border-color: var(--danger);
+}
+.ui-field-description,
+.ui-field-error {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.55;
+}
+.ui-field-description {
+  color: var(--muted);
+}
+.ui-field-error {
+  color: var(--danger);
+}
+.inline-message {
+  color: var(--text-secondary);
+}
+.inline-message.error {
+  color: var(--danger);
+}
+.inline-message.success {
+  color: var(--success);
+}
+.inline-message.warning {
+  color: var(--warning);
+}
+.empty {
+  color: var(--muted);
+}
+.modal::backdrop {
+  background: var(--backdrop);
+  animation: backdrop-in var(--popup-transition);
+}
+.modal:not([open]) {
+  display: none;
+}
+.modal[open] {
+  animation: dialog-in var(--popup-transition);
+}
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.modal {
+  position: fixed;
+  z-index: 101;
+  inset: 0;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  width: 510px;
+  height: fit-content;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--overlay-shadow);
+}
+.ui-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 14px 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.ui-dialog-title {
+  margin: 0;
+  padding-top: 5px;
+  font-size: 17px;
+  line-height: 1.4;
+}
+.ui-dialog-close {
+  flex: 0 0 auto;
+}
+.ui-dialog-description {
+  margin: 0;
+  padding: 12px 20px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 18px 20px 0;
+}
+.modal-form > .ui-field {
+  margin-bottom: 1px;
+}
+.modal-form > label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+.source-path {
+  color: var(--muted);
+}
+.location {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.location span {
+  flex: 1;
+  min-width: 0;
+}
+.location button {
+  flex-shrink: 0;
+}
+.preview {
+  display: block;
+  padding: 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface-hover);
+}
+.modal .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.modal input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+.modal > p {
+  margin: 0;
+  padding: 16px 20px 0;
+  font-size: 12px;
+  line-height: 1.9;
+}
+.modal > dl {
+  margin: 14px 20px 0;
+}
+.modal > .modal-footer {
+  margin: 14px 0 0;
+}
+.modal-form > .modal-footer {
+  margin: 14px -20px 0;
+}
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+.modal .form-error {
+  margin: 0;
+}
+.pdf-upload-confirm dl {
+  font-size: 12px;
+  line-height: 1.8;
+  margin: 12px 0;
+}
+.pdf-upload-confirm dt {
+  color: var(--muted);
+  margin-top: 8px;
+}
+.pdf-upload-confirm dd {
+  margin: 2px 0 0;
+}
+.pdf-upload-hash {
+  font-family: monospace;
+  word-break: break-all;
+}
+@media (prefers-reduced-motion: reduce) {
+  .button,
+  .ui-input {
+    transition: none;
+  }
+  .modal[open],
+  .modal::backdrop {
+    animation: none;
+  }
+}
