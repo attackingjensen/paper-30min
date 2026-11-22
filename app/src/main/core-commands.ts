@@ -50,6 +50,7 @@ import {
   reconvertArxivCandidate,
 } from "./arxiv/update.js";
 import { arxivFetch } from "./arxiv/transport.js";
+import { isArxivFixtureEnvironment } from "./arxiv/fixture-command.js";
 import type { ArxivFetchOptions, ArxivFetchResponse, ArxivTransport } from "./arxiv/fetch.js";
 
 /** 进行中的 arXiv 导入/恢复：operationId → 取消控制器（worker 进程内权威）。 */
@@ -58,7 +59,15 @@ const arxivOperations = new Map<string, AbortController>();
 /** 受控 fixture 端点门控：仅测试环境 + 回环 baseUrl 才允许回环 http；
  * 生产命令即使携带 baseUrl 也无法访问本机/私网服务。 */
 function fixtureGate(baseUrl: string | undefined): boolean {
-  if (baseUrl === undefined || process.env.PAPER30MIN_TEST_WINDOW === undefined) return false;
+  if (
+    baseUrl === undefined ||
+    !isArxivFixtureEnvironment({
+      baseUrl,
+      testWindow: process.env.PAPER30MIN_TEST_WINDOW,
+      isPackaged: process.env.PAPER30MIN_APP_IS_PACKAGED === "1",
+    })
+  )
+    return false;
   try {
     const host = new URL(baseUrl).hostname.toLowerCase();
     return host === "127.0.0.1" || host === "::1" || host === "localhost";

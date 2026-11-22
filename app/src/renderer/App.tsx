@@ -23,6 +23,7 @@ import type {
   PdfUploadConfirmation,
   Preferences,
   Project,
+  ProjectCoreSnapshot,
   DocumentTab,
   PdfPosition,
 } from "../shared/contracts";
@@ -32,6 +33,7 @@ import { PdfReader } from "./PdfReader";
 import { MarkdownDocument } from "./MarkdownDocument";
 import { AgentPanel } from "./AgentPanel";
 import type { ChatAttachment } from "../shared/chat-input";
+import type { PdfParseTaskRecord } from "../shared/parsing";
 import type { ReadingPosition } from "../shared/reader/position";
 import { AgentSettingsForm } from "./AgentSettingsForm";
 import { ProductSkillsForm } from "./ProductSkillsForm";
@@ -42,10 +44,12 @@ import { Dialog as Modal } from "./ui/Dialog";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { Field } from "./ui/Field";
 import { EmptyState, InlineMessage } from "./ui/Feedback";
+import { ArxivProjectDialog, type ArxivRecovery } from "./ArxivProjectDialog";
 
 const desktop = window.desktop;
 type Tab = DocumentTab;
 type Dialog =
+  | { type: "arxiv"; recovery?: ArxivRecovery }
   | {
       type: "create";
       source: string;
@@ -60,6 +64,7 @@ interface ConfirmationRequest {
   title: string;
   description: string;
   confirmLabel: string;
+  cancelLabel?: string;
 }
 
 export function App() {
@@ -314,11 +319,33 @@ export function App() {
   }
   async function openProject(folder?: string) {
     if (!(await documents.mayLeave())) return;
+    dialogReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     await run(async () => {
       const selected = folder ?? (await desktop.choose("folder"));
       if (!selected) return;
       const p = await desktop.invoke<Project>({ type: "open", root: selected });
-      enter(p);
+      const core =
+        p.manifest.paper.path === ""
+          ? await desktop.invoke<ProjectCoreSnapshot>({ type: "coreOpen", root: p.root })
+          : null;
+      const recovery = core?.importRecord?.arxiv;
+      if (core && core.manifest.paper.currentRevision === null && recovery) {
+        const pdfTasks = await desktop.invoke<PdfParseTaskRecord[]>({ type: "corePdfTasks", root: core.root });
+        setDialog({
+          type: "arxiv",
+          recovery: {
+            root: core.root,
+            input: recovery.reference.canonicalId,
+            name: p.manifest.name,
+            parent: core.root.replace(/[\\/][^\\/]+$/, ""),
+            reference: recovery.reference,
+            diagnostic: recovery.diagnostic ?? null,
+            pdfTask: pdfTasks.findLast((task) => task.phase !== "candidate-complete") ?? null,
+          },
+        });
+      } else {
+        enter(p);
+      }
       await reloadPreferences();
     });
   }
@@ -340,6 +367,35 @@ export function App() {
         makeDefault: !preferences.defaultFolder,
       });
     });
+  }
+  async function newArxivProject() {
+    dialogReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (!(await documents.mayLeave())) return;
+    setDialog({ type: "arxiv" });
+  }
+  async function finishArxivProject(root: string, parent: string, makeDefault: boolean) {
+    const warnings: string[] = [];
+    if (makeDefault) {
+      try {
+        await desktop.invoke({ type: "setDefault", folder: parent });
+      } catch (cause) {
+        warnings.push("默认工程位置未保存：" + (cause as Error).message);
+      }
+    }
+    const p = await desktop.invoke<Project>({ type: "refresh", root });
+    try {
+      await desktop.invoke<Project>({ type: "open", root });
+      await reloadPreferences();
+    } catch (cause) {
+      warnings.push("最近工程登记未更新：" + (cause as Error).message);
+    }
+    enter(p);
+    setDialog(null);
+    if (warnings.length) setError(warnings.join("；"));
+  }
+  async function registerArxivRecovery(root: string) {
+    await desktop.invoke({ type: "open", root });
+    await reloadPreferences();
   }
   async function createProject(d: Extract<Dialog, { type: "create" }>) {
     const operationId = crypto.randomUUID();
@@ -623,6 +679,9 @@ export function App() {
             <Button variant="primary" disabled={busy} onClick={() => void newProject()}>
               <Plus /> 从 PDF 新建工程
             </Button>
+            <Button disabled={busy} onClick={() => void newArxivProject()}>
+              <FileText /> 从 arXiv 新建工程
+            </Button>
             <Button disabled={busy} onClick={() => void openProject()}>
               <FolderOpen /> 打开工程文件夹
             </Button>
@@ -672,6 +731,10 @@ export function App() {
               <button className="nav" disabled={busy} onClick={() => void newProject()}>
                 <Plus />
                 <span>从 PDF 新建工程</span>
+              </button>
+              <button className="nav" disabled={busy} onClick={() => void newArxivProject()}>
+                <FileText />
+                <span>从 arXiv 新建工程</span>
               </button>
               <div className="section-label">当前工程</div>
               <div className="project-name" title={project.manifest.name}>
@@ -801,12 +864,27 @@ export function App() {
           title={confirmation.title}
           description={confirmation.description}
           confirmLabel={confirmation.confirmLabel}
-          cancelLabel="继续编辑"
+          cancelLabel={confirmation.cancelLabel ?? "继续编辑"}
           onConfirm={() => replyConfirmation(true)}
           onClose={() => replyConfirmation(false)}
         />
       )}
-      {dialog && (
+      {dialog?.type === "arxiv" && (
+        <ArxivProjectDialog
+          recovery={dialog.recovery}
+          initialParent={preferences.defaultFolder ?? ""}
+          initialMakeDefault={!preferences.defaultFolder}
+          returnFocus={dialogReturnFocus}
+          confirmAction={confirmAction}
+          onRecovery={registerArxivRecovery}
+          onCreated={finishArxivProject}
+          onClose={() => {
+            setDialog(null);
+            setError("");
+          }}
+        />
+      )}
+      {dialog && dialog.type !== "arxiv" && (
         <Modal
           open
           title={dialog.type === "create" ? "新建工程" : dialog.type === "note" ? "新建笔记" : "改名或移动"}

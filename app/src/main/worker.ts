@@ -113,6 +113,7 @@ async function dispatchPdfCloud(command: PdfImportWorkerCommand): Promise<unknow
   const inner = command.command;
   if (pdfOperations.has(inner.operationId)) throw new Error(`PDF 操作已在进行中：${inner.operationId}`);
   const controller = new AbortController();
+  if (command.cancelBeforeStart) controller.abort();
   let network: Dispatcher;
   let run: Promise<unknown>;
   try {
@@ -213,6 +214,11 @@ port.on(
         value = await agent.withFileMove(command.root, () => service.dispatch(command));
       } else if (command && (command.type === "corePdfReconvert" || command.type === "corePdfPublishCandidate")) {
         value = await dispatchPdfOffline(command);
+      } else if (command?.type === "coreArxivCancel") {
+        const pdfOperation = pdfOperations.get(command.operationId);
+        pdfOperation?.controller.abort();
+        const arxivResult = (await dispatchCoreCommand(command)) as { cancelled: boolean };
+        value = { cancelled: arxivResult.cancelled || pdfOperation !== undefined };
       } else if (command && isCoreCommand(command)) {
         value = await dispatchCoreCommand(command);
       } else value = await service.dispatch(command!);
