@@ -26,6 +26,8 @@ npm test
 
 真实 Electron 测试只替代系统文件选择器，使用生产 preload、IPC、Node 工程进程和真实磁盘操作。默认测试使用临时配置与可控模型服务，覆盖流式回复、代理、失败恢复、并发停止和迟到事件。失败保留 trace，布局截图位于 `test-results/`。两层分别在 `test-results/timing/non-electron.json` 与 `test-results/timing/electron.json` 写入 JSON 时序报告。
 
+桌面高层用例按领域拆分：多服务模型位于 `tests/desktop-agent-model-electron.spec.ts`，Pi 工具与并发会话位于 `tests/desktop-agent-runtime-electron.spec.ts`，本次迁出的三条 PDF 导航、选区与缩放恢复用例位于 `tests/desktop-pdf-electron.spec.ts`；这些行为的新回归进入对应文件，不再回堆 `desktop.spec.ts`。共享启动、工程创建与 PDF helper 只放在 `tests/desktop-fixture.ts`，每个 spec 显式调用 `registerDesktopFixture()` 注册隔离配置和清理钩子。其余用例在自然触及或出现失败历史时继续按独立行为迁移，不做一次性机械搬迁。
+
 GitHub 的 `Electron CI` 使用 Node.js 24，在 PR 与 `main` push 上启动两条并行路径，不再对同一 PR 同时触发 push matrix。Linux `quality` 安装一次依赖，运行 `check:fast`、`format:check`、`check:architecture`、`check:lint:type-aware`、`check:dependencies`、构建和并行非 Electron 测试；Windows `electron` 安装一次依赖，构建后先补跑两条 `win32` junction 非 Electron 回归，再以隐藏窗口运行完整串行 Electron 套件。Windows 使用受控服务，不配置真实模型或百度服务凭据；HTML 报告、JSON 时序、失败 trace 和布局截图作为 `electron-test-evidence-windows-latest` 附件保留 14 天，非 Electron 报告单独上传。可从 Actions 页面手动运行工作流。Linux 构建与非 Electron 通过不代表 Electron 桌面行为已验证；CI 不生成安装包。
 
 ## 质量约束
