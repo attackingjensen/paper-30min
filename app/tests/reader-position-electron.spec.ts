@@ -2,7 +2,14 @@
 // 真实 Electron：滚动捕获→重开按锚点恢复（不用旧 scrollTop）；
 // resize 以锚点重定位；revision removed 显式失效提示＋父 section 回退；
 // moved 恢复原锚点；用户滚动后迟到恢复不得覆盖新位置。
-import { test, expect, _electron as electron, type ElectronApplication, type Locator, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  _electron as electron,
+  type ElectronApplication,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";

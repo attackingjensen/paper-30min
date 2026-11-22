@@ -2,7 +2,14 @@
 // 受控 fixture 端点（回环 http）驱动检查更新→候选→逐项解决→发布全链路；
 // 未解决不能发布，解决状态落盘，基线被推进时拒绝发布且保留解决结果；
 // 发布成功后 reader 按新 revision 恢复正文。渲染进程零远端请求。
-import { test, expect, _electron as electron, type ElectronApplication, type Locator, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  _electron as electron,
+  type ElectronApplication,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";

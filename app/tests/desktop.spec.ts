@@ -237,9 +237,7 @@ test.describe("多服务模型", () => {
       }
       const model = body.model;
       const reasoningEffort =
-        "reasoning_effort" in body && typeof body.reasoning_effort === "string"
-          ? body.reasoning_effort
-          : undefined;
+        "reasoning_effort" in body && typeof body.reasoning_effort === "string" ? body.reasoning_effort : undefined;
       const enableThinking = "enable_thinking" in body && body.enable_thinking === true;
       requests.push({
         path: request.url ?? "",
