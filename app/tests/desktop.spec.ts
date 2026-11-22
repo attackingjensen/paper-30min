@@ -2523,33 +2523,13 @@ test("从真实创建入口保存默认位置、复制 PDF，重启与搬迁后�
   await expect(page.getByTestId("project-preview")).toHaveText(path.join(parent, "重启后新建"));
 });
 
-test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
+test("PDF 滚动与页码导航在笔记切换后保持位置", async () => {
   const parent = path.join(sandbox, "projects");
   await create(fixture, parent);
   const root = path.join(parent, "研究工程");
-  const originalPdf = await fs.readFile(path.join(root, "text/paper.pdf"));
   await expect(pdfPages()).toContainText("2");
   await expectPdfRendered();
-  const pdfColors = await page.evaluate(() => {
-    const probe = document.createElement("div");
-    document.body.append(probe);
-    const resolve = (token: string) => {
-      probe.style.color = `var(${token})`;
-      const value = getComputedStyle(probe).color;
-      probe.style.color = "";
-      return value;
-    };
-    const colors = { text: resolve("--text"), accent: resolve("--accent") };
-    probe.remove();
-    return colors;
-  });
-  const cursorMode = page.getByRole("button", { name: "光标模式", exact: true });
-  const cursorSelected = await cursorMode.evaluate((element) => element.classList.contains("bg-interactive-selected"));
-  await expect(cursorMode).toHaveCSS("color", cursorSelected ? pdfColors.accent : pdfColors.text);
-  await expect(page.getByRole("button", { name: "批注", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "高亮", exact: true })).toHaveCount(0);
   await setPdfZoom("100");
-  await page.screenshot({ path: "test-results/pdf-desktop.png" });
   for (const offset of [300, 620]) {
     await pdfViewport().evaluate((e, y) => {
       e.scrollTop = y;
@@ -2573,6 +2553,33 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   }
   await jumpPdfPage(1);
   await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeLessThan(20);
+  await jumpPdfPage(2);
+  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeGreaterThan(700);
+});
+
+test("PDF 光标选区复制与区域截取使用统一选中色", async () => {
+  await create(fixture, path.join(sandbox, "projects"));
+  await expectPdfRendered();
+  const pdfColors = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    document.body.append(probe);
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`;
+      const value = getComputedStyle(probe).color;
+      probe.style.color = "";
+      return value;
+    };
+    const colors = { text: resolve("--text"), accent: resolve("--accent") };
+    probe.remove();
+    return colors;
+  });
+  const cursorMode = page.getByRole("button", { name: "光标模式", exact: true });
+  const cursorSelected = await cursorMode.evaluate((element) => element.classList.contains("bg-interactive-selected"));
+  await expect(cursorMode).toHaveCSS("color", cursorSelected ? pdfColors.accent : pdfColors.text);
+  await expect(page.getByRole("button", { name: "批注", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "高亮", exact: true })).toHaveCount(0);
+  await setPdfZoom("100");
+  await page.screenshot({ path: "test-results/pdf-desktop.png" });
   await cursorMode.click();
   await expect(cursorMode).toHaveCSS("color", pdfColors.accent);
   const bounds = (await pdfImage().boundingBox())!;
@@ -2608,8 +2615,15 @@ test("真实 PDF 导航、缩放、选区与关闭重开位置", async () => {
   await expect(region).toBeVisible();
   await expect.poll(() => region.evaluate((e: HTMLImageElement) => e.naturalWidth)).toBeGreaterThanOrEqual(218);
   await page.getByRole("button", { name: "取消", exact: true }).click();
+});
+
+test("PDF 缩放、关闭重开与重启恢复阅读位置", async () => {
+  const parent = path.join(sandbox, "projects");
+  await create(fixture, parent);
+  const root = path.join(parent, "研究工程");
+  const originalPdf = await fs.readFile(path.join(root, "text/paper.pdf"));
+  await expectPdfRendered();
   await jumpPdfPage(2);
-  await expect.poll(() => pdfViewport().evaluate((e) => e.scrollTop)).toBeGreaterThan(700);
   await setPdfZoom("150");
   await expect(pdfPage()).toHaveValue("2");
   await expect
