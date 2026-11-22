@@ -13,6 +13,7 @@ import { createRangeAnchor } from "../../shared/document/anchor";
 import {
   buildReaderProjection,
   type ReaderAtom,
+  type ReaderInlinePart,
   type ReaderItem,
   type ReaderProjection,
   type ReaderSentence,
@@ -190,34 +191,55 @@ function SentenceBody({
 }) {
   const status = translation?.status ?? "ready";
   const parts = translation && translation.status !== "gap" ? translation.parts : sentence.parts;
+  // stale 对照：旧译文显著标识，最新原文可展开查看（原文锚点，不冒充译文）。
+  const [showSource, setShowSource] = useState(false);
+  const renderParts = (value: ReaderInlinePart[]) =>
+    value.map((part, index) =>
+      part.kind === "text" ? (
+        <span key={index} data-start={part.start} data-end={part.end}>
+          {part.text}
+        </span>
+      ) : (
+        <AtomView key={part.atom.id} atom={part.atom} start={part.start} end={part.end} onNavigate={onNavigate} />
+      ),
+    );
   return (
     <span
       data-sentence-id={sentence.sentenceId}
       data-translation-status={translation ? status : undefined}
       className={status === "stale" ? "reader-sentence-stale" : undefined}
     >
-      {parts.map((part, index) =>
-        part.kind === "text" ? (
-          <span key={index} data-start={part.start} data-end={part.end}>
-            {part.text}
-          </span>
-        ) : (
-          <AtomView key={part.atom.id} atom={part.atom} start={part.start} end={part.end} onNavigate={onNavigate} />
-        ),
-      )}
+      {renderParts(parts)}
       {translation?.status === "gap" && (
         <span className="reader-translation-note" role="note">
           未翻译
         </span>
       )}
       {translation?.status === "stale" && (
-        <span
-          className="reader-translation-note stale"
-          role="note"
-          title="原句已修改，显示的是旧译文；可查看最新原文。"
-        >
-          已过期
-        </span>
+        <>
+          <span
+            className="reader-translation-note stale"
+            role="note"
+            title="原句已修改，显示的是旧译文；可查看最新原文。"
+          >
+            已过期
+          </span>
+          {translation.sourceParts && (
+            <button
+              type="button"
+              className="reader-stale-source-toggle"
+              aria-expanded={showSource}
+              onClick={() => setShowSource((value) => !value)}
+            >
+              {showSource ? "收起原文" : "查看最新原文"}
+            </button>
+          )}
+          {showSource && translation.sourceParts && (
+            <span className="reader-stale-source" data-stale-source={sentence.sentenceId}>
+              {renderParts(translation.sourceParts)}
+            </span>
+          )}
+        </>
       )}
     </span>
   );
@@ -707,6 +729,25 @@ export function FullReader({
     };
   }, [status, state, root, language]);
 
+  // revision 推进（修正／来源更新发布）：语言视图保持，按新 current 重读迁移后的
+  // 译文投影；旧 revision 投影不得冒充新原文的译文。不自动发起模型请求。
+  useEffect(() => {
+    const revisionId = stateRef.current?.revisionId;
+    if (status !== "ready" || !revisionId || language === null) return;
+    const target = language;
+    let disposed = false;
+    void desktop
+      .invoke<TranslationReadCommandResult>({ type: "coreTranslationRead", root, revisionId, language: target })
+      .then((projection) => {
+        if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === target)
+          setTranslation(projection);
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [status, state, root, language]);
+
   // 选区交互：DOM 只承担交互，权威偏移经投影索引映射；工具条不破坏原生选择。
   const refreshSelection = useCallback(() => {
     const article = articleRef.current;
@@ -1105,6 +1146,7 @@ export function FullReader({
       setLanguage(null);
       setTranslation(null);
       setTranslationStatus("");
+      setTranslationBusy(false);
       setToolbar(null);
       return;
     }
@@ -1183,7 +1225,59 @@ export function FullReader({
       if (stale()) return;
       setTranslationStatus((error as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
     } finally {
-      if (!stale()) setTranslationBusy(false);
+      // 代际被后续动作取代时由新动作管理 busy；此处不得把新任务的 busy 清掉。
+      if (epochAtStart === translationEpoch.current) setTranslationBusy(false);
+    }
+  }
+
+  // 显式补译／更新过期译文（SPEC-translation §8）：只处理目标状态，
+  // 费用提示与任务状态可见；渐进刷新由 translation:changed 承担。
+  async function runTranslationAction(action: "fill-gaps" | "update-stale") {
+    if (!state || language === null || translationBusy) return;
+    const target = language;
+    const epochAtStart = ++translationEpoch.current;
+    const current = state;
+    const stale = () => epochAtStart !== translationEpoch.current || stateRef.current !== current;
+    setTranslationBusy(true);
+    setTranslationStatus(
+      action === "fill-gaps"
+        ? `正在补译${target === "zh" ? "中文" : "英文"}缺口（可能产生模型费用）…`
+        : `正在更新过期译文（可能产生模型费用）…`,
+    );
+    try {
+      const result = await desktop.invoke<TranslationStartCommandResult>({
+        type: action === "fill-gaps" ? "coreTranslationFillGaps" : "coreTranslationUpdateStale",
+        root,
+        language: target,
+      });
+      if (stale()) return;
+      if (result.status === "finished") {
+        setTranslation(result.projection);
+        const gaps = result.units.filter((unit) => unit.status === "gap");
+        setTranslationStatus(
+          gaps.length > 0
+            ? action === "fill-gaps"
+              ? `补译完成；仍有 ${gaps.length} 个单元缺口，可检查模型后重试。`
+              : `过期译文更新完成；${gaps.length} 个单元更新失败，旧译文继续以过期显示。`
+            : action === "fill-gaps"
+              ? "缺口补译完成。"
+              : "过期译文已更新。",
+        );
+      } else if (result.projection) {
+        setTranslation(result.projection);
+        setTranslationStatus(
+          result.reason === "busy"
+            ? "该语言已有翻译任务在运行，译文将渐进出现。"
+            : action === "fill-gaps"
+              ? "没有需要补译的缺口。"
+              : "没有需要更新的过期译文。",
+        );
+      }
+    } catch (error) {
+      if (stale()) return;
+      setTranslationStatus((error as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
+    } finally {
+      if (epochAtStart === translationEpoch.current) setTranslationBusy(false);
     }
   }
 
@@ -1211,6 +1305,19 @@ export function FullReader({
         )
       : null;
   const translatedUnit = translationViews ? (unitId: string) => translationViews.get(unitId) : undefined;
+  // 缺口与过期句计数：显式动作入口只在存在目标状态时出现。
+  const translationCounts = translationViews
+    ? Array.from(translationViews.values()).reduce(
+        (counts, view) => {
+          for (const sentence of view.sentences) {
+            if (sentence.status === "gap") counts.gaps++;
+            else if (sentence.status === "stale") counts.stale++;
+          }
+          return counts;
+        },
+        { gaps: 0, stale: 0 },
+      )
+    : { gaps: 0, stale: 0 };
   return (
     <article
       className="full-reader"
@@ -1258,6 +1365,28 @@ export function FullReader({
             English
           </Button>
         </div>
+        {language !== null && translation && (translationCounts.gaps > 0 || translationCounts.stale > 0) && (
+          <div className="reader-translation-actions" role="group" aria-label="译文维护">
+            {translationCounts.gaps > 0 && (
+              <Button
+                className="reader-translation-action"
+                disabled={translationBusy}
+                onClick={() => void runTranslationAction("fill-gaps")}
+              >
+                补译缺口（{translationCounts.gaps} 句）
+              </Button>
+            )}
+            {translationCounts.stale > 0 && (
+              <Button
+                className="reader-translation-action"
+                disabled={translationBusy}
+                onClick={() => void runTranslationAction("update-stale")}
+              >
+                更新过期译文（{translationCounts.stale} 句）
+              </Button>
+            )}
+          </div>
+        )}
         {language !== null && translationStatus && (
           <InlineMessage className="reader-translation-status" role="status">
             {translationStatus}

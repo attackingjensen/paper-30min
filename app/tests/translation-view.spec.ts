@@ -124,6 +124,42 @@ test.describe("translation 语言视图投影", () => {
     expect(views[0].sentences[1]).toMatchObject({ sentenceId: second.sentenceId, status: "ready" });
   });
 
+  test("stale 句携带最新原文片段供对照，ready/gap 不携带", () => {
+    const { ids, intro } = fixture();
+    const [first, second] = intro.sentences;
+    const views = buildTranslationUnitViews(
+      [intro],
+      projection([
+        {
+          unitId: intro.unitId,
+          generator,
+          sentences: [
+            {
+              sentenceId: first.sentenceId,
+              status: "stale",
+              staleReason: "source-changed",
+              content: [{ kind: "text", text: "旧译文" }],
+            },
+            {
+              sentenceId: second.sentenceId,
+              status: "ready",
+              content: [
+                { kind: "text", text: "参见 " },
+                { kind: "atom", atomId: ids.resolvedRef },
+                { kind: "text", text: "。" },
+              ],
+            },
+          ],
+        },
+      ]),
+    );
+
+    // stale：旧译文显示之外，可对照最新原文（原文锚点片段）。
+    expect(views[0].sentences[0].sourceParts).toEqual(first.parts);
+    // ready 与 gap 不携带对照原文。
+    expect(views[0].sentences[1].sourceParts).toBeUndefined();
+  });
+
   test("已提交单元中的新增句为 gap，显示最新原文", () => {
     const { ids, intro } = fixture();
     const views = buildTranslationUnitViews(

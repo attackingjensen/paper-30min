@@ -516,7 +516,7 @@ export async function writeTranslationTaskRecord(
   await atomicWriteJson(path.join(directory, "task.json"), value, indexBudget, "翻译任务记录");
 }
 
-export async function readTranslationTaskRecord(
+async function readTranslationTaskRecord(
   root: string,
   baseRevision: string,
   language: TranslationLanguage,

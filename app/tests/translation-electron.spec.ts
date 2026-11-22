@@ -1,6 +1,7 @@
-// 真实 Electron 翻译回归（SPEC-translation Testing Strategy，paper-30min-crd.2）：
+// 真实 Electron 翻译回归（SPEC-translation Testing Strategy，paper-30min-crd.2/crd.3）：
 // 生产 preload、project:command IPC、Node utility process 与真实临时 v2 工程；
-// 受控回环模型服务驱动按需启动、渐进阅读、语言切换不 reload、离线重开。
+// 受控回环模型服务驱动按需启动、渐进阅读、语言切换不 reload、离线重开、
+// 正文修正后的局部 stale 对照与显式更新。
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +16,7 @@ import type {
   SourceSnapshotRecord,
 } from "../src/shared/contracts";
 import type { DocumentTree } from "../src/shared/document/tree";
+import { unitEditText } from "../src/shared/document/correction";
 
 let sandbox: string;
 let desktop: ElectronApplication;
@@ -157,7 +159,7 @@ async function englishProject(name: string) {
       },
     },
   );
-  return { created, revision, ids };
+  return { created, revision, ids, tree, source };
 }
 
 async function openFolder(root: string) {
@@ -314,15 +316,93 @@ test("translation 单单元失败不阻塞其他单元：gap 保留原文与诊�
     expect(calls.filter((id) => id === ids.abstract)).toHaveLength(2);
     expect(calls.filter((id) => id === ids.body)).toHaveLength(1);
 
-    // 再次显式切换是新的按需请求：只重试 gap（abstract 首轮＋补试两次），
-    // 已保存 body 不重发。打开缺口的每会话指纹限次由 crd.3 承担。
+    // 同会话同指纹再次打开：不再自动请求（crd.3 每会话限次）。
     await reader.getByRole("button", { name: "原文", exact: true }).click();
     const before = calls.length;
     await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "gap");
+    expect(calls.length).toBe(before);
+
+    // 手动补译缺口：显式动作可再次发起（仍失败，但请求确实发出）。
+    await reader.getByRole("button", { name: /补译缺口/ }).click();
     await expect(reader.locator(".reader-translation-status")).toContainText("缺口", { timeout: 30000 });
     expect(calls.length).toBe(before + 2);
     expect(calls.slice(before).every((id) => id === ids.abstract)).toBe(true);
   } finally {
     await stopServer(server);
+  }
+});
+
+test("translation 正文修正后局部 stale：旧译文可对照最新原文，显式更新只替换目标句", async () => {
+  const { created, ids, tree, revision } = await englishProject("局部stale工程");
+  const { server, calls } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    const bodySentence = reader.locator(`[data-sentence-id="${ids.bodySentence}"]`);
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "ready");
+    expect(calls.sort()).toEqual([ids.abstract, ids.body].sort());
+
+    // 显式修正 abstract 单元文字（保留句边界与 atom）：发布新 current。
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    const unit = reader.locator(`[data-unit-id="${ids.abstract}"]`);
+    await unit.getByRole("button", { name: /修正单元/ }).click();
+    const host = reader.locator(".correction-host");
+    const original = unitEditText(tree, ids.abstract);
+    await host.locator(".correction-text").fill(original.replace("progressive reading", "progressive close reading"));
+    await host.getByRole("button", { name: "预览 changeset" }).click();
+    await expect(host.locator(".correction-preview")).toBeVisible();
+    await host.getByRole("button", { name: "确认发布新 revision" }).click();
+    await expect(host).toHaveCount(0);
+    await expect(unit).toContainText("progressive close reading", { timeout: 15000 });
+
+    // 语言视图保持：迁移后仅 abstract 句 stale，body 仍 ready；不自动重译。
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
+    await expect(abstractSentence).toContainText("译文：We study progressive reading");
+    await expect(abstractSentence.locator(".reader-translation-note.stale")).toHaveText("已过期");
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "ready");
+    const beforeUpdate = calls.length;
+
+    // 对照最新原文：展开后显示修正后的原句（原文锚点）。
+    await abstractSentence.getByRole("button", { name: "查看最新原文" }).click();
+    const comparison = abstractSentence.locator(".reader-stale-source");
+    await expect(comparison).toContainText("progressive close reading");
+    await abstractSentence.getByRole("button", { name: "收起原文" }).click();
+    await expect(comparison).toHaveCount(0);
+
+    // 显式更新过期译文：只请求 stale 句，body 不重发。
+    await reader.getByRole("button", { name: /更新过期译文/ }).click();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await expect(abstractSentence).toContainText("译文：We study progressive close reading");
+    await expect(bodySentence).toContainText("译文：Translations appear unit by unit");
+    expect(calls.length).toBe(beforeUpdate + 1);
+    expect(calls[calls.length - 1]).toBe(ids.abstract);
+
+    // 离线重开：更新后的译文与 ready 状态持久可读。
+    await closeDesktopForCleanup();
+    await stopServer(server);
+    await launch();
+    await openFolder(created.root);
+    const reopened = page.locator(".full-reader");
+    await expect(reopened).toBeVisible();
+    await reopened.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(reopened.locator(`[data-sentence-id="${ids.abstractSentence}"]`)).toContainText(
+      "译文：We study progressive close reading",
+      { timeout: 30000 },
+    );
+    await expect(reopened.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toHaveAttribute(
+      "data-translation-status",
+      "ready",
+    );
+    expect(revision.revisionId).toBeTruthy();
+  } finally {
+    await stopServer(server).catch(() => undefined);
   }
 });

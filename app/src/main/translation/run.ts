@@ -31,7 +31,7 @@ export function translationSourceUnits(tree: DocumentTree) {
   return readerProjectionUnits(buildReaderProjection(tree));
 }
 
-export type TranslationRunMode = "generate" | "fill-gaps" | "update-stale";
+type TranslationRunMode = "generate" | "fill-gaps" | "update-stale";
 
 export interface TranslationRunInput {
   root: string;

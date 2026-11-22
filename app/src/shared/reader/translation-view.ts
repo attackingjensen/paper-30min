@@ -12,6 +12,8 @@ export interface TranslationSentenceView {
   /** ready/stale 为译文片段（含逻辑偏移）；gap 为当前原文片段（原文锚点）。 */
   parts: ReaderInlinePart[];
   staleReason?: "source-changed";
+  /** stale 句的最新原文片段（原文锚点）：旧译文可对照最新原文；ready/gap 不携带。 */
+  sourceParts?: ReaderInlinePart[];
 }
 
 export interface TranslationUnitView {
@@ -66,7 +68,7 @@ export function buildTranslationUnitViews(
           unitId: unit.unitId,
           status: sentence.status,
           parts: translatedParts(sentence.content, source),
-          ...(sentence.status === "stale" ? { staleReason: "source-changed" as const } : {}),
+          ...(sentence.status === "stale" ? { staleReason: "source-changed" as const, sourceParts: source.parts } : {}),
         };
       }),
     };
