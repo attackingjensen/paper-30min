@@ -3088,6 +3088,8 @@ test("Markdown 外部变更自动同步，冲突与文件消失保留用户输�
   await page.getByLabel("笔记名称").fill("协作.md");
   await page.getByRole("button", { name: "创建笔记", exact: true }).click();
   const note = path.join(root, "notes/协作.md");
+  await expect(page.getByRole("dialog", { name: "新建笔记", exact: true })).toHaveCount(0);
+  await expect(page.locator(".markdown-preview")).toBeVisible();
   await fs.writeFile(note, "# Agent 首次写入\n");
   await expect(page.locator(".markdown-preview")).toContainText("Agent 首次写入");
   await page.getByRole("button", { name: "编辑", exact: true }).click();
