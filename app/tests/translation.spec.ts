@@ -4,6 +4,7 @@ import { parseDocumentTree } from "../src/shared/document/tree";
 import { buildReaderProjection, type ReaderUnitContent } from "../src/shared/reader/projection";
 import { createTranslationModelInput, parseTranslationModelOutput } from "../src/main/translation/model-io";
 import { runTranslationTask } from "../src/main/translation/task";
+import { TranslationModelRequestError } from "../src/main/translation/model-request";
 import { complexReaderTree } from "./fixtures/reader/complex-document";
 
 const testModelBudget = {
@@ -409,6 +410,8 @@ test.describe("translation 按需任务与模型 I/O", () => {
 
   test("合法片段重组后超过 2 MiB 的 unit 仍为 gap", async () => {
     const content = "x".repeat(1024 * 1024);
+    // 首片段重组后即超 2 MiB（原始响应仍在解析预算内）：追加后立即超限，第二片段不得再发送。
+    const firstContent = "x".repeat(2 * 1024 * 1024 - 144);
     const unitId = randomUUID();
     const unit: ReaderUnitContent = {
       unitId,
@@ -450,14 +453,21 @@ test.describe("translation 按需任务与模型 I/O", () => {
         return response(
           input.unit.unitId,
           sentenceIds,
-          sentenceIds.map(() => content),
+          sentenceIds.map((sentenceId) => (sentenceId === unit.sentences[0].sentenceId ? firstContent : content)),
         );
       },
     });
 
-    expect(calls).toHaveLength(2);
+    // crd.5 R8：每追加一个 fragment 即累计检查，超限立即停止后续片段。
+    expect(calls).toHaveLength(1);
     expect(result.units).toHaveLength(1);
-    expect(result.units[0]).toMatchObject({ status: "gap", diagnostic: expect.stringMatching(/2 MiB/) });
+    expect(result.units[0]).toMatchObject({
+      status: "gap",
+      sentenceFailures: [
+        { kind: "budget", diagnostic: expect.stringMatching(/2 MiB/) },
+        { kind: "budget", diagnostic: expect.stringMatching(/2 MiB/) },
+      ],
+    });
   });
 
   test("单句超出输入预算时不截断也不发送，其他单元继续", async () => {
@@ -497,7 +507,9 @@ test.describe("translation 按需任务与模型 I/O", () => {
 
     expect(calls).toEqual([fixture.target.unitId]);
     expect(result.units.map((unit) => unit.status)).toEqual(["gap", "ready"]);
-    expect(result.units[0]).toMatchObject({ diagnostic: expect.stringMatching(/模型输入预算/) });
+    expect(result.units[0]).toMatchObject({
+      sentenceFailures: [{ kind: "budget", diagnostic: expect.stringMatching(/模型输入预算/) }],
+    });
   });
 
   test("单语言逻辑内容达到 64 MiB 后，越界单元不能成为 ready", async () => {
@@ -531,7 +543,9 @@ test.describe("translation 按需任务与模型 I/O", () => {
     });
 
     expect(result.units.map((unit) => unit.status)).toEqual([...Array(32).fill("ready"), "gap"]);
-    expect(result.units[32]).toMatchObject({ diagnostic: expect.stringMatching(/64 MiB/) });
+    expect(result.units[32]).toMatchObject({
+      sentenceFailures: [{ kind: "budget", diagnostic: expect.stringMatching(/64 MiB/) }],
+    });
   });
 
   test("模型请求拒绝只使对应单元成为 gap", async () => {
@@ -557,7 +571,16 @@ test.describe("translation 按需任务与模型 I/O", () => {
 
     expect(calls).toEqual([fixture.abstract.unitId, fixture.intro.unitId]);
     expect(result.units.map((unit) => unit.status)).toEqual(["gap", "ready"]);
-    expect(result.units[0]).toMatchObject({ diagnostic: "翻译模型请求失败，请检查模型配置后重试。" });
+    // crd.5 R6：过宽文案预期改为分类断言——普通请求异常归为 network 类，不再冒充配置问题。
+    expect(result.units[0]).toMatchObject({
+      sentenceFailures: [
+        {
+          sentenceId: fixture.ids.inlineMathSentence,
+          kind: "network",
+          diagnostic: expect.stringMatching(/网络/),
+        },
+      ],
+    });
   });
 
   test("合法单元完成即回调发布，失败单元留 gap 不阻塞后续", async () => {
@@ -653,6 +676,197 @@ test.describe("translation 按需任务与模型 I/O", () => {
     });
 
     expect(result.units.map((unit) => unit.status)).toEqual(["gap", "ready"]);
-    expect(result.units[0]).toMatchObject({ diagnostic: expect.stringMatching(/受控写入失败|写入/) });
+    expect(result.units[0]).toMatchObject({
+      sentenceFailures: [{ kind: "commit", diagnostic: expect.stringMatching(/受控写入失败|写入/) }],
+    });
+  });
+
+  test("typed 请求错误按类别持久化诊断：限流、断网、超时、停止互不混淆且不含凭据", async () => {
+    const fixture = translationFixture();
+    const contents = validContents(fixture);
+    const kinds = ["rate-limit", "network", "timeout", "aborted"] as const;
+    const secret = "sk-typed-diagnostic-secret";
+    for (const kind of kinds) {
+      const result = await runTranslationTask({
+        baseRevision: "revision-current",
+        modelBudget: testModelBudget,
+        sourceLanguage: "en",
+        selectedLanguage: "zh",
+        units: [fixture.abstract, fixture.intro],
+        generate: async (input) => {
+          if (input.unit.unitId === fixture.abstract.unitId) throw new TranslationModelRequestError(kind);
+          return response(
+            fixture.intro.unitId,
+            fixture.intro.sentences.map((sentence) => sentence.sentenceId),
+            contents.intro,
+          );
+        },
+      });
+      expect(result.units.map((unit) => unit.status)).toEqual(["gap", "ready"]);
+      const failed = result.units[0];
+      if (failed.status !== "gap") throw new Error("失败单元应为 gap。");
+      expect(failed.sentenceFailures).toEqual([
+        { sentenceId: fixture.ids.inlineMathSentence, kind, diagnostic: expect.any(String) },
+      ]);
+      expect(failed.sentenceFailures[0].diagnostic).not.toContain(secret);
+    }
+    // 分类文案互不相同（SPEC §6.4 分别记录）。
+    const diagnostics = new Set<string>();
+    for (const kind of kinds) {
+      const result = await runTranslationTask({
+        baseRevision: "revision-current",
+        modelBudget: testModelBudget,
+        sourceLanguage: "en",
+        selectedLanguage: "zh",
+        units: [fixture.abstract],
+        generate: async () => {
+          throw new TranslationModelRequestError(kind);
+        },
+      });
+      const failed = result.units[0];
+      if (failed.status !== "gap") throw new Error("失败单元应为 gap。");
+      diagnostics.add(failed.sentenceFailures[0].diagnostic);
+    }
+    expect(diagnostics.size).toBe(kinds.length);
+  });
+
+  test("已有 unit 句级补译：同 unit 两目标句一成一败，合法句独立提交，失败句保留诊断", async () => {
+    const fixture = translationFixture();
+    const contents = validContents(fixture);
+    const [first, second] = fixture.intro.sentences;
+    const published: string[][] = [];
+    const result = await runTranslationTask({
+      baseRevision: "revision-current",
+      modelBudget: testModelBudget,
+      sourceLanguage: "en",
+      selectedLanguage: "zh",
+      units: [fixture.intro],
+      sentenceAtomic: true,
+      // 已有 unit（存在已提交句），两句都是本次目标 gap。
+      committedSentences: new Map([[fixture.intro.unitId, new Set<string>()]]),
+      onUnitReady: async (unit) => {
+        published.push(unit.sentences.map((sentence) => sentence.sentenceId));
+      },
+      generate: async (input) => {
+        const sentenceIds = input.unit.sentences.map((sentence) => sentence.sentenceId);
+        if (sentenceIds.includes(second.sentenceId)) throw new TranslationModelRequestError("rate-limit");
+        return response(input.unit.unitId, sentenceIds, [contents.intro[0]]);
+      },
+    });
+
+    // 每句独立请求与提交；失败句不拖累合法句。
+    expect(published).toEqual([[first.sentenceId]]);
+    const unitResult = result.units[0];
+    expect(unitResult.status).toBe("gap");
+    if (unitResult.status !== "gap") throw new Error("部分失败 unit 应表达句级诊断。");
+    expect(unitResult.sentenceFailures).toEqual([
+      { sentenceId: second.sentenceId, kind: "rate-limit", diagnostic: expect.stringMatching(/限流/) },
+    ]);
+  });
+
+  test("句级补译失败句不占用语言预算：接近上限时前句发布失败，后小句仍 ready", async () => {
+    const unitId = randomUUID();
+    const bigId = randomUUID();
+    const smallId = randomUUID();
+    const big = "x".repeat(2 * 1024 * 1024 - 4096);
+    const unit: ReaderUnitContent = {
+      unitId,
+      unitKind: "paragraph",
+      sentences: [
+        { sentenceId: bigId, unitId, parts: [{ kind: "text", text: big, start: 0, end: big.length }] },
+        { sentenceId: smallId, unitId, parts: [{ kind: "text", text: "Small tail.", start: 0, end: 11 }] },
+      ],
+    };
+    const fillerContent = "y".repeat(2 * 1024 * 1024 - 1024);
+    const fillers: ReaderUnitContent[] = Array.from({ length: 31 }, () => {
+      const fillerId = randomUUID();
+      const sentenceId = randomUUID();
+      return {
+        unitId: fillerId,
+        unitKind: "paragraph",
+        sentences: [
+          {
+            sentenceId,
+            unitId: fillerId,
+            parts: [{ kind: "text", text: fillerContent, start: 0, end: fillerContent.length }],
+          },
+        ],
+      };
+    });
+    const modelBudget = { contextWindow: 8 * 1024 * 1024, maxTokens: 4 * 1024 * 1024, safetyMarginTokens: 1024 };
+    const result = await runTranslationTask({
+      baseRevision: "revision-current",
+      modelBudget,
+      sourceLanguage: "en",
+      selectedLanguage: "zh",
+      units: [...fillers, unit],
+      sentenceAtomic: true,
+      committedSentences: new Map([[unitId, new Set<string>()]]),
+      onUnitReady: async (ready) => {
+        // 大句发布失败（存储拒绝）；其字节不得占用本轮语言预算。
+        if (ready.sentences.some((sentence) => sentence.sentenceId === bigId)) throw new Error("受控写入失败");
+      },
+      generate: async (input) =>
+        response(
+          input.unit.unitId,
+          input.unit.sentences.map((sentence) => sentence.sentenceId),
+          input.unit.sentences.map((sentence) =>
+            sentence.sentenceId === bigId ? big : sentence.sentenceId === smallId ? "小尾巴。" : fillerContent,
+          ),
+        ),
+    });
+
+    const tail = result.units[result.units.length - 1];
+    expect(tail.status).toBe("gap");
+    if (tail.status !== "gap") throw new Error("部分失败 unit 应为 gap。");
+    expect(tail.sentenceFailures).toEqual([
+      { sentenceId: bigId, kind: "commit", diagnostic: expect.stringMatching(/受控写入失败/) },
+    ]);
+    // 31 个 filler 已接近 64 MiB；大句发布失败不占预算，小句仍成功提交。
+    expect(result.units.slice(0, 31).every((ready) => ready.status === "ready")).toBe(true);
+  });
+
+  test("整单元发布失败不占用语言预算：接近上限时后续小 unit 仍 ready", async () => {
+    const content = "x".repeat(2 * 1024 * 1024 - 1024);
+    const units: ReaderUnitContent[] = Array.from({ length: 33 }, () => {
+      const unitId = randomUUID();
+      const sentenceId = randomUUID();
+      return {
+        unitId,
+        unitKind: "paragraph",
+        sentences: [{ sentenceId, unitId, parts: [{ kind: "text", text: content, start: 0, end: content.length }] }],
+      };
+    });
+    const smallId = randomUUID();
+    const smallSentence = randomUUID();
+    units.push({
+      unitId: smallId,
+      unitKind: "paragraph",
+      sentences: [
+        { sentenceId: smallSentence, unitId: smallId, parts: [{ kind: "text", text: "Small.", start: 0, end: 6 }] },
+      ],
+    });
+    const failingUnit = units[32].unitId;
+    const result = await runTranslationTask({
+      baseRevision: "revision-current",
+      modelBudget: { contextWindow: 8 * 1024 * 1024, maxTokens: 4 * 1024 * 1024, safetyMarginTokens: 0 },
+      sourceLanguage: "en",
+      selectedLanguage: "zh",
+      units,
+      onUnitReady: async (unit) => {
+        if (unit.unitId === failingUnit) throw new Error("受控写入失败");
+      },
+      generate: async (input) =>
+        response(
+          input.unit.unitId,
+          [input.unit.sentences[0].sentenceId],
+          [input.unit.unitId === smallId ? "小单元。" : content],
+        ),
+    });
+
+    // 前 32 个 unit 占满约 64 MiB；第 33 个发布失败不占预算，小 unit 仍 ready。
+    expect(result.units.slice(0, 32).every((unit) => unit.status === "ready")).toBe(true);
+    expect(result.units[32]).toMatchObject({ status: "gap" });
+    expect(result.units[33]).toMatchObject({ status: "ready", committed: false });
   });
 });

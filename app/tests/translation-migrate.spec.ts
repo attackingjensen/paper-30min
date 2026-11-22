@@ -17,6 +17,7 @@ import {
 import { translationSourceUnits } from "../src/main/translation/run";
 import { parseDocumentTree, type DocumentTree } from "../src/shared/document/tree";
 import { appendRemovedTombstones, createDocumentChangeset, type Tombstone } from "../src/shared/document/changeset";
+import { sentenceSourceDigest } from "../src/main/translation/store";
 import type { TranslationGenerator } from "../src/shared/translation/contracts";
 
 const generator: TranslationGenerator = {
@@ -215,21 +216,40 @@ test.describe("translation 正文更新后的局部 stale 迁移", () => {
     expect(projection.translationRevision).not.toBe(a.committed.translationRevision);
     const unitA = projection.units.find((unit) => unit.unitId === ids.unitA)!;
     const byId = new Map(unitA.sentences.map((sentence) => [sentence.sentenceId, sentence]));
-    // retained：s1 译文、atom 与 generator 事实原样保留。
-    expect(byId.get(ids.s1)).toEqual({ sentenceId: ids.s1, status: "ready", content: a.sentences[0].content });
-    expect(unitA.generator).toEqual(generator);
-    // changed：仅 s2 stale，旧译文保留，不冒充最新。
-    expect(byId.get(ids.s2)).toEqual({
+    // retained：s1 译文、atom 与 generator 事实原样保留（句级事实）。
+    expect(byId.get(ids.s1)).toMatchObject({
+      sentenceId: ids.s1,
+      status: "ready",
+      content: a.sentences[0].content,
+      generator,
+    });
+    expect(byId.get(ids.s1)!.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(byId.get(ids.s1)!.translationSha256).toMatch(/^[a-f0-9]{64}$/);
+    // changed：仅 s2 stale，旧译文与旧 sourceSha 保留，不冒充最新。
+    const staleS2 = byId.get(ids.s2)!;
+    expect(staleS2).toMatchObject({
       sentenceId: ids.s2,
       status: "stale",
       staleReason: "source-changed",
       content: a.sentences[1].content,
+      generator,
     });
-    // added：新句为 gap，由消费方按最新原文显示。
-    expect(byId.get(added)).toEqual({ sentenceId: added, status: "gap", content: null });
+    expect(staleS2.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(staleS2.sourceSha256).not.toBe(sentenceSourceDigest(next, ids.s2));
+    // added：新句为 gap，摘要与 generator 事实为 null。
+    expect(byId.get(added)).toEqual({
+      sentenceId: added,
+      status: "gap",
+      content: null,
+      sourceSha256: null,
+      translationSha256: null,
+      generator: null,
+    });
     // moved：unitB 不 stale，阅读位置以新树为准。
     const unitB = projection.units.find((unit) => unit.unitId === ids.unitB)!;
-    expect(unitB.sentences).toEqual([{ sentenceId: ids.sB, status: "ready", content: b.sentences[0].content }]);
+    expect(unitB.sentences).toMatchObject([
+      { sentenceId: ids.sB, status: "ready", content: b.sentences[0].content, generator },
+    ]);
 
     // 旧侧车不被修改：失效诊断只属于新 revision。
     const oldIndex = JSON.parse(
@@ -318,14 +338,62 @@ test.describe("translation 正文更新后的局部 stale 迁移", () => {
     const projection = await readTranslationProjection(created.root, second.revisionId, "zh");
     // 新单元没有任何已提交译文：全部 gap，不重挂旧译文。
     expect(projection.units).toEqual([]);
-    expect((projection.retired ?? []).map((entry) => [entry.sentenceId, entry.reason]).sort()).toEqual(
-      [
-        [ids.s1, "split"],
-        [ids.s2, "split"],
-        [ids.s3, "split"],
-        [ids.sB, "removed"],
-      ].sort(),
+    const bySentence = (left: [string, string], right: [string, string]) => left[0].localeCompare(right[0]);
+    expect(
+      (projection.retired ?? []).map((entry) => [entry.sentenceId, entry.reason] as [string, string]).sort(bySentence),
+    ).toEqual(
+      (
+        [
+          [ids.s1, "split"],
+          [ids.s2, "split"],
+          [ids.s3, "split"],
+          [ids.sB, "removed"],
+        ] as [string, string][]
+      ).sort(bySentence),
     );
+    expect((projection.retired ?? []).every((entry) => entry.content.length > 0)).toBe(true);
+  });
+
+  test("合并单元：旧句以 merged 原因只进失效诊断，新句为 gap，不自动重挂", async () => {
+    const paperId = randomUUID();
+    const { tree, ids } = migrationTree(paperId);
+    const { created, revision, source } = await projectWithTree("合并退役", tree);
+    await translateUnit(created.root, revision.revisionId, tree, ids.unitA);
+    await translateUnit(created.root, revision.revisionId, tree, ids.unitB);
+
+    // unitA 与 unitB 合并为一个新单元：全部旧句以 merged 原因显式退役。
+    const next = structuredClone(tree);
+    const mergedUnit = randomUUID();
+    const mergedSentence = randomUUID();
+    delete next.units[ids.unitA];
+    delete next.units[ids.unitB];
+    for (const sentenceId of [ids.s1, ids.s2, ids.s3, ids.sB]) delete next.sentences[sentenceId];
+    delete next.atoms[ids.atom];
+    next.units[mergedUnit] = {
+      id: mergedUnit,
+      sectionId: ids.section,
+      kind: "paragraph",
+      sentenceIds: [mergedSentence],
+    };
+    next.sentences[mergedSentence] = {
+      id: mergedSentence,
+      unitId: mergedUnit,
+      content: [{ kind: "text", text: "Energy stays constant; results improve and a second paragraph closes." }],
+    };
+    next.sections[ids.section].unitIds = [mergedUnit];
+    next.blocks = [{ id: randomUUID(), sectionId: ids.section, kind: "unit", unitId: mergedUnit }];
+    const explicit: Tombstone[] = [ids.s1, ids.s2, ids.s3, ids.sB].map((sentenceId) => ({
+      nodeType: "sentence",
+      nodeId: sentenceId,
+      lastRevision: revision.revisionId,
+      excerpt: tree.sentences[sentenceId].content.map((part) => (part.kind === "text" ? part.text : "")).join(""),
+      reason: "merged",
+    }));
+    const second = await publishNext(created.root, revision.revisionId, source.sourceSnapshotId, tree, next, explicit);
+
+    const projection = await readTranslationProjection(created.root, second.revisionId, "zh");
+    expect(projection.units).toEqual([]);
+    expect((projection.retired ?? []).map((entry) => entry.reason)).toEqual(["merged", "merged", "merged", "merged"]);
     expect((projection.retired ?? []).every((entry) => entry.content.length > 0)).toBe(true);
   });
 
@@ -350,7 +418,7 @@ test.describe("translation 正文更新后的局部 stale 迁移", () => {
     expect(projection.retired).toEqual([]);
   });
 
-  test("无已提交译文时不写迁移侧车；迁移失败不阻断 current 发布", async () => {
+  test("无已提交译文时迁移零写入：不产生侧车，current 正常发布", async () => {
     const paperId = randomUUID();
     const { tree, ids } = migrationTree(paperId);
     const { created, revision, source } = await projectWithTree("无译文迁移", tree);
@@ -362,5 +430,91 @@ test.describe("translation 正文更新后的局部 stale 迁移", () => {
     const projection = await readTranslationProjection(created.root, second.revisionId, "zh");
     expect(projection.translationRevision).toBeNull();
     expect(projection.units).toEqual([]);
+  });
+
+  test("跨 unit moved 句按新树归属迁移：保持 ready，不 stale、不 tombstone、不重复", async () => {
+    const paperId = randomUUID();
+    const { tree, ids } = migrationTree(paperId);
+    const { created, revision, source } = await projectWithTree("跨单元移动", tree);
+    const a = await translateUnit(created.root, revision.revisionId, tree, ids.unitA);
+    const b = await translateUnit(created.root, revision.revisionId, tree, ids.unitB);
+
+    // s2 身份与内容不变，仅从 unitA 移到 unitB（document-core 分类 moved）。
+    const next = structuredClone(tree);
+    next.units[ids.unitA].sentenceIds = [ids.s1, ids.s3];
+    next.units[ids.unitB].sentenceIds = [ids.s2, ids.sB];
+    next.sentences[ids.s2].unitId = ids.unitB;
+    const second = await publishNext(created.root, revision.revisionId, source.sourceSnapshotId, tree, next);
+
+    const projection = await readTranslationProjection(created.root, second.revisionId, "zh");
+    const unitA = projection.units.find((unit) => unit.unitId === ids.unitA)!;
+    const unitB = projection.units.find((unit) => unit.unitId === ids.unitB)!;
+    expect(unitA.sentences.map((sentence) => sentence.sentenceId)).toEqual([ids.s1, ids.s3]);
+    // moved 句进入目标 unit，按新树顺序组装；内容与 generator 事实不变，不 stale。
+    expect(unitB.sentences.map((sentence) => sentence.sentenceId)).toEqual([ids.s2, ids.sB]);
+    expect(unitB.sentences[0]).toMatchObject({
+      sentenceId: ids.s2,
+      status: "ready",
+      content: a.sentences[1].content,
+      generator,
+    });
+    expect(unitB.sentences[1]).toMatchObject({ sentenceId: ids.sB, status: "ready", content: b.sentences[0].content });
+    expect(projection.retired).toEqual([]);
+    // 全局不重复：每个句子 ID 只出现一次。
+    const allIds = projection.units.flatMap((unit) => unit.sentences.map((sentence) => sentence.sentenceId));
+    expect(new Set(allIds).size).toBe(allIds.length);
+  });
+
+  test("保留句删除旧 atom：迁移不阻断发布，旧译文判 stale，后续句级提交仍可推进", async () => {
+    const paperId = randomUUID();
+    const { tree, ids } = migrationTree(paperId);
+    const { created, revision, source } = await projectWithTree("atom删除迁移", tree);
+    const a = await translateUnit(created.root, revision.revisionId, tree, ids.unitA);
+
+    // s1 保留同 ID 但改写为纯文本，atom 整体删除；s2/s3 不变。
+    const next = structuredClone(tree);
+    next.sentences[ids.s1].content = [{ kind: "text", text: "Energy stays constant in this study." }];
+    delete next.atoms[ids.atom];
+    const second = await publishNext(created.root, revision.revisionId, source.sourceSnapshotId, tree, next);
+
+    const projection = await readTranslationProjection(created.root, second.revisionId, "zh");
+    const unitA = projection.units.find((unit) => unit.unitId === ids.unitA)!;
+    const byId = new Map(unitA.sentences.map((sentence) => [sentence.sentenceId, sentence]));
+    expect(byId.get(ids.s1)).toMatchObject({
+      status: "stale",
+      staleReason: "source-changed",
+      content: a.sentences[0].content,
+      atoms: [tree.atoms[ids.atom]],
+    });
+    expect(byId.get(ids.s2)!.status).toBe("ready");
+    expect(byId.get(ids.s3)!.status).toBe("ready");
+    expect(projection.retired).toEqual([]);
+
+    // 迁移后显式句级提交（merge）：kept stale 句的旧 atom 已删，不得阻断提交。
+    const nextUnit = translationSourceUnits(next).find((candidate) => candidate.unitId === ids.unitA)!;
+    const replacement = [
+      { sentenceId: ids.s2, content: [{ kind: "text" as const, text: "新译：Results improve steadily." }] },
+    ];
+    const committed = await commitTranslationUnit({
+      root: created.root,
+      baseRevision: second.revisionId,
+      language: "zh",
+      generator: { ...generator, model: "controlled-translate-v2" },
+      unit: { unitId: ids.unitA, sentences: replacement },
+      digests: translationSentenceDigests(next, nextUnit, replacement),
+      merge: true,
+    });
+    expect(committed.translationRevision).toMatch(/^[0-9a-f-]{36}$/);
+    const after = await readTranslationProjection(created.root, second.revisionId, "zh");
+    const afterA = after.units.find((unit) => unit.unitId === ids.unitA)!;
+    const afterById = new Map(afterA.sentences.map((sentence) => [sentence.sentenceId, sentence]));
+    expect(afterById.get(ids.s2)).toMatchObject({
+      status: "ready",
+      content: replacement[0].content,
+      generator: { ...generator, model: "controlled-translate-v2" },
+    });
+    // 未触碰句保留旧事实：s1 仍 stale 且旧译文/快照保留，s3 generator 不变。
+    expect(afterById.get(ids.s1)).toMatchObject({ status: "stale", content: a.sentences[0].content, generator });
+    expect(afterById.get(ids.s3)).toMatchObject({ status: "ready", generator });
   });
 });

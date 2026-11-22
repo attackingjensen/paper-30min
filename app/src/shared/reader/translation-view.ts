@@ -2,13 +2,25 @@
 // ready 句显示译文并携带译文逻辑偏移（atom 占一个逻辑位置）；
 // gap 句回退当前原文锚点，不包装成译文 range；stale 句保留旧译文并显著标识。
 // 本模块进程中立：输入是原文投影＋主进程验证后的翻译投影，不读磁盘、不发请求。
-import type { ReaderInlinePart, ReaderItem, ReaderSentence, ReaderUnitContent } from "./projection.js";
-import type { TranslationProjection, TranslationUnitProjection } from "../translation/contracts.js";
+import {
+  projectAtom,
+  type ReaderAtom,
+  type ReaderInlinePart,
+  type ReaderItem,
+  type ReaderSentence,
+  type ReaderUnitContent,
+} from "./projection.js";
+import type {
+  TranslationAtomSnapshot,
+  TranslationProjection,
+  TranslationSentenceStatus,
+  TranslationUnitProjection,
+} from "../translation/contracts.js";
 
 export interface TranslationSentenceView {
   sentenceId: string;
   unitId: string;
-  status: "ready" | "gap" | "stale";
+  status: TranslationSentenceStatus;
   /** ready/stale 为译文片段（含逻辑偏移）；gap 为当前原文片段（原文锚点）。 */
   parts: ReaderInlinePart[];
   staleReason?: "source-changed";
@@ -23,13 +35,17 @@ export interface TranslationUnitView {
 }
 
 /** 把译文内容投影为带逻辑偏移的片段：text 计 UTF-16 长度，atom 占一个位置。
- * atom 复用原文树的完整结构（KaTeX/链接/引用渲染与原文一致）。 */
+ * ready 复用当前原文树 atom（内容指纹一致）；stale 只从提交时旧 atom 快照重建
+ * （快照缺省的旧格式回退当前树，仅适用于未变 atom），当前树 atom 已改/已删不影响展示。 */
 function translatedParts(
   content: NonNullable<TranslationUnitProjection["sentences"][number]["content"]>,
   source: ReaderSentence,
+  snapshots?: readonly TranslationAtomSnapshot[],
 ): ReaderInlinePart[] {
-  const atoms = new Map(
-    source.parts.flatMap((part) => (part.kind === "atom" ? [[part.atom.id, part.atom] as const] : [])),
+  const atoms = new Map<string, ReaderAtom>(
+    snapshots
+      ? snapshots.map((atom) => [atom.id, projectAtom(atom)] as const)
+      : source.parts.flatMap((part) => (part.kind === "atom" ? [[part.atom.id, part.atom] as const] : [])),
   );
   let cursor = 0;
   return content.map((part) => {
@@ -39,7 +55,7 @@ function translatedParts(
       return { kind: "text", text: part.text, start, end: cursor };
     }
     const atom = atoms.get(part.atomId);
-    if (!atom) throw new Error(`译文 atom 在原句中不存在：${part.atomId}。`);
+    if (!atom) throw new Error(`译文 atom 缺少可用快照或原文结构：${part.atomId}。`);
     const start = cursor;
     cursor += 1;
     return { kind: "atom", atom, start, end: cursor };
@@ -67,7 +83,7 @@ export function buildTranslationUnitViews(
           sentenceId: source.sentenceId,
           unitId: unit.unitId,
           status: sentence.status,
-          parts: translatedParts(sentence.content, source),
+          parts: translatedParts(sentence.content, source, sentence.status === "stale" ? sentence.atoms : undefined),
           ...(sentence.status === "stale" ? { staleReason: "source-changed" as const, sourceParts: source.parts } : {}),
         };
       }),

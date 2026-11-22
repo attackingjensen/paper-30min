@@ -73,8 +73,8 @@ function invoke<T>(command: CoreCommand): Promise<T> {
   return page.evaluate((c) => window.desktop.invoke(c), command) as Promise<T>;
 }
 
-/** 两个英文单元的真实树：摘要＋正文段落，各一句。 */
-function englishTree(paperId: string) {
+/** 两个英文单元的真实树：摘要＋正文段落，各一句。long：摘要多句使正文可滚出首屏。 */
+function englishTree(paperId: string, options: { long?: boolean } = {}) {
   const ids = {
     section: randomUUID(),
     abstract: randomUUID(),
@@ -82,6 +82,35 @@ function englishTree(paperId: string) {
     body: randomUUID(),
     bodySentence: randomUUID(),
   };
+  const abstractSentenceIds = [ids.abstractSentence];
+  const sentences: DocumentTree["sentences"] = {
+    [ids.abstractSentence]: {
+      id: ids.abstractSentence,
+      unitId: ids.abstract,
+      content: [{ kind: "text", text: "We study progressive reading of scientific papers." }],
+    },
+    [ids.bodySentence]: {
+      id: ids.bodySentence,
+      unitId: ids.body,
+      content: [{ kind: "text", text: "Translations appear unit by unit while the task runs." }],
+    },
+  };
+  if (options.long) {
+    for (let index = 0; index < 14; index++) {
+      const sentenceId = randomUUID();
+      abstractSentenceIds.push(sentenceId);
+      sentences[sentenceId] = {
+        id: sentenceId,
+        unitId: ids.abstract,
+        content: [
+          {
+            kind: "text",
+            text: `Background sentence ${index} explains the reading pipeline in considerable detail so that the abstract spans well beyond a single viewport height.`,
+          },
+        ],
+      };
+    }
+  }
   const tree: DocumentTree = {
     documentFormatVersion: 1,
     paperId,
@@ -99,22 +128,11 @@ function englishTree(paperId: string) {
         id: ids.abstract,
         sectionId: ids.section,
         kind: "abstract",
-        sentenceIds: [ids.abstractSentence],
+        sentenceIds: abstractSentenceIds,
       },
       [ids.body]: { id: ids.body, sectionId: ids.section, kind: "paragraph", sentenceIds: [ids.bodySentence] },
     },
-    sentences: {
-      [ids.abstractSentence]: {
-        id: ids.abstractSentence,
-        unitId: ids.abstract,
-        content: [{ kind: "text", text: "We study progressive reading of scientific papers." }],
-      },
-      [ids.bodySentence]: {
-        id: ids.bodySentence,
-        unitId: ids.body,
-        content: [{ kind: "text", text: "Translations appear unit by unit while the task runs." }],
-      },
-    },
+    sentences,
     atoms: {},
     blocks: [
       { id: randomUUID(), sectionId: ids.section, kind: "unit", unitId: ids.abstract },
@@ -124,10 +142,10 @@ function englishTree(paperId: string) {
   return { tree, ids };
 }
 
-async function englishProject(name: string) {
+async function englishProject(name: string, options: { long?: boolean } = {}) {
   const created = await invoke<ProjectCoreSnapshot>({ type: "coreCreate", parent: sandbox, name });
   const paperId = created.manifest.paper.id;
-  const { tree, ids } = englishTree(paperId);
+  const { tree, ids } = englishTree(paperId, options);
   const source = await page.evaluate(
     ({ root }) =>
       window.desktop.invoke<SourceSnapshotRecord>({
@@ -169,8 +187,9 @@ async function openFolder(root: string) {
   await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
 }
 
-/** 受控翻译模型端点：按请求单元返回合法译文；可门控延迟以观察渐进发布。 */
-function controlledServer(options: { hold?: Promise<void>; failUnit?: string }) {
+/** 受控翻译模型端点：按请求单元返回合法译文；可门控延迟以观察渐进发布。
+ * hold：全局门控；holdUnit：按单元独立门控（验证逐单元渐进可见）。 */
+function controlledServer(options: { hold?: Promise<void>; holdUnit?: Map<string, Promise<void>>; failUnit?: string }) {
   const calls: string[] = [];
   const server: Server = createServer(async (request, response) => {
     let raw = "";
@@ -183,6 +202,8 @@ function controlledServer(options: { hold?: Promise<void>; failUnit?: string }) 
     };
     calls.push(prompt.unit.unitId);
     if (options.hold) await options.hold;
+    const unitHold = options.holdUnit?.get(prompt.unit.unitId);
+    if (unitHold) await unitHold;
     if (options.failUnit === prompt.unit.unitId) {
       response.writeHead(500, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: { message: "受控单元失败" } }));
@@ -237,9 +258,15 @@ async function stopServer(server: Server) {
 }
 
 test("translation 语言切换渐进阅读：ready 译文、gap 原文回退、离线重开与不重复请求", async () => {
-  const { created, ids } = await englishProject("翻译工程");
-  const hold = Promise.withResolvers<void>();
-  const { server, calls } = controlledServer({ hold: hold.promise });
+  const { created, ids } = await englishProject("翻译工程", { long: true });
+  const abstractHold = Promise.withResolvers<void>();
+  const bodyHold = Promise.withResolvers<void>();
+  const { server, calls } = controlledServer({
+    holdUnit: new Map([
+      [ids.abstract, abstractHold.promise],
+      [ids.body, bodyHold.promise],
+    ]),
+  });
   const endpoint = await startServer(server);
   try {
     await configureModel(endpoint);
@@ -257,13 +284,42 @@ test("translation 语言切换渐进阅读：ready 译文、gap 原文回退、�
     await expect(abstractSentence.locator(".reader-translation-note")).toHaveText("未翻译");
     await expect(reader.locator(".reader-translation-status")).toContainText("可能产生模型费用");
 
-    // 放行受控响应：两个单元渐进变为 ready，无需 reload。
-    hold.resolve();
+    // 逐单元渐进：先放行 abstract，body 仍在途——abstract 立即可读，body 保持 gap 原文。
+    abstractHold.resolve();
     await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
     await expect(abstractSentence).toContainText("译文：We study progressive reading");
     const bodySentence = reader.locator(`[data-sentence-id="${ids.bodySentence}"]`);
-    await expect(bodySentence).toHaveAttribute("data-translation-status", "ready");
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "gap");
+    await expect(bodySentence).toContainText("Translations appear unit by unit");
+    // 阅读位置稳定：滚到接近文末，使 body 单元成为视口锚点（摘要在上方）；
+    // 放行 body 后上方摘要译文已就绪、body 自身长度变化由锚点重对齐吸收。
+    const readerBox = (await reader.boundingBox())!;
+    await page.mouse.move(readerBox.x + readerBox.width / 2, readerBox.y + readerBox.height / 2);
+    await page.mouse.wheel(0, 100000);
+    await page.waitForTimeout(300);
+    const anchorBefore = await page.evaluate(() => {
+      const container = document.querySelector(".full-reader")!.parentElement!;
+      const containerTop = container.getBoundingClientRect().top;
+      for (const element of Array.from(document.querySelectorAll<HTMLElement>("[data-unit-id], [data-section-id]"))) {
+        const rect = element.getBoundingClientRect();
+        if (rect.height === 0 || rect.bottom <= containerTop + 1) continue;
+        return {
+          id: element.getAttribute("data-unit-id") ?? element.getAttribute("data-section-id"),
+          rel: rect.top - containerTop,
+        };
+      }
+      throw new Error("无可见锚点");
+    });
+    bodyHold.resolve();
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
     await expect(bodySentence).toContainText("译文：Translations appear unit by unit");
+    await page.waitForTimeout(300);
+    const anchorAfter = await page.evaluate((anchorId) => {
+      const container = document.querySelector(".full-reader")!.parentElement!;
+      const element = document.querySelector(`[data-unit-id="${anchorId}"], [data-section-id="${anchorId}"]`)!;
+      return element.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    }, anchorBefore.id);
+    expect(Math.abs(anchorAfter - anchorBefore.rel)).toBeLessThanOrEqual(4);
     expect(calls.sort()).toEqual([ids.abstract, ids.body].sort());
 
     // 切回原文再切中文：已有译文只切换视图，不重复请求。
@@ -290,7 +346,8 @@ test("translation 语言切换渐进阅读：ready 译文、gap 原文回退、�
     );
     await expect(reopened.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toContainText("译文：Translations");
   } finally {
-    hold.resolve();
+    abstractHold.resolve();
+    bodyHold.resolve();
     await stopServer(server).catch(() => undefined);
   }
 });
@@ -488,6 +545,189 @@ test("translation 译文精确选区：quote 来自译文投影，gap 原文不�
         .at(-1),
     ).toBe("> study ");
   } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 语言直接互切：旧语言译文不冒充新视图，读取期间显示原文锚点", async () => {
+  const { created, ids } = await englishProject("语言互切工程");
+  const { server, calls } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await expect(abstractSentence).toContainText("译文：We study progressive reading");
+    const before = calls.length;
+
+    // 中文 → English 直接互切：源语言即英文，不创建任务；
+    // 旧中文投影立即退出渲染，不得以 English 视图显示中文 ready 译文。
+    await reader.getByRole("button", { name: "English", exact: true }).click();
+    await expect(reader).toHaveAttribute("data-language-view", "en");
+    await expect(abstractSentence).not.toContainText("译文：");
+    await expect(reader.locator(".reader-translation-status")).toContainText("目标语言与原文相同");
+    expect(calls.length).toBe(before);
+
+    // 切回中文：已有译文只切换视图，不重复请求。
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toContainText("译文：We study progressive reading", { timeout: 30000 });
+    expect(calls.length).toBe(before);
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 跨旧译文与最新原文对照区的选区不产出译文工具条", async () => {
+  const { created, ids, tree } = await englishProject("跨界选区工程");
+  const { server } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+
+    // 修正原文发布新 current：abstract 句 stale，展开最新原文对照区。
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    const unit = reader.locator(`[data-unit-id="${ids.abstract}"]`);
+    await unit.getByRole("button", { name: /修正单元/ }).click();
+    const host = reader.locator(".correction-host");
+    const original = unitEditText(tree, ids.abstract);
+    await host.locator(".correction-text").fill(original.replace("progressive reading", "progressive close reading"));
+    await host.getByRole("button", { name: "预览 changeset" }).click();
+    await expect(host.locator(".correction-preview")).toBeVisible();
+    await host.getByRole("button", { name: "确认发布新 revision" }).click();
+    await expect(host).toHaveCount(0);
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
+    await abstractSentence.getByRole("button", { name: "查看最新原文" }).click();
+    const comparison = abstractSentence.locator(".reader-stale-source");
+    await expect(comparison).toContainText("progressive close reading");
+
+    // 选区从旧译文片段开始、在对照区原文结束：共同祖先在对照区外，仍须拒绝。
+    await page.evaluate((sentenceId) => {
+      const sentence = document.querySelector(`[data-sentence-id="${sentenceId}"]`)!;
+      const translated = sentence.querySelector('[data-start="0"]')!;
+      const source = sentence.querySelector("[data-stale-source] [data-start]")!;
+      if (!translated.firstChild || !source.firstChild) throw new Error("选区端点片段不存在");
+      const range = document.createRange();
+      range.setStart(translated.firstChild, 0);
+      range.setEnd(source.firstChild, Math.min(10, source.firstChild.textContent?.length ?? 0));
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.querySelector(".full-reader")!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    }, ids.abstractSentence);
+    await expect(page.locator(".reader-selection-toolbar")).toHaveCount(0);
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可读，gap 不触发恢复请求", async () => {
+  const { created, ids, tree } = await englishProject("混合离线工程");
+  const { server, calls } = controlledServer({ failUnit: ids.body });
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    const bodySentence = reader.locator(`[data-sentence-id="${ids.bodySentence}"]`);
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "gap", { timeout: 30000 });
+
+    // 修正 abstract 原文：迁移后 abstract stale、body 仍 gap。
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    const unit = reader.locator(`[data-unit-id="${ids.abstract}"]`);
+    await unit.getByRole("button", { name: /修正单元/ }).click();
+    const host = reader.locator(".correction-host");
+    const original = unitEditText(tree, ids.abstract);
+    await host.locator(".correction-text").fill(original.replace("progressive reading", "progressive close reading"));
+    await host.getByRole("button", { name: "预览 changeset" }).click();
+    await expect(host.locator(".correction-preview")).toBeVisible();
+    await host.getByRole("button", { name: "确认发布新 revision" }).click();
+    await expect(host).toHaveCount(0);
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "gap");
+
+    // 离线重开：断开受控服务后 stale 旧译文与 gap 原文都可读，不发起任何模型请求。
+    const beforeReopen = calls.length;
+    await closeDesktopForCleanup();
+    await stopServer(server);
+    await launch();
+    await openFolder(created.root);
+    const reopened = page.locator(".full-reader");
+    await expect(reopened).toBeVisible();
+    await reopened.getByRole("button", { name: "中文", exact: true }).click();
+    const reopenedAbstract = reopened.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    await expect(reopenedAbstract).toHaveAttribute("data-translation-status", "stale", { timeout: 30000 });
+    await expect(reopenedAbstract).toContainText("译文：We study progressive reading");
+    await expect(reopenedAbstract.locator(".reader-translation-note.stale")).toHaveText("已过期");
+    const reopenedBody = reopened.locator(`[data-sentence-id="${ids.bodySentence}"]`);
+    await expect(reopenedBody).toHaveAttribute("data-translation-status", "gap");
+    await expect(reopenedBody).toContainText("Translations appear unit by unit");
+    expect(calls.length).toBe(beforeReopen);
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 用户停止：未发送批次取消，合法完成项保留，同指纹不再自动请求", async () => {
+  const { created, ids } = await englishProject("停止工程");
+  const abstractHold = Promise.withResolvers<void>();
+  const bodyHold = Promise.withResolvers<void>();
+  const { server, calls } = controlledServer({
+    holdUnit: new Map([
+      [ids.abstract, abstractHold.promise],
+      [ids.body, bodyHold.promise],
+    ]),
+  });
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    const bodySentence = reader.locator(`[data-sentence-id="${ids.bodySentence}"]`);
+    await expect(reader.locator(".reader-translation-status")).toContainText("可能产生模型费用");
+
+    // 放行 abstract 使其合法完成；body 仍在途时停止。
+    abstractHold.resolve();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await reader.getByRole("button", { name: "停止翻译" }).click();
+    await expect(reader.locator(".reader-translation-status")).toContainText("已停止翻译", { timeout: 30000 });
+    // 合法完成项保留；body 未发送/被取消，保持 gap 原文。
+    await expect(abstractSentence).toContainText("译文：We study progressive reading");
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "gap");
+    const afterStop = calls.length;
+
+    // 停止后切回再切中文：同指纹不再自动请求。
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toContainText("译文：We study progressive reading", { timeout: 30000 });
+    expect(calls.length).toBe(afterStop);
+
+    // 手动补译缺口仍可显式发起。
+    bodyHold.resolve();
+    await reader.getByRole("button", { name: /补译缺口/ }).click();
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    expect(calls.length).toBeGreaterThan(afterStop);
+  } finally {
+    abstractHold.resolve();
+    bodyHold.resolve();
     await stopServer(server).catch(() => undefined);
   }
 });

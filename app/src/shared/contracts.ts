@@ -343,6 +343,11 @@ export type CoreCommand =
       type: "coreTranslationUpdateStale";
       root: string;
       language: "zh" | "en";
+    }
+  | {
+      type: "coreTranslationStop";
+      root: string;
+      language: "zh" | "en";
     };
 
 /** arXiv 组合入口经生产 IPC 的结果（SPEC-arxiv-import §6–7）。 */
@@ -399,7 +404,14 @@ export type TranslationStartCommandResult =
   | {
       status: "finished";
       units: Array<
-        { status: "ready"; unitId: string; committed: boolean } | { status: "gap"; unitId: string; diagnostic: string }
+        | { status: "ready"; unitId: string; committed: boolean }
+        | {
+            status: "gap";
+            unitId: string;
+            diagnostic: string;
+            /** 句级失败事实（fill-gaps/update-stale 句级原子提交）；整单元失败时可选。 */
+            sentences?: Array<{ sentenceId: string; kind: string; diagnostic: string }>;
+          }
       >;
       projection: TranslationProjection;
     };

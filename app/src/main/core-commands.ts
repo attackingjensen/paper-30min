@@ -53,7 +53,7 @@ import { arxivFetch } from "./arxiv/transport.js";
 import type { ArxivFetchOptions, ArxivFetchResponse, ArxivTransport } from "./arxiv/fetch.js";
 import type { ModelConfig } from "./agent-settings.js";
 import { readTranslationProjection } from "./translation/store.js";
-import { runProjectTranslation } from "./translation/run.js";
+import { runProjectTranslation, stopTranslationTasks } from "./translation/run.js";
 import { translationInheritCommitHooks } from "./translation/migrate.js";
 import { createDocumentChangeset, type Tombstone } from "../shared/document/changeset.js";
 import type { ProjectCommitHooks } from "./project-core.js";
@@ -118,6 +118,7 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   coreTranslationStart: true,
   coreTranslationFillGaps: true,
   coreTranslationUpdateStale: true,
+  coreTranslationStop: true,
 };
 
 export function isCoreCommand(command: { type: string }): command is CoreCommand {
@@ -165,6 +166,10 @@ export async function dispatchCoreCommand(
               : "generate",
         ...(translation.onCommitted ? { onCommitted: translation.onCommitted } : {}),
       });
+    case "coreTranslationStop":
+      // 用户停止：取消未发送批次并等待在途落定；合法完成项已保存，
+      // 不谎称撤回模型费用。停止后同指纹不再自动启动（run 层登记）。
+      return stopTranslationTasks(command.root, command.language);
     case "coreCreate":
       return createProject({ parent: command.parent, name: command.name });
     case "coreOpen":

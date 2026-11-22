@@ -16,7 +16,7 @@ import {
   readTranslationProjection,
   translationSentenceDigests,
 } from "../src/main/translation/store";
-import { createTranslationModelSession } from "../src/main/translation/model-request";
+import { createTranslationModelSession, TranslationModelRequestError } from "../src/main/translation/model-request";
 import { createTranslationModelInput } from "../src/main/translation/model-io";
 import { buildReaderProjection, type ReaderUnitContent } from "../src/shared/reader/projection";
 import { createDocumentChangeset } from "../src/shared/document/changeset";
@@ -246,7 +246,9 @@ test.describe("translation 缓存、凭据与机器配置边界", () => {
       stored.sentences.find((sentence) => sentence.sentenceId === sourceUnit.sentences[0].sentenceId)?.status,
     ).toBe("ready");
     expect(stored.sentences.find((sentence) => sentence.sentenceId === addedId)?.status ?? "gap").toBe("gap");
-    expect(stored.generator.model).toBe("old-model");
+    expect(
+      stored.sentences.find((sentence) => sentence.sentenceId === sourceUnit.sentences[0].sentenceId)?.generator?.model,
+    ).toBe("old-model");
   });
 
   test("模型响应缓存目录缺失或损坏不阻塞已提交译文读取，也不被猜测发布", async () => {
@@ -284,7 +286,7 @@ test.describe("translation 缓存、凭据与机器配置边界", () => {
     expect(session.generator).toEqual({
       provider: "openai-completions",
       model: "controlled-translate",
-      promptVersion: 1,
+      promptVersion: 2,
       schemaVersion: 1,
     });
     void session.close();
@@ -296,5 +298,247 @@ test.describe("translation 缓存、凭据与机器配置边界", () => {
         services: [{ ...config.services[0], baseUrl: "http://example.invalid/v1" }],
       }),
     ).toThrow(/HTTPS/);
+  });
+
+  test("请求失败分类：429 限流、断网、鉴权失败分别记录，诊断不含凭据与原始响应正文", async () => {
+    const { created, unit } = await committedProject("失败分类");
+    const input = createTranslationModelInput({
+      baseRevision: randomUUID(),
+      modelBudget: { contextWindow: 128_000, maxTokens: 4096, safetyMarginTokens: 1024 },
+      sourceLanguage: "en",
+      targetLanguage: "zh",
+      unit,
+    });
+    const rawBody = `受控原始错误正文 ${secret}`;
+    const cases: Array<{ status: number; kind: string }> = [
+      { status: 429, kind: "rate-limit" },
+      { status: 401, kind: "auth" },
+      { status: 500, kind: "network" },
+    ];
+    for (const item of cases) {
+      const server: Server = createServer((_request, response) => {
+        response.writeHead(item.status, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: { message: rawBody } }));
+      });
+      const endpoint = await startServer(server);
+      process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+      try {
+        const session = createTranslationModelSession(modelConfig(endpoint));
+        try {
+          await expect(session.generate(input)).rejects.toMatchObject({ kind: item.kind });
+        } finally {
+          await session.close();
+        }
+      } finally {
+        delete process.env.PAPER30MIN_TEST_WINDOW;
+        await stopServer(server);
+      }
+    }
+    // 断网：连接拒绝归为 network；诊断与错误对象不含密钥或原始响应正文。
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    const offline = createTranslationModelSession(modelConfig("http://127.0.0.1:1/v1"));
+    try {
+      let caught: unknown;
+      try {
+        await offline.generate(input);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(TranslationModelRequestError);
+      expect(caught).toMatchObject({ kind: "network" });
+      expect((caught as Error).message).not.toContain(secret);
+      expect((caught as Error).message).not.toContain(rawBody);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await offline.close();
+    }
+    // 分类诊断经任务持久化到 task.json：无凭据、无原始服务正文。
+    const failing: Server = createServer((_request, response) => {
+      response.writeHead(429, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { message: rawBody } }));
+    });
+    const failEndpoint = await startServer(failing);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const result = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: modelConfig(failEndpoint),
+      });
+      expect(result.status).toBe("finished");
+      if (result.status !== "finished") throw new Error("任务未完成。");
+      const taskJson = await fs.readFile(
+        path.join(
+          created.root,
+          ".paper30min",
+          "revisions",
+          result.projection.baseRevision,
+          "translations",
+          "zh",
+          "task.json",
+        ),
+        "utf8",
+      );
+      expect(taskJson).toContain("rate-limit");
+      expect(taskJson).not.toContain(secret);
+      expect(taskJson).not.toContain(rawBody);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(failing);
+    }
+  });
+
+  test("请求超时分类为 timeout：挂起服务不无限等待，诊断可恢复", async () => {
+    test.setTimeout(180_000);
+    const { unit } = await committedProject("超时分类");
+    const input = createTranslationModelInput({
+      baseRevision: randomUUID(),
+      modelBudget: { contextWindow: 128_000, maxTokens: 4096, safetyMarginTokens: 1024 },
+      sourceLanguage: "en",
+      targetLanguage: "zh",
+      unit,
+    });
+    // 接受连接但永不响应：请求级超时必须触发并分类为 timeout。
+    const server: Server = createServer(() => {});
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const session = createTranslationModelSession(modelConfig(endpoint));
+      try {
+        await expect(session.generate(input)).rejects.toMatchObject({ kind: "timeout" });
+      } finally {
+        await session.close();
+      }
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("用户取消分类为 aborted：在途请求中止，不冒充网络或配置失败", async () => {
+    const { unit } = await committedProject("取消分类");
+    const input = createTranslationModelInput({
+      baseRevision: randomUUID(),
+      modelBudget: { contextWindow: 128_000, maxTokens: 4096, safetyMarginTokens: 1024 },
+      sourceLanguage: "en",
+      targetLanguage: "zh",
+      unit,
+    });
+    const held = Promise.withResolvers<void>();
+    const server: Server = createServer(async () => {
+      await held.promise;
+    });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const session = createTranslationModelSession(modelConfig(endpoint));
+      const controller = new AbortController();
+      const pending = session.generate(input, controller.signal);
+      const rejected = expect(pending).rejects.toMatchObject({ kind: "aborted" });
+      controller.abort();
+      await rejected;
+      await session.close();
+    } finally {
+      held.resolve();
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("流式响应超过 2 MiB 立即断开：不等完整缓冲，后续分块不再接收", async () => {
+    const { unit } = await committedProject("流式超限");
+    const input = createTranslationModelInput({
+      baseRevision: randomUUID(),
+      modelBudget: { contextWindow: 128_000, maxTokens: 4096, safetyMarginTokens: 1024 },
+      sourceLanguage: "en",
+      targetLanguage: "zh",
+      unit,
+    });
+    let chunksSent = 0;
+    const gone = Promise.withResolvers<void>();
+    let clientGone = false;
+    const server: Server = createServer(async (request, response) => {
+      for await (const part of request) void part;
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.on("close", () => {
+        clientGone = true;
+        gone.resolve();
+      });
+      // 每块 256 KiB，共 16 块（4 MiB）：超限后客户端必须立即断开。
+      const chunk = "x".repeat(256 * 1024);
+      for (let index = 0; index < 16 && !clientGone; index++) {
+        const payload = JSON.stringify({
+          id: "t",
+          object: "chat.completion.chunk",
+          model: "controlled-translate",
+          choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
+        });
+        response.write(`data: ${payload}\n\n`);
+        chunksSent++;
+        const pause = Promise.withResolvers<void>();
+        setTimeout(pause.resolve, 20);
+        await pause.promise;
+      }
+      if (!clientGone) {
+        response.write(
+          `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+        );
+        response.end("data: [DONE]\n\n");
+      }
+    });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const session = createTranslationModelSession(modelConfig(endpoint));
+      try {
+        await expect(session.generate(input)).rejects.toMatchObject({ kind: "output" });
+      } finally {
+        await session.close();
+      }
+      // 2 MiB 上限 ≈ 8 块；服务端远未发完 16 块即被断开（连接关闭可观察）。
+      expect(chunksSent).toBeLessThan(16);
+      const deadline = Promise.withResolvers<never>();
+      const timer = setTimeout(() => deadline.reject(new Error("客户端未断开连接")), 5000);
+      try {
+        await Promise.race([gone.promise, deadline.promise]);
+      } finally {
+        clearTimeout(timer);
+      }
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("fixture 门控反向负例：无测试变量拒绝回环 HTTP；有变量仍拒绝非回环 HTTP", () => {
+    const config = modelConfig("http://127.0.0.1:9/v1");
+    const previous = process.env.PAPER30MIN_TEST_WINDOW;
+    try {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      expect(() => createTranslationModelSession(config)).toThrow(/HTTPS/);
+      process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+      expect(() =>
+        createTranslationModelSession({
+          ...config,
+          services: [{ ...config.services[0], baseUrl: "http://example.invalid/v1" }],
+        }),
+      ).toThrow(/HTTPS/);
+      // 生产 HTTPS 的 userinfo/query/hash 拒绝不受门控影响。
+      for (const baseUrl of [
+        "https://user:pass@example.invalid/v1",
+        "https://example.invalid/v1?key=1",
+        "https://example.invalid/v1#frag",
+      ]) {
+        expect(() =>
+          createTranslationModelSession({
+            ...config,
+            services: [{ ...config.services[0], baseUrl }],
+          }),
+        ).toThrow(/HTTPS/);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PAPER30MIN_TEST_WINDOW;
+      else process.env.PAPER30MIN_TEST_WINDOW = previous;
+    }
   });
 });

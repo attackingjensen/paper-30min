@@ -16,9 +16,10 @@ import type {
   TranslationIndex,
   TranslationLanguage,
   TranslationRetiredEntry,
+  TranslationUnitFile,
 } from "../../shared/translation/contracts.js";
 import { maximumUnitBytes } from "./model-io.js";
-import { parseTranslationIndex, parseTranslationUnitFile, translationLogicalContent } from "./store.js";
+import { parseTranslationIndex, parseTranslationUnitFile, storedLogicalText } from "./store.js";
 
 const languages: TranslationLanguage[] = ["zh", "en"];
 const indexBudget = 64 * 1024 * 1024;
@@ -98,21 +99,27 @@ async function migrateLanguage(input: {
       .map((change) => change.nodeId),
   );
 
-  const units: TranslationIndex["units"] = [];
+  // 新树全局 sentence→unit 归属：跨 unit moved 句按新归属迁移（不 stale、不 tombstone），
+  // 多个旧 unit 的保留句可汇入同一目标 unit。
+  const ownerBySentence = new Map<string, string>();
+  for (const unit of Object.values(input.document.units))
+    for (const sentenceId of unit.sentenceIds) ownerBySentence.set(sentenceId, unit.id);
+  const keptByUnit = new Map<string, TranslationUnitFile["sentences"]>();
   const retired: TranslationRetiredEntry[] = [...(index.retired ?? [])];
-  const staged: Array<{ unitId: string; bytes: Buffer }> = [];
-  let logicalContentBytes = 0;
   for (const entry of index.units) {
     const file = parseTranslationUnitFile(
       await readJsonFile(path.join(source, entry.file), maximumUnitBytes, "译文单元文件"),
       entry,
     );
-    const currentUnit = input.document.units[entry.unitId];
-    const currentIds = new Set(currentUnit?.sentenceIds ?? []);
-    const kept = file.sentences.filter((sentence) => currentIds.has(sentence.sentenceId));
     for (const sentence of file.sentences) {
-      if (currentIds.has(sentence.sentenceId)) continue;
-      // 不在新单元中的旧句：removed/split/merge 只进失效诊断，不重挂到相似新句。
+      const owner = ownerBySentence.get(sentence.sentenceId);
+      if (owner) {
+        const bucket = keptByUnit.get(owner) ?? [];
+        bucket.push(sentence);
+        keptByUnit.set(owner, bucket);
+        continue;
+      }
+      // 新树中不存在的旧句：removed/split/merge 只进失效诊断，不重挂到相似新句。
       const reason =
         retiredReason.get(sentence.sentenceId) ?? (removedSentences.has(sentence.sentenceId) ? "removed" : null);
       if (!reason) throw new Error(`译文句子无法可靠延续到新 current：${sentence.sentenceId}。`);
@@ -122,33 +129,41 @@ async function migrateLanguage(input: {
         reason,
         excerpt: documentNodeExcerpt(input.baseDocument, "sentence", sentence.sentenceId),
         content: sentence.content,
-        generator: file.generator,
+        generator: sentence.generator,
       });
     }
-    if (!currentUnit || kept.length === 0) continue;
-    // 句子顺序以新树为权威（moved 更新阅读位置）；内容与摘要事实不变。
+  }
+
+  const units: TranslationIndex["units"] = [];
+  const staged: Array<{ file: string; bytes: Buffer }> = [];
+  let logicalContentBytes = 0;
+  for (const [unitId, kept] of keptByUnit) {
+    const currentUnit = input.document.units[unitId];
+    // 句子顺序以新树为权威（moved 更新阅读位置）；内容、摘要、generator 与 atom 快照原样保留。
     const byId = new Map(kept.map((sentence) => [sentence.sentenceId, sentence]));
     const sentences = currentUnit.sentenceIds.flatMap((sentenceId) => {
       const sentence = byId.get(sentenceId);
       return sentence ? [sentence] : [];
     });
+    // 继承句的逻辑文本以提交时快照为准：旧 atom 已改/已删不阻断 current 发布。
     const logicalBytes = Buffer.byteLength(
-      sentences.map((sentence) => translationLogicalContent(sentence.content, input.document)).join(""),
+      sentences.map((sentence) => storedLogicalText(sentence, input.document)).join(""),
       "utf8",
     );
-    const unitFile = { ...file, sentences };
+    const unitFile: TranslationUnitFile = { formatVersion: 1, unitId, sentences };
     const bytes = Buffer.from(JSON.stringify(unitFile, null, 2) + "\n");
-    if (bytes.byteLength > maximumUnitBytes) throw new Error(`迁移译文单元超过 2 MiB 预算：${entry.unitId}。`);
-    staged.push({ unitId: entry.unitId, bytes });
+    if (bytes.byteLength > maximumUnitBytes) throw new Error(`迁移译文单元超过 2 MiB 预算：${unitId}。`);
+    const file = `units/${unitId}.${randomUUID()}.json`;
+    staged.push({ file, bytes });
     units.push({
-      unitId: entry.unitId,
-      file: `units/${entry.unitId}.json`,
-      generator: file.generator,
+      unitId,
+      file,
       logicalBytes,
-      sentences: sentences.map(({ sentenceId, sourceSha256, translationSha256 }) => ({
+      sentences: sentences.map(({ sentenceId, sourceSha256, translationSha256, generator }) => ({
         sentenceId,
         sourceSha256,
         translationSha256,
+        generator,
       })),
     });
     logicalContentBytes += logicalBytes;
@@ -163,7 +178,7 @@ async function migrateLanguage(input: {
   const unitsDirectory = await managedDirectory(input.root, `${targetRelative}/units`, true);
   if (!unitsDirectory) throw new Error("译文单元目录不可用。");
   // 单元文件先完整写入；index 推进前崩溃时未引用文件不作为当前投影。
-  for (const { unitId, bytes } of staged) {
+  for (const { file, bytes } of staged) {
     const temporary = path.join(unitsDirectory, `.paper30min-${randomUUID()}.tmp`);
     try {
       const handle = await fs.open(temporary, "wx");
@@ -173,7 +188,7 @@ async function migrateLanguage(input: {
       } finally {
         await handle.close();
       }
-      await renameManaged(temporary, path.join(unitsDirectory, `${unitId}.json`));
+      await renameManaged(temporary, path.join(unitsDirectory, path.basename(file)));
     } finally {
       await fs.rm(temporary, { force: true });
     }

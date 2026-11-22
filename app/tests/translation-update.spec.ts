@@ -323,7 +323,7 @@ test.describe("translation 补译缺口与显式 stale 更新", () => {
       expect(byId.get(added)!.status).toBe("ready");
       // 既有 ready 句内容与 generator 事实不变。
       expect(byId.get(ids.s1)!.content).toEqual(a.sentences[0].content);
-      expect(unitA.generator.model).toBe("controlled-translate");
+      expect(byId.get(ids.s1)!.generator!.model).toBe("controlled-translate");
     } finally {
       delete process.env.PAPER30MIN_TEST_WINDOW;
       await stopServer(server);
@@ -379,7 +379,10 @@ test.describe("translation 补译缺口与显式 stale 更新", () => {
         expect(byId.get(ids.s2)!.content).toEqual([{ kind: "text", text: "新译：Results improve rapidly now." }]);
         expect(byId.get(ids.s1)!.content).toEqual(a.sentences[0].content);
         expect(byId.get(ids.s3)!.content).toEqual(a.sentences[2].content);
-        expect(updatedA.generator.model).toBe("controlled-translate-v2");
+        // generator 是句级事实：只有重译句更新为 v2，未触碰句保留旧模型。
+        expect(byId.get(ids.s2)!.generator!.model).toBe("controlled-translate-v2");
+        expect(byId.get(ids.s1)!.generator!.model).toBe("controlled-translate");
+        expect(byId.get(ids.s3)!.generator!.model).toBe("controlled-translate");
       } finally {
         await stopServer(ok.server);
       }
@@ -419,6 +422,147 @@ test.describe("translation 补译缺口与显式 stale 更新", () => {
       );
       expect(manual).toMatchObject({ status: "finished" });
       expect(calls.length).toBe(before + 2);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("fill-gaps 同 unit 两目标句一成一败：合法句独立推进 index，失败句保留 gap 只补试一次", async () => {
+    const paperId = randomUUID();
+    const { tree, ids } = updateTree(paperId);
+    const { created, revision, tree: committed } = await projectWithTree("句级补译", tree);
+    // unitA 已有提交（s1/s2/s3 ready），追加两个新句成为同 unit 的两个 gap 目标。
+    const a = await translateUnit(created.root, revision.revisionId, committed, ids.unitA);
+    const next = structuredClone(committed);
+    const goodGap = randomUUID();
+    const badGap = randomUUID();
+    next.sentences[goodGap] = {
+      id: goodGap,
+      unitId: ids.unitA,
+      content: [{ kind: "text", text: "A good new sentence awaits translation." }],
+    };
+    next.sentences[badGap] = {
+      id: badGap,
+      unitId: ids.unitA,
+      content: [{ kind: "text", text: "A bad new sentence keeps failing." }],
+    };
+    next.units[ids.unitA].sentenceIds = [ids.s1, ids.s2, ids.s3, goodGap, badGap];
+    const revisionId = randomUUID();
+    const changeset = createDocumentChangeset({
+      base: committed,
+      current: next,
+      baseRevision: revision.revisionId,
+      revisionId,
+    });
+    const second = (await dispatchCoreCommand({
+      type: "coreCommit",
+      root: created.root,
+      baseRevision: revision.revisionId,
+      sourceSnapshotId: (
+        await publishSourceSnapshot({
+          root: created.root,
+          files: { "document.html": Buffer.from("<html>paper2</html>") },
+          metadata: { kind: "arxiv", canonicalId: "2401.00004v2" },
+        })
+      ).sourceSnapshotId,
+      revisionId,
+      files: {
+        "document.json": json(next),
+        "source-base.json": json(next),
+        "tombstones.json": json([]),
+        "changeset.json": json(changeset),
+      },
+      metadata: { normalizationVersion: 1 },
+    })) as { revisionId: string };
+
+    const { server, calls } = controlledServer({ failSentences: new Set([badGap]) });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const result = (await dispatchCoreCommand(
+        { type: "coreTranslationFillGaps", root: created.root, language: "zh" },
+        undefined,
+        { config: modelConfig(endpoint) },
+      )) as {
+        status: string;
+        units: Array<{ unitId: string; status: string; sentences?: Array<{ sentenceId: string; kind: string }> }>;
+      };
+      expect(result.status).toBe("finished");
+      // 每句独立请求：goodGap 首轮成功；badGap 首轮＋补试一次；unitB 整单元 gap 一并补译。
+      expect(calls.filter((call) => call.sentenceIds.includes(goodGap))).toHaveLength(1);
+      expect(calls.filter((call) => call.sentenceIds.includes(badGap))).toHaveLength(2);
+      // 同 unit 部分成功以句级诊断表达。
+      const unitA = result.units.find((unit) => unit.unitId === ids.unitA)!;
+      expect(unitA.status).toBe("gap");
+      expect(unitA.sentences).toEqual([expect.objectContaining({ sentenceId: badGap })]);
+
+      const projection = await readTranslationProjection(created.root, second.revisionId, "zh");
+      const stored = projection.units.find((unit) => unit.unitId === ids.unitA)!;
+      const byId = new Map(stored.sentences.map((sentence) => [sentence.sentenceId, sentence]));
+      // 合法句单独推进 index；失败句保留 gap；未涉及 ready 句内容不变。
+      expect(byId.get(goodGap)!.status).toBe("ready");
+      expect(byId.get(badGap)!.status).toBe("gap");
+      expect(byId.get(ids.s1)!.content).toEqual(a.sentences[0].content);
+      expect(byId.get(ids.s2)!.content).toEqual(a.sentences[1].content);
+      expect(byId.get(ids.s3)!.content).toEqual(a.sentences[2].content);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("update-stale 同 unit 两 stale 句一成一败：合法句替换，失败句保留旧 stale", async () => {
+    const paperId = randomUUID();
+    const { tree, ids } = updateTree(paperId);
+    const { created, revision, source, tree: committed } = await projectWithTree("句级stale", tree);
+    const a = await translateUnit(created.root, revision.revisionId, committed, ids.unitA);
+    // s2 与 s3 同时 changed → 同 unit 两个 stale 目标；s1 retained。
+    const next = structuredClone(committed);
+    next.sentences[ids.s2].content = [{ kind: "text", text: "Results improve rapidly now." }];
+    next.sentences[ids.s3].content = [{ kind: "text", text: "The conclusion changes as well." }];
+    const revisionId = randomUUID();
+    const changeset = createDocumentChangeset({
+      base: committed,
+      current: next,
+      baseRevision: revision.revisionId,
+      revisionId,
+    });
+    const second = (await dispatchCoreCommand({
+      type: "coreCommit",
+      root: created.root,
+      baseRevision: revision.revisionId,
+      sourceSnapshotId: source.sourceSnapshotId,
+      revisionId,
+      files: {
+        "document.json": json(next),
+        "source-base.json": json(next),
+        "tombstones.json": json([]),
+        "changeset.json": json(changeset),
+      },
+      metadata: { normalizationVersion: 1 },
+    })) as { revisionId: string };
+
+    const { server, calls } = controlledServer({ failSentences: new Set([ids.s3]) });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const result = await dispatchCoreCommand(
+        { type: "coreTranslationUpdateStale", root: created.root, language: "zh" },
+        undefined,
+        { config: modelConfig(endpoint) },
+      );
+      expect(result).toMatchObject({ status: "finished" });
+      // 每句独立请求；失败句只补试一次，不拖累合法句。
+      expect(calls.filter((call) => call.sentenceIds.includes(ids.s2))).toHaveLength(1);
+      expect(calls.filter((call) => call.sentenceIds.includes(ids.s3))).toHaveLength(2);
+      const projection = await readTranslationProjection(created.root, second.revisionId, "zh");
+      const stored = projection.units.find((unit) => unit.unitId === ids.unitA)!;
+      const byId = new Map(stored.sentences.map((sentence) => [sentence.sentenceId, sentence]));
+      expect(byId.get(ids.s2)!.status).toBe("ready");
+      expect(byId.get(ids.s2)!.content).toEqual([{ kind: "text", text: "新译：Results improve rapidly now." }]);
+      expect(byId.get(ids.s3)).toMatchObject({ status: "stale", content: a.sentences[2].content });
+      expect(byId.get(ids.s1)!.content).toEqual(a.sentences[0].content);
     } finally {
       delete process.env.PAPER30MIN_TEST_WINDOW;
       await stopServer(server);

@@ -10,15 +10,7 @@ import { readDiagnosticArray, type ImportDiagnostic } from "../../shared/arxiv";
 import "./reader.css";
 import type { DocumentTree } from "../../shared/document/tree";
 import { createRangeAnchor } from "../../shared/document/anchor";
-import {
-  buildReaderProjection,
-  type ReaderAtom,
-  type ReaderInlinePart,
-  type ReaderItem,
-  type ReaderProjection,
-  type ReaderSentence,
-  type ReaderUnitContent,
-} from "../../shared/reader/projection";
+import { buildReaderProjection, type ReaderItem, type ReaderProjection } from "../../shared/reader/projection";
 import { buildSelectionIndex, mapDomSelection, type SelectionIndex } from "../../shared/reader/selection";
 import {
   buildTranslationSelectionIndex,
@@ -31,6 +23,8 @@ import { summarizeVerification, type VerificationRecord } from "../../shared/ver
 import { SourcePanel, sourcePanelFacts } from "./SourcePanel";
 import { CorrectionHost } from "./CorrectionHost";
 import { ConflictHost } from "./ConflictHost";
+import { TranslationControls } from "./TranslationControls";
+import { UnitBody } from "./ReaderSentence";
 import { Button } from "../ui/Button";
 import { EmptyState, InlineMessage } from "../ui/Feedback";
 import type { ArxivUpdateCandidateCommandResult, ArxivUpdateCheckCommandResult } from "../../shared/contracts";
@@ -43,7 +37,6 @@ import {
 import {
   buildTranslationUnitViews,
   readerProjectionUnits,
-  type TranslationSentenceView,
   type TranslationUnitView,
 } from "../../shared/reader/translation-view";
 import type { TranslationReadCommandResult, TranslationStartCommandResult } from "../../shared/contracts";
@@ -157,225 +150,6 @@ function sourceFacts(snapshot: Record<string, unknown>): ReaderSourceFacts {
     authors: Array.isArray(snapshot.authors) ? snapshot.authors.filter((a): a is string => typeof a === "string") : [],
     canonicalId: typeof snapshot.canonicalId === "string" ? snapshot.canonicalId : null,
   };
-}
-
-/** 单元正文：句子携带稳定 ID；文本片段按逻辑顺序渲染，atom 独立锚定。
- * 语言视图按句替换为译文片段；gap 句保留原文锚点，stale 句显著标识。 */
-function UnitBody({
-  unit,
-  onNavigate,
-  translation,
-}: {
-  unit: ReaderUnitContent;
-  onNavigate: (unitId: string) => void;
-  translation?: TranslationUnitView;
-}) {
-  const translated = new Map(translation?.sentences.map((sentence) => [sentence.sentenceId, sentence]) ?? []);
-  return (
-    <>
-      {unit.sentences.map((sentence) => (
-        <SentenceBody
-          key={sentence.sentenceId}
-          sentence={sentence}
-          onNavigate={onNavigate}
-          translation={translated.get(sentence.sentenceId)}
-        />
-      ))}
-    </>
-  );
-}
-
-function SentenceBody({
-  sentence,
-  onNavigate,
-  translation,
-}: {
-  sentence: ReaderSentence;
-  onNavigate: (unitId: string) => void;
-  translation?: TranslationSentenceView;
-}) {
-  const status = translation?.status ?? "ready";
-  const parts = translation && translation.status !== "gap" ? translation.parts : sentence.parts;
-  // stale 对照：旧译文显著标识，最新原文可展开查看（原文锚点，不冒充译文）。
-  const [showSource, setShowSource] = useState(false);
-  const renderParts = (value: ReaderInlinePart[]) =>
-    value.map((part, index) =>
-      part.kind === "text" ? (
-        <span key={index} data-start={part.start} data-end={part.end}>
-          {part.text}
-        </span>
-      ) : (
-        <AtomView key={part.atom.id} atom={part.atom} start={part.start} end={part.end} onNavigate={onNavigate} />
-      ),
-    );
-  return (
-    <span
-      data-sentence-id={sentence.sentenceId}
-      data-translation-status={translation ? status : undefined}
-      className={status === "stale" ? "reader-sentence-stale" : undefined}
-    >
-      {renderParts(parts)}
-      {translation?.status === "gap" && (
-        <span className="reader-translation-note" role="note">
-          未翻译
-        </span>
-      )}
-      {translation?.status === "stale" && (
-        <>
-          <span
-            className="reader-translation-note stale"
-            role="note"
-            title="原句已修改，显示的是旧译文；可查看最新原文。"
-          >
-            已过期
-          </span>
-          {translation.sourceParts && (
-            <button
-              type="button"
-              className="reader-stale-source-toggle"
-              aria-expanded={showSource}
-              onClick={() => setShowSource((value) => !value)}
-            >
-              {showSource ? "收起原文" : "查看最新原文"}
-            </button>
-          )}
-          {showSource && translation.sourceParts && (
-            <span className="reader-stale-source" data-stale-source={sentence.sentenceId}>
-              {renderParts(translation.sourceParts)}
-            </span>
-          )}
-        </>
-      )}
-    </span>
-  );
-}
-
-function AtomView({
-  atom,
-  start,
-  end,
-  onNavigate,
-}: {
-  atom: ReaderAtom;
-  start: number;
-  end: number;
-  onNavigate: (unitId: string) => void;
-}) {
-  const jump = (targetUnitId: string) => {
-    if (!document.querySelector(`[data-unit-id="${targetUnitId}"]`)) return;
-    onNavigate(targetUnitId);
-  };
-  if (atom.kind === "math" || atom.kind === "inline-object") {
-    if (atom.source.format === "latex") {
-      try {
-        const html = katex.renderToString(atom.source.value, {
-          throwOnError: true,
-          trust: false,
-          strict: "ignore",
-        });
-        return (
-          <span
-            className="reader-atom reader-math"
-            data-atom-id={atom.id}
-            data-start={start}
-            data-end={end}
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
-        );
-      } catch {
-        return (
-          <span className="reader-atom reader-math-failed" data-atom-id={atom.id} data-start={start} data-end={end}>
-            <code>{atom.source.value}</code>
-            <span className="reader-warning" role="note">
-              公式渲染失败，保留来源。
-            </span>
-          </span>
-        );
-      }
-    }
-    if (atom.source.format === "mathml") {
-      // 树校验已按 MathML 白名单消毒；这里不再执行任何脚本或加载远端资源。
-      return (
-        <span
-          className="reader-atom reader-math"
-          data-atom-id={atom.id}
-          data-start={start}
-          data-end={end}
-          dangerouslySetInnerHTML={{ __html: atom.source.value }}
-        />
-      );
-    }
-    return (
-      <span className="reader-atom" data-atom-id={atom.id} data-start={start} data-end={end}>
-        {atom.text}
-      </span>
-    );
-  }
-  if (atom.kind === "link") {
-    if (atom.href === null) {
-      return (
-        <span className="reader-atom reader-link-disabled" data-atom-id={atom.id} data-start={start} data-end={end}>
-          {atom.text}
-          <span className="reader-warning" role="note">
-            {atom.warning}
-          </span>
-        </span>
-      );
-    }
-    return (
-      <a
-        className="reader-atom reader-link"
-        data-atom-id={atom.id}
-        data-start={start}
-        data-end={end}
-        href={atom.href}
-        onClick={(event) => {
-          event.preventDefault();
-          void desktop.openLink(atom.href!).catch(() => undefined);
-        }}
-      >
-        {atom.text}
-      </a>
-    );
-  }
-  if (atom.kind === "footnote-reference") {
-    return (
-      <button
-        type="button"
-        className="reader-atom reader-ref"
-        data-atom-id={atom.id}
-        data-start={start}
-        data-end={end}
-        aria-label={`脚注 ${atom.text}`}
-        onClick={() => jump(atom.targetUnitId)}
-      >
-        <sup>{atom.text}</sup>
-      </button>
-    );
-  }
-  // citation 与 cross-reference：已解析可跳转；未解析保留文本＋警告。
-  if (atom.targetUnitId !== null) {
-    return (
-      <button
-        type="button"
-        className="reader-atom reader-ref"
-        data-atom-id={atom.id}
-        data-start={start}
-        data-end={end}
-        onClick={() => jump(atom.targetUnitId!)}
-      >
-        {atom.text}
-      </button>
-    );
-  }
-  return (
-    <span className="reader-atom reader-ref-unresolved" data-atom-id={atom.id} data-start={start} data-end={end}>
-      {atom.text}
-      <span className="reader-warning" role="note">
-        {atom.warning}
-      </span>
-    </span>
-  );
 }
 
 function FormulaView({ item }: { item: Extract<ReaderItem, { kind: "formula" }> }) {
@@ -728,7 +502,12 @@ export function FullReader({
           if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === language)
             setTranslation(projection);
         })
-        .catch(() => undefined);
+        .catch((error: Error) => {
+          if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === language)
+            setTranslationStatus(
+              `译文刷新失败：${error.message.replace(/^Error invoking remote method '[^']+': Error: /, "")}`,
+            );
+        });
     });
     return () => {
       disposed = true;
@@ -749,23 +528,40 @@ export function FullReader({
         if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === target)
           setTranslation(projection);
       })
-      .catch(() => undefined);
+      .catch((error: Error) => {
+        if (!disposed && stateRef.current?.revisionId === revisionId && languageRef.current === target) {
+          // 读取失败不保留旧 revision 的 ready 内容：清除投影并给出可行动错误。
+          setTranslation(null);
+          setTranslationStatus(
+            `译文读取失败：${error.message.replace(/^Error invoking remote method '[^']+': Error: /, "")}请重试语言切换。`,
+          );
+        }
+      });
     return () => {
       disposed = true;
     };
   }, [status, state, root, language]);
 
   // 语言视图句级投影：选区索引与渲染共用同一 memo，translation:changed 渐进刷新。
+  // 投影身份显式键控 (revisionId, language)：语言互切或 revision 推进后，
+  // 旧投影在新读取完成前不得进入渲染（迟到/失败响应不冒充当前视图）。
   const translationViews = useMemo(
     () =>
-      language !== null && translation && state
+      language !== null &&
+      translation &&
+      state &&
+      translation.language === language &&
+      translation.baseRevision === state.revisionId
         ? buildTranslationUnitViews(readerProjectionUnits(state.projection), translation)
         : null,
     [language, translation, state],
   );
   const translationIndex = useMemo<TranslationSelectionIndex | null>(
-    () => (translationViews && state ? buildTranslationSelectionIndex(translationViews, state.projection) : null),
-    [translationViews, state],
+    () =>
+      translationViews && state && translation
+        ? buildTranslationSelectionIndex(translationViews, state.projection, translation)
+        : null,
+    [translationViews, state, translation],
   );
   const translationIndexRef = useRef<TranslationSelectionIndex | null>(null);
   translationIndexRef.current = translationIndex;
@@ -789,10 +585,13 @@ export function FullReader({
     }
     const inTranslation = languageRef.current !== null;
     // stale 对照区展示最新原文（原文锚点）：在语言视图中不参与译文选区。
+    // 两端分别检查：跨旧译文与对照区的选区共同祖先在对照区外，仍须拒绝。
     if (inTranslation) {
-      const node = range.commonAncestorContainer;
-      const element = node instanceof Element ? node : node.parentElement;
-      if (element?.closest("[data-stale-source]")) {
+      const inStaleSource = (node: Node) => {
+        const element = node instanceof Element ? node : node.parentElement;
+        return element?.closest("[data-stale-source]") != null;
+      };
+      if (inStaleSource(range.startContainer) || inStaleSource(range.endContainer)) {
         setToolbar(null);
         return;
       }
@@ -884,6 +683,39 @@ export function FullReader({
       capturedAt: new Date().toISOString(),
     };
   }, []);
+
+  // 语言切换与渐进提交的阅读位置稳定（SPEC-translation §5.2）：译文文本长度
+  // 变化会重排上方内容；布局变化前捕获视口锚点，变化后按同一锚点重对齐。
+  // 不做持续恢复窗口：用户滚动即让位，后续渐进提交重新捕获当前视口锚点。
+  const translationLayoutKey = translationViews
+    ? `${language}:${translation?.translationRevision ?? "none"}`
+    : `${language}:source-fallback`;
+  const translationLayoutRef = useRef<{ key: string; position: ReadingPosition | null } | null>(null);
+  // 渲染期（DOM 仍是旧布局）捕获上一布局的视口锚点；effect 在布局提交后对齐。
+  if (translationLayoutRef.current?.key !== translationLayoutKey) {
+    translationLayoutRef.current = {
+      key: translationLayoutKey,
+      position: status === "ready" ? capturePosition() : null,
+    };
+  }
+  const pendingTranslationAnchor = translationLayoutRef.current.position;
+  useEffect(() => {
+    if (status !== "ready" || !state || !pendingTranslationAnchor) return;
+    translationLayoutRef.current = { key: translationLayoutKey, position: null };
+    const container = articleRef.current?.parentElement;
+    const article = articleRef.current;
+    if (!container || !article || userScrolled.current) return;
+    const element = article.querySelector<HTMLElement>(positionAnchorSelector(pendingTranslationAnchor.anchor));
+    if (!element) return;
+    const top = Math.max(
+      0,
+      container.scrollTop +
+        element.getBoundingClientRect().top -
+        container.getBoundingClientRect().top -
+        pendingTranslationAnchor.offsetWithinAnchor,
+    );
+    programmaticScrollTo(container, top);
+  }, [status, state, translationLayoutKey, pendingTranslationAnchor, capturePosition]);
 
   useEffect(() => {
     if (status !== "ready") return;
@@ -1194,6 +1026,8 @@ export function FullReader({
       setToolbar(null);
       return;
     }
+    // 语言互切：旧语言投影立即退出渲染（memo 身份键控兜底），读取期间显示原文锚点 gap。
+    setTranslation(null);
     setLanguage(target);
     setToolbar(null);
     setTranslationBusy(true);
@@ -1223,7 +1057,9 @@ export function FullReader({
       const readyByUnit = new Map(
         existing.units.map((unit) => [
           unit.unitId,
-          unit.sentences.filter((sentence) => sentence.status === "ready").map((sentence) => sentence.sentenceId),
+          new Set(
+            unit.sentences.filter((sentence) => sentence.status === "ready").map((sentence) => sentence.sentenceId),
+          ),
         ]),
       );
       const allReady =
@@ -1234,7 +1070,7 @@ export function FullReader({
           return (
             ready !== undefined &&
             unit.sentences.length > 0 &&
-            unit.sentences.every((sentence) => ready.includes(sentence.sentenceId))
+            unit.sentences.every((sentence) => ready.has(sentence.sentenceId))
           );
         });
       if (allReady) {
@@ -1325,6 +1161,30 @@ export function FullReader({
     }
   }
 
+  // 用户停止（SPEC-translation §6.5）：取消未发送批次；已在途请求可能已产生
+  // 费用，完成且合法的结果仍会保存。停止后同指纹不再自动补试，手动补译可再发起。
+  async function stopTranslation() {
+    if (!state || language === null) return;
+    const target = language;
+    ++translationEpoch.current;
+    try {
+      await desktop.invoke({ type: "coreTranslationStop", root, language: target });
+      if (languageRef.current !== target) return;
+      const projection = await desktop.invoke<TranslationReadCommandResult>({
+        type: "coreTranslationRead",
+        root,
+        revisionId: stateRef.current!.revisionId,
+        language: target,
+      });
+      if (languageRef.current === target) setTranslation(projection);
+      setTranslationStatus("已停止翻译：未发送批次已取消；已完成的译文保留，在途请求可能已产生费用。");
+    } catch (error) {
+      setTranslationStatus((error as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
+    } finally {
+      setTranslationBusy(false);
+    }
+  }
+
   if (status === "loading") return <EmptyState>正在读取正文…</EmptyState>;
   if (status === "empty")
     return (
@@ -1379,58 +1239,17 @@ export function FullReader({
           </Button>
         )}
         {updateStatus && <InlineMessage className="reader-update-status">{updateStatus}</InlineMessage>}
-        <div className="reader-language" role="group" aria-label="阅读语言">
-          <Button
-            className={`reader-language-option${language === null ? " active" : ""}`}
-            aria-pressed={language === null}
-            onClick={() => void switchLanguage(null)}
-          >
-            原文
-          </Button>
-          <Button
-            className={`reader-language-option${language === "zh" ? " active" : ""}`}
-            aria-pressed={language === "zh"}
-            disabled={translationBusy}
-            onClick={() => void switchLanguage("zh")}
-          >
-            中文
-          </Button>
-          <Button
-            className={`reader-language-option${language === "en" ? " active" : ""}`}
-            aria-pressed={language === "en"}
-            disabled={translationBusy}
-            onClick={() => void switchLanguage("en")}
-          >
-            English
-          </Button>
-        </div>
-        {language !== null && translation && (translationCounts.gaps > 0 || translationCounts.stale > 0) && (
-          <div className="reader-translation-actions" role="group" aria-label="译文维护">
-            {translationCounts.gaps > 0 && (
-              <Button
-                className="reader-translation-action"
-                disabled={translationBusy}
-                onClick={() => void runTranslationAction("fill-gaps")}
-              >
-                补译缺口（{translationCounts.gaps} 句）
-              </Button>
-            )}
-            {translationCounts.stale > 0 && (
-              <Button
-                className="reader-translation-action"
-                disabled={translationBusy}
-                onClick={() => void runTranslationAction("update-stale")}
-              >
-                更新过期译文（{translationCounts.stale} 句）
-              </Button>
-            )}
-          </div>
-        )}
-        {language !== null && translationStatus && (
-          <InlineMessage className="reader-translation-status" role="status">
-            {translationStatus}
-          </InlineMessage>
-        )}
+        <TranslationControls
+          language={language}
+          busy={translationBusy}
+          status={translationStatus}
+          gaps={translationCounts.gaps}
+          stale={translationCounts.stale}
+          hasProjection={translation !== null}
+          onSwitch={(target) => void switchLanguage(target)}
+          onAction={(action) => void runTranslationAction(action)}
+          onStop={() => void stopTranslation()}
+        />
       </header>
       {panelOpen && (
         <SourcePanel

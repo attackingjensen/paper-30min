@@ -71,7 +71,7 @@ export interface ReaderProjection {
 
 const safeLinkProtocols: Record<string, true> = { "https:": true, "http:": true, "mailto:": true };
 
-function projectAtom(atom: Atom): ReaderAtom {
+export function projectAtom(atom: Atom): ReaderAtom {
   if (atom.kind === "link") {
     let protocol: string | null = null;
     try {

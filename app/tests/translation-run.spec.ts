@@ -1,6 +1,7 @@
-// 翻译任务编排回归（SPEC-translation §1/§4/§6，paper-30min-crd.2）：
+// 翻译任务编排回归（SPEC-translation §1/§4/§6，paper-30min-crd.2/crd.5）：
 // 受控模型响应驱动真实工程：按需启动、逐单元原子发布、首轮补试一次、
 // 恢复不重复请求、同 revision＋language 单任务、离线重开读取已提交内容。
+// crd.5：current 推进停止旧任务、用户停止零新增请求、全失败同会话限次。
 import { expect, test } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -8,7 +9,8 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { commitRevision, createProject, publishSourceSnapshot } from "../src/main/project-core";
-import { runProjectTranslation, translationSourceUnits } from "../src/main/translation/run";
+import { dispatchCoreCommand } from "../src/main/core-commands";
+import { runProjectTranslation, stopTranslationTasks, translationSourceUnits } from "../src/main/translation/run";
 import { detectSourceLanguage } from "../src/shared/translation/contracts";
 import {
   commitTranslationUnit,
@@ -16,6 +18,7 @@ import {
   translationSentenceDigests,
 } from "../src/main/translation/store";
 import { parseDocumentTree, type DocumentTree } from "../src/shared/document/tree";
+import { createDocumentChangeset } from "../src/shared/document/changeset";
 import { buildReaderProjection } from "../src/shared/reader/projection";
 import { defaultAgentSettings } from "../src/shared/contracts";
 import type { ModelConfig } from "../src/main/agent-settings";
@@ -103,7 +106,7 @@ async function projectWithTree(name: string, tree: DocumentTree) {
     },
     metadata: { normalizationVersion: 1 },
   });
-  return { created, revision };
+  return { created, revision, source, tree: committedTree };
 }
 
 function modelConfig(baseUrl = "https://example.invalid/v1"): ModelConfig {
@@ -125,6 +128,93 @@ function modelConfig(baseUrl = "https://example.invalid/v1"): ModelConfig {
     keys: { default: "controlled-key" },
     unreadableKeys: [],
   };
+}
+
+const json = (value: unknown) => Buffer.from(JSON.stringify(value));
+
+/** 受控模型端点：记录逐单元请求；可挂起指定单元、按单元注入 HTTP 失败。 */
+function controlledModelServer(options: { holdUnits?: Map<string, Promise<void>>; failUnits?: Set<string> } = {}) {
+  const calls: Array<{ unitId: string; sentenceIds: string[] }> = [];
+  const server: Server = createServer(async (request, response) => {
+    let raw = "";
+    for await (const part of request) raw += part;
+    const body = JSON.parse(raw) as { messages: Array<{ role: string; content: string }> };
+    const prompt = JSON.parse(body.messages.find((message) => message.role === "user")!.content) as {
+      unit: { unitId: string; sentences: Array<{ sentenceId: string; content: string }> };
+    };
+    calls.push({ unitId: prompt.unit.unitId, sentenceIds: prompt.unit.sentences.map((s) => s.sentenceId) });
+    const hold = options.holdUnits?.get(prompt.unit.unitId);
+    if (hold) await hold;
+    if (options.failUnits?.has(prompt.unit.unitId)) {
+      response.writeHead(500, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "受控失败" } }));
+      return;
+    }
+    const content = JSON.stringify({
+      unitId: prompt.unit.unitId,
+      sentences: prompt.unit.sentences.map((sentence) => ({
+        sentenceId: sentence.sentenceId,
+        content: `译文：${sentence.content}`,
+      })),
+    });
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(
+      `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`,
+    );
+    response.write(
+      `data: ${JSON.stringify({ id: "t", object: "chat.completion.chunk", model: "controlled-translate", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+    );
+    response.end("data: [DONE]\n\n");
+  });
+  return { server, calls };
+}
+
+async function startServer(server: Server) {
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  return `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+}
+
+async function stopServer(server: Server) {
+  server.closeAllConnections();
+  const closed = Promise.withResolvers<void>();
+  server.close(() => closed.resolve());
+  await closed.promise;
+}
+
+/** 修改一句内容并经生产命令面发布新 current（触发译文迁移）。 */
+async function publishChangedSentence(input: {
+  root: string;
+  baseRevision: string;
+  sourceSnapshotId: string;
+  tree: DocumentTree;
+  sentenceId: string;
+}) {
+  const next = structuredClone(input.tree);
+  next.sentences[input.sentenceId].content = [{ kind: "text", text: "A revised sentence changes the current tree." }];
+  const revisionId = randomUUID();
+  const changeset = createDocumentChangeset({
+    base: input.tree,
+    current: next,
+    baseRevision: input.baseRevision,
+    revisionId,
+  });
+  const revision = (await dispatchCoreCommand({
+    type: "coreCommit",
+    root: input.root,
+    baseRevision: input.baseRevision,
+    sourceSnapshotId: input.sourceSnapshotId,
+    revisionId,
+    files: {
+      "document.json": json(next),
+      "source-base.json": json(next),
+      "tombstones.json": json([]),
+      "changeset.json": json(changeset),
+    },
+    metadata: { normalizationVersion: 1 },
+  })) as { revisionId: string };
+  return revision;
 }
 
 test.describe("translation 任务编排", () => {
@@ -253,10 +343,7 @@ test.describe("translation 任务编排", () => {
       );
       response.end("data: [DONE]\n\n");
     });
-    const listening = Promise.withResolvers<void>();
-    server.listen(0, "127.0.0.1", listening.resolve);
-    await listening.promise;
-    const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+    const endpoint = await startServer(server);
     process.env.PAPER30MIN_TEST_WINDOW = "hidden";
     try {
       const result = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
@@ -276,10 +363,173 @@ test.describe("translation 任务编排", () => {
       expect(calls.length).toBe(before);
     } finally {
       delete process.env.PAPER30MIN_TEST_WINDOW;
-      server.closeAllConnections();
-      const closed = Promise.withResolvers<void>();
-      server.close(() => closed.resolve());
-      await closed.promise;
+      await stopServer(server);
+    }
+  });
+
+  test("current 推进停止旧任务：后续单元零请求，补试零请求，已完成结果只经迁移继承", async () => {
+    const paperId = randomUUID();
+    const { tree, ids } = englishTree(paperId);
+    const { created, revision, source, tree: committed } = await projectWithTree("revision推进", tree);
+    const bodyHold = Promise.withResolvers<void>();
+    const { server, calls } = controlledModelServer({
+      holdUnits: new Map([[ids.body, bodyHold.promise]]),
+    });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const running = runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      // abstract 合法完成并提交，body 挂起在途。
+      await expect
+        .poll(async () => {
+          const projection = await readTranslationProjection(created.root, revision.revisionId, "zh");
+          return projection.units.find((unit) => unit.unitId === ids.abstract)?.sentences[0]?.status ?? "gap";
+        })
+        .toBe("ready");
+
+      // 发布新 current：旧 baseRevision 任务必须停止调度新批次。
+      const second = await publishChangedSentence({
+        root: created.root,
+        baseRevision: revision.revisionId,
+        sourceSnapshotId: source.sourceSnapshotId,
+        tree: committed,
+        sentenceId: ids.bodySentence,
+      });
+      bodyHold.resolve();
+      const result = await running;
+      expect(result.status).toBe("finished");
+      // 只有挂起前的两个请求；旧任务不重发 body、不补试、不调度新批次。
+      expect(calls.map((call) => call.unitId)).toEqual([ids.abstract, ids.body]);
+
+      // 已完成的合法结果留在旧 A 侧车；新 current 只经 changeset 迁移继承。
+      const oldSidecar = await readTranslationProjection(created.root, revision.revisionId, "zh");
+      expect(oldSidecar.units.find((unit) => unit.unitId === ids.abstract)?.sentences[0].status).toBe("ready");
+      const migrated = await readTranslationProjection(created.root, second.revisionId, "zh");
+      const byUnit = new Map(migrated.units.map((unit) => [unit.unitId, unit]));
+      expect(byUnit.get(ids.abstract)?.sentences[0]).toMatchObject({
+        status: "ready",
+        content: [{ kind: "text", text: "译文：We study progressive reading of scientific papers." }],
+      });
+      // 在途被停止的 body 不冒充译文：新 current 下保持 gap，不直写 B。
+      expect(byUnit.get(ids.body)?.sentences[0]?.status ?? "gap").toBe("gap");
+    } finally {
+      bodyHold.resolve();
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("外部 signal 预先 aborted：零请求，不产生译文", async () => {
+    const paperId = randomUUID();
+    const { tree } = englishTree(paperId);
+    const { created, revision } = await projectWithTree("预先取消", tree);
+    const { server, calls } = controlledModelServer();
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      const result = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: modelConfig(endpoint),
+        signal: controller.signal,
+      });
+      expect(result.status).toBe("finished");
+      expect(calls).toHaveLength(0);
+      const projection = await readTranslationProjection(created.root, revision.revisionId, "zh");
+      expect(projection.translationRevision).toBeNull();
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("用户停止：未发送批次零新增请求，合法完成项保留，同指纹不再自动启动，手动补译可发起", async () => {
+    const paperId = randomUUID();
+    const { tree, ids } = englishTree(paperId);
+    const { created, revision } = await projectWithTree("用户停止", tree);
+    const bodyHold = Promise.withResolvers<void>();
+    const { server, calls } = controlledModelServer({
+      holdUnits: new Map([[ids.body, bodyHold.promise]]),
+    });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const running = runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      await expect
+        .poll(async () => {
+          const projection = await readTranslationProjection(created.root, revision.revisionId, "zh");
+          return projection.units.find((unit) => unit.unitId === ids.abstract)?.sentences[0]?.status ?? "gap";
+        })
+        .toBe("ready");
+
+      await stopTranslationTasks(created.root, "zh");
+      await running;
+      const afterStop = calls.length;
+
+      // 停止后再次打开同指纹：不自动启动，零新增请求。
+      const reopened = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: modelConfig(endpoint),
+      });
+      expect(reopened).toMatchObject({ status: "skipped", reason: "already-generated" });
+      expect(calls.length).toBe(afterStop);
+
+      // 合法完成项保留；body 保持 gap。
+      const projection = await readTranslationProjection(created.root, revision.revisionId, "zh");
+      const byUnit = new Map(projection.units.map((unit) => [unit.unitId, unit]));
+      expect(byUnit.get(ids.abstract)?.sentences[0].status).toBe("ready");
+      expect(byUnit.get(ids.body)?.sentences[0]?.status ?? "gap").toBe("gap");
+
+      // 手动补译缺口不受停止指纹限制。
+      bodyHold.resolve();
+      const manual = await dispatchCoreCommand(
+        { type: "coreTranslationFillGaps", root: created.root, language: "zh" },
+        undefined,
+        { config: modelConfig(endpoint) },
+      );
+      expect(manual).toMatchObject({ status: "finished" });
+      expect(calls.length).toBeGreaterThan(afterStop);
+      const afterManual = await readTranslationProjection(created.root, revision.revisionId, "zh");
+      expect(afterManual.units.find((unit) => unit.unitId === ids.body)?.sentences[0].status).toBe("ready");
+    } finally {
+      bodyHold.resolve();
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("全部单元持续失败：同会话连续两次打开零重复自动请求，手动补译才新增", async () => {
+    const paperId = randomUUID();
+    const { tree, ids } = englishTree(paperId);
+    const { created } = await projectWithTree("全失败限次", tree);
+    const { server, calls } = controlledModelServer({ failUnits: new Set([ids.abstract, ids.body]) });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const first = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(first.status).toBe("finished");
+      // 每单元首轮一次＋补试一次；没有任何 index 提交。
+      expect(calls.filter((call) => call.unitId === ids.abstract)).toHaveLength(2);
+      expect(calls.filter((call) => call.unitId === ids.body)).toHaveLength(2);
+
+      const before = calls.length;
+      const second = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(second).toMatchObject({ status: "skipped", reason: "already-generated" });
+      expect(calls.length).toBe(before);
+
+      const manual = await dispatchCoreCommand(
+        { type: "coreTranslationFillGaps", root: created.root, language: "zh" },
+        undefined,
+        { config: modelConfig(endpoint) },
+      );
+      expect(manual).toMatchObject({ status: "finished" });
+      expect(calls.length).toBe(before + 4);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
     }
   });
 });

@@ -768,6 +768,9 @@ span.reader-warning {
 .reader-translation-status {
   margin-top: 8px;
 }
+.reader-translation-stop {
+  margin-left: 8px;
+}
 .reader-translation-note {
   margin-left: 6px;
   padding: 0 5px;

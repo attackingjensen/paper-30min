@@ -6,10 +6,13 @@
 import type { ReaderProjection } from "./projection.js";
 import type { SelectionIndex, SentenceInfo } from "./selection.js";
 import type { TranslationSentenceView, TranslationUnitView } from "./translation-view.js";
+import type { TranslationProjection } from "../translation/contracts.js";
 
 interface TranslationSentenceInfo extends SentenceInfo {
   status: "ready" | "stale";
   sentence: TranslationSentenceView;
+  /** 提交时原句内容摘要（stale 为旧原句摘要）；用于区分源变化与译文重译。 */
+  sourceSha256?: string;
 }
 
 /** 结构上兼容 SelectionIndex：mapDomSelection 直接复用同一映射规则。 */
@@ -17,6 +20,8 @@ export interface TranslationSelectionIndex {
   sentences: Map<string, TranslationSentenceInfo>;
   blocks: SelectionIndex["blocks"];
   order: Map<string, number>;
+  /** 构建时投影的原 revision；跨 revision 比较时源摘要变化即 stale。 */
+  baseRevision?: string;
 }
 
 type SelectionRange = { unitId: string; sentenceId: string; start: number; end: number };
@@ -24,12 +29,26 @@ type SelectionRange = { unitId: string; sentenceId: string; start: number; end: 
 const quoteContextLength = 32;
 
 /** 按语言视图构建译文选区索引。projection 提供块结构（公式/图片等无 unit
- * 块的降级判定与原文一致）；省略时只做句内与同视图跨句映射。 */
+ * 块的降级判定与原文一致）；省略时只做句内与同视图跨句映射。
+ * translation 提供逐句源摘要与 baseRevision，供跨 revision 的 stale 判定。 */
 export function buildTranslationSelectionIndex(
   views: readonly TranslationUnitView[],
   projection?: ReaderProjection,
+  translation?: TranslationProjection,
 ): TranslationSelectionIndex {
-  const index: TranslationSelectionIndex = { sentences: new Map(), blocks: new Map(), order: new Map() };
+  const digests = new Map(
+    (translation?.units ?? []).flatMap((unit) =>
+      unit.sentences.flatMap((sentence) =>
+        sentence.sourceSha256 !== null ? [[sentence.sentenceId, sentence.sourceSha256] as const] : [],
+      ),
+    ),
+  );
+  const index: TranslationSelectionIndex = {
+    sentences: new Map(),
+    blocks: new Map(),
+    order: new Map(),
+    ...(translation ? { baseRevision: translation.baseRevision } : {}),
+  };
   for (const view of views) {
     for (const sentence of view.sentences) {
       index.order.set(sentence.sentenceId, index.order.size);
@@ -46,6 +65,7 @@ export function buildTranslationSelectionIndex(
         textParts,
         status: sentence.status,
         sentence,
+        ...(digests.has(sentence.sentenceId) ? { sourceSha256: digests.get(sentence.sentenceId) } : {}),
       });
     }
   }
@@ -120,6 +140,10 @@ export interface SavedTranslationSelection {
   translationRevision: string | null;
   ranges: readonly SelectionRange[];
   quote: { text: string; before: string; after: string };
+  /** 创建时投影身份与逐句源摘要（可选，来自创建时索引）：
+   * 跨原文 revision 时源摘要变化即 stale，即使旧译文文本未变。 */
+  baseRevision?: string;
+  sourceDigests?: Readonly<Record<string, string>>;
 }
 
 export type TranslationSelectionState =
@@ -131,9 +155,12 @@ export type TranslationSelectionState =
     };
 
 /** translationRevision 重基（SPEC-translation §10）：只按实际 sentenceId、
- * range 与 quote 判定，不比较版本字符串。全部匹配→重基到当前值；原句 stale
- * →按 stale 处理；句子退出译文投影→removed；quote 失配→translation-changed。
- * 无关 unit 的提交不制造失效；重译得到相同文本不制造无意义失效。 */
+ * range 与 quote 判定，不比较版本字符串。有效性以每个保存 range 的实际
+ * selected text 为单位：未相交 range 的文本不变即继续精确有效（§10.4），
+ * 32 位前后文只是创建时 provenance，不反向扩大失效。全部匹配→重基到
+ * 当前值并刷新 quote 上下文；原句 stale→按 stale 处理；句子退出译文投影
+ * →removed；任一相交 range 文本失配→translation-changed（整组保留旧
+ * quote；range 级部分保留属 annotations-results 持久化契约，Phase 6 承接）。 */
 export function classifyTranslationSelection(
   index: TranslationSelectionIndex,
   currentTranslationRevision: string | null,
@@ -146,17 +173,30 @@ export function classifyTranslationSelection(
   });
   if (infos.some((info) => info === null)) return { status: "removed", quote: saved.quote };
   if (infos.some((info) => info!.status === "stale")) return { status: "stale", quote: saved.quote };
-  let expected: { text: string; before: string; after: string };
+  // 跨原文 revision：任一相关句的源摘要变化即 stale（§10.5），不依赖译文文本是否变化。
+  if (
+    saved.baseRevision !== undefined &&
+    index.baseRevision !== undefined &&
+    saved.baseRevision !== index.baseRevision &&
+    saved.sourceDigests &&
+    infos.some((info) => {
+      const savedDigest = saved.sourceDigests![info!.sentence.sentenceId];
+      return savedDigest !== undefined && info!.sourceSha256 !== undefined && savedDigest !== info!.sourceSha256;
+    })
+  )
+    return { status: "stale", quote: saved.quote };
+  const savedTexts = saved.quote.text.split("\n");
+  if (savedTexts.length !== saved.ranges.length) return { status: "translation-changed", quote: saved.quote };
+  const currentTexts = saved.ranges.map((range) =>
+    logicalSlice(index.sentences.get(range.sentenceId)!.sentence, range.start, range.end),
+  );
+  if (currentTexts.some((text, index_) => text !== savedTexts[index_]))
+    return { status: "translation-changed", quote: saved.quote };
+  let quote: SavedTranslationSelection["quote"];
   try {
-    expected = translationQuote(index, saved.ranges);
+    quote = translationQuote(index, saved.ranges);
   } catch {
     return { status: "removed", quote: saved.quote };
   }
-  if (
-    expected.text !== saved.quote.text ||
-    expected.before !== saved.quote.before ||
-    expected.after !== saved.quote.after
-  )
-    return { status: "translation-changed", quote: saved.quote };
-  return { status: "active", translationRevision: currentTranslationRevision, quote: saved.quote };
+  return { status: "active", translationRevision: currentTranslationRevision, quote };
 }

@@ -4,6 +4,10 @@ import type { ReaderSentence, ReaderUnitContent } from "../../shared/reader/proj
 import type { TranslationLanguage, TranslationUnitContent } from "../../shared/translation/contracts.js";
 
 export const maximumUnitBytes = 2 * 1024 * 1024;
+
+/** 翻译协议版本事实：prompt 文本变化必须递增 promptVersion（SPEC §2.7）；
+ * generator 记录与模型输入共用同一来源，避免两处字面量漂移。 */
+export const translationProtocolVersions = { promptVersion: 2, schemaVersion: 1 } as const;
 const atomTokenPattern = /⟦atom:([^⟧]+)⟧/g;
 const htmlPattern = /<!--|<!doctype|<\?|<\/?[a-z][^>]*>/i;
 
@@ -77,8 +81,8 @@ export interface TranslationModelInput {
   baseRevision: string;
   sourceLanguage: TranslationLanguage;
   targetLanguage: TranslationLanguage;
-  promptVersion: 1;
-  schemaVersion: 1;
+  promptVersion: typeof translationProtocolVersions.promptVersion;
+  schemaVersion: typeof translationProtocolVersions.schemaVersion;
   maxTokens: number;
   estimatedInputTokens: number;
   systemPrompt: string;
@@ -117,6 +121,7 @@ export function createTranslationModelInput(options: CreateTranslationModelInput
     "只返回符合所给 JSON schema 的 JSON，不返回 Markdown、HTML、摘要或工具调用。",
     "句子 ID、数量和顺序必须与输入完全一致，不得合并、拆分、遗漏、新增句子或修正原文。",
     "⟦atom:...⟧ 占位符必须留在对应原句且各出现一次，不得改写或新增。",
+    "作者姓名、DOI、arXiv 编号等标识符以及参考文献条目中的作者名保持原文，不翻译或转写；期刊名与标题按目标语言翻译。",
   ].join("\n");
   const userPrompt = JSON.stringify({
     sourceLanguage: options.sourceLanguage,
@@ -134,8 +139,7 @@ export function createTranslationModelInput(options: CreateTranslationModelInput
     baseRevision: options.baseRevision,
     sourceLanguage: options.sourceLanguage,
     targetLanguage: options.targetLanguage,
-    promptVersion: 1,
-    schemaVersion: 1,
+    ...translationProtocolVersions,
     maxTokens: options.modelBudget.maxTokens,
     estimatedInputTokens,
     systemPrompt,

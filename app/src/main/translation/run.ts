@@ -1,12 +1,15 @@
-// 翻译任务编排（SPEC-translation §1/§4/§6/§8，paper-30min-crd.2/crd.3）：
+// 翻译任务编排（SPEC-translation §1/§4/§6/§8，paper-30min-crd.2/crd.3/crd.5）：
 // 按需启动、逐单元原子发布、首轮失败自动补试一次、恢复不重复提交。
-// 任务只处理 gap，不自动覆盖 ready/stale；显式 stale 更新以句为最小提交；
-// 打开缺口按 baseRevision＋language＋model＋gap 指纹每会话最多自动补试一次。
-// 同一 baseRevision＋language 只运行一个任务；任务固定开始时的模型配置。
-import { buildReaderProjection } from "../../shared/reader/projection.js";
+// 任务只处理 gap，不自动覆盖 ready/stale；对已有 unit 的补译/stale 更新以句为
+// 最小提交（初次 generate 保持 unit 原子）；同会话同指纹自动尝试（含用户停止）
+// 最多一次。同一 baseRevision＋language 只运行一个任务；任务固定开始时的模型配置。
+// current 推进或用户停止即中止旧任务并停止调度新批次；已完成结果只写旧 revision
+// 侧车，再经 changeset 迁移继承，不直写新 current。
+import { buildReaderProjection, type ReaderUnitContent } from "../../shared/reader/projection.js";
 import { readerProjectionUnits } from "../../shared/reader/translation-view.js";
 import type { DocumentTree } from "../../shared/document/tree.js";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs/promises";
 import type { TranslationStartCommandResult } from "../../shared/contracts.js";
 import {
   detectSourceLanguage,
@@ -56,15 +59,77 @@ function committedSentenceMap(projection: TranslationProjection): Map<string, Se
   return map;
 }
 
-const activeTasks = new Map<string, Promise<TranslationRunResult>>();
+interface ActiveTranslationTask {
+  root: string;
+  baseRevision: string;
+  language: TranslationLanguage;
+  controller: AbortController;
+  /** 停止登记所需事实：停止时按剩余 gap 计算指纹，与再次打开的 generate 指纹同口径。 */
+  model?: string;
+  sourceUnits?: readonly ReaderUnitContent[];
+  done: Promise<TranslationRunResult>;
+}
 
-/** 在途任务的取消控制器：应用退出时中止未发送批次；合法完成项已保存。 */
-const taskControllers = new Map<string, AbortController>();
+/** 在途任务按完整 key（root＋baseRevision＋language）管理：不同 revision 的任务
+ * 互不覆盖控制器；退出与停止都能中止全部在途任务。 */
+const activeTasks = new Map<string, ActiveTranslationTask>();
 
-/** 应用退出：中止全部在途翻译任务并等待落定；合法完成项已保存，pending 不冒充 ready。 */
+/** 打开缺口自动尝试的会话指纹登记：同 root＋baseRevision＋language＋model＋gap 内容
+ * 在实际开始自动网络尝试时登记（与是否存在已提交 index 解耦），最多自动一次；
+ * 用户停止同样登记。手动补译与显式 stale 更新不受此限制。 */
+const autoFillFingerprints = new Set<string>();
+
+/** 中止匹配的全部在途任务并等待落定；合法完成项已保存，pending 不冒充 ready。
+ * 用户停止按停止后的剩余 gap 登记指纹：同指纹 generate 不再自动启动（SPEC §6.3）。 */
+async function abortTasks(matches: (task: ActiveTranslationTask) => boolean, registerStop: boolean): Promise<void> {
+  const tasks = Array.from(activeTasks.values()).filter(matches);
+  for (const task of tasks) task.controller.abort();
+  await Promise.allSettled(tasks.map((task) => task.done));
+  if (!registerStop) return;
+  for (const task of tasks) {
+    if (!task.model || !task.sourceUnits) continue;
+    try {
+      const projection = await readTranslationProjection(task.root, task.baseRevision, task.language);
+      const committed = committedSentenceMap(projection);
+      const gaps = task.sourceUnits
+        .map((unit) => ({
+          unitId: unit.unitId,
+          sentenceIds: unit.sentences
+            .filter((sentence) => !committed.get(unit.unitId)?.has(sentence.sentenceId))
+            .map((sentence) => sentence.sentenceId),
+        }))
+        .filter((unit) => unit.sentenceIds.length > 0);
+      if (gaps.length === 0) continue;
+      autoFillFingerprints.add(
+        createHash("sha256")
+          .update(
+            JSON.stringify({
+              root: task.root,
+              baseRevision: task.baseRevision,
+              language: task.language,
+              model: task.model,
+              gaps,
+            }),
+          )
+          .digest("hex"),
+      );
+    } catch {
+      // 停止登记失败不改变已中止事实；下次打开仍受任务记录与已提交内容约束。
+    }
+  }
+}
+
+/** 应用退出：中止全部在途翻译任务并等待落定。 */
 export async function settleTranslationTasks(): Promise<void> {
-  for (const controller of Array.from(taskControllers.values())) controller.abort();
-  await Promise.allSettled(Array.from(activeTasks.values()));
+  await abortTasks(() => true, false);
+}
+
+/** 用户停止（coreTranslationStop）：中止该 root＋language 全部在途任务（跨 revision）
+ * 并等待落定；登记停止指纹使同指纹 generate 不再自动启动，手动补译仍可显式发起。
+ * 已在途的请求可能已产生费用；完成且合法的结果仍保存，不谎称撤回费用。 */
+export async function stopTranslationTasks(root: string, language: TranslationLanguage): Promise<void> {
+  const canonical = await fs.realpath(root);
+  await abortTasks((task) => task.root === canonical && task.language === language, true);
 }
 
 export async function runProjectTranslation(input: TranslationRunInput): Promise<TranslationRunResult> {
@@ -72,28 +137,37 @@ export async function runProjectTranslation(input: TranslationRunInput): Promise
   if (!opened.currentRevision) return { status: "skipped", reason: "no-current", projection: null };
   const baseRevision = opened.currentRevision.revisionId;
   const key = `${opened.root}\0${baseRevision}\0${input.language}`;
-  const running = activeTasks.get(key);
-  if (running) return { status: "skipped", reason: "busy", projection: null };
+  if (activeTasks.has(key)) return { status: "skipped", reason: "busy", projection: null };
 
+  // 组合外部 signal 与内部控制器（AnyAbort 语义）：调用方停止同样取消未发送批次。
   const controller = new AbortController();
-  taskControllers.set(`${opened.root}\0${input.language}`, controller);
-  const run = execute({ ...input, signal: controller.signal }, opened.root, baseRevision).finally(() => {
-    if (taskControllers.get(`${opened.root}\0${input.language}`) === controller)
-      taskControllers.delete(`${opened.root}\0${input.language}`);
+  const external = input.signal;
+  const onExternalAbort = () => controller.abort();
+  if (external?.aborted) controller.abort();
+  else external?.addEventListener("abort", onExternalAbort, { once: true });
+
+  const task: ActiveTranslationTask = {
+    root: opened.root,
+    baseRevision,
+    language: input.language,
+    controller,
+    // execute 同步启动后立即回填；登记与等待只发生在回填之后。
+    done: undefined as unknown as Promise<TranslationRunResult>,
+  };
+  task.done = execute({ ...input, signal: controller.signal }, task, opened.root, baseRevision).finally(() => {
+    external?.removeEventListener("abort", onExternalAbort);
+    if (activeTasks.get(key) === task) activeTasks.delete(key);
   });
-  activeTasks.set(key, run);
-  try {
-    return await run;
-  } finally {
-    if (activeTasks.get(key) === run) activeTasks.delete(key);
-  }
+  activeTasks.set(key, task);
+  return task.done;
 }
 
-/** 打开缺口自动补试的会话指纹登记：同 baseRevision＋language＋model＋gap 内容
- * 最多自动补试一次；手动补译与显式 stale 更新不受此限制。 */
-const autoFillFingerprints = new Set<string>();
-
-async function execute(input: TranslationRunInput, root: string, baseRevision: string): Promise<TranslationRunResult> {
+async function execute(
+  input: TranslationRunInput,
+  task: ActiveTranslationTask,
+  root: string,
+  baseRevision: string,
+): Promise<TranslationRunResult> {
   const mode = input.mode ?? "generate";
   const tree = await readRevisionDocument(root, baseRevision, "document");
   const sourceLanguage = detectSourceLanguage(tree);
@@ -104,6 +178,7 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
     return { status: "skipped", reason: "same-language", projection: projectionWithSource };
 
   const units = translationSourceUnits(tree);
+  task.sourceUnits = units;
   const committed = committedSentenceMap(before);
   const statusByUnit = new Map(
     before.units.map((unit) => [
@@ -126,10 +201,12 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
   if (targets.length === 0) return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
 
   const selected = input.config.models.find((model) => model.id === input.config.selectedModelId)!;
-  // 自动补试指纹：同会话同 baseRevision＋language＋model＋gap 内容最多一次。
+  task.model = selected.model;
+  // 自动尝试指纹：同会话同 root＋baseRevision＋language＋model＋gap 内容最多一次。
   const fingerprint = createHash("sha256")
     .update(
       JSON.stringify({
+        root,
         baseRevision,
         language: input.language,
         model: selected.model,
@@ -137,7 +214,7 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
       }),
     )
     .digest("hex");
-  if (mode === "generate" && before.translationRevision !== null && autoFillFingerprints.has(fingerprint))
+  if (mode === "generate" && autoFillFingerprints.has(fingerprint))
     return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
 
   const session = createTranslationModelSession(input.config);
@@ -147,21 +224,42 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
     // UTF-8 字节是保守预算单位；安全余量吸收协议封装与估算误差。
     safetyMarginTokens: 1024,
   };
+  // current 复核：每个新 fragment/unit 调度前与每次提交前检查。current 已推进
+  // 即中止本任务并停止调度（不是普通 gap，也不进入自动补试）。
+  const ensureCurrent = async () => {
+    if (task.controller.signal.aborted) return false;
+    const opened = await openProject(root);
+    if (opened.currentRevision?.revisionId !== baseRevision) {
+      task.controller.abort();
+      return false;
+    }
+    return true;
+  };
   try {
     await writeTranslationTaskRecord(root, baseRevision, input.language, { status: "running", gaps: [] });
+    if (mode === "generate") {
+      // 在实际开始自动网络尝试时登记指纹：全失败（无 index）与用户停止同样受限。
+      autoFillFingerprints.add(fingerprint);
+    }
     const options = {
       baseRevision,
       modelBudget,
       sourceLanguage,
       selectedLanguage: input.language,
       units: targets,
+      // 对已有 unit 的 fill-gaps/update-stale 按目标句独立计划、校验、merge 提交；
+      // 初次 generate 的新 unit 保持整单元原子。
+      sentenceAtomic: mode !== "generate",
+      signal: task.controller.signal,
+      ensureCurrent,
       // 部分提交：目标句之外的已提交 ready 句不重发；stale 句不属于 gap 任务目标。
       committedSentences: committed,
       generate: async (modelInput: Parameters<typeof session.generate>[0]) => {
-        input.signal?.throwIfAborted();
-        return session.generate(modelInput, input.signal);
+        task.controller.signal.throwIfAborted();
+        return session.generate(modelInput, task.controller.signal);
       },
       onUnitReady: async (unit: TranslationUnitContent) => {
+        if (!(await ensureCurrent())) throw task.controller.signal.reason ?? new Error("翻译任务已停止。");
         const sourceUnit = units.find((candidate) => candidate.unitId === unit.unitId)!;
         await commitTranslationUnit({
           root,
@@ -176,11 +274,11 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
         input.onCommitted?.();
       },
     };
-    // 首轮：合法单元完成即发布；失败单元记 gap。
-    let task = await runTranslationTask(options);
-    // 首轮结束后对失败单元自动补试一次；已保存内容不重发。
-    const failedIds = new Set(task.units.flatMap((unit) => (unit.status === "gap" ? [unit.unitId] : [])));
-    if (failedIds.size > 0 && !input.signal?.aborted) {
+    // 首轮：合法单元（或句级目标）完成即发布；失败项记 gap。
+    const first = await runTranslationTask(options);
+    let results = first.status === "finished" ? first.units : [];
+    // 首轮结束后对失败目标自动补试一次；已保存内容与停止/revision 失效不重发。
+    if (results.some((unit) => unit.status !== "ready") && (await ensureCurrent())) {
       const refreshed = await readTranslationProjection(root, baseRevision, input.language);
       const refreshedStatus = new Map(
         refreshed.units.map((unit) => [
@@ -188,45 +286,68 @@ async function execute(input: TranslationRunInput, root: string, baseRevision: s
           new Map(unit.sentences.map((sentence) => [sentence.sentenceId, sentence.status])),
         ]),
       );
-      const retryTargets = targets
-        .filter((unit) => failedIds.has(unit.unitId))
-        .map((unit) => ({
-          ...unit,
-          sentences: unit.sentences.filter(
-            (sentence) => (refreshedStatus.get(unit.unitId)?.get(sentence.sentenceId) ?? "gap") === targetStatus,
-          ),
-        }))
-        .filter((unit) => unit.sentences.length > 0);
+      const retryTargets = results
+        .filter((unit) => unit.status !== "ready")
+        .flatMap((failed) => {
+          const source = targets.find((unit) => unit.unitId === failed.unitId);
+          if (!source) return [];
+          const sentences = source.sentences.filter(
+            (sentence) =>
+              failed.sentenceFailures.some((failure) => failure.sentenceId === sentence.sentenceId) &&
+              (refreshedStatus.get(source.unitId)?.get(sentence.sentenceId) ?? "gap") === targetStatus,
+          );
+          return sentences.length > 0 ? [{ ...source, sentences }] : [];
+        });
       if (retryTargets.length > 0) {
-        const retry = await runTranslationTask({
+        const retryRun = await runTranslationTask({
           ...options,
           units: retryTargets,
           committedSentences: committedSentenceMap(refreshed),
         });
-        const retried = new Map(
-          retry.units.map((unit) => [unit.status === "ready" ? unit.unit.unitId : unit.unitId, unit]),
-        );
-        task = {
-          status: "finished",
-          units: task.units.map((unit) => {
-            const id = unit.status === "ready" ? unit.unit.unitId : unit.unitId;
-            return retried.get(id) ?? unit;
-          }),
-        };
+        const retried = retryRun.status === "finished" ? retryRun.units : [];
+        results = results.map((failed) => {
+          if (failed.status === "ready") return failed;
+          const retry = retried.find((unit) => unit.unitId === failed.unitId);
+          if (!retry) return failed;
+          if (retry.status === "ready") return retry;
+          const retriedIds = new Set(retry.sentenceFailures.map((failure) => failure.sentenceId));
+          return {
+            ...failed,
+            sentenceFailures: [
+              ...failed.sentenceFailures.filter((failure) => !retriedIds.has(failure.sentenceId)),
+              ...retry.sentenceFailures,
+            ],
+          };
+        });
       }
     }
-    if (mode === "generate" && before.translationRevision !== null) autoFillFingerprints.add(fingerprint);
-    const gaps = task.units.flatMap((unit) =>
-      unit.status === "gap" ? [{ unitId: unit.unitId, diagnostic: unit.diagnostic }] : [],
+    // task.json 记录句级分类诊断：kind 前缀＋安全文案；同 unit 多句失败逐句列出。
+    // 记录 schema 由存储层拥有（unitId＋diagnostic），分类信息编码进诊断文本。
+    const gaps = results.flatMap((unit) =>
+      unit.status === "ready"
+        ? []
+        : unit.sentenceFailures.map((failure) => ({
+            unitId: unit.unitId,
+            diagnostic: `[${failure.kind}] 句子 ${failure.sentenceId}：${failure.diagnostic}`,
+          })),
     );
     await writeTranslationTaskRecord(root, baseRevision, input.language, { status: "finished", gaps });
     const projection = await readTranslationProjection(root, baseRevision, input.language);
     return {
       status: "finished",
-      units: task.units.map((unit) =>
+      units: results.map((unit) =>
         unit.status === "ready"
-          ? { status: "ready", unitId: unit.unit.unitId, committed: unit.committed }
-          : { status: "gap", unitId: unit.unitId, diagnostic: unit.diagnostic },
+          ? { status: "ready", unitId: unit.unitId, committed: unit.committed }
+          : {
+              status: "gap",
+              unitId: unit.unitId,
+              diagnostic: unit.sentenceFailures[0]?.diagnostic ?? "翻译未完成。",
+              sentences: unit.sentenceFailures.map((failure) => ({
+                sentenceId: failure.sentenceId,
+                kind: failure.kind,
+                diagnostic: failure.diagnostic,
+              })),
+            },
       ),
       projection: { ...projection, sourceLanguage },
     };

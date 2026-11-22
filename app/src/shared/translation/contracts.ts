@@ -27,26 +27,37 @@ export interface TranslationGenerator {
   schemaVersion: number;
 }
 
-/** 磁盘单元文件（units/<unitId>.json）：只保存完整通过校验的 ready 句。
- * stale/gap 是读取时对照当前原文推导的投影状态，不回写单元文件。 */
+/** 提交时原句引用的 atom 完整快照：stale 展示与 quote 只从此重建，
+ * 不再依赖当前树仍存在同 ID atom。缺省（旧格式）回退当前树 atom，仅适用于未变 atom。 */
+export type TranslationAtomSnapshot = DocumentTree["atoms"][string];
+
+/** 磁盘单元文件（units/<unitId>.<generation>.json）：只保存完整通过校验的 ready 句。
+ * stale/gap 是读取时对照当前原文推导的投影状态，不回写单元文件。
+ * generator 与 atom 快照是句级事实：merge 只替换目标句，kept 句保留原事实。 */
 export interface TranslationUnitFile {
   formatVersion: 1;
   unitId: string;
-  generator: TranslationGenerator;
   sentences: Array<{
     sentenceId: string;
     sourceSha256: string;
     translationSha256: string;
     content: TranslationInlinePart[];
+    generator: TranslationGenerator;
+    /** 译文引用的 atom 完整快照（提交时原树事实）；旧格式缺省。 */
+    atoms?: TranslationAtomSnapshot[];
   }>;
 }
 
 export interface TranslationUnitIndexEntry {
   unitId: string;
   file: string;
-  generator: TranslationGenerator;
   logicalBytes: number;
-  sentences: Array<{ sentenceId: string; sourceSha256: string; translationSha256: string }>;
+  sentences: Array<{
+    sentenceId: string;
+    sourceSha256: string;
+    translationSha256: string;
+    generator: TranslationGenerator;
+  }>;
 }
 
 /** index.json：此语言当前投影的唯一指针；未引用文件不是当前译文。 */
@@ -74,17 +85,24 @@ export interface TranslationRetiredEntry {
 }
 
 /** 主进程读取路径输出的只读投影：状态已对照当前原文树推导。 */
-export interface TranslationSentenceProjection {
+interface TranslationSentenceProjection {
   sentenceId: string;
   status: TranslationSentenceStatus;
   /** null 只用于 gap；stale 保留旧译文内容。 */
   content: TranslationInlinePart[] | null;
+  /** 提交时原句内容摘要（含引用 atom 内容）；stale 仍是旧原句摘要；gap 为 null。 */
+  sourceSha256: string | null;
+  /** 提交时译文逻辑内容摘要；gap 为 null。 */
+  translationSha256: string | null;
+  /** 提交该句的 generator 事实；gap 为 null。 */
+  generator: TranslationGenerator | null;
+  /** stale 句译文引用的旧 atom 快照；缺省（旧格式）回退当前树 atom。 */
+  atoms?: TranslationAtomSnapshot[];
   staleReason?: "source-changed";
 }
 
 export interface TranslationUnitProjection {
   unitId: string;
-  generator: TranslationGenerator;
   sentences: TranslationSentenceProjection[];
 }
 

@@ -47,11 +47,13 @@ function translatedProjection(
 function readyUnit(abstract: ReaderUnitContent, sentenceId: string, atomId: string) {
   return {
     unitId: abstract.unitId,
-    generator,
     sentences: [
       {
         sentenceId,
         status: "ready" as const,
+        sourceSha256: "a".repeat(64),
+        translationSha256: "c".repeat(64),
+        generator,
         content: [
           { kind: "text" as const, text: "能量保持 " },
           { kind: "atom" as const, atomId },
@@ -128,11 +130,13 @@ test.describe("translation translationRevision 按 quote 重基", () => {
     const { ids, abstract } = fixture();
     const unit = {
       unitId: abstract.unitId,
-      generator,
       sentences: [
         {
           sentenceId: ids.inlineMathSentence,
           status,
+          sourceSha256: "a".repeat(64),
+          translationSha256: "c".repeat(64),
+          generator,
           content: [{ kind: "text" as const, text }],
         },
       ],
@@ -150,7 +154,7 @@ test.describe("translation translationRevision 按 quote 重基", () => {
   test("无关 unit 提交推进 translationRevision：quote 仍匹配则重基保持 active", () => {
     const base = viewWith("能量保持守恒。");
     // 同一句内容不变，另一 unit 新增译文 → 新 translationRevision。
-    const other = { unitId: randomUUID(), generator, sentences: [] };
+    const other = { unitId: randomUUID(), sentences: [] };
     const next = translatedProjection([...base.projectionValue.units, other]);
     const nextIndex = buildTranslationSelectionIndex(buildTranslationUnitViews([base.abstract], next));
     const result = classifyTranslationSelection(nextIndex, next.translationRevision, {
@@ -186,23 +190,128 @@ test.describe("translation translationRevision 按 quote 重基", () => {
     expect(result.status).toBe("active");
   });
 
-  test("选区外但落入 quote 上下文的文本改变：按 quote 失配失效，不误报 active", () => {
-    const base = viewWith("能量保持守恒。");
+  test("选区外但落入 quote 上下文的文本改变：range 未相交仍精确有效，重基刷新上下文", () => {
+    const base = viewWith("能量保持恒久。");
+    // 纯译文重译（源未变）：只改 after 上下文内的第 6 字（久→远），选区 0..5 不含该字。
     const changed = translatedProjection([
       {
         ...base.projectionValue.units[0],
         sentences: [
-          { ...base.projectionValue.units[0].sentences[0], content: [{ kind: "text", text: "能量保持恒久。" }] },
+          { ...base.projectionValue.units[0].sentences[0], content: [{ kind: "text", text: "能量保持恒远。" }] },
         ],
       },
     ]);
-    const nextIndex = buildTranslationSelectionIndex(buildTranslationUnitViews([base.abstract], changed));
+    const nextIndex = buildTranslationSelectionIndex(
+      buildTranslationUnitViews([base.abstract], changed),
+      undefined,
+      changed,
+    );
     const result = classifyTranslationSelection(nextIndex, changed.translationRevision, {
       translationRevision: base.revision,
       ranges: base.ranges,
       quote: base.quote,
     });
-    expect(result.status).toBe("translation-changed");
+    // SPEC §10.4：只有相交 range 失效；0..5 文本未变，上下文变化不扩大失效。
+    expect(result.status).toBe("active");
+    expect(result.status === "active" && result.translationRevision).toBe(changed.translationRevision);
+    // 重基后 quote 上下文刷新为当前文本，selected text 不变。
+    expect(result.quote.text).toBe(base.quote.text);
+    expect(result.quote.after).toBe("远。");
+  });
+
+  test("跨原文 revision 源摘要变化：旧译文文本未变也按 stale 处理", () => {
+    const base = viewWith("能量保持守恒。");
+    const baseIndex = buildTranslationSelectionIndex(base.views, undefined, base.projectionValue);
+    // 新 current：原句已改（源摘要变化），迁移保留的旧译文文本恰好相同。
+    const migrated = translatedProjection([
+      {
+        ...base.projectionValue.units[0],
+        sentences: [{ ...base.projectionValue.units[0].sentences[0], sourceSha256: "b".repeat(64) }],
+      },
+    ]);
+    migrated.baseRevision = "revision-next";
+    const nextIndex = buildTranslationSelectionIndex(
+      buildTranslationUnitViews([base.abstract], migrated),
+      undefined,
+      migrated,
+    );
+    const result = classifyTranslationSelection(nextIndex, migrated.translationRevision, {
+      translationRevision: base.revision,
+      ranges: base.ranges,
+      quote: translationQuote(baseIndex, base.ranges),
+      baseRevision: base.projectionValue.baseRevision,
+      sourceDigests: Object.fromEntries(
+        base.projectionValue.units.flatMap((unit) =>
+          unit.sentences.map((sentence) => [sentence.sentenceId, sentence.sourceSha256 ?? "a".repeat(64)] as const),
+        ),
+      ),
+    });
+    expect(result).toMatchObject({ status: "stale" });
+  });
+
+  test("两 range 仅一个相交变化：整组 translation-changed 保留旧 quote，未相交 range 文本仍可核验", () => {
+    const { abstract, intro } = (() => {
+      const f = fixture();
+      const item = f.projection.items.find(
+        (candidate) => candidate.kind === "unit" && candidate.unitId === f.ids.intro,
+      );
+      if (!item || item.kind !== "unit") throw new Error("测试单元不存在。");
+      return { ...f, intro: item };
+    })();
+    const firstSentence = abstract.sentences[0].sentenceId;
+    const secondSentence = intro.sentences[0].sentenceId;
+    const units = [
+      {
+        unitId: abstract.unitId,
+        sentences: [
+          {
+            sentenceId: firstSentence,
+            status: "ready" as const,
+            sourceSha256: "a".repeat(64),
+            translationSha256: "c".repeat(64),
+            generator,
+            content: [{ kind: "text" as const, text: "能量保持守恒。" }],
+          },
+        ],
+      },
+      {
+        unitId: intro.unitId,
+        sentences: [
+          {
+            sentenceId: secondSentence,
+            status: "ready" as const,
+            sourceSha256: "a".repeat(64),
+            translationSha256: "c".repeat(64),
+            generator,
+            content: [{ kind: "text" as const, text: "先前工作启发研究。" }],
+          },
+        ],
+      },
+    ];
+    const baseProjection = translatedProjection(units);
+    const baseIndex = buildTranslationSelectionIndex(buildTranslationUnitViews([abstract, intro], baseProjection));
+    const ranges = [
+      { unitId: abstract.unitId, sentenceId: firstSentence, start: 0, end: 4 },
+      { unitId: intro.unitId, sentenceId: secondSentence, start: 0, end: 4 },
+    ];
+    const quote = translationQuote(baseIndex, ranges);
+    // 只有第二句相交文本改变；第一句 range 文本不变。
+    const changed = translatedProjection([
+      units[0],
+      {
+        ...units[1],
+        sentences: [{ ...units[1].sentences[0], content: [{ kind: "text" as const, text: "全新译文完全不同。" }] }],
+      },
+    ]);
+    const nextIndex = buildTranslationSelectionIndex(buildTranslationUnitViews([abstract, intro], changed));
+    const result = classifyTranslationSelection(nextIndex, changed.translationRevision, {
+      translationRevision: baseProjection.translationRevision,
+      ranges,
+      quote,
+    });
+    expect(result).toMatchObject({ status: "translation-changed", quote });
+    // 未相交 range 的当前文本仍与保存一致：失效只由相交 range 触发。
+    expect(translationQuote(nextIndex, [ranges[0]]).text).toBe(quote.text.split("\n")[0]);
   });
 
   test("相关译文文本改变使相交 range 失效为 translation-changed，quote 保留", () => {

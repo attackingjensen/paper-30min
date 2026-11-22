@@ -9,10 +9,11 @@ import Type from "typebox";
 import Schema from "typebox/schema";
 import { renameManaged } from "../managed-rename.js";
 import { openProject, readRevisionDocument, withProjectWriteLock } from "../project-core.js";
-import { documentNodeContentFingerprint } from "../../shared/document/changeset.js";
-import type { DocumentTree } from "../../shared/document/tree.js";
+import { sentenceSourceDigestInput } from "../../shared/document/changeset.js";
+import { AtomNodeSchema, type DocumentTree } from "../../shared/document/tree.js";
 import type { ReaderUnitContent } from "../../shared/reader/projection.js";
 import type {
+  TranslationAtomSnapshot,
   TranslationGenerator,
   TranslationIndex,
   TranslationInlinePart,
@@ -46,6 +47,7 @@ const SentenceDigestSchema = Type.Object(
     sentenceId: Type.String({ minLength: 1 }),
     sourceSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
     translationSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    generator: GeneratorSchema,
   },
   { additionalProperties: false },
 );
@@ -53,7 +55,6 @@ const UnitFileSchema = Type.Object(
   {
     formatVersion: Type.Literal(1),
     unitId: Type.String({ minLength: 1 }),
-    generator: GeneratorSchema,
     sentences: Type.Array(
       Type.Object(
         {
@@ -61,6 +62,8 @@ const UnitFileSchema = Type.Object(
           sourceSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
           translationSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
           content: Type.Array(InlinePartSchema, { minItems: 1 }),
+          generator: GeneratorSchema,
+          atoms: Type.Optional(Type.Array(AtomNodeSchema)),
         },
         { additionalProperties: false },
       ),
@@ -91,7 +94,6 @@ const IndexSchema = Type.Object(
         {
           unitId: Type.String({ minLength: 1 }),
           file: Type.String({ minLength: 1 }),
-          generator: GeneratorSchema,
           logicalBytes: Type.Integer({ minimum: 0 }),
           sentences: Type.Array(SentenceDigestSchema),
         },
@@ -107,8 +109,13 @@ const indexSchema = Schema.Compile(IndexSchema);
 
 const digest = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
+/** 原句内容摘要（含引用 atom 内容）：shared 确定性输入 + main 侧 SHA-256。 */
+export function sentenceSourceDigest(tree: DocumentTree, sentenceId: string): string {
+  return digest(sentenceSourceDigestInput(tree, sentenceId));
+}
+
 /** 译文逻辑内容摘要：text 计自身，atom 计原句 atom 的逻辑文本（与任务预算同口径）。 */
-export function translationLogicalContent(parts: readonly TranslationInlinePart[], tree: DocumentTree): string {
+function translationLogicalContent(parts: readonly TranslationInlinePart[], tree: DocumentTree): string {
   return parts
     .map((part) => {
       if (part.kind === "text") return part.text;
@@ -119,24 +126,55 @@ export function translationLogicalContent(parts: readonly TranslationInlinePart[
     .join("");
 }
 
-/** 逐句内容摘要：原句用 document-core 内容指纹（含 atom 结构），译文用逻辑内容。 */
+/** 逐句内容摘要：原句用统一 sentence-source 摘要（含引用 atom 内容），译文用逻辑内容。 */
 export function translationSentenceDigests(
   tree: DocumentTree,
   sourceUnit: ReaderUnitContent,
   sentences: TranslationUnitContent["sentences"],
 ): Array<{ sentenceId: string; sourceSha256: string; translationSha256: string }> {
+  const sourceIds = new Set(sourceUnit.sentences.map((sentence) => sentence.sentenceId));
   return sentences.map((sentence) => {
-    const source = sourceUnit.sentences.find((candidate) => candidate.sentenceId === sentence.sentenceId);
-    if (!source) throw new Error(`译文句子缺少对应原句：${sentence.sentenceId}。`);
+    if (!sourceIds.has(sentence.sentenceId)) throw new Error(`译文句子缺少对应原句：${sentence.sentenceId}。`);
     return {
       sentenceId: sentence.sentenceId,
-      sourceSha256: digest(documentNodeContentFingerprint(tree, "sentence", sentence.sentenceId)),
+      sourceSha256: sentenceSourceDigest(tree, sentence.sentenceId),
       translationSha256: digest(translationLogicalContent(sentence.content, tree)),
     };
   });
 }
 
-export interface TranslationCommitHooks {
+/** 已提交句的逻辑文本：优先提交时 atom 快照（旧 atom 可能已改/已删），
+ * 快照缺省（旧格式）回退当前树。摘要核验与预算计算共用，不依赖新树仍存在旧 atom。 */
+export function storedLogicalText(
+  sentence: { content: TranslationInlinePart[]; atoms?: TranslationAtomSnapshot[] },
+  tree: DocumentTree,
+): string {
+  const snapshot = new Map((sentence.atoms ?? []).map((atom) => [atom.id, atom]));
+  return sentence.content
+    .map((part) => {
+      if (part.kind === "text") return part.text;
+      const atom = snapshot.get(part.atomId) ?? tree.atoms[part.atomId];
+      if (!atom) throw new Error(`译文 atom 缺少快照与来源逻辑内容：${part.atomId}。`);
+      return atom.text;
+    })
+    .join("");
+}
+
+/** 提交时从原文树采集译文引用的 atom 完整快照（按出现顺序去重）。 */
+function snapshotAtoms(content: TranslationInlinePart[], tree: DocumentTree): TranslationAtomSnapshot[] {
+  const seen = new Set<string>();
+  const atoms: TranslationAtomSnapshot[] = [];
+  for (const part of content) {
+    if (part.kind !== "atom" || seen.has(part.atomId)) continue;
+    const atom = tree.atoms[part.atomId];
+    if (!atom) throw new Error(`译文 atom 缺少来源逻辑内容：${part.atomId}。`);
+    seen.add(part.atomId);
+    atoms.push(structuredClone(atom));
+  }
+  return atoms;
+}
+
+interface TranslationCommitHooks {
   /** index 替换前故障注入点；抛错时旧 index 与旧译文保持权威。 */
   beforeIndexReplace?: () => void | Promise<void>;
   /** index 替换后故障注入点；提交已可见，抛错不回滚。 */
@@ -218,7 +256,11 @@ export function parseTranslationIndex(
     throw new Error("译文 index 与请求的 revision／语言不一致。");
   const seen = new Set<string>();
   for (const entry of value.units) {
-    if (!uuid.test(entry.unitId) || entry.file !== `units/${entry.unitId}.json` || seen.has(entry.unitId))
+    // 每代单元使用不可变版本化文件名：index 推进前后旧 index 始终指向旧文件。
+    const validFile = new RegExp(
+      `^units/${entry.unitId}\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.json$`,
+    );
+    if (!uuid.test(entry.unitId) || !validFile.test(entry.file) || seen.has(entry.unitId))
       throw new Error("译文 index 单元条目无效或重复。");
     seen.add(entry.unitId);
   }
@@ -236,7 +278,8 @@ export function parseTranslationUnitFile(value: unknown, entry: TranslationUnitI
       return (
         sentence.sentenceId !== expected.sentenceId ||
         sentence.sourceSha256 !== expected.sourceSha256 ||
-        sentence.translationSha256 !== expected.translationSha256
+        sentence.translationSha256 !== expected.translationSha256 ||
+        JSON.stringify(sentence.generator) !== JSON.stringify(expected.generator)
       );
     })
   )
@@ -244,45 +287,55 @@ export function parseTranslationUnitFile(value: unknown, entry: TranslationUnitI
   return value;
 }
 
-/** 单元原子提交：unit 文件完整写入并核验后，才以临时文件＋替换推进 index。
+/** 单元原子提交：每代 unit 写入不可变版本化文件并核验，next index 引用新文件，
+ * 最后才以临时文件＋替换推进 index.json；index 推进失败或崩溃时旧 index 仍指向
+ * 旧文件，旧译文持续可读，新文件只是未引用残留（延迟清理，不作为当前投影）。
+ * current 校验在写锁内复核：迟到提交（current 已推进）明确拒绝，不写锁外旧侧车。
  * 整单元提交要求句子与 current 完全一致；merge 提交只替换目标句（局部 stale
- * 更新与补译的最小提交单位），其余已提交句原样保留。失败保留旧 index 与旧译文。 */
+ * 更新与补译的最小提交单位），其余已提交句连同 generator 与 atom 快照原样保留。 */
 export async function commitTranslationUnit(
   input: CommitTranslationUnitInput,
 ): Promise<{ translationRevision: string; logicalContentBytes: number }> {
   if (!uuid.test(input.baseRevision)) throw new Error("baseRevision 必须是 revision ID。");
   if (input.language !== "zh" && input.language !== "en") throw new Error("目标语言无效。");
   const root = await fs.realpath(input.root);
-  const opened = await openProject(root);
-  if (!opened.currentRevision || opened.currentRevision.revisionId !== input.baseRevision)
-    throw new Error("译文提交的 baseRevision 不是当前 current，拒绝写入过期侧车。");
-  const tree = await readRevisionDocument(root, input.baseRevision, "document");
-  const sourceUnit = tree.units[input.unit.unitId];
-  if (!sourceUnit) throw new Error(`译文单元不存在于 current 树：${input.unit.unitId}。`);
   if (input.unit.sentences.length === 0) throw new Error("译文提交不能为空单元。");
-
   const digestBySentence = new Map(input.digests.map((entry) => [entry.sentenceId, entry]));
-  const incoming = input.unit.sentences.map((sentence) => {
-    const digests = digestBySentence.get(sentence.sentenceId);
-    if (!digests || !sourceUnit.sentenceIds.includes(sentence.sentenceId))
-      throw new Error(`译文句子缺少摘要或不属于该单元：${sentence.sentenceId}。`);
-    const sourceSha256 = digest(documentNodeContentFingerprint(tree, "sentence", sentence.sentenceId));
-    const translationSha256 = digest(translationLogicalContent(sentence.content, tree));
-    if (digests.sourceSha256 !== sourceSha256 || digests.translationSha256 !== translationSha256)
-      throw new Error(`译文摘要与提交内容不一致：${sentence.sentenceId}。`);
-    return { ...sentence, sourceSha256, translationSha256 };
-  });
-  const incomingIds = new Set(incoming.map((sentence) => sentence.sentenceId));
-  if (incomingIds.size !== incoming.length) throw new Error("译文提交包含重复句子。");
-  if (!input.merge) {
-    if (
-      incoming.length !== sourceUnit.sentenceIds.length ||
-      incoming.some((sentence, index) => sentence.sentenceId !== sourceUnit.sentenceIds[index])
-    )
-      throw new Error("译文句子 ID、数量或顺序与 current 单元不一致。");
-  }
+  const incomingIds = new Set(input.unit.sentences.map((sentence) => sentence.sentenceId));
+  if (incomingIds.size !== input.unit.sentences.length) throw new Error("译文提交包含重复句子。");
 
   return withProjectWriteLock(root, async () => {
+    const opened = await openProject(root);
+    if (!opened.currentRevision || opened.currentRevision.revisionId !== input.baseRevision)
+      throw new Error("译文提交的 baseRevision 不是当前 current，拒绝写入过期侧车。");
+    const tree = await readRevisionDocument(root, input.baseRevision, "document");
+    const sourceUnit = tree.units[input.unit.unitId];
+    if (!sourceUnit) throw new Error(`译文单元不存在于 current 树：${input.unit.unitId}。`);
+    const sourceIds = new Set(sourceUnit.sentenceIds);
+    const incoming = input.unit.sentences.map((sentence) => {
+      const digests = digestBySentence.get(sentence.sentenceId);
+      if (!digests || !sourceIds.has(sentence.sentenceId))
+        throw new Error(`译文句子缺少摘要或不属于该单元：${sentence.sentenceId}。`);
+      const sourceSha256 = sentenceSourceDigest(tree, sentence.sentenceId);
+      const translationSha256 = digest(translationLogicalContent(sentence.content, tree));
+      if (digests.sourceSha256 !== sourceSha256 || digests.translationSha256 !== translationSha256)
+        throw new Error(`译文摘要与提交内容不一致：${sentence.sentenceId}。`);
+      return {
+        ...sentence,
+        sourceSha256,
+        translationSha256,
+        generator: input.generator,
+        atoms: snapshotAtoms(sentence.content, tree),
+      };
+    });
+    if (!input.merge) {
+      if (
+        incoming.length !== sourceUnit.sentenceIds.length ||
+        incoming.some((sentence, index) => sentence.sentenceId !== sourceUnit.sentenceIds[index])
+      )
+        throw new Error("译文句子 ID、数量或顺序与 current 单元不一致。");
+    }
+
     const relative = `.paper30min/revisions/${input.baseRevision}/translations/${input.language}`;
     const directory = await managedDirectory(root, relative, true);
     if (!directory) throw new Error("译文侧车目录不可用。");
@@ -308,9 +361,10 @@ export async function commitTranslationUnit(
       );
     }
     // 合并提交：以旧文件为底，只替换目标句；句子顺序以 current 单元为权威。
-    // 旧文件中不属于 current 单元的句子（迁移残留）不进入新文件。
+    // kept 句保留旧摘要、generator 与 atom 快照；旧文件中不属于 current 单元的
+    // 句子（迁移残留）不进入新文件。
     const kept = (previousFile?.sentences ?? []).filter(
-      (sentence) => sourceUnit.sentenceIds.includes(sentence.sentenceId) && !incomingIds.has(sentence.sentenceId),
+      (sentence) => sourceIds.has(sentence.sentenceId) && !incomingIds.has(sentence.sentenceId),
     );
     const byId = new Map([...kept, ...incoming].map((sentence) => [sentence.sentenceId, sentence]));
     const sentences = sourceUnit.sentenceIds.flatMap((sentenceId) => {
@@ -323,11 +377,11 @@ export async function commitTranslationUnit(
     const unitFile: TranslationUnitFile = {
       formatVersion: 1,
       unitId: input.unit.unitId,
-      generator: input.generator,
       sentences,
     };
+    // kept 句的逻辑文本以提交时快照为准：旧 atom 已改/已删不阻断后续句级提交。
     const logicalBytes = Buffer.byteLength(
-      sentences.map((sentence) => translationLogicalContent(sentence.content, tree)).join(""),
+      sentences.map((sentence) => storedLogicalText(sentence, tree)).join(""),
       "utf8",
     );
     const logicalContentBytes =
@@ -335,25 +389,21 @@ export async function commitTranslationUnit(
     if (logicalContentBytes > maximumLanguageContentBytes)
       throw new Error("单元译文使单语言逻辑内容超过 64 MiB 预算，未发布。");
 
+    const generation = randomUUID();
     const entry: TranslationUnitIndexEntry = {
       unitId: input.unit.unitId,
-      file: `units/${input.unit.unitId}.json`,
-      generator: input.generator,
+      file: `units/${input.unit.unitId}.${generation}.json`,
       logicalBytes,
-      sentences: sentences.map(({ sentenceId, sourceSha256, translationSha256 }) => ({
+      sentences: sentences.map(({ sentenceId, sourceSha256, translationSha256, generator }) => ({
         sentenceId,
         sourceSha256,
         translationSha256,
+        generator,
       })),
     };
-    // 替换已有单元时先写未引用临时单元文件；index 推进前旧译文持续可读，
-    // 崩溃留下的未引用文件不作为当前投影。
-    const finalUnitFile = path.join(unitsDirectory, `${input.unit.unitId}.json`);
-    const stagedUnitFile = previousEntry
-      ? path.join(unitsDirectory, `.paper30min-${randomUUID()}.staged.json`)
-      : finalUnitFile;
-    await atomicWriteJson(stagedUnitFile, unitFile, maximumUnitBytes, "译文单元文件");
-    parseTranslationUnitFile(await readJsonFile(stagedUnitFile, maximumUnitBytes, "译文单元文件"), entry);
+    const newUnitFile = path.join(unitsDirectory, `${input.unit.unitId}.${generation}.json`);
+    await atomicWriteJson(newUnitFile, unitFile, maximumUnitBytes, "译文单元文件");
+    parseTranslationUnitFile(await readJsonFile(newUnitFile, maximumUnitBytes, "译文单元文件"), entry);
 
     const translationRevision = randomUUID();
     const next: TranslationIndex = {
@@ -378,12 +428,12 @@ export async function commitTranslationUnit(
         await handle.close();
       }
       await input.hooks?.beforeIndexReplace?.();
-      if (stagedUnitFile !== finalUnitFile) await renameManaged(stagedUnitFile, finalUnitFile);
       await renameManaged(temporary, indexFile);
     } finally {
       await fs.rm(temporary, { force: true });
-      if (stagedUnitFile !== finalUnitFile) await fs.rm(stagedUnitFile, { force: true });
     }
+    // 旧代文件已成为未引用残留：index 推进后才清理；崩溃时残留不作为当前投影。
+    if (previousEntry) await fs.rm(path.join(directory, previousEntry.file), { force: true });
     await input.hooks?.afterIndexReplace?.();
     return { translationRevision, logicalContentBytes };
   });
@@ -427,7 +477,6 @@ export async function readTranslationProjection(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return empty;
     throw error;
   }
-
   const units: TranslationProjection["units"] = [];
   for (const entry of index.units) {
     const file = parseTranslationUnitFile(
@@ -438,20 +487,42 @@ export async function readTranslationProjection(
     const stored = new Map(file.sentences.map((sentence) => [sentence.sentenceId, sentence]));
     const sentences = (sourceUnit?.sentenceIds ?? []).map((sentenceId) => {
       const sentence = stored.get(sentenceId);
-      if (!sentence) return { sentenceId, status: "gap" as const, content: null };
-      const currentSha256 = digest(documentNodeContentFingerprint(tree, "sentence", sentenceId));
-      if (currentSha256 !== sentence.sourceSha256)
+      if (!sentence)
+        return {
+          sentenceId,
+          status: "gap" as const,
+          content: null,
+          sourceSha256: null,
+          translationSha256: null,
+          generator: null,
+        };
+      const facts = {
+        sourceSha256: sentence.sourceSha256,
+        translationSha256: sentence.translationSha256,
+        generator: sentence.generator,
+      };
+      // 原句或引用 atom 内容改变、原句/引用 atom 已删除 → 仅该句 stale；
+      // stale 展示与 quote 由提交时 atom 快照重建，不依赖当前树。
+      let currentSha256: string | null = null;
+      try {
+        currentSha256 = sentenceSourceDigest(tree, sentenceId);
+      } catch {
+        currentSha256 = null;
+      }
+      if (currentSha256 === null || currentSha256 !== sentence.sourceSha256)
         return {
           sentenceId,
           status: "stale" as const,
           staleReason: "source-changed" as const,
           content: sentence.content,
+          ...facts,
+          ...(sentence.atoms ? { atoms: sentence.atoms } : {}),
         };
-      if (digest(translationLogicalContent(sentence.content, tree)) !== sentence.translationSha256)
+      if (digest(storedLogicalText(sentence, tree)) !== sentence.translationSha256)
         throw new Error(`译文内容摘要不符：${sentenceId}。`);
-      return { sentenceId, status: "ready" as const, content: sentence.content };
+      return { sentenceId, status: "ready" as const, content: sentence.content, ...facts };
     });
-    units.push({ unitId: entry.unitId, generator: file.generator, sentences });
+    units.push({ unitId: entry.unitId, sentences });
   }
   return {
     baseRevision,
