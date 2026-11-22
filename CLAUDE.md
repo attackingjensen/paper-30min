@@ -1,3 +1,5 @@
+你是这个代码库的所有者和长期维护者，它的架构设计与实现方式由你主导，后续也会由你持续迭代。
+
 # Paper30Min
 
 论文精读应用。当前版本使用 Electron + React/TypeScript + Node + Pi SDK；旧 Windows Tauri 客户端已归档。开发使用当前安装的 NexusKit 技能，项目只保留下述特有约定，不另建竞争的开发或审批流程。

@@ -1,7 +1,14 @@
 // 原文修正宿主真实 Electron 回归（SPEC-reader §8，paper-30min-qa3.4）：
 // 默认只读、显式单元修正、atom 受保护占位、changeset 预览、草稿取消与基线保护；
 // 发布经生产 IPC 重放同一命令，current 原子推进，source-base 不含本地修正。
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  _electron as electron,
+  type ElectronApplication,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -166,6 +173,14 @@ async function openFolder(root: string) {
   await page.getByRole("button", { name: "打开工程文件夹", exact: true }).click();
 }
 
+async function refreshWithFocus(reader: Locator) {
+  const stamp = randomUUID();
+  await reader.evaluate((element, value) => element.setAttribute("data-test-focus-cycle", value), stamp);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator(`.full-reader[data-test-focus-cycle="${stamp}"]`)).toHaveCount(0, { timeout: 15000 });
+  await expect(reader).toHaveAttribute("data-revision-id", /.+/, { timeout: 15000 });
+}
+
 test("reader 默认只读：显式修正入口编辑单元，预览 changeset 后发布新 revision", async () => {
   const { created, ids, tree, revision } = await correctionProject("单元修正");
   await openFolder(created.root);
@@ -241,9 +256,18 @@ test("reader atom 单独修正入口：同类型内容修正保留 ID，类型�
   const editor = host.locator(".correction-atom-editor");
   await expect(editor).toContainText("类型不可在此改变");
   await editor.locator("textarea").fill("E=mc^3");
+  await refreshWithFocus(reader);
+  await expect(editor.locator("textarea")).toHaveValue("E=mc^3");
   await editor.getByRole("button", { name: "保存原子修正" }).click();
+  await refreshWithFocus(reader);
   await host.getByRole("button", { name: "预览 changeset" }).click();
   await expect(host.locator(".correction-preview")).toBeVisible();
+  await host.locator(".correction-atom-row").getByRole("button", { name: "修正原子" }).click();
+  await editor.locator("textarea").fill("E=mc^4");
+  await expect(host.getByRole("button", { name: "确认发布新 revision" })).toBeDisabled();
+  await editor.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(host.locator(".correction-preview")).toBeVisible();
+  await expect(host.getByRole("button", { name: "确认发布新 revision" })).toBeEnabled();
   await host.getByRole("button", { name: "确认发布新 revision" }).click();
   await expect(host).toHaveCount(0);
   // atom ID 保留，来源表示已更新。
@@ -267,11 +291,12 @@ test("reader 基线被外部推进后修正发布被拒绝，草稿保留且正�
   await openFolder(created.root);
   const reader = page.locator(".full-reader");
   await reader
-    .locator(`[data-unit-id="${ids.unitB}"]`)
+    .locator(`[data-unit-id="${ids.unitA}"]`)
     .getByRole("button", { name: /修正单元/ })
     .click();
   const host = reader.locator(".correction-host");
-  await host.locator(".correction-text").fill("Second paragraph edited locally.");
+  const original = unitEditText(tree, ids.unitA);
+  await host.locator(".correction-text").fill(`${original} baseline edit`);
   await host.getByRole("button", { name: "预览 changeset" }).click();
   await expect(host.locator(".correction-preview")).toBeVisible();
   // 另一操作经 IPC 推进 current（模拟外部更新）。
@@ -300,10 +325,17 @@ test("reader 基线被外部推进后修正发布被拒绝，草稿保留且正�
   await expect(host.getByRole("button", { name: "确认发布新 revision" })).toBeDisabled();
   await expect(host.locator(".correction-error").filter({ hasText: "基线已变化" })).toBeVisible();
   // 草稿保留：文本仍在编辑器中；current 是外部推进的结果。
-  await expect(host.locator(".correction-text")).toHaveValue("Second paragraph edited locally.");
+  await expect(host.locator(".correction-text")).toHaveValue(`${original} baseline edit`);
+  const editor = host.locator(".correction-atom-editor");
+  await host.locator(".correction-atom-row").getByRole("button", { name: "修正原子" }).click();
+  await editor.locator("textarea").fill("E=mc^4");
+  await editor.getByRole("button", { name: "取消", exact: true }).click();
+  await refreshWithFocus(reader);
+  await expect(host.locator(".correction-error").filter({ hasText: "基线已变化" })).toBeVisible();
+  await expect(host.getByRole("button", { name: "确认发布新 revision" })).toBeDisabled();
   const current = await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root: created.root });
   expect(current.currentRevision?.revisionId).toBe(advanced.revisionId);
-  await expect(reader.locator(`[data-unit-id="${ids.unitB}"]`)).toContainText("Second paragraph stays plain.");
+  await expect(reader.locator(`[data-unit-id="${ids.unitA}"]`)).toContainText("in this study.");
 });
 
 test("reader 删除单元经预览发布：旧锚点退役，正文其余单元不受影响", async () => {

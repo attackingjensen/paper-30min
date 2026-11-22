@@ -2,7 +2,14 @@
 // 真实 Electron：滚动捕获→重开按锚点恢复（不用旧 scrollTop）；
 // resize 以锚点重定位；revision removed 显式失效提示＋父 section 回退；
 // moved 恢复原锚点；用户滚动后迟到恢复不得覆盖新位置。
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  _electron as electron,
+  type ElectronApplication,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -178,6 +185,19 @@ async function scrollToUnit(unitId: string) {
   await page.waitForTimeout(400);
 }
 
+async function refreshReader(target: Locator) {
+  // 旧 DOM 在刷新前已落顶，只查可见性会在卸载窗口立即通过；以节点身份变化为界，
+  // 等新 article 挂载并恢复后再派发输入，避免输入落入无监听器的空档。
+  const stamp = randomUUID();
+  await page
+    .locator(".full-reader")
+    .evaluate((element, value) => element.setAttribute("data-test-cycle", value), stamp);
+  await page.getByRole("button", { name: "刷新工程", exact: true }).click();
+  await expect(page.locator(`.full-reader[data-test-cycle="${stamp}"]`)).toHaveCount(0, { timeout: 15000 });
+  await expect(page.locator(".full-reader")).toHaveAttribute("data-revision-id", /.+/);
+  await expect(target).toBeInViewport({ timeout: 15000 });
+}
+
 test("reader 滚动位置按锚点捕获，重开后恢复到同一单元而非旧 scrollTop", async () => {
   const { created, filler } = await publish("位置重开工程");
   const target = filler[20];
@@ -304,10 +324,8 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
   const { filler } = await publish("位置抢占工程");
   const target = filler[20];
   await scrollToUnit(target);
-  // 刷新触发恢复流程；等待恢复把目标带回视口后再真实滚轮向上滚动，
-  // 迟到恢复必须让位（避免滚轮落在恢复对齐之前被覆盖的竞态）。
-  await page.getByRole("button", { name: "刷新工程", exact: true }).click();
-  await expect(page.locator(`.full-reader [data-unit-id="${target}"]`)).toBeInViewport({ timeout: 15000 });
+  // 刷新触发重读；恢复对齐后再真实滚轮向上滚动，迟到恢复必须让位。
+  await refreshReader(page.locator(`.full-reader [data-unit-id="${target}"]`));
   const box = (await page.locator(".main").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   // 真实用户输入优先：滚轮（重发防丢帧）→ 键盘 Home。
@@ -320,7 +338,6 @@ test("reader 用户滚动后迟到的恢复结果不覆盖新位置", async () =
       container.dataset.readerInputEventCount = String(count);
     };
     container.addEventListener("wheel", record);
-    container.addEventListener("scroll", record);
     window.addEventListener("keydown", record);
   });
   const inputEventCount = async () =>
@@ -369,9 +386,8 @@ test("reader 恢复窗口内点击交叉引用：定位目标不被兜底核对�
   const { ids, filler } = await publish("恢复期导航工程");
   const target = filler[20];
   await scrollToUnit(target);
-  // 刷新触发 8s 恢复窗口；窗口内真实点击交叉引用跳转到前文目标。
-  await page.getByRole("button", { name: "刷新工程", exact: true }).click();
-  await expect(page.locator(`.full-reader [data-unit-id="${target}"]`)).toBeInViewport({ timeout: 15000 });
+  // 刷新触发 8s 恢复窗口；重读落定后点击交叉引用跳转到前文目标。
+  await refreshReader(page.locator(`.full-reader [data-unit-id="${target}"]`));
   await page.locator(`.full-reader [data-atom-id="${ids.resolvedRef}"]`).click();
   const jumpTarget = page.locator(`.full-reader [data-unit-id="${ids.target}"]`);
   await expect(jumpTarget).toBeInViewport();

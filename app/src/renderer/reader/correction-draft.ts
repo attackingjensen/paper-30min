@@ -3,8 +3,15 @@
 // 本模块只存草稿状态，不写受管文件；发布经 coreCorrectionPublish 命令。
 import type { CorrectionPreview, DocumentCorrection } from "../../shared/document/correction.js";
 
+export interface CorrectionAtomEditorDraft {
+  atomId: string;
+  text: string;
+  value: string;
+  format: "latex" | "mathml" | "text";
+}
+
 export interface CorrectionDraft {
-  /** 草稿创建时的 current 基线；发布前必须仍等于 current。 */
+  /** 草稿创建时的 current 基线；发布前必须仍等于 current. */
   baseRevision: string;
   /** 目标单元（修正宿主一次编辑一个单元）。 */
   unitId: string;
@@ -14,6 +21,8 @@ export interface CorrectionDraft {
   previewRevisionId: string | null;
   /** 已成功的预览（含 changeset 与候选身份）：重挂载后仍可核对与发布。 */
   preview: CorrectionPreview | null;
+  /** 未保存的 atom 编辑器输入；异步重读和外部更新不得静默丢弃。 */
+  atomEditor?: CorrectionAtomEditorDraft | null;
 }
 
 const drafts = new Map<string, CorrectionDraft>();
