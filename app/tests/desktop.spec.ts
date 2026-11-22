@@ -1053,7 +1053,7 @@ test("Agent 回复排版、链接与历史阅读不被流式更新打断", async
   }
 });
 
-test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开", async () => {
+test("Pi 工具真实读取、修改、计算绘图与冲突重开", async () => {
   test.setTimeout(120000);
   let releaseThinking = () => {};
   const thinkingGate = new Promise<void>((resolve) => {
@@ -1104,13 +1104,6 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
         edits: [{ oldText: "score=3", newText: "score=4" }],
       },
     },
-    {
-      name: "bash",
-      args: {
-        command:
-          "$p = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 40' -PassThru; Write-Output ('child=' + $p.Id); Start-Sleep -Seconds 40",
-      },
-    },
   ];
   let index = 0;
   const results: any[] = [];
@@ -1121,7 +1114,7 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
     const last = payload.messages.at(-1);
     if (last?.role === "tool") results.push(last);
     if (index === 10) await fs.writeFile(path.join(root, "notes/input.md"), "score=9\n");
-    expect(payload.tools.map((tool: any) => tool.function.name).sort()).toEqual([
+    expect(payload.tools.map((tool: { function: { name: string } }) => tool.function.name).sort()).toEqual([
       "bash",
       "edit",
       "fetch_content",
@@ -1196,29 +1189,8 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
     const thinking = page.locator(".thinking-card").first();
     await thinking.locator("summary").click();
     releaseThinking();
-    const shell = page
-      .locator('[data-tool="bash"]')
-      .filter({ has: page.locator(".tool-arguments", { hasText: "child=" }) });
-    await expect(shell).toContainText("运行中", { timeout: 60000 });
     await expect(thinking).toHaveAttribute("open", "");
-    await shell.locator("summary").click();
-    await expect(shell.locator(".tool-output")).toContainText("child=", {
-      timeout: 60000,
-    });
-    const child = Number((await shell.locator(".tool-output").innerText()).match(/child=(\d+)/)?.[1]);
-    expect(child).toBeGreaterThan(0);
-    await page.getByRole("button", { name: "停止回复" }).click();
-    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
-    await expect
-      .poll(() => {
-        try {
-          process.kill(child, 0);
-          return false;
-        } catch {
-          return true;
-        }
-      })
-      .toBe(true);
+    await expect(page.locator(".message-text").last()).toHaveText("任务完成");
     expect(await fs.readFile(path.join(root, "notes/input.md"), "utf8")).toBe("score=9\n");
     expect(await fs.readFile(path.join(root, "notes/result.csv"), "utf8")).toContain("sum,30");
     expect(await fs.readFile(path.join(root, "text/paper.pdf"))).toEqual(await fs.readFile(fixture));
@@ -1254,7 +1226,6 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
     await expect(page.locator('[data-tool="read"]')).toHaveCount(2);
     await page.locator('[data-tool="read"]').first().locator("summary").click();
     await expect(page.locator('[data-tool="read"]').first()).toContainText("score=2");
-    await expect(page.locator('[data-tool="bash"]').last()).toContainText("已停止");
     await expect(page.locator('[data-tool="edit"]').last()).toContainText("失败");
     const sessions = path.join(root, ".pi/sessions");
     for (const file of await fs.readdir(sessions)) {
@@ -1273,6 +1244,131 @@ test("Pi 工具真实读取、修改、计算绘图、冲突与停止后重开",
     releaseThinking();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("Pi 长任务停止清理子进程并在重开后保留状态", async () => {
+  test.setTimeout(120000);
+  const root = path.join(sandbox, "projects", "工具工程");
+  const secret = "controlled-tool-secret-STE81-controlled";
+  const command =
+    "$p = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 40' -PassThru; Write-Output ('child=' + $p.Id); Start-Sleep -Seconds 40";
+  let index = 0;
+  const server = createServer(async (request, response) => {
+    let text = "";
+    for await (const part of request) text += part;
+    const payload = JSON.parse(text);
+    expect(payload.tools.map((tool: { function: { name: string } }) => tool.function.name).sort()).toEqual([
+      "bash",
+      "edit",
+      "fetch_content",
+      "get_search_content",
+      "read",
+      "read_pdf",
+      "web_search",
+      "write",
+    ]);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const action = index++ === 0 ? { name: "bash", args: { command } } : undefined;
+    const emit = (delta: unknown, finish_reason: string | null = null) =>
+      response.write(
+        `data: ${JSON.stringify({
+          id: "tools",
+          object: "chat.completion.chunk",
+          model: "tool-model",
+          choices: [{ index: 0, delta, finish_reason }],
+        })}\n\n`,
+      );
+    if (action) {
+      emit({
+        tool_calls: [
+          {
+            index: 0,
+            id: "reused-tool-id",
+            type: "function",
+            function: {
+              name: action.name,
+              arguments: JSON.stringify(action.args),
+            },
+          },
+        ],
+      });
+      emit({}, "tool_calls");
+    } else {
+      emit({ content: "任务完成" });
+      emit({}, "stop");
+    }
+    response.end("data: [DONE]\n\n");
+  });
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  try {
+    await create(fixture, path.join(sandbox, "projects"), "工具工程");
+    await page.evaluate(
+      async ({ endpoint, secret }) => {
+        const settings = await window.desktop.agent<AgentSettings>({
+          type: "settings",
+        });
+        settings.services[0].baseUrl = endpoint;
+        settings.models[0].model = "tool-model";
+        await window.desktop.agent({
+          type: "saveSettings",
+          settings,
+          apiKey: secret,
+        });
+      },
+      {
+        endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        secret,
+      },
+    );
+    await page.getByLabel("Agent 消息").fill("运行可停止的长任务。");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    const shell = page
+      .locator('[data-tool="bash"]')
+      .filter({ has: page.locator(".tool-arguments", { hasText: "child=" }) });
+    await expect(shell).toContainText("运行中", { timeout: 60000 });
+    await shell.locator("summary").click();
+    await expect(shell.locator(".tool-output")).toContainText("child=", {
+      timeout: 60000,
+    });
+    const child = Number((await shell.locator(".tool-output").innerText()).match(/child=(\d+)/)?.[1]);
+    expect(child).toBeGreaterThan(0);
+    await page.getByRole("button", { name: "停止回复" }).click();
+    await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0);
+    await expect
+      .poll(() => {
+        try {
+          process.kill(child, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      })
+      .toBe(true);
+    await desktop.close();
+    await launch();
+    await page.getByRole("button", { name: /工具工程/ }).click();
+    await expect(page.locator('[data-tool="bash"]').last()).toContainText("已停止");
+    const sessions = path.join(root, ".pi/sessions");
+    for (const file of await fs.readdir(sessions)) {
+      const saved = await fs.readFile(path.join(sessions, file), "utf8");
+      expect(saved).not.toContain(secret);
+      for (const line of saved.trim().split("\n")) {
+        const output = JSON.parse(line).message?.details?.fullOutputPath;
+        if (output) {
+          const log = await fs.readFile(output, "utf8");
+          expect(log).not.toContain(secret);
+          expect(log).toContain("[已隐藏凭据]");
+        }
+      }
+    }
+  } finally {
+    server.closeAllConnections();
+    const closed = Promise.withResolvers<void>();
+    server.close(() => closed.resolve());
+    await closed.promise;
   }
 });
 
