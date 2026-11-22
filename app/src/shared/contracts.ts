@@ -436,6 +436,8 @@ export type PdfImportWorkerCommand = {
     | { type: "coreArxivPdfFallbackImport" }
   >;
   config: PdfImportMachineConfig;
+  /** 主进程配置读取期间已收到取消；worker 注册控制器后立即中止，避免丢取消。 */
+  cancelBeforeStart?: boolean;
 };
 
 /** 经生产 IPC 的候选摘要：树、changeset 与冲突可序列化；资产字节留在工程进程。 */

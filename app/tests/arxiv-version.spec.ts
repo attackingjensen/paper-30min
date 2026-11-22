@@ -66,6 +66,29 @@ test("arxiv-import 用户显式选择的历史版本即使标记撤稿也按该�
   });
 });
 
+test("arxiv-import 真实单版本 strong 历史可固定 v1", async () => {
+  const html = `<div class="submission-history"><h2>Submission history</h2><br/><strong>[v1]</strong> Wed, 9 Sep 2026 17:53:38 UTC (8,032 KB)<br/></div>`;
+  const latest = await resolveArxivVersion(reference("2609.10522"), async () => html);
+  expect(latest.ok).toBe(true);
+  if (latest.ok) expect(latest.reference.canonicalId).toBe("2609.10522v1");
+  const explicit = await resolveArxivVersion(reference("2609.10522v1"), async () => html);
+  expect(explicit.ok).toBe(true);
+});
+
+test("arxiv-import 真实多版本无链接最新版不低判到上一版", async () => {
+  const html = `<div class="submission-history"><strong><a href="/abs/1706.03762v1" rel="nofollow">[v1]</a></strong> Mon, 12 Jun 2017 17:57:34 UTC<br/><strong>[v7]</strong> Wed, 2 Aug 2023 00:41:18 UTC<br/></div>`;
+  const latest = await resolveArxivVersion(reference("1706.03762"), async () => html);
+  expect(latest.ok).toBe(true);
+  if (latest.ok) expect(latest.reference.canonicalId).toBe("1706.03762v7");
+});
+
+test("arxiv-import 无链接最新撤稿版本仍报告撤稿", async () => {
+  const html = `<div class="submission-history"><strong><a href="/abs/2401.01234v1">[v1]</a></strong> Mon, 1 Jan 2024 UTC<br/><strong>[v2]</strong> Tue, 2 Jan 2024 UTC (withdrawn)<br/></div>`;
+  const latest = await resolveArxivVersion(reference("2401.01234"), async () => html);
+  expect(latest.ok).toBe(false);
+  if (!latest.ok) expect(latest.diagnostic.code).toBe("arxiv-version-withdrawn");
+});
+
 test("arxiv-import abs 无法确定版本时失败，不进入正文可读状态", async () => {
   const result = await resolveArxivVersion(
     reference("2401.01234"),
@@ -123,7 +146,7 @@ test("arxiv-import 版本守卫：非允许 host 的最终 URL 被拒绝", () =>
   if (!result.ok) expect(result.diagnostic.code).toBe("arxiv-source-host-rejected");
 });
 
-test("arxiv-import arxivLatestVersion 只信提交历史中的版本链接，忽略页面其他数字", () => {
+test("arxiv-import arxivLatestVersion 只信提交历史记录，忽略页面其他数字", () => {
   const html = absHtml({ id: "2401.01234", versions: [2, 10] });
   expect(arxivLatestVersion(html, "2401.01234")).toBe(10);
   expect(arxivLatestVersion("<html>v99 引用文字 2401.01234v88</html>", "2401.01234")).toBeNull();

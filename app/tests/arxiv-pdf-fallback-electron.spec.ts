@@ -39,6 +39,10 @@ let endpoint = "";
 let requests: string[];
 let routes: Map<string, { bytes: Buffer; mime: string }>;
 let posts: number;
+let queryStarted: number;
+let holdQuery: boolean;
+let releaseQuery: (() => void) | undefined;
+let holdPdf: boolean;
 
 function block(id: number, content: string) {
   return {
@@ -95,6 +99,10 @@ async function drain(request: IncomingMessage) {
 async function startServers() {
   requests = [];
   posts = 0;
+  queryStarted = 0;
+  holdQuery = false;
+  releaseQuery = undefined;
+  holdPdf = false;
   const pdfBytes = await fs.readFile(SAMPLE);
   routes = new Map([
     [`/abs/${ID}`, { bytes: Buffer.from(absHtml({ id: ID, versions: [1] })), mime: "text/html" }],
@@ -105,6 +113,7 @@ async function startServers() {
   arxivServer = createServer((req, res) => {
     const url = req.url ?? "";
     requests.push(url);
+    if (url === PDF_PATH && holdPdf) return;
     const route = routes.get(url);
     if (!route) {
       res.writeHead(404, { "content-type": "text/plain" });
@@ -127,6 +136,12 @@ async function startServers() {
         return;
       }
       if (request.url === "/jobs/job-fallback-0") {
+        queryStarted += 1;
+        if (holdQuery) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          releaseQuery = resolve;
+          await promise;
+        }
         response.end(
           JSON.stringify({
             code: 0,
@@ -165,6 +180,7 @@ async function launch() {
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
+    PAPER30MIN_ARXIV_BASE_URL: baseUrl,
   };
   delete env.ELECTRON_RUN_AS_NODE;
   desktop = await electron.launch({ args: ["."], env });
@@ -213,6 +229,21 @@ let operationSeq = 0;
 const nextOperation = () => `fallback-op-${++operationSeq}`;
 const open = (root: string) => invoke<ProjectCoreSnapshot>({ type: "coreOpen", root });
 
+async function openFailedArxivCreation(name: string) {
+  routes.delete(HTML_PATH);
+  await page.getByRole("button", { name: "从 arXiv 新建工程", exact: true }).click();
+  const creation = page.getByRole("dialog", { name: "从 arXiv 新建工程", exact: true });
+  await creation.getByLabel("arXiv URL 或 ID", { exact: true }).fill(ID);
+  await creation.getByLabel("工程名称", { exact: true }).fill(name);
+  await desktop.evaluate(({ dialog: nativeDialog }, parent) => {
+    nativeDialog.showOpenDialog = async () => ({ canceled: false, filePaths: [parent] });
+  }, sandbox);
+  await creation.getByRole("button", { name: "选择位置", exact: true }).click();
+  await creation.getByRole("button", { name: "创建工程", exact: true }).click();
+  await expect(creation.getByRole("button", { name: "改用此版本 PDF 解析", exact: true })).toBeVisible();
+  return creation;
+}
+
 test.beforeEach(async () => {
   errors = [];
   remotePageRequests = [];
@@ -223,6 +254,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  releaseQuery?.();
   try {
     expect(errors).toEqual([]);
     expect(remotePageRequests).toEqual([]);
@@ -483,6 +515,80 @@ test("arxiv-pdf-fallback 真实 Electron 拒绝上传确认：零 POST，PDF 快
   expect(requests.filter((url) => url === PDF_PATH)).toHaveLength(1);
   expect(posts).toBe(0);
   expect((await open(failed.root)).manifest.paper.currentRevision).toBeNull();
+});
+
+test("arxiv-pdf-fallback renderer 二次确认后回退固定版本 PDF，偏好写入失败仍进入工程", async () => {
+  const creation = await openFailedArxivCreation("界面 PDF 回退");
+  expect(posts).toBe(0);
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+
+  await creation.getByRole("button", { name: "改用此版本 PDF 解析", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "确认 arXiv PDF 回退", exact: true });
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toContainText(`${ID}v1`);
+  await page.screenshot({ animations: "disabled", path: "test-results/arxiv-creation/pdf-fallback-confirm.png" });
+  expect(posts).toBe(0);
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+  await confirmation.getByRole("button", { name: "下载 PDF 并继续", exact: true }).click();
+
+  const upload = page.getByRole("dialog", { name: "确认上传 PDF 到云端解析" });
+  await expect(upload).toBeVisible({ timeout: 30000 });
+  expect(posts).toBe(0);
+  expect(requests.filter((url) => url === PDF_PATH)).toHaveLength(1);
+  const preferencesFile = path.join(sandbox, "profile", "preferences.json");
+  await fs.rm(preferencesFile, { force: true });
+  await fs.mkdir(preferencesFile);
+  await upload.getByRole("button", { name: "确认上传并解析", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "原始论文", exact: true })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText("Fallback first page", { exact: false }).first()).toBeVisible({ timeout: 30000 });
+  expect(posts).toBe(1);
+  expect(requests.filter((url) => url === PDF_PATH)).toHaveLength(1);
+  const manifest = JSON.parse(await fs.readFile(path.join(sandbox, "界面 PDF 回退", "paper30min.json"), "utf8"));
+  expect(manifest.paper.currentRevision).toEqual(expect.any(String));
+});
+
+test("arxiv-pdf-fallback renderer 停止云端等待后恢复原任务且不重复上传", async () => {
+  holdQuery = true;
+  const creation = await openFailedArxivCreation("停止并恢复 PDF 回退");
+  await creation.getByRole("button", { name: "改用此版本 PDF 解析", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "确认 arXiv PDF 回退", exact: true });
+  await confirmation.getByRole("button", { name: "下载 PDF 并继续", exact: true }).click();
+  const upload = page.getByRole("dialog", { name: "确认上传 PDF 到云端解析" });
+  await expect(upload).toBeVisible({ timeout: 30000 });
+  await upload.getByRole("button", { name: "确认上传并解析", exact: true }).click();
+  await expect.poll(() => queryStarted).toBe(1);
+
+  await creation.getByRole("button", { name: "停止回退", exact: true }).click();
+  await expect(creation.getByText(/已停止本机 PDF 回退等待/)).toBeVisible({ timeout: 30000 });
+  expect(posts).toBe(1);
+  expect(requests.filter((url) => url === PDF_PATH)).toHaveLength(1);
+  const root = path.join(sandbox, "停止并恢复 PDF 回退");
+  expect((await open(root)).manifest.paper.currentRevision).toBeNull();
+  await expect(page.getByRole("tab", { name: "原始论文", exact: true })).toHaveCount(0);
+
+  holdQuery = false;
+  releaseQuery?.();
+  await creation.getByRole("button", { name: "恢复 PDF 任务", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "原始论文", exact: true })).toBeVisible({ timeout: 30000 });
+  expect(posts).toBe(1);
+  expect(requests.filter((url) => url === PDF_PATH)).toHaveLength(1);
+  const manifest = JSON.parse(await fs.readFile(path.join(root, "paper30min.json"), "utf8"));
+  expect(manifest.paper.currentRevision).toEqual(expect.any(String));
+});
+
+test("arxiv-pdf-fallback renderer 启动早期停止不创建云端任务", async () => {
+  holdPdf = true;
+  const creation = await openFailedArxivCreation("启动早期停止");
+  await creation.getByRole("button", { name: "改用此版本 PDF 解析", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "确认 arXiv PDF 回退", exact: true });
+  await confirmation.getByRole("button", { name: "下载 PDF 并继续", exact: true }).click();
+  await creation.getByRole("button", { name: "停止回退", exact: true }).click();
+  await expect(creation.getByText(/arxiv-fetch-cancelled|已取消 PDF 回退/)).toBeVisible({ timeout: 30000 });
+
+  expect(posts).toBe(0);
+  await expect(page.getByRole("dialog", { name: "确认上传 PDF 到云端解析" })).toHaveCount(0);
+  expect(requests.filter((url) => url === PDF_PATH).length).toBeLessThanOrEqual(1);
+  expect((await open(path.join(sandbox, "启动早期停止"))).manifest.paper.currentRevision).toBeNull();
 });
 
 async function listFiles(root: string): Promise<string[]> {

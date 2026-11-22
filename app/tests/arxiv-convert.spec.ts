@@ -235,6 +235,23 @@ test("arxiv-import 交叉引用：图/公式/文献解析到规范节点，脚�
   expect(link.text).toBe("open data");
 });
 
+test("arxiv-import 章节交叉引用锚定到章节首个正文单元", () => {
+  const tree = okTree(
+    convert(
+      latexmlDocument({
+        extra:
+          '<div class="ltx_para"><p class="ltx_p"><a href="#S2" class="ltx_ref"><span class="ltx_text ltx_ref_title">Section 2</span></a></p></div>',
+      }),
+    ),
+  );
+  const reference = Object.values(tree.atoms).find(
+    (atom) => atom.kind === "cross-reference" && atom.sourceTarget === "S2",
+  )!;
+  if (reference.kind !== "cross-reference") throw new Error("section reference missing");
+  expect(reference.targetUnitId).not.toBeNull();
+  expect(unitText(tree, reference.targetUnitId!)).toContain("We repeat the claim");
+});
+
 test("arxiv-import 缺失引用目标：保留显示文本与 sourceTarget，记 warning 不冒充已解析", () => {
   const result = convert(latexmlDocument({ extra: MISSING_TARGET_EXTRA }));
   if (!result.ok) throw new Error(result.diagnostic.messageKey);

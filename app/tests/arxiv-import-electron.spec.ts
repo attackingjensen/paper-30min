@@ -86,6 +86,7 @@ async function launch() {
     ),
     PAPER30MIN_PROFILE: path.join(sandbox, "profile"),
     PAPER30MIN_TEST_WINDOW: visible ? "visible" : "hidden",
+    PAPER30MIN_ARXIV_BASE_URL: baseUrl,
   };
   delete env.ELECTRON_RUN_AS_NODE;
   desktop = await electron.launch({ args: ["."], env });
@@ -177,6 +178,92 @@ function orderedTreeTexts(tree: DocumentTree): string[] {
     return [block.text];
   });
 }
+
+async function openArxivCreation(input: string, name: string) {
+  await page.getByRole("button", { name: "从 arXiv 新建工程", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "从 arXiv 新建工程", exact: true });
+  await dialog.getByLabel("arXiv URL 或 ID", { exact: true }).fill(input);
+  await dialog.getByLabel("工程名称", { exact: true }).fill(name);
+  await desktop.evaluate(({ dialog: nativeDialog }, parent) => {
+    nativeDialog.showOpenDialog = async () => ({ canceled: false, filePaths: [parent] });
+  }, sandbox);
+  await dialog.getByRole("button", { name: "选择位置", exact: true }).click();
+  return dialog;
+}
+
+test("arxiv-import renderer 通过 URL 创建无 PDF 工程并渲染正文", async () => {
+  const name = "界面 URL 导入";
+  const dialog = await openArxivCreation(`https://arxiv.org/abs/${ID}`, name);
+  await dialog.getByRole("button", { name: "创建工程", exact: true }).click();
+
+  await expect(page.getByRole("tab", { name: "原始论文", exact: true })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText("Energy equals mass", { exact: false }).first()).toBeVisible({ timeout: 30000 });
+  await page.screenshot({ animations: "disabled", path: "test-results/arxiv-creation/url-project.png" });
+  const root = path.join(sandbox, name);
+  const manifest = JSON.parse(await fs.readFile(path.join(root, "paper30min.json"), "utf8"));
+  expect(manifest.paper.currentRevision).toEqual(expect.any(String));
+  await expect(fs.stat(path.join(root, "paper", "paper.pdf"))).rejects.toThrow(/ENOENT/);
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+  const preferences = JSON.parse(await fs.readFile(path.join(sandbox, "profile", "preferences.json"), "utf8"));
+  expect(preferences.defaultFolder).toBe(sandbox);
+  expect(preferences.recent[0].root).toBe(await fs.realpath(root));
+});
+
+test("arxiv-import renderer 失败后重启仍可打开恢复界面并保持工程身份", async () => {
+  routes.delete(HTML_PATH);
+  const name = "界面失败恢复";
+  const dialog = await openArxivCreation(ID, name);
+  await dialog.getByRole("button", { name: "创建工程", exact: true }).click();
+
+  await expect(dialog.getByRole("button", { name: "恢复导入", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "改用此版本 PDF 解析", exact: true })).toBeVisible();
+  const root = path.join(sandbox, name);
+  const before = JSON.parse(await fs.readFile(path.join(root, "paper30min.json"), "utf8"));
+  const progress = JSON.parse(await fs.readFile(path.join(root, ".paper30min", "imports", "initial.json"), "utf8"));
+  await expect(dialog.getByText(progress.arxiv.diagnostic.code, { exact: true })).toBeVisible();
+  await page.screenshot({ animations: "disabled", path: "test-results/arxiv-creation/recovery-diagnostic.png" });
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+
+  routes.set(HTML_PATH, { bytes: Buffer.from(latexmlDocument()), mime: "text/html" });
+  await closeDesktopForCleanup();
+  await launch();
+  await page.getByRole("button", { name: new RegExp(name) }).click();
+  const recovered = page.getByRole("dialog", { name: "从 arXiv 新建工程", exact: true });
+  await expect(recovered).toBeVisible();
+  await expect(recovered.getByText(progress.arxiv.diagnostic.code, { exact: true })).toBeVisible();
+  await recovered.getByRole("button", { name: "恢复导入", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "原始论文", exact: true })).toBeVisible({ timeout: 30000 });
+  const after = await open(root);
+  expect(after.manifest.id).toBe(before.id);
+  expect(after.manifest.paper.id).toBe(before.paper.id);
+  expect(after.manifest.paper.currentRevision).toEqual(expect.any(String));
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+});
+
+test("arxiv-import renderer 版本未固定时不提供 PDF 回退", async () => {
+  routes.set(`/abs/${ID}`, {
+    bytes: Buffer.from("<html><body>Service unavailable</body></html>"),
+    mime: "text/html",
+  });
+  const dialog = await openArxivCreation(ID, "未固定版本");
+  await dialog.getByRole("button", { name: "创建工程", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "恢复导入", exact: true })).toBeVisible();
+  await expect(dialog.getByText("arxiv-version-unresolved", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "改用此版本 PDF 解析", exact: true })).toHaveCount(0);
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+
+  // abs 服务恢复后，同一工程必须从 resolve 阶段重试，而不是把 null 版本交给快照守卫。
+  routes.set(`/abs/${ID}`, {
+    bytes: Buffer.from(absHtml({ id: ID, versions: [1] })),
+    mime: "text/html",
+  });
+  await dialog.getByRole("button", { name: "恢复导入", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "原始论文", exact: true })).toBeVisible({ timeout: 30000 });
+  const recovered = await open(path.join(sandbox, "未固定版本"));
+  expect(recovered.manifest.paper.currentRevision).toEqual(expect.any(String));
+  expect(requests.filter((url) => url === `/abs/${ID}`)).toHaveLength(2);
+  expect(requests.some((url) => url.startsWith("/pdf/"))).toBe(false);
+});
 
 test("arxiv-import 真实 Electron 裸 ID 创建无 PDF 工程，断网重开后完整阅读", async () => {
   const result = await importPaper("离线阅读", ID);

@@ -56,20 +56,26 @@ interface HistoryEntry {
   withdrawn: boolean;
 }
 
-/** 提交历史中指向同一 base ID 的版本链接；版本按整数比较。 */
+/** 提交历史中指向同一 base ID 的版本记录；旧版可链接，当前最新版常只有 strong 文本。 */
 function submissionHistory(html: string, baseId: string): HistoryEntry[] {
-  const pattern = new RegExp(
-    `<a\\b[^>]*\\bhref=["']/abs/${escapeRegExp(baseId)}v(\\d+)["'][^>]*>\\s*\\[v\\d+\\]\\s*</a>([\\s\\S]*?)(?=<a\\b|<b>|$)`,
+  const source = /<div\b[^>]*class=["'][^"']*\bsubmission-history\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i.exec(html)?.[1];
+  if (!source) return [];
+  const entries: HistoryEntry[] = [];
+  const linked = new RegExp(
+    `<a\\b[^>]*\\bhref=["']/abs/${escapeRegExp(baseId)}v(\\d+)["'][^>]*>\\s*\\[v\\d+\\]\\s*</a>([\\s\\S]*?)(?=<a\\b|<b>|<strong\\b|$)`,
     "gi",
   );
-  const entries: HistoryEntry[] = [];
-  for (const match of html.matchAll(pattern)) {
+  for (const match of source.matchAll(linked)) {
+    entries.push({ version: Number(match[1]), withdrawn: /withdrawn/i.test(match[2]) });
+  }
+  const unlinked = /<strong\b[^>]*>\s*\[v(\d+)\]\s*<\/strong>([\s\S]*?)(?=<strong\b|$)/gi;
+  for (const match of source.matchAll(unlinked)) {
     entries.push({ version: Number(match[1]), withdrawn: /withdrawn/i.test(match[2]) });
   }
   return entries;
 }
 
-/** 只信提交历史中的版本链接，忽略页面其他数字；无历史返回 null。 */
+/** 只信提交历史中的版本记录，忽略页面其他数字；无历史返回 null。 */
 export function arxivLatestVersion(html: string, baseId: string): number | null {
   const versions = submissionHistory(html, baseId).map((entry) => entry.version);
   return versions.length === 0 ? null : Math.max(...versions);

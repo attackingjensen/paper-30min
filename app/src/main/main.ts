@@ -15,6 +15,7 @@ import { defaultAgentSettings } from "../shared/contracts.js";
 import { AgentSettingsStore, type ModelConfig } from "./agent-settings.js";
 import { ParsingSettingsStore } from "./parsing-settings.js";
 import type { ParsingCommand } from "../shared/parsing.js";
+import { withArxivFixtureEndpoint } from "./arxiv/fixture-command.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 protocol.registerSchemesAsPrivileged([
@@ -25,6 +26,8 @@ protocol.registerSchemesAsPrivileged([
 ]);
 const profile = process.env.PAPER30MIN_PROFILE;
 if (profile) app.setPath("userData", path.resolve(profile));
+// utility process 继承主进程环境；打包状态由主进程覆盖，不能由外部变量伪造。
+process.env.PAPER30MIN_APP_IS_PACKAGED = app.isPackaged ? "1" : "0";
 let window: BrowserWindow;
 let worker: Electron.UtilityProcess;
 let workerExited = false;
@@ -95,6 +98,8 @@ async function start() {
   /** 未决上传确认：confirmationId → 请求。renderer 重载／窗口关闭时按拒绝应答
    * 全部未决项，避免 worker 等待确认永久挂起。 */
   const pendingUploadConfirms = new Map<string, { operationId: string }>();
+  const startingPdfOperations = new Set<string>();
+  const cancelledStartingPdfOperations = new Set<string>();
   const rejectUploadConfirm = (confirmationId: string) => {
     const entry = pendingUploadConfirms.get(confirmationId);
     if (!entry) return;
@@ -222,22 +227,42 @@ async function start() {
   };
   ipcMain.handle("project:command", async (event, command: Command) => {
     trusted(event);
+    command = withArxivFixtureEndpoint(command, {
+      baseUrl: process.env.PAPER30MIN_ARXIV_BASE_URL,
+      testWindow: process.env.PAPER30MIN_TEST_WINDOW,
+      isPackaged: app.isPackaged,
+    });
     if (pdfCloudTypes[command.type]) {
-      // 本机配置与代理只从主进程设置读取；renderer 命令不携带 Token。
-      await parsingSettingsWrite;
-      const config = await parsingSettings.read();
-      const { proxy, proxyUrl } = await agentSettings.read();
-      return request({
-        type: "pdfImport",
-        command: command as PdfImportWorkerCommand["command"],
-        config: {
-          endpoint: config.endpoint,
-          model: "PaddleOCR-VL-1.6",
-          apiKey: config.apiKey,
-          // custom 代理必须携带 proxyUrl；其余模式不携带（可辨识联合）。
-          ...(proxy === "custom" ? { proxy, proxyUrl } : { proxy }),
-        },
-      });
+      const operationId = (command as PdfImportWorkerCommand["command"]).operationId;
+      startingPdfOperations.add(operationId);
+      try {
+        // 本机配置与代理只从主进程设置读取；renderer 命令不携带 Token。
+        await parsingSettingsWrite;
+        const config = await parsingSettings.read();
+        const { proxy, proxyUrl } = await agentSettings.read();
+        const cancelBeforeStart = cancelledStartingPdfOperations.delete(operationId);
+        return request({
+          type: "pdfImport",
+          command: command as PdfImportWorkerCommand["command"],
+          config: {
+            endpoint: config.endpoint,
+            model: "PaddleOCR-VL-1.6",
+            apiKey: config.apiKey,
+            // custom 代理必须携带 proxyUrl；其余模式不携带（可辨识联合）。
+            ...(proxy === "custom" ? { proxy, proxyUrl } : { proxy }),
+          },
+          ...(cancelBeforeStart ? { cancelBeforeStart: true } : {}),
+        });
+      } finally {
+        startingPdfOperations.delete(operationId);
+        cancelledStartingPdfOperations.delete(operationId);
+      }
+    }
+    if (command.type === "coreArxivCancel") {
+      const starting = startingPdfOperations.has(command.operationId);
+      if (starting) cancelledStartingPdfOperations.add(command.operationId);
+      const result = (await request(command)) as { cancelled: boolean };
+      return { cancelled: result.cancelled || starting };
     }
     if (
       command.type === "coreTranslationStart" ||

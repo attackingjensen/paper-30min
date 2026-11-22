@@ -413,6 +413,10 @@ class TreeBuilder {
       ...(input.aliases ? { sourceAliases: input.aliases } : {}),
     };
     this.tree.sections[sectionId].unitIds.push(unitId);
+    // 章节引用锚定到该章节（含祖先）首个正文单元；aliases 只存于 section 时无法解析。
+    for (const ancestorSectionId of this.sectionStack) {
+      for (const alias of this.tree.sections[ancestorSectionId].sourceAliases ?? []) this.registerAlias(alias, unitId);
+    }
     if (block) this.tree.blocks.push(block);
     for (const alias of input.aliases ?? []) this.registerAlias(alias, unitId);
   }

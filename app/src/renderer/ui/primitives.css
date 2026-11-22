@@ -282,6 +282,18 @@
 .modal .form-error {
   margin: 0;
 }
+.modal .arxiv-diagnostic {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.modal .arxiv-diagnostic small {
+  color: var(--text-secondary);
+}
+.modal .arxiv-fallback-action {
+  align-self: flex-start;
+}
 .pdf-upload-confirm dl {
   font-size: 12px;
   line-height: 1.8;
