@@ -127,6 +127,7 @@ const coreCommandTypes: Record<CoreCommand["type"], true> = {
   coreTranslationStart: true,
   coreTranslationFillGaps: true,
   coreTranslationUpdateStale: true,
+  coreTranslationRetranslate: true,
   coreTranslationStop: true,
 };
 
@@ -159,12 +160,28 @@ export async function dispatchCoreCommand(
   switch (command.type) {
     case "coreTranslationRead": {
       const projection = await readTranslationProjection(command.root, command.revisionId, command.language);
-      return { ...projection, running: hasActiveTranslationTask(command.root, command.revisionId, command.language) };
+      return {
+        ...projection,
+        running: await hasActiveTranslationTask(command.root, command.revisionId, command.language),
+      };
     }
     case "coreTranslationStart":
     case "coreTranslationFillGaps":
     case "coreTranslationUpdateStale":
+    case "coreTranslationRetranslate":
       if (!translation) throw new Error("翻译任务缺少模型配置上下文。");
+      if (command.type === "coreTranslationRetranslate") {
+        // IPC 运行时边界：scope 判别字段与 unitId 必须合法，畸形命令 fail-closed，
+        // 不得退化为仅重译论文标题的付费请求。
+        const scope: unknown = command.scope;
+        const scopeKind = typeof scope === "object" && scope !== null && "kind" in scope ? scope.kind : undefined;
+        const scopeUnitId = typeof scope === "object" && scope !== null && "unitId" in scope ? scope.unitId : undefined;
+        const validScope =
+          scopeKind === "full" || (scopeKind === "unit" && typeof scopeUnitId === "string" && scopeUnitId.length > 0);
+        if (!validScope) throw new Error("重译范围无效：必须是 full 或携带 unitId 的 unit。");
+        if (typeof command.expectedBaseRevision !== "string" || command.expectedBaseRevision.length === 0)
+          throw new Error("重译必须携带确认时的 expectedBaseRevision。");
+      }
       return runProjectTranslation({
         root: command.root,
         language: command.language,
@@ -174,7 +191,11 @@ export async function dispatchCoreCommand(
             ? "fill-gaps"
             : command.type === "coreTranslationUpdateStale"
               ? "update-stale"
-              : "generate",
+              : command.type === "coreTranslationRetranslate"
+                ? "retranslate"
+                : "generate",
+        ...(command.type === "coreTranslationRetranslate" ? { scope: command.scope } : {}),
+        ...(command.expectedBaseRevision !== undefined ? { expectedBaseRevision: command.expectedBaseRevision } : {}),
         ...(translation.onCommitted ? { onCommitted: translation.onCommitted } : {}),
       });
     case "coreTranslationStop":

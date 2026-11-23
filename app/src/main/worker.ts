@@ -168,7 +168,13 @@ port.on(
             type: "translationStart";
             command: Extract<
               CoreCommand,
-              { type: "coreTranslationStart" | "coreTranslationFillGaps" | "coreTranslationUpdateStale" }
+              {
+                type:
+                  | "coreTranslationStart"
+                  | "coreTranslationFillGaps"
+                  | "coreTranslationUpdateStale"
+                  | "coreTranslationRetranslate";
+              }
             >;
             config: ModelConfig;
           }

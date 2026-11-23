@@ -198,7 +198,14 @@ async function openFolder(root: string) {
 
 /** 受控翻译模型端点：按请求单元返回合法译文；可门控延迟以观察渐进发布。
  * hold：全局门控；holdUnit：按单元独立门控（验证逐单元渐进可见）。 */
-function controlledServer(options: { hold?: Promise<void>; holdUnit?: Map<string, Promise<void>>; failUnit?: string }) {
+function controlledServer(options: {
+  hold?: Promise<void>;
+  holdUnit?: Map<string, Promise<void>>;
+  failUnit?: string;
+  /** 译文前缀（默认“译文：”）：重译回归用不同前缀制造可观察的新内容与缓存键变化。 */
+  prefix?: string;
+}) {
+  const prefix = options.prefix ?? "译文：";
   const calls: string[] = [];
   const metaCalls: string[] = [];
   const server: Server = createServer(async (request, response) => {
@@ -217,14 +224,14 @@ function controlledServer(options: { hold?: Promise<void>; holdUnit?: Map<string
       metaCalls.push("meta");
       if (options.hold) await options.hold;
       const metaContent = JSON.stringify({
-        paperTitle: prompt.paperTitle == null ? null : `译文：${prompt.paperTitle}`,
+        paperTitle: prompt.paperTitle == null ? null : `${prefix}${prompt.paperTitle}`,
         sections: (prompt.sections ?? []).map((section) => ({
           sectionId: section.sectionId,
-          title: `译文：${section.title}`,
+          title: `${prefix}${section.title}`,
         })),
         rawBlocks: (prompt.rawBlocks ?? []).map((block) => ({
           blockId: block.blockId,
-          text: `译文：${block.text}`,
+          text: `${prefix}${block.text}`,
         })),
       });
       response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -250,7 +257,7 @@ function controlledServer(options: { hold?: Promise<void>; holdUnit?: Map<string
       unitId: prompt.unit.unitId,
       sentences: prompt.unit.sentences.map((sentence) => ({
         sentenceId: sentence.sentenceId,
-        content: `译文：${sentence.content}`,
+        content: `${prefix}${sentence.content}`,
       })),
     });
     response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -265,19 +272,22 @@ function controlledServer(options: { hold?: Promise<void>; holdUnit?: Map<string
   return { server, calls, metaCalls };
 }
 
-async function configureModel(endpoint: string) {
-  await page.evaluate(async (url) => {
-    const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
-    await window.desktop.agent({
-      type: "saveSettings",
-      apiKey: "controlled-key",
-      settings: {
-        ...settings,
-        services: settings.services.map((service) => ({ ...service, baseUrl: url })),
-        models: settings.models.map((model) => ({ ...model, model: "controlled-translate" })),
-      },
-    });
-  }, endpoint);
+async function configureModel(endpoint: string, model = "controlled-translate") {
+  await page.evaluate(
+    async ({ url, modelName }) => {
+      const settings = await window.desktop.agent<AgentSettings>({ type: "settings" });
+      await window.desktop.agent({
+        type: "saveSettings",
+        apiKey: "controlled-key",
+        settings: {
+          ...settings,
+          services: settings.services.map((service) => ({ ...service, baseUrl: url })),
+          models: settings.models.map((entry) => ({ ...entry, model: modelName })),
+        },
+      });
+    },
+    { url: endpoint, modelName: model },
+  );
 }
 
 async function startServer(server: Server) {
@@ -893,6 +903,491 @@ test("translation 语言视图显示标题与 raw 文本投影；标题修正后
     await expect(sectionHeading.locator(".reader-translation-note.stale")).toHaveCount(0);
     expect(calls.length).toBe(beforeUpdate);
     expect(metaCalls.length).toBe(beforeMetaUpdate + 1);
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 全文重译单独确认：取消零请求，确认后逐单元原子替换 ready", async () => {
+  const { created, ids, revision } = await englishProject("全文重译工程");
+  const { server, calls, metaCalls } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    const bodySentence = reader.locator(`[data-sentence-id="${ids.bodySentence}"]`);
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await expect(abstractSentence).toContainText("译文：We study progressive reading");
+    await waitTranslationIdle(created.root, revision.revisionId);
+    const callsAfterGenerate = calls.length;
+    const metaAfterGenerate = metaCalls.length;
+    const revisionBefore = await invoke<{ translationRevision: string | null }>({
+      type: "coreTranslationRead",
+      root: created.root,
+      revisionId: revision.revisionId,
+      language: "zh",
+    });
+
+    // 取消前先切到缓存未命中的新模型/端点：若取消误启动重译，请求必然可观察。
+    const cancelProbe = controlledServer({ prefix: "取消探针：" });
+    const cancelProbeEndpoint = await startServer(cancelProbe.server);
+    try {
+      await configureModel(cancelProbeEndpoint, "controlled-translate-cancel");
+      await reader.getByRole("button", { name: "重译全文", exact: true }).click();
+      const confirm = reader.getByRole("alertdialog", { name: "全文重译确认" });
+      await expect(confirm).toContainText("可能产生较高模型费用");
+      await confirm.getByRole("button", { name: "取消", exact: true }).click();
+      await expect(confirm).toHaveCount(0);
+      // unit 与 meta 均零请求，translationRevision 不变，译文不变。
+      expect(cancelProbe.calls).toEqual([]);
+      expect(cancelProbe.metaCalls).toEqual([]);
+      expect(calls.length).toBe(callsAfterGenerate);
+      expect(metaCalls.length).toBe(metaAfterGenerate);
+      const revisionAfterCancel = await invoke<{ translationRevision: string | null }>({
+        type: "coreTranslationRead",
+        root: created.root,
+        revisionId: revision.revisionId,
+        language: "zh",
+      });
+      expect(revisionAfterCancel.translationRevision).toBe(revisionBefore.translationRevision);
+      await expect(abstractSentence).toContainText("译文：We study progressive reading");
+    } finally {
+      await stopServer(cancelProbe.server).catch(() => undefined);
+    }
+
+    // 确认：切换到新模型（SPEC §8.4 改变模型场景）重译；缓存键含模型，真实重新请求。
+    const retranslate = controlledServer({ prefix: "重译：" });
+    const retranslateEndpoint = await startServer(retranslate.server);
+    try {
+      await configureModel(retranslateEndpoint, "controlled-translate-v2");
+      await reader.getByRole("button", { name: "重译全文", exact: true }).click();
+      await reader
+        .getByRole("alertdialog", { name: "全文重译确认" })
+        .getByRole("button", { name: "确认全文重译", exact: true })
+        .click();
+      await expect(abstractSentence).toContainText("重译：We study progressive reading", { timeout: 30000 });
+      await expect(bodySentence).toContainText("重译：Translations appear unit by unit");
+      await expect(reader.locator("[data-paper-title]")).toContainText("重译：Progressive Reading");
+      await waitTranslationIdle(created.root, revision.revisionId);
+      // 两个单元整单元重译（各一次请求），元数据一次覆盖标题/section/raw。
+      expect(retranslate.calls.filter((unitId) => unitId === ids.abstract)).toHaveLength(1);
+      expect(retranslate.calls.filter((unitId) => unitId === ids.body)).toHaveLength(1);
+      expect(retranslate.metaCalls).toHaveLength(1);
+      await expect(reader.locator(".reader-translation-status")).toContainText("全文重译完成");
+    } finally {
+      await stopServer(retranslate.server).catch(() => undefined);
+    }
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 单元重译入口：只替换目标单元；失败单元保留旧 ready 不制造新 gap", async () => {
+  const { created, ids, revision } = await englishProject("单元重译工程");
+  const { server } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractUnit = reader.locator(`[data-unit-id="${ids.abstract}"]`);
+    const bodyUnit = reader.locator(`[data-unit-id="${ids.body}"]`);
+    const bodySentence = reader.locator(`[data-sentence-id="${ids.bodySentence}"]`);
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await waitTranslationIdle(created.root, revision.revisionId);
+    // 语言视图逐单元提供重译入口；原文视图不提供。
+    await expect(bodyUnit.getByRole("button", { name: /重译单元/ })).toBeVisible();
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    await expect(bodyUnit.getByRole("button", { name: /重译单元/ })).toHaveCount(0);
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(bodySentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await waitTranslationIdle(created.root, revision.revisionId);
+
+    // 成功路径：切换新模型只重译 body 单元（缓存键含模型，真实请求），abstract 保留旧译文。
+    const ok = controlledServer({ prefix: "重译：" });
+    const okEndpoint = await startServer(ok.server);
+    try {
+      await configureModel(okEndpoint, "controlled-translate-v2");
+      await bodyUnit.getByRole("button", { name: /重译单元/ }).click();
+      await expect(bodySentence).toContainText("重译：Translations appear unit by unit", { timeout: 30000 });
+      await waitTranslationIdle(created.root, revision.revisionId);
+      expect(ok.calls).toEqual([ids.body]);
+      await expect(abstractUnit).toContainText("译文：We study progressive reading");
+      await expect(reader.locator(".reader-translation-status")).toContainText("单元重译完成");
+    } finally {
+      await stopServer(ok.server).catch(() => undefined);
+    }
+
+    // 失败路径：再换模型使请求真实发出；body 首轮＋补试均失败，旧 ready 保留，不制造新 gap。
+    const failing = controlledServer({ prefix: "再译：", failUnit: ids.body });
+    const failEndpoint = await startServer(failing.server);
+    try {
+      await configureModel(failEndpoint, "controlled-translate-v3");
+      await bodyUnit.getByRole("button", { name: /重译单元/ }).click();
+      await expect(reader.locator(".reader-translation-status")).toContainText("1 个单元重译失败，旧译文保留", {
+        timeout: 30000,
+      });
+      await waitTranslationIdle(created.root, revision.revisionId);
+      expect(failing.calls.filter((unitId) => unitId === ids.body)).toHaveLength(2);
+      await expect(bodySentence).toHaveAttribute("data-translation-status", "ready");
+      await expect(bodySentence).toContainText("重译：Translations appear unit by unit");
+    } finally {
+      await stopServer(failing.server).catch(() => undefined);
+    }
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 在途任务期间的显式重译不被静默丢弃：busy 明确返回，落定后可完成", async () => {
+  const { created, ids, revision, tree, source } = await englishProject("重译排队工程", { long: true });
+  const { server } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(reader.locator(`[data-unit-id="${ids.body}"]`)).toContainText(
+      "译文：Translations appear unit by unit",
+      {
+        timeout: 30000,
+      },
+    );
+    await waitTranslationIdle(created.root, revision.revisionId);
+
+    // 追加新句并发布新 current：再次生成只处理该 gap（挂起），制造确定的在途窗口。
+    const added = randomUUID();
+    const withAdded: DocumentTree = {
+      ...tree,
+      units: {
+        ...tree.units,
+        [ids.abstract]: { ...tree.units[ids.abstract], sentenceIds: [...tree.units[ids.abstract].sentenceIds, added] },
+      },
+      sentences: {
+        ...tree.sentences,
+        [added]: {
+          id: added,
+          unitId: ids.abstract,
+          content: [{ kind: "text", text: "A newly added sentence awaits translation." }],
+        },
+      },
+    };
+    const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    const second = await page.evaluate(
+      ({ root, baseRevision, sourceSnapshotId, files }) =>
+        window.desktop.invoke<ProjectRevisionRecord>({
+          type: "coreCommit",
+          root,
+          baseRevision,
+          sourceSnapshotId,
+          files,
+        }),
+      {
+        root: created.root,
+        baseRevision: revision.revisionId,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: {
+          "document.json": json(withAdded),
+          "source-base.json": json(withAdded),
+          "tombstones.json": json([]),
+          "changeset.json": json({ baseRevision: revision.revisionId }),
+        },
+      },
+    );
+    const gapHold = Promise.withResolvers<void>();
+    const held = controlledServer({
+      prefix: "二次生成：",
+      hold: gapHold.promise,
+      holdUnit: new Map([[ids.abstract, gapHold.promise]]),
+    });
+    const heldEndpoint = await startServer(held.server);
+    const queued = controlledServer({ prefix: "排队重译：" });
+    const queuedEndpoint = await startServer(queued.server);
+    try {
+      await configureModel(heldEndpoint, "controlled-translate-second");
+      await expect(reader).toHaveAttribute("data-revision-id", second.revisionId, { timeout: 30000 });
+      // 直接经命令面启动挂起的 generate（不依赖 UI busy 渲染时序）。
+      const generatePromise = invoke<{ status: string }>({
+        type: "coreTranslationStart",
+        root: created.root,
+        language: "zh",
+        expectedBaseRevision: second.revisionId,
+      });
+      await expect.poll(() => held.calls.length + held.metaCalls.length, { timeout: 30000 }).toBeGreaterThanOrEqual(1);
+      // 在途期间发起两个单元重译：主进程以 busy 明确返回（不静默丢弃、不悬挂）。
+      const busyA = await invoke<{ status: string; reason?: string }>({
+        type: "coreTranslationRetranslate",
+        root: created.root,
+        language: "zh",
+        scope: { kind: "unit", unitId: ids.abstract },
+        expectedBaseRevision: second.revisionId,
+      });
+      const busyB = await invoke<{ status: string; reason?: string }>({
+        type: "coreTranslationRetranslate",
+        root: created.root,
+        language: "zh",
+        scope: { kind: "unit", unitId: ids.body },
+        expectedBaseRevision: second.revisionId,
+      });
+      expect(busyA).toMatchObject({ status: "skipped", reason: "busy" });
+      expect(busyB).toMatchObject({ status: "skipped", reason: "busy" });
+      // 放行 generate 并落定。
+      gapHold.resolve();
+      await generatePromise;
+      await waitTranslationIdle(created.root, second.revisionId);
+      // 落定后显式重译可完成：两个单元都被整单元重译（renderer 排队动作即在此后执行）。
+      await configureModel(queuedEndpoint, "controlled-translate-queue");
+      const doneA = await invoke<{ status: string }>({
+        type: "coreTranslationRetranslate",
+        root: created.root,
+        language: "zh",
+        scope: { kind: "unit", unitId: ids.abstract },
+        expectedBaseRevision: second.revisionId,
+      });
+      const doneB = await invoke<{ status: string }>({
+        type: "coreTranslationRetranslate",
+        root: created.root,
+        language: "zh",
+        scope: { kind: "unit", unitId: ids.body },
+        expectedBaseRevision: second.revisionId,
+      });
+      expect(doneA).toMatchObject({ status: "finished" });
+      expect(doneB).toMatchObject({ status: "finished" });
+      expect(queued.calls).toEqual([ids.abstract, ids.body]);
+      await expect(reader.locator(`[data-unit-id="${ids.abstract}"]`)).toContainText(
+        "排队重译：We study progressive reading",
+      );
+      await expect(reader.locator(`[data-unit-id="${ids.body}"]`)).toContainText(
+        "排队重译：Translations appear unit by unit",
+      );
+    } finally {
+      gapHold.resolve();
+      await stopServer(held.server).catch(() => undefined);
+      await stopServer(queued.server).catch(() => undefined);
+    }
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 全文重译确认期间正文推进：确认按新 current 复核，旧授权不跨 revision 收费", async () => {
+  const { created, ids, revision, tree, source } = await englishProject("重译确认revision工程");
+  const { server } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(reader.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toHaveAttribute(
+      "data-translation-status",
+      "ready",
+      { timeout: 30000 },
+    );
+    await waitTranslationIdle(created.root, revision.revisionId);
+
+    // 打开全文重译确认框后发布新 current（正文句变化）。
+    await reader.getByRole("button", { name: "重译全文", exact: true }).click();
+    const confirm = reader.getByRole("alertdialog", { name: "全文重译确认" });
+    await expect(confirm).toBeVisible();
+    const changed: DocumentTree = {
+      ...tree,
+      sentences: {
+        ...tree.sentences,
+        [ids.bodySentence]: {
+          ...tree.sentences[ids.bodySentence],
+          content: [{ kind: "text", text: "Translations appear unit by unit while the task runs, now revised." }],
+        },
+      },
+    };
+    const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    const second = await page.evaluate(
+      ({ root, baseRevision, sourceSnapshotId, files }) =>
+        window.desktop.invoke<ProjectRevisionRecord>({
+          type: "coreCommit",
+          root,
+          baseRevision,
+          sourceSnapshotId,
+          files,
+        }),
+      {
+        root: created.root,
+        baseRevision: revision.revisionId,
+        sourceSnapshotId: source.sourceSnapshotId,
+        files: {
+          "document.json": json(changed),
+          "source-base.json": json(changed),
+          "tombstones.json": json([]),
+          "changeset.json": json({ baseRevision: revision.revisionId }),
+        },
+      },
+    );
+    // revision 推进后确认框不得继续代表旧授权：关闭，需按新正文重新发起。
+    await expect(confirm).toHaveCount(0, { timeout: 15000 });
+
+    // 直接以旧 expectedBaseRevision 发起命令：主进程复核拒绝，零请求。
+    const probe = controlledServer({ prefix: "越权探针：" });
+    const probeEndpoint = await startServer(probe.server);
+    try {
+      await configureModel(probeEndpoint, "controlled-translate-stale");
+      const stale = await invoke<{ status: string; reason?: string }>({
+        type: "coreTranslationRetranslate",
+        root: created.root,
+        language: "zh",
+        scope: { kind: "full" },
+        expectedBaseRevision: revision.revisionId,
+      });
+      expect(stale).toMatchObject({ status: "skipped", reason: "revision-changed" });
+      expect(probe.calls).toEqual([]);
+      expect(probe.metaCalls).toEqual([]);
+      // 按新 current 重新确认后可正常重译。
+      await reader.getByRole("button", { name: "重译全文", exact: true }).click();
+      await reader
+        .getByRole("alertdialog", { name: "全文重译确认" })
+        .getByRole("button", { name: "确认全文重译", exact: true })
+        .click();
+      await expect(reader.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toContainText(
+        "越权探针：Translations appear unit by unit while the task runs, now revised.",
+        { timeout: 30000 },
+      );
+      await waitTranslationIdle(created.root, second.revisionId);
+    } finally {
+      await stopServer(probe.server).catch(() => undefined);
+    }
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 表格单元与表标题提供重译入口：单元级替换不影响其他单元", async () => {
+  const created = await invoke<ProjectCoreSnapshot>({ type: "coreCreate", parent: sandbox, name: "表格重译工程" });
+  const paperId = created.manifest.paper.id;
+  const ids = {
+    section: randomUUID(),
+    body: randomUUID(),
+    bodySentence: randomUUID(),
+    caption: randomUUID(),
+    captionSentence: randomUUID(),
+    cell: randomUUID(),
+    cellSentence: randomUUID(),
+  };
+  const tree: DocumentTree = {
+    documentFormatVersion: 1,
+    paperId,
+    sections: {
+      [ids.section]: {
+        id: ids.section,
+        parentSectionId: null,
+        title: "1 Results",
+        childSectionIds: [],
+        unitIds: [ids.body, ids.caption, ids.cell],
+      },
+    },
+    units: {
+      [ids.body]: { id: ids.body, sectionId: ids.section, kind: "paragraph", sentenceIds: [ids.bodySentence] },
+      [ids.caption]: { id: ids.caption, sectionId: ids.section, kind: "caption", sentenceIds: [ids.captionSentence] },
+      [ids.cell]: { id: ids.cell, sectionId: ids.section, kind: "table-cell", sentenceIds: [ids.cellSentence] },
+    },
+    sentences: {
+      [ids.bodySentence]: {
+        id: ids.bodySentence,
+        unitId: ids.body,
+        content: [{ kind: "text", text: "The results are summarized below." }],
+      },
+      [ids.captionSentence]: {
+        id: ids.captionSentence,
+        unitId: ids.caption,
+        content: [{ kind: "text", text: "Table 1: measured accuracy." }],
+      },
+      [ids.cellSentence]: {
+        id: ids.cellSentence,
+        unitId: ids.cell,
+        content: [{ kind: "text", text: "0.98" }],
+      },
+    },
+    atoms: {},
+    blocks: [
+      { id: randomUUID(), sectionId: ids.section, kind: "unit", unitId: ids.body },
+      {
+        id: randomUUID(),
+        sectionId: ids.section,
+        kind: "table",
+        captionUnitId: ids.caption,
+        rows: [[{ unitId: ids.cell, rowSpan: 1, columnSpan: 1 }]],
+      },
+    ],
+  };
+  const source = await page.evaluate(
+    ({ root }) =>
+      window.desktop.invoke<SourceSnapshotRecord>({
+        type: "corePublishSource",
+        root,
+        files: { "document.html": new TextEncoder().encode("<html>paper</html>") },
+        metadata: { kind: "arxiv", canonicalId: "2401.00009v1", title: "Table Retranslation" },
+      }),
+    { root: created.root },
+  );
+  const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+  const revision = await page.evaluate(
+    ({ root, sourceSnapshotId, files }) =>
+      window.desktop.invoke<ProjectRevisionRecord>({
+        type: "coreCommit",
+        root,
+        baseRevision: null,
+        sourceSnapshotId,
+        files,
+      }),
+    {
+      root: created.root,
+      sourceSnapshotId: source.sourceSnapshotId,
+      files: {
+        "document.json": json(tree),
+        "source-base.json": json(tree),
+        "tombstones.json": json([]),
+        "changeset.json": json({ baseRevision: null }),
+      },
+    },
+  );
+  const { server } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const cellUnit = reader.locator(`[data-unit-id="${ids.cell}"]`);
+    const captionUnit = reader.locator(`[data-unit-id="${ids.caption}"]`);
+    const bodyUnit = reader.locator(`[data-unit-id="${ids.body}"]`);
+    await expect(cellUnit).toContainText("译文：0.98", { timeout: 30000 });
+    await waitTranslationIdle(created.root, revision.revisionId);
+    // 表格单元与表标题都有重译入口。
+    await expect(cellUnit.getByRole("button", { name: /重译单元/ })).toBeVisible();
+    await expect(captionUnit.getByRole("button", { name: /重译单元/ })).toBeVisible();
+
+    const ok = controlledServer({ prefix: "重译：" });
+    const okEndpoint = await startServer(ok.server);
+    try {
+      await configureModel(okEndpoint, "controlled-translate-v2");
+      await cellUnit.getByRole("button", { name: /重译单元/ }).click();
+      await expect(cellUnit).toContainText("重译：0.98", { timeout: 30000 });
+      await waitTranslationIdle(created.root, revision.revisionId);
+      expect(ok.calls).toEqual([ids.cell]);
+      // 表标题与正文单元不受影响。
+      await expect(captionUnit).toContainText("译文：Table 1: measured accuracy.");
+      await expect(bodyUnit).toContainText("译文：The results are summarized below.");
+    } finally {
+      await stopServer(ok.server).catch(() => undefined);
+    }
   } finally {
     await stopServer(server).catch(() => undefined);
   }

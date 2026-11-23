@@ -41,7 +41,13 @@ function request(
         type: "translationStart";
         command: Extract<
           Command,
-          { type: "coreTranslationStart" | "coreTranslationFillGaps" | "coreTranslationUpdateStale" }
+          {
+            type:
+              | "coreTranslationStart"
+              | "coreTranslationFillGaps"
+              | "coreTranslationUpdateStale"
+              | "coreTranslationRetranslate";
+          }
         >;
         config: ModelConfig;
       }
@@ -267,7 +273,8 @@ async function start() {
     if (
       command.type === "coreTranslationStart" ||
       command.type === "coreTranslationFillGaps" ||
-      command.type === "coreTranslationUpdateStale"
+      command.type === "coreTranslationUpdateStale" ||
+      command.type === "coreTranslationRetranslate"
     ) {
       // 翻译模型配置与凭据只从主进程设置读取；renderer 命令不携带 Token。
       await settingsWrite;
