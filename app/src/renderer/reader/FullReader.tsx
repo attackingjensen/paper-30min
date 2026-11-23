@@ -40,7 +40,11 @@ import {
   readerProjectionUnits,
   type TranslationUnitView,
 } from "../../shared/reader/translation-view";
-import type { TranslationReadCommandResult, TranslationStartCommandResult } from "../../shared/contracts";
+import type {
+  TranslationReadCommandResult,
+  TranslationRetranslateScope,
+  TranslationStartCommandResult,
+} from "../../shared/contracts";
 
 const desktop = window.desktop;
 /** raw block 白名单（与 document-core rawHtmlTags 一致）：渲染层独立消毒，
@@ -187,6 +191,18 @@ function FormulaView({ item }: { item: Extract<ReaderItem, { kind: "formula" }> 
     </div>
   );
 }
+/** 语言视图的单元重译入口（SPEC §8.4）：正文、图注、表标题与表格单元共用。 */
+function UnitRetranslateButton({ unitId, onRetranslate }: { unitId: string; onRetranslate: (unitId: string) => void }) {
+  return (
+    <Button
+      className="reader-retranslate-entry"
+      aria-label={`重译单元 ${unitId.slice(0, 8)}`}
+      onClick={() => onRetranslate(unitId)}
+    >
+      重译
+    </Button>
+  );
+}
 
 function FigureView({
   item,
@@ -194,12 +210,14 @@ function FigureView({
   revisionPath,
   onNavigate,
   translatedUnit,
+  onRetranslate,
 }: {
   item: Extract<ReaderItem, { kind: "figure" }>;
   root: string;
   revisionPath: string;
   onNavigate: (unitId: string) => void;
   translatedUnit?: (unitId: string) => TranslationUnitView | undefined;
+  onRetranslate?: (unitId: string) => void;
 }) {
   const [failed, setFailed] = useState(false);
   const captionText =
@@ -225,6 +243,7 @@ function FigureView({
       {item.caption && (
         <figcaption data-unit-id={item.caption.unitId}>
           <UnitBody unit={item.caption} onNavigate={onNavigate} translation={translatedUnit?.(item.caption.unitId)} />
+          {onRetranslate && <UnitRetranslateButton unitId={item.caption.unitId} onRetranslate={onRetranslate} />}
         </figcaption>
       )}
     </figure>
@@ -235,10 +254,12 @@ function TableView({
   item,
   onNavigate,
   translatedUnit,
+  onRetranslate,
 }: {
   item: Extract<ReaderItem, { kind: "table" }>;
   onNavigate: (unitId: string) => void;
   translatedUnit?: (unitId: string) => TranslationUnitView | undefined;
+  onRetranslate?: (unitId: string) => void;
 }) {
   return (
     <div className="reader-table-scroll" data-block-id={item.blockId}>
@@ -246,6 +267,7 @@ function TableView({
         {item.caption && (
           <caption data-unit-id={item.caption.unitId}>
             <UnitBody unit={item.caption} onNavigate={onNavigate} translation={translatedUnit?.(item.caption.unitId)} />
+            {onRetranslate && <UnitRetranslateButton unitId={item.caption.unitId} onRetranslate={onRetranslate} />}
           </caption>
         )}
         <tbody>
@@ -263,6 +285,7 @@ function TableView({
                     onNavigate={onNavigate}
                     translation={translatedUnit?.(cell.unitId)}
                   />
+                  {onRetranslate && <UnitRetranslateButton unitId={cell.unitId} onRetranslate={onRetranslate} />}
                 </td>
               ))}
             </tr>
@@ -308,11 +331,14 @@ function UnitView({
   onCorrect,
   onNavigate,
   translation,
+  onRetranslate,
 }: {
   item: Extract<ReaderItem, { kind: "unit" }>;
   onCorrect?: (unitId: string) => void;
   onNavigate: (unitId: string) => void;
   translation?: TranslationUnitView;
+  /** 语言视图的强制重译入口（SPEC §8.4）；原文视图不提供。 */
+  onRetranslate?: (unitId: string) => void;
 }) {
   const Tag = item.unitKind === "reference" || item.unitKind === "footnote" ? "div" : "p";
   return (
@@ -327,9 +353,16 @@ function UnitView({
           修正
         </Button>
       )}
+      {onRetranslate && <UnitRetranslateButton unitId={item.unitId} onRetranslate={onRetranslate} />}
     </Tag>
   );
 }
+
+/** 显式译文维护动作（SPEC §8）：补译、stale 更新与强制重译共用排队与渐进刷新。 */
+type TranslationAction =
+  | { kind: "fill-gaps" }
+  | { kind: "update-stale" }
+  | { kind: "retranslate"; scope: TranslationRetranslateScope };
 
 /** 选区工具条状态：逻辑映射结果＋视口坐标；revision/代际切换即失效。
  * view 区分原文/译文选区：译文 quote 不得冒充原文锚点写入原 anchor。 */
@@ -379,9 +412,11 @@ export function FullReader({
   const [translationBusy, setTranslationBusy] = useState(false);
   const [translationStatus, setTranslationStatus] = useState("");
   const translationEpoch = useRef(0);
-  // 显式动作排队：在途任务期间点击补译/更新不丢弃，落定后自动执行一次。
-  const [pendingAction, setPendingAction] = useState<"fill-gaps" | "update-stale" | null>(null);
-  const pendingActionRef = useRef<"fill-gaps" | "update-stale" | null>(null);
+  // 显式动作 FIFO 排队：在途任务期间点击补译/更新/重译不丢弃，落定后按序执行。
+  const [pendingActions, setPendingActions] = useState<TranslationAction[]>([]);
+  const pendingActionsRef = useRef<TranslationAction[]>([]);
+  // 全文重译单独确认（SPEC §8.4）：确认前不发起命令；取消不产生请求。
+  const [confirmRetranslateFull, setConfirmRetranslateFull] = useState(false);
   const translationRootRef = useRef<string | null>(null);
   const requestRef = useRef(0);
   const articleRef = useRef<HTMLElement | null>(null);
@@ -560,6 +595,24 @@ export function FullReader({
       disposed = true;
     };
   }, [status, state, root, language]);
+
+  // 正文推进后，旧 revision 排队的显式动作不得在新 current 上自动执行
+  // （重译授权已绑定 expectedBaseRevision）；清空并提示重新发起。
+  const queuedRevisionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const revisionId = state?.revisionId ?? null;
+    if (pendingActions.length > 0) {
+      if (queuedRevisionRef.current === null) queuedRevisionRef.current = revisionId;
+      else if (queuedRevisionRef.current !== revisionId) {
+        queuedRevisionRef.current = null;
+        pendingActionsRef.current = [];
+        setPendingActions([]);
+        setTranslationStatus("正文已更新：排队的译文动作已取消，请按新正文重新发起。");
+      }
+    } else {
+      queuedRevisionRef.current = null;
+    }
+  }, [state, pendingActions]);
 
   // 元数据与正文共用同一身份守卫：revision 推进或语言互切后，旧投影的
   // 标题/raw 不得在新读取完成前按 ready 显示。
@@ -1046,8 +1099,9 @@ export function FullReader({
   // 已有译文只切换视图。任务期间渐进刷新投影，不重排阅读位置、不强制 reload。
   async function switchLanguage(target: TranslationLanguage | null) {
     if (!state) return;
-    pendingActionRef.current = null;
-    setPendingAction(null);
+    // 语言切换不清空显式动作队列：动作已绑定发起时 revision，落定后仍按序执行；
+    // 仅全文重译确认态随视图切换失效（需按当前视图重新确认）。
+    setConfirmRetranslateFull(false);
     const epochAtStart = ++translationEpoch.current;
     const current = state;
     if (target === null) {
@@ -1121,6 +1175,7 @@ export function FullReader({
         type: "coreTranslationStart",
         root,
         language: target,
+        expectedBaseRevision: current.revisionId,
       });
       if (stale()) return;
       if (started.status === "finished") {
@@ -1135,9 +1190,11 @@ export function FullReader({
         setTranslationStatus(
           started.reason === "busy"
             ? "该语言已有翻译任务在运行，译文将渐进出现。"
-            : gaps.length > 0
-              ? `译文已渐进发布；${gaps.length} 个单元暂为缺口，可稍后补译。`
-              : "",
+            : started.reason === "revision-changed"
+              ? "正文已更新，本次未启动翻译；请按新正文重新切换语言。"
+              : gaps.length > 0
+                ? `译文已渐进发布；${gaps.length} 个单元暂为缺口，可稍后补译。`
+                : "",
         );
       } else {
         setTranslationStatus("翻译任务未启动：正文尚未发布或已有同语言任务。");
@@ -1152,14 +1209,12 @@ export function FullReader({
     }
   }
 
-  // 显式补译／更新过期译文（SPEC-translation §8）：只处理目标状态，
-  // 费用提示与任务状态可见；渐进刷新由 translation:changed 承担。
-  async function runTranslationAction(action: "fill-gaps" | "update-stale") {
+  // 显式补译／更新过期译文／强制重译（SPEC-translation §8）：补译与更新只处理目标状态，
+  // 重译逐单元原子替换 ready/stale/gap；费用提示与任务状态可见，渐进刷新由 translation:changed 承担。
+  async function runTranslationAction(action: TranslationAction) {
     if (!state || language === null) return;
     if (translationBusy) {
-      // 在途任务期间不丢弃显式动作：排队待落定后执行。
-      pendingActionRef.current = action;
-      setPendingAction(action);
+      enqueueTranslationAction(action);
       return;
     }
     const target = language;
@@ -1168,67 +1223,130 @@ export function FullReader({
     const stale = () => epochAtStart !== translationEpoch.current || stateRef.current !== current;
     setTranslationBusy(true);
     setTranslationStatus(
-      action === "fill-gaps"
+      action.kind === "fill-gaps"
         ? `正在补译${target === "zh" ? "中文" : "英文"}缺口（可能产生模型费用）…`
-        : `正在更新过期译文（可能产生模型费用）…`,
+        : action.kind === "update-stale"
+          ? `正在更新过期译文（可能产生模型费用）…`
+          : action.scope.kind === "full"
+            ? `正在全文重译（可能产生模型费用）…`
+            : `正在重译单元（可能产生模型费用）…`,
     );
+    let busySkipped = false;
     try {
-      const result = await desktop.invoke<TranslationStartCommandResult>({
-        type: action === "fill-gaps" ? "coreTranslationFillGaps" : "coreTranslationUpdateStale",
-        root,
-        language: target,
-      });
+      const result = await desktop.invoke<TranslationStartCommandResult>(
+        action.kind === "retranslate"
+          ? {
+              type: "coreTranslationRetranslate",
+              root,
+              language: target,
+              scope: action.scope,
+              expectedBaseRevision: current.revisionId,
+            }
+          : {
+              type: action.kind === "fill-gaps" ? "coreTranslationFillGaps" : "coreTranslationUpdateStale",
+              root,
+              language: target,
+              expectedBaseRevision: current.revisionId,
+            },
+      );
       if (stale()) return;
       if (result.status === "finished") {
         setTranslation(result.projection);
         setTranslationBusy(result.projection.running === true);
-        const gaps = result.units.filter((unit) => unit.status === "gap");
+        const failedUnits = result.units.filter((unit) => unit.status === "gap" && unit.unitId !== "meta");
+        const metaFailed = result.units.some((unit) => unit.status === "gap" && unit.unitId === "meta");
+        const failureNote = `${failedUnits.length > 0 ? `${failedUnits.length} 个单元` : ""}${
+          failedUnits.length > 0 && metaFailed ? "与" : ""
+        }${metaFailed ? "标题/raw 元数据" : ""}`;
         setTranslationStatus(
-          gaps.length > 0
-            ? action === "fill-gaps"
-              ? `补译完成；仍有 ${gaps.length} 个单元缺口，可检查模型后重试。`
-              : `过期译文更新完成；${gaps.length} 个单元更新失败，旧译文继续以过期显示。`
-            : action === "fill-gaps"
+          failedUnits.length > 0 || metaFailed
+            ? action.kind === "fill-gaps"
+              ? `补译完成；仍有 ${failedUnits.length} 个单元缺口，可检查模型后重试。`
+              : action.kind === "update-stale"
+                ? `过期译文更新完成；${failureNote}更新失败，旧译文继续以过期显示。`
+                : `重译完成；${failureNote}重译失败，旧译文保留。`
+            : action.kind === "fill-gaps"
               ? "缺口补译完成。"
-              : "过期译文已更新。",
+              : action.kind === "update-stale"
+                ? "过期译文已更新。"
+                : action.scope.kind === "full"
+                  ? "全文重译完成。"
+                  : "单元重译完成。",
         );
       } else if (result.projection) {
         setTranslation(result.projection);
-        setTranslationBusy(result.projection.running === true);
-        setTranslationStatus(
-          result.reason === "busy"
-            ? "该语言已有翻译任务在运行，译文将渐进出现。"
-            : action === "fill-gaps"
-              ? "没有需要补译的缺口。"
-              : "没有需要更新的过期译文。",
-        );
+        if (result.reason === "busy") {
+          // 本地 busy 滞后于主进程：动作放回队首，保持在途状态；
+          // 不改 pendingActions 状态（避免 busy 期间的排空效应把动作移丢），
+          // 由 translation:changed/停止/重读把 busy 落定后再排空。
+          pendingActionsRef.current = [action, ...pendingActionsRef.current];
+          setTranslationBusy(true);
+          setTranslationStatus("该语言已有翻译任务在运行，动作已排队，译文将渐进出现。");
+          busySkipped = true;
+          return;
+        } else {
+          setTranslationBusy(result.projection.running === true);
+          setTranslationStatus(
+            result.reason === "revision-changed"
+              ? "正文已更新，重译未执行；请按新正文重新发起重译。"
+              : action.kind === "fill-gaps"
+                ? "没有需要补译的缺口。"
+                : action.kind === "update-stale"
+                  ? "没有需要更新的过期译文。"
+                  : "没有可重译的内容。",
+          );
+        }
       }
     } catch (error) {
       if (stale()) return;
       setTranslationStatus((error as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ""));
     } finally {
-      if (epochAtStart === translationEpoch.current) setTranslationBusy(false);
+      // busy-skip 已保持 busy；其余路径队列未空时保持 busy，点击继续排队不插队。
+      if (epochAtStart === translationEpoch.current && !busySkipped)
+        setTranslationBusy(pendingActionsRef.current.length > 0);
     }
   }
 
-  // 在途任务落定（busy 解除）后执行排队的显式动作，避免点击被静默丢弃。
+  // FIFO 排队：同目标去重；full 重译吸收先前排队的 unit 重译（其结果将被覆盖）。
+  function enqueueTranslationAction(action: TranslationAction) {
+    const queue = pendingActionsRef.current;
+    const duplicate = queue.some(
+      (queued) =>
+        queued.kind === action.kind &&
+        (queued.kind !== "retranslate" ||
+          (action.kind === "retranslate" &&
+            (queued.scope.kind === "full" ||
+              (action.scope.kind === "unit" && queued.scope.unitId === action.scope.unitId)))),
+    );
+    if (!duplicate) {
+      const next =
+        action.kind === "retranslate" && action.scope.kind === "full"
+          ? queue.filter((queued) => queued.kind !== "retranslate" || queued.scope.kind !== "unit")
+          : queue;
+      pendingActionsRef.current = [...next, action];
+      setPendingActions(pendingActionsRef.current);
+    }
+  }
+
+  // 在途任务落定（busy 解除）后按 FIFO 执行排队动作；busy-skip 回队的动作也经此排空。
   const runActionRef = useRef(runTranslationAction);
   runActionRef.current = runTranslationAction;
   useEffect(() => {
-    if (!translationBusy && pendingAction) {
-      const action = pendingAction;
-      pendingActionRef.current = null;
-      setPendingAction(null);
+    if (!translationBusy && pendingActionsRef.current.length > 0) {
+      const [action, ...rest] = pendingActionsRef.current;
+      pendingActionsRef.current = rest;
+      setPendingActions(rest);
       void runActionRef.current(action);
     }
-  }, [translationBusy, pendingAction]);
+  }, [translationBusy, pendingActions]);
   // 用户停止（SPEC-translation §6.5）：取消未发送批次；已在途请求可能已产生
   // 费用，完成且合法的结果仍会保存。停止后同指纹不再自动补试，手动补译可再发起。
   async function stopTranslation() {
     if (!state || language === null) return;
     const target = language;
-    pendingActionRef.current = null;
-    setPendingAction(null);
+    pendingActionsRef.current = [];
+    setPendingActions([]);
+    setConfirmRetranslateFull(false);
     ++translationEpoch.current;
     try {
       await desktop.invoke({ type: "coreTranslationStop", root, language: target });
@@ -1331,8 +1449,17 @@ export function FullReader({
           gaps={translationCounts.gaps}
           stale={translationCounts.stale}
           hasProjection={translation !== null}
+          confirmingFullRetranslate={
+            confirmRetranslateFull && state !== null && translation?.baseRevision === state.revisionId
+          }
           onSwitch={(target) => void switchLanguage(target)}
-          onAction={(action) => void runTranslationAction(action)}
+          onAction={(action) => void runTranslationAction({ kind: action })}
+          onRetranslateFull={() => setConfirmRetranslateFull(true)}
+          onConfirmFullRetranslate={() => {
+            setConfirmRetranslateFull(false);
+            void runTranslationAction({ kind: "retranslate", scope: { kind: "full" } });
+          }}
+          onCancelFullRetranslate={() => setConfirmRetranslateFull(false)}
           onStop={() => void stopTranslation()}
         />
       </header>
@@ -1418,6 +1545,11 @@ export function FullReader({
                 onCorrect={language === null ? (unitId) => setCorrectingUnit(unitId) : undefined}
                 onNavigate={navigateUnit}
                 translation={translatedUnit?.(item.unitId)}
+                onRetranslate={
+                  language !== null
+                    ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
+                    : undefined
+                }
               />
             );
           case "formula":
@@ -1431,11 +1563,26 @@ export function FullReader({
                 revisionPath={revisionPath}
                 onNavigate={navigateUnit}
                 translatedUnit={translatedUnit}
+                onRetranslate={
+                  language !== null
+                    ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
+                    : undefined
+                }
               />
             );
           case "table":
             return (
-              <TableView key={item.blockId} item={item} onNavigate={navigateUnit} translatedUnit={translatedUnit} />
+              <TableView
+                key={item.blockId}
+                item={item}
+                onNavigate={navigateUnit}
+                translatedUnit={translatedUnit}
+                onRetranslate={
+                  language !== null
+                    ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
+                    : undefined
+                }
+              />
             );
           case "raw":
             return (

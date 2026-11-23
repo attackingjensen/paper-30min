@@ -11,8 +11,12 @@ export function TranslationControls({
   gaps,
   stale,
   hasProjection,
+  confirmingFullRetranslate,
   onSwitch,
   onAction,
+  onRetranslateFull,
+  onConfirmFullRetranslate,
+  onCancelFullRetranslate,
   onStop,
 }: {
   language: TranslationLanguage | null;
@@ -21,8 +25,13 @@ export function TranslationControls({
   gaps: number;
   stale: number;
   hasProjection: boolean;
+  /** 全文重译单独确认态（SPEC §8.4）：确认前不发起命令。 */
+  confirmingFullRetranslate: boolean;
   onSwitch: (target: TranslationLanguage | null) => void;
   onAction: (action: "fill-gaps" | "update-stale") => void;
+  onRetranslateFull: () => void;
+  onConfirmFullRetranslate: () => void;
+  onCancelFullRetranslate: () => void;
   onStop: () => void;
 }) {
   return (
@@ -52,7 +61,7 @@ export function TranslationControls({
           English
         </Button>
       </div>
-      {language !== null && hasProjection && (gaps > 0 || stale > 0) && (
+      {language !== null && hasProjection && (
         <div className="reader-translation-actions" role="group" aria-label="译文维护">
           {gaps > 0 && (
             <Button className="reader-translation-action" disabled={busy} onClick={() => onAction("fill-gaps")}>
@@ -64,7 +73,28 @@ export function TranslationControls({
               更新过期译文（{stale} 项）
             </Button>
           )}
+          <Button className="reader-translation-action" disabled={busy} onClick={onRetranslateFull}>
+            重译全文
+          </Button>
         </div>
+      )}
+      {language !== null && confirmingFullRetranslate && (
+        <InlineMessage
+          variant="warning"
+          className="reader-retranslate-confirm"
+          role="alertdialog"
+          aria-label="全文重译确认"
+        >
+          <p>
+            全文重译将重新生成全部单元与标题译文（含已完成内容），可能产生较高模型费用；失败单元保留旧译文。确定继续吗？
+          </p>
+          <div className="reader-retranslate-confirm-actions">
+            <Button className="reader-retranslate-confirm-ok" onClick={onConfirmFullRetranslate}>
+              确认全文重译
+            </Button>
+            <Button onClick={onCancelFullRetranslate}>取消</Button>
+          </div>
+        </InlineMessage>
       )}
       {language !== null && (status || busy) && (
         <InlineMessage className="reader-translation-status" role="status">

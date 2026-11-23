@@ -134,6 +134,10 @@ export interface ProjectRevisionContext {
 
 export type ManagedFileContent = Uint8Array | { bytes: Uint8Array; mime?: string };
 
+/** 强制重译范围（SPEC-translation §8.4）：unit 只替换该单元与其所在 section 的标题/raw；
+ * full 覆盖全部单元与元数据。full 可能产生较高费用，renderer 必须单独确认后才发起。 */
+export type TranslationRetranslateScope = { kind: "unit"; unitId: string } | { kind: "full" };
+
 export type CoreCommand =
   | { type: "coreCreate"; parent: string; name: string }
   | { type: "coreOpen"; root: string }
@@ -333,16 +337,30 @@ export type CoreCommand =
       type: "coreTranslationStart";
       root: string;
       language: "zh" | "en";
+      /** 发起时看到的 current（可选）：执行前复核，正文已推进则拒绝，
+       * 不得把旧视图的启动落到新 revision 上。缺省按执行时 current。 */
+      expectedBaseRevision?: string;
     }
   | {
       type: "coreTranslationFillGaps";
       root: string;
       language: "zh" | "en";
+      expectedBaseRevision?: string;
     }
   | {
       type: "coreTranslationUpdateStale";
       root: string;
       language: "zh" | "en";
+      expectedBaseRevision?: string;
+    }
+  | {
+      type: "coreTranslationRetranslate";
+      root: string;
+      language: "zh" | "en";
+      scope: TranslationRetranslateScope;
+      /** 确认/发起时看到的 current：执行前复核，正文已推进则拒绝，
+       * 不得把旧确认冒充新原文的重译授权。 */
+      expectedBaseRevision: string;
     }
   | {
       type: "coreTranslationStop";
@@ -398,7 +416,14 @@ export type TranslationReadCommandResult = TranslationProjection;
 export type TranslationStartCommandResult =
   | {
       status: "skipped";
-      reason: "not-selected" | "same-language" | "already-generated" | "no-current" | "unknown-language" | "busy";
+      reason:
+        | "not-selected"
+        | "same-language"
+        | "already-generated"
+        | "no-current"
+        | "unknown-language"
+        | "busy"
+        | "revision-changed";
       projection: TranslationProjection | null;
     }
   | {
