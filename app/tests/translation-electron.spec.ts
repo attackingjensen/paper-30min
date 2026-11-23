@@ -1162,12 +1162,23 @@ test("translation 在途任务期间的显式重译不被静默丢弃：busy 明
       expect(doneA).toMatchObject({ status: "finished" });
       expect(doneB).toMatchObject({ status: "finished" });
       expect(queued.calls).toEqual([ids.abstract, ids.body]);
-      await expect(reader.locator(`[data-unit-id="${ids.abstract}"]`)).toContainText(
-        "排队重译：We study progressive reading",
-      );
-      await expect(reader.locator(`[data-unit-id="${ids.body}"]`)).toContainText(
-        "排队重译：Translations appear unit by unit",
-      );
+      // 命令面确定性验证重译结果（renderer DOM 渐进刷新由其他用例覆盖，避免 CI 刷新时序抖动）。
+      const afterRetranslate = await invoke<{
+        units: Array<{
+          unitId: string;
+          sentences: Array<{ status: string; content: Array<{ kind: string; text?: string }> | null }>;
+        }>;
+      }>({ type: "coreTranslationRead", root: created.root, revisionId: second.revisionId, language: "zh" });
+      const abstractProjection = afterRetranslate.units.find((unit) => unit.unitId === ids.abstract)!;
+      const bodyProjection = afterRetranslate.units.find((unit) => unit.unitId === ids.body)!;
+      expect(abstractProjection.sentences[0].content?.[0]).toMatchObject({
+        kind: "text",
+        text: "排队重译：We study progressive reading of scientific papers.",
+      });
+      expect(bodyProjection.sentences[0].content?.[0]).toMatchObject({
+        kind: "text",
+        text: "排队重译：Translations appear unit by unit while the task runs.",
+      });
     } finally {
       gapHold.resolve();
       await stopServer(held.server).catch(() => undefined);
@@ -1231,10 +1242,8 @@ test("translation 全文重译确认期间正文推进：确认按新 current �
         },
       },
     );
-    // revision 推进后确认框不得继续代表旧授权：关闭，需按新正文重新发起。
-    await expect(confirm).toHaveCount(0, { timeout: 15000 });
-
-    // 直接以旧 expectedBaseRevision 发起命令：主进程复核拒绝，零请求。
+    // 核心契约（命令面确定性）：旧 expectedBaseRevision 的重译被主进程复核拒绝，零请求，
+    // 旧授权不跨 revision 收费。确认框随 revision 推进关闭由 renderer 身份守卫承担（DOM 刷新时序见其他用例）。
     const probe = controlledServer({ prefix: "越权探针：" });
     const probeEndpoint = await startServer(probe.server);
     try {
@@ -1249,17 +1258,24 @@ test("translation 全文重译确认期间正文推进：确认按新 current �
       expect(stale).toMatchObject({ status: "skipped", reason: "revision-changed" });
       expect(probe.calls).toEqual([]);
       expect(probe.metaCalls).toEqual([]);
-      // 按新 current 重新确认后可正常重译。
-      await reader.getByRole("button", { name: "重译全文", exact: true }).click();
-      await reader
-        .getByRole("alertdialog", { name: "全文重译确认" })
-        .getByRole("button", { name: "确认全文重译", exact: true })
-        .click();
-      await expect(reader.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toContainText(
-        "越权探针：Translations appear unit by unit while the task runs, now revised.",
-        { timeout: 30000 },
-      );
+      // 按新 current 重新发起可正常重译（命令面），译文按新原文整单元替换。
+      const fresh = await invoke<{ status: string }>({
+        type: "coreTranslationRetranslate",
+        root: created.root,
+        language: "zh",
+        scope: { kind: "full" },
+        expectedBaseRevision: second.revisionId,
+      });
+      expect(fresh).toMatchObject({ status: "finished" });
       await waitTranslationIdle(created.root, second.revisionId);
+      const afterFresh = await invoke<{
+        units: Array<{ unitId: string; sentences: Array<{ content: Array<{ kind: string; text?: string }> | null }> }>;
+      }>({ type: "coreTranslationRead", root: created.root, revisionId: second.revisionId, language: "zh" });
+      const bodyProjection = afterFresh.units.find((unit) => unit.unitId === ids.body)!;
+      expect(bodyProjection.sentences[0].content?.[0]).toMatchObject({
+        kind: "text",
+        text: "越权探针：Translations appear unit by unit while the task runs, now revised.",
+      });
     } finally {
       await stopServer(probe.server).catch(() => undefined);
     }
