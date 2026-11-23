@@ -7,7 +7,7 @@ export const maximumUnitBytes = 2 * 1024 * 1024;
 
 /** 翻译协议版本事实：prompt 文本变化必须递增 promptVersion（SPEC §2.7）；
  * generator 记录与模型输入共用同一来源，避免两处字面量漂移。 */
-export const translationProtocolVersions = { promptVersion: 3, schemaVersion: 2 } as const;
+export const translationProtocolVersions = { promptVersion: 3, schemaVersion: 2, normalizationVersion: 1 } as const;
 const atomTokenPattern = /⟦atom:([^⟧]+)⟧/g;
 const htmlPattern = /<!--|<!doctype|<\?|<\/?[a-z][^>]*>/i;
 
@@ -83,6 +83,8 @@ export interface TranslationModelInput {
   targetLanguage: TranslationLanguage;
   promptVersion: typeof translationProtocolVersions.promptVersion;
   schemaVersion: typeof translationProtocolVersions.schemaVersion;
+  normalizationVersion: typeof translationProtocolVersions.normalizationVersion;
+  context?: CreateTranslationModelInputOptions["context"];
   maxTokens: number;
   estimatedInputTokens: number;
   systemPrompt: string;
@@ -140,6 +142,7 @@ export function createTranslationModelInput(options: CreateTranslationModelInput
     sourceLanguage: options.sourceLanguage,
     targetLanguage: options.targetLanguage,
     ...translationProtocolVersions,
+    ...(options.context === undefined ? {} : { context: options.context }),
     maxTokens: options.modelBudget.maxTokens,
     estimatedInputTokens,
     systemPrompt,
@@ -286,6 +289,7 @@ export interface TranslationMetaInput {
   targetLanguage: TranslationLanguage;
   promptVersion: typeof translationProtocolVersions.promptVersion;
   schemaVersion: typeof translationProtocolVersions.schemaVersion;
+  normalizationVersion: typeof translationProtocolVersions.normalizationVersion;
   maxTokens: number;
   estimatedInputTokens: number;
   systemPrompt: string;

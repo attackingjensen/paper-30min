@@ -775,3 +775,227 @@ test("generate 只请求 gap 元数据：ready 的论文标题不重译、不被
     await stopServer(server);
   }
 });
+
+test.describe("translation 模型响应缓存", () => {
+  const sentenceStatuses = (projection: { units: Array<{ sentences: Array<{ status: string }> }> }) =>
+    projection.units.flatMap((unit) => unit.sentences.map((sentence) => sentence.status));
+
+  test("完整合法响应写入缓存；手动补译命中零新增请求且投影一致", async () => {
+    const { tree } = englishTree(randomUUID());
+    const { created, revision } = await projectWithTree("缓存命中工程", tree);
+    const { server, calls } = controlledModelServer();
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const first = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(first.status).toBe("finished");
+      if (first.status !== "finished") throw new Error("任务未完成。");
+      expect(calls).toHaveLength(2);
+      const entries = await fs.readdir(path.join(created.root, ".paper30min", "cache", "translation"));
+      // 2 个正文单元＋1 个元数据请求（标题＋section）各一条完整合法缓存。
+      expect(entries.filter((entry) => entry.endsWith(".json"))).toHaveLength(3);
+      // 已提交译文清空后手动补译：全部命中缓存，零新增模型请求，译文与首轮一致。
+      await fs.rm(path.join(created.root, ".paper30min", "revisions", revision.revisionId, "translations"), {
+        recursive: true,
+        force: true,
+      });
+      const second = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: modelConfig(endpoint),
+        mode: "fill-gaps",
+      });
+      expect(second.status).toBe("finished");
+      if (second.status !== "finished") throw new Error("补译未完成。");
+      expect(calls).toHaveLength(2);
+      expect(sentenceStatuses(second.projection)).toEqual(["ready", "ready"]);
+      expect(second.projection.units).toEqual(first.projection.units);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("模型配置变化键隔离：换模型后不复用旧缓存，重新请求", async () => {
+    const { tree } = englishTree(randomUUID());
+    const { created, revision } = await projectWithTree("缓存键隔离工程", tree);
+    const { server, calls } = controlledModelServer();
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(calls).toHaveLength(2);
+      await fs.rm(path.join(created.root, ".paper30min", "revisions", revision.revisionId, "translations"), {
+        recursive: true,
+        force: true,
+      });
+      const otherConfig = modelConfig(endpoint);
+      otherConfig.models[0].model = "other-translate";
+      const second = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: otherConfig,
+        mode: "fill-gaps",
+      });
+      expect(second.status).toBe("finished");
+      expect(calls).toHaveLength(4);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("缓存损坏降级重新请求：已提交译文保持可读，缓存重建", async () => {
+    const { tree } = englishTree(randomUUID());
+    const { created, revision } = await projectWithTree("缓存损坏工程", tree);
+    const { server, calls } = controlledModelServer();
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const first = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(first.status).toBe("finished");
+      if (first.status !== "finished") throw new Error("任务未完成。");
+      expect(calls).toHaveLength(2);
+      const cacheDir = path.join(created.root, ".paper30min", "cache", "translation");
+      for (const entry of await fs.readdir(cacheDir)) await fs.writeFile(path.join(cacheDir, entry), "{broken");
+      // 损坏不影响已提交译文：离线读取仍 ready。
+      const offline = await readTranslationProjection(created.root, revision.revisionId, "zh");
+      expect(sentenceStatuses(offline)).toEqual(["ready", "ready"]);
+      // 清空已提交译文模拟缺口；损坏条目使补译重新请求并重建缓存。
+      await fs.rm(path.join(created.root, ".paper30min", "revisions", revision.revisionId, "translations"), {
+        recursive: true,
+        force: true,
+      });
+      const second = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: modelConfig(endpoint),
+        mode: "fill-gaps",
+      });
+      expect(second.status).toBe("finished");
+      expect(calls).toHaveLength(4);
+      // 重建后的缓存再次命中：清空译文后补译零新增请求。
+      await fs.rm(path.join(created.root, ".paper30min", "revisions", revision.revisionId, "translations"), {
+        recursive: true,
+        force: true,
+      });
+      const third = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: modelConfig(endpoint),
+        mode: "fill-gaps",
+      });
+      expect(third.status).toBe("finished");
+      expect(calls).toHaveLength(4);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("无效响应不写缓存：持续失败单元零缓存条目，成功单元与元数据正常缓存", async () => {
+    const { tree } = englishTree(randomUUID());
+    const { created } = await projectWithTree("无效响应缓存工程", tree);
+    const failedUnitId = Object.keys(tree.units)[0];
+    const { server, calls } = controlledModelServer({ failUnits: new Set([failedUnitId]) });
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const first = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(first.status).toBe("finished");
+      if (first.status !== "finished") throw new Error("任务未完成。");
+      expect(first.units.find((unit) => unit.unitId === failedUnitId)?.status).toBe("gap");
+      const entries = await fs.readdir(path.join(created.root, ".paper30min", "cache", "translation"));
+      // 失败单元（含自动补试）零缓存条目；成功单元＋元数据各一条。
+      expect(entries.filter((entry) => entry.endsWith(".json"))).toHaveLength(2);
+      expect(calls.filter((call) => call.unitId === failedUnitId)).toHaveLength(2);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("缓存不含凭据；凭据变化不影响命中与已提交译文", async () => {
+    const { tree } = englishTree(randomUUID());
+    const { created, revision } = await projectWithTree("缓存凭据工程", tree);
+    const { server, calls } = controlledModelServer();
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      const cacheDir = path.join(created.root, ".paper30min", "cache", "translation");
+      for (const entry of await fs.readdir(cacheDir)) {
+        const raw = await fs.readFile(path.join(cacheDir, entry), "utf8");
+        expect(raw).not.toContain("controlled-key");
+        expect(raw).not.toContain("Authorization");
+      }
+      await fs.rm(path.join(created.root, ".paper30min", "revisions", revision.revisionId, "translations"), {
+        recursive: true,
+        force: true,
+      });
+      const rotated = modelConfig(endpoint);
+      rotated.keys.default = "rotated-key";
+      const second = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: rotated,
+        mode: "fill-gaps",
+      });
+      expect(second.status).toBe("finished");
+      expect(calls).toHaveLength(2);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+
+  test("元数据响应缓存命中：标题/raw 重建零新增请求，损坏后重新请求", async () => {
+    const { created, revision } = await metaProject("元数据缓存工程");
+    const { server, calls } = metaModelServer();
+    const endpoint = await startServer(server);
+    process.env.PAPER30MIN_TEST_WINDOW = "hidden";
+    try {
+      const first = await runProjectTranslation({ root: created.root, language: "zh", config: modelConfig(endpoint) });
+      expect(first.status).toBe("finished");
+      if (first.status !== "finished") throw new Error("任务未完成。");
+      expect(calls.filter((call) => call.kind === "meta")).toHaveLength(1);
+      // 首轮论文标题已 ready：其投影作为缓存重建后的断言基准。
+      const firstTitle = first.projection.paperTitle;
+      expect(firstTitle).toMatchObject({ status: "ready", content: "译文：Progressive Reading" });
+      await fs.rm(path.join(created.root, ".paper30min", "revisions", revision.revisionId, "translations"), {
+        recursive: true,
+        force: true,
+      });
+      const second = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: modelConfig(endpoint),
+        mode: "fill-gaps",
+      });
+      expect(second.status).toBe("finished");
+      if (second.status !== "finished") throw new Error("补译未完成。");
+      // 元数据缓存命中：重建标题/section/raw 零新增 meta 请求。
+      expect(calls.filter((call) => call.kind === "meta")).toHaveLength(1);
+      expect(second.projection.paperTitle).toEqual(firstTitle);
+      expect(second.projection.rawBlocks?.[0]).toMatchObject({ status: "ready", content: "译文：Quoted source line." });
+      // 损坏全部缓存并清空译文：元数据重新请求（第二次），重建后投影一致。
+      const cacheDir = path.join(created.root, ".paper30min", "cache", "translation");
+      for (const entry of await fs.readdir(cacheDir)) await fs.writeFile(path.join(cacheDir, entry), "{broken");
+      await fs.rm(path.join(created.root, ".paper30min", "revisions", revision.revisionId, "translations"), {
+        recursive: true,
+        force: true,
+      });
+      const third = await runProjectTranslation({
+        root: created.root,
+        language: "zh",
+        config: modelConfig(endpoint),
+        mode: "fill-gaps",
+      });
+      expect(third.status).toBe("finished");
+      expect(calls.filter((call) => call.kind === "meta")).toHaveLength(2);
+    } finally {
+      delete process.env.PAPER30MIN_TEST_WINDOW;
+      await stopServer(server);
+    }
+  });
+});

@@ -297,6 +297,7 @@ test.describe("translation 缓存、凭据与机器配置边界", () => {
       model: "controlled-translate",
       promptVersion: 3,
       schemaVersion: 2,
+      normalizationVersion: 1,
     });
     void session.close();
     expect(() => createTranslationModelSession({ ...config, keys: {} })).toThrow(/API 密钥/);

@@ -9,7 +9,7 @@ import { streamSimple as responses } from "@earendil-works/pi-ai/api/openai-resp
 import { streamSimple as anthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { Agent, EnvHttpProxyAgent, ProxyAgent, fetch as httpFetch, type Dispatcher } from "undici";
 import type { ModelConfig } from "../agent-settings.js";
-import type { TranslationGenerator } from "../../shared/translation/contracts.js";
+import type { TranslationCacheGenerator } from "./response-cache.js";
 import {
   maximumUnitBytes,
   translationProtocolVersions,
@@ -45,7 +45,7 @@ function translationFixtureGate(baseUrl: string): boolean {
 }
 
 export interface TranslationModelSession {
-  generator: TranslationGenerator;
+  generator: TranslationCacheGenerator;
   generate: (input: TranslationModelInput | TranslationMetaInput, signal?: AbortSignal) => Promise<string>;
   close: () => Promise<void>;
 }
@@ -115,6 +115,7 @@ export function createTranslationModelSession(config: ModelConfig): TranslationM
       model: selected.model,
       promptVersion: translationProtocolVersions.promptVersion,
       schemaVersion: translationProtocolVersions.schemaVersion,
+      normalizationVersion: translationProtocolVersions.normalizationVersion,
     },
     generate: async (input, signal) => {
       signal?.throwIfAborted();

@@ -11,6 +11,11 @@ import {
   type TranslationModelInput,
 } from "./model-io.js";
 import { TranslationModelRequestError } from "./model-request.js";
+import {
+  translationCacheKey,
+  type TranslationCacheGenerator,
+  type TranslationResponseCache,
+} from "./response-cache.js";
 
 /** 失败分类（SPEC §6.4）：网络/限流/超时/鉴权/停止与输出、预算、提交分别记录。 */
 type TranslationFailureKind =
@@ -73,6 +78,9 @@ export interface TranslationTaskOptions {
   /** 每个新 fragment/unit 调度前复核 current 与取消状态；false 即停止调度。 */
   ensureCurrent?: () => Promise<boolean>;
   generate: (input: TranslationModelInput) => Promise<string>;
+  /** 可重建响应缓存（SPEC §9）：命中仍走同一校验，完整合法响应才写入；缺省不缓存。
+   * generator 提供 provider/model 与协议版本键成分（与提交事实同源）。 */
+  responseCache?: { cache: TranslationResponseCache; generator: TranslationCacheGenerator };
   onUnitReady?: (unit: TranslationUnitContent) => Promise<void>;
 }
 
@@ -140,6 +148,24 @@ export async function runTranslationTask(options: TranslationTaskOptions): Promi
     targetLanguage,
     context: options.context,
   };
+  // 响应缓存接线：命中不绕过 parse 校验；仅完整合法片段响应入缓存，失败/部分 unit 不写。
+  const generateFragment = async (input: TranslationModelInput, fragment: ReaderUnitContent) => {
+    const responseCache = options.responseCache;
+    const cached = responseCache
+      ? await responseCache.cache.read(
+          translationCacheKey({ generator: responseCache.generator, input, unit: fragment }),
+        )
+      : undefined;
+    if (cached !== undefined) return parseTranslationModelOutput(fragment, cached);
+    const raw = await options.generate(input);
+    const translated = parseTranslationModelOutput(fragment, raw);
+    if (responseCache)
+      await responseCache.cache.put(
+        translationCacheKey({ generator: responseCache.generator, input, unit: fragment }),
+        raw,
+      );
+    return translated;
+  };
   for (const sourceUnit of options.units) {
     const committed = options.committedSentences?.get(sourceUnit.unitId);
     if (
@@ -175,7 +201,7 @@ export async function runTranslationTask(options: TranslationTaskOptions): Promi
             if (options.signal?.aborted || (options.ensureCurrent && !(await options.ensureCurrent())))
               throw options.signal?.reason ?? new Error("翻译任务已停止调度。");
             const input = createTranslationModelInput({ ...requestOptions, unit: fragment });
-            const translated = parseTranslationModelOutput(fragment, await options.generate(input));
+            const translated = await generateFragment(input, fragment);
             sentences.push(...translated.sentences);
             assembledBytes += Buffer.byteLength(JSON.stringify(translated.sentences), "utf8");
             if (assembledBytes > maximumUnitBytes)
@@ -231,7 +257,7 @@ export async function runTranslationTask(options: TranslationTaskOptions): Promi
         if (options.signal?.aborted || (options.ensureCurrent && !(await options.ensureCurrent())))
           throw options.signal?.reason ?? new Error("翻译任务已停止调度。");
         const input = createTranslationModelInput({ ...requestOptions, unit: fragment });
-        const translated = parseTranslationModelOutput(fragment, await options.generate(input));
+        const translated = await generateFragment(input, fragment);
         sentences.push(...translated.sentences);
         // 每追加一个 fragment 即累计重组 unit 大小；超限立即停止后续片段。
         assembledBytes += Buffer.byteLength(JSON.stringify(translated.sentences), "utf8");

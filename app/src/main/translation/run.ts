@@ -33,6 +33,7 @@ import {
 } from "./store.js";
 import { createTranslationMetaInput, parseTranslationMetaOutput, type TranslationMetaSources } from "./model-io.js";
 import { runTranslationTask } from "./task.js";
+import { createTranslationResponseCache, translationCacheKey } from "./response-cache.js";
 
 /** 全部可读单元（正文、表格单元、图注、脚注、参考文献），按 blocks 阅读顺序。 */
 export function translationSourceUnits(tree: DocumentTree) {
@@ -280,6 +281,8 @@ async function execute(
     return { status: "skipped", reason: "already-generated", projection: projectionWithSource };
 
   const session = createTranslationModelSession(input.config);
+  // 可重建响应缓存（SPEC §9）：键含 provider/model 与协议版本；损坏/失败静默降级。
+  const responseCache = createTranslationResponseCache(root);
   const modelBudget = {
     contextWindow: selected.contextWindow,
     maxTokens: selected.maxTokens,
@@ -324,6 +327,7 @@ async function execute(
       ensureCurrent,
       // 部分提交：目标句之外的已提交 ready 句不重发；stale 句不属于 gap 任务目标。
       committedSentences: committed,
+      responseCache: { cache: responseCache, generator: session.generator },
       generate: async (modelInput: Parameters<typeof session.generate>[0]) => {
         task.controller.signal.throwIfAborted();
         return session.generate(modelInput, task.controller.signal);
@@ -357,10 +361,14 @@ async function execute(
           targetLanguage: input.language,
           sources: metaTargets,
         });
-        const parsed = parseTranslationMetaOutput(
-          metaTargets,
-          await session.generate(metaInput, task.controller.signal),
-        );
+        // 元数据缓存：命中仍走同一 schema/逐项校验；仅全部目标项合法的完整响应入缓存。
+        const metaCacheKey = translationCacheKey({ generator: session.generator, input: metaInput });
+        let metaRaw = await responseCache.read(metaCacheKey);
+        if (metaRaw === undefined) {
+          metaRaw = await session.generate(metaInput, task.controller.signal);
+        }
+        const parsed = parseTranslationMetaOutput(metaTargets, metaRaw);
+        if (parsed.failures.length === 0) await responseCache.put(metaCacheKey, metaRaw);
         if (parsed.failures.length > 0) metaFailure = `标题/raw 元数据部分失败：${parsed.failures.join("；")}`;
         const hasValid =
           parsed.content.paperTitle !== null ||

@@ -142,7 +142,7 @@ const sidecar = (root: string, revisionId: string, language: string) =>
 
 test.describe("translation 标题与 raw 模型 I/O", () => {
   test("协议版本随标题/raw 扩展递增，generator 与模型输入同源", () => {
-    expect(translationProtocolVersions).toEqual({ promptVersion: 3, schemaVersion: 2 });
+    expect(translationProtocolVersions).toEqual({ promptVersion: 3, schemaVersion: 2, normalizationVersion: 1 });
   });
 
   test("meta 输入只含论文标题、有标题 section 与 raw 安全文本，无标题 section 不进入请求", () => {
