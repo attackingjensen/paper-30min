@@ -48,6 +48,8 @@ const GeneratorSchema = Type.Object(
     model: Type.String({ minLength: 1 }),
     promptVersion: Type.Integer({ minimum: 1 }),
     schemaVersion: Type.Integer({ minimum: 1 }),
+    // crd.7 起记录规范化版本；旧侧车缺省仍合法（读取回退不影响既有译文）。
+    normalizationVersion: Type.Optional(Type.Integer({ minimum: 1 })),
   },
   { additionalProperties: false },
 );

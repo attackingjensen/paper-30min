@@ -25,6 +25,8 @@ export interface TranslationGenerator {
   model: string;
   promptVersion: number;
   schemaVersion: number;
+  /** crd.7 起记录的规范化版本；旧侧车缺省仍合法。 */
+  normalizationVersion?: number;
 }
 
 /** 提交时原句引用的 atom 完整快照：stale 展示与 quote 只从此重建，

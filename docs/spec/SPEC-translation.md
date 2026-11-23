@@ -103,7 +103,7 @@ app/tests/                   转换、恢复、stale 和真实 Electron 回归
 - 已提交译文按句保留实际 generator、prompt／schema 版本、原句摘要和译文摘要；句级 merge 只替换目标句事实，kept 句保留原事实。原句摘要统一纳入按出现顺序的全部引用 atom 内容（atom-only 修正也判 stale）。模型 API key、代理和机器配置不得写入。
 - 已提交句保留译文引用的旧 atom 完整快照（可选字段，旧格式缺省时回退当前树，仅适用于未变 atom）；stale 展示与 quote 只从快照重建，不依赖当前树仍存在同 ID atom。
 - 旧原 revision 清理前，先把可继承译文迁移到新 current 的侧车。不承诺完整翻译历史，但 stale 展示所需的旧译文与 quote 必须保留。
-- `.paper30min/cache/` 中可重建的模型响应缓存不是当前译文权威，不能与已提交 index 混用。
+- `.paper30min/cache/translation/<sha256>.json` 是可重建的模型响应缓存，不是当前译文权威，不能与已提交 index 混用。条目键覆盖 §9.2 全部成分（含 atom 完整逻辑内容与 unit/sentence 身份）；只保存完整合法响应文本，损坏、键不匹配或超预算条目按 miss 降级并删除；缓存读写失败静默降级重新请求，不含凭据。
 
 ## Code Style
 

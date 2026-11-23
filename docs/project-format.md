@@ -14,6 +14,7 @@
   paper/revisions/<revisionId>/ # 已发布受管正文：document.json、source-base.json、tombstones.json、changeset.json、assets/
   sources/<sourceSnapshotId>/   # 不可变来源快照与 snapshot.json（逐文件 SHA-256／大小／可选 MIME）
   .paper30min/revisions/        # revision 元数据、核验侧车 verification.json 与译文侧车 translations/<language>/
+  .paper30min/cache/translation/ # 可重建翻译模型响应缓存（非译文权威；损坏降级重新请求，不含凭据）
   .paper30min/imports/          # 首次导入恢复记录
   .paper30min/staging/          # 尚未发布的受管候选
   .paper30min/update-candidates/<revisionId>/ # arXiv 更新候选：candidate.json、五棵树与 changeset/tombstones、assets/（发布重载同一字节）
@@ -68,7 +69,8 @@ PDF 阅读位置及 Markdown 视图、位置保存在工程内 `.paper30min-read
 - 新核经 `core*` 命令接入生产 preload、IPC 与 Node utility process（命令面见 [app/README.md](../app/README.md)）。`coreCommit` 是低层容器协议：tombstones 累积与退役语义由 document-core 合并命令层保证，直接调用方自行维护。
 - arXiv 更新编排（[SPEC-arxiv-import](spec/SPEC-arxiv-import.md) §8）：检查新版只读 abs 比较固定版本，不下载正文；更新候选要求严格更高版本，同版重取与离线重新转换都形成 document-core 三方合并候选，确认发布前 current 不变。同版重取字节一致复用快照，不一致新建不可变快照；离线重转换不访问网络、不改写快照。候选身份按快照、基线与转换器版本确定性派生，构建时整体落盘于 `.paper30min/update-candidates/`（树与资产读取执行 64 MiB／32 MiB／512 MiB 硬预算），发布按用户确认的候选身份重载同一份存储字节（不重新转换），复核 baseRevision、来源 base ID 与有效固定版本，冲突逐项显式解决。PDF 回退后的 current（pdf-parse 来源）沿 `parentSourceSnapshotId` 回溯父级 **PDF** 快照的 arXiv 事实（baseId/固定版本）参与检查与更新；父级类型不符、缺失或本地 PDF 无谱系时如实拒绝，不猜测身份。
 - 译文是原 revision 的受管派生侧车 `.paper30min/revisions/<revisionId>/translations/<language>/`（[SPEC-translation](spec/SPEC-translation.md) §4–§5）：`index.json` 是此语言当前投影的唯一指针（baseRevision、translationRevision、逐句内容摘要与句级 generator 事实），`units/<unitId>.<generation>.json` 以每代不可变版本化文件名保存完整通过校验的单元译文（含句级旧 atom 快照），`task.json` 保存任务状态与缺口诊断（pending/failed 不冒充 ready）。单元文件先完整写入并核验，next index 引用新文件，再以同目录临时文件＋替换原子推进 index；index 推进失败或崩溃时旧 index 仍指向旧文件，旧译文持续可读，新文件只是未引用残留（延迟清理）。未引用文件不是当前译文。ready/gap/stale 由读取路径对照当前原文树推导（原句摘要纳入引用 atom 内容），不回写单元文件；stale 展示与 quote 只从提交时 atom 快照重建；离线重开只读已提交 index。译文不写入已发布正文、不登记进工程清单，不含 API key、代理或机器配置；单单元文件 2 MiB、单语言逻辑内容 64 MiB 硬预算。
-- 标题/raw 元数据译文（[SPEC-translation](spec/SPEC-translation.md) §3.4/§3.7，crd.6）：论文标题作为 `index.json` 的 `paperTitle` 元数据（不制造新正文 unit）；有标题 section 的标题与 raw block 安全文本译文存于 `sections/<sectionId>.<generation>.json`（每代不可变版本化文件名，与单元同一原子推进口径）。无标题 section 不落盘、不得由模型命名；raw 只存文本投影，不存 HTML。标题/raw 的 ready/gap/stale 同样由读取路径对照当前树与来源标题推导：标题 changed 仅标题 stale，正文句不受影响；迁移按 changeset 继承 section 文件与论文标题。协议版本 promptVersion 3／schemaVersion 2。
+- 标题/raw 元数据译文（[SPEC-translation](spec/SPEC-translation.md) §3.4/§3.7，crd.6）：论文标题作为 `index.json` 的 `paperTitle` 元数据（不制造新正文 unit）；有标题 section 的标题与 raw block 安全文本译文存于 `sections/<sectionId>.<generation>.json`（每代不可变版本化文件名，与单元同一原子推进口径）。无标题 section 不落盘、不得由模型命名；raw 只存文本投影，不存 HTML。标题/raw 的 ready/gap/stale 同样由读取路径对照当前树与来源标题推导：标题 changed 仅标题 stale，正文句不受影响；迁移按 changeset 继承 section 文件与论文标题。协议版本 promptVersion 3／schemaVersion 2／normalizationVersion 1。
+- 模型响应缓存（[SPEC-translation](spec/SPEC-translation.md) §9，crd.7）：`.paper30min/cache/translation/<sha256>.json` 保存完整合法的单元/元数据响应文本，是可重建优化而非译文权威。键覆盖原句与 atom 完整逻辑内容、unit/sentence 身份、上下文、源/目标语言、provider/model 与 prompt/schema/规范化版本；命中仍走同一句子/atom/schema 校验后才提交。无效、部分或超预算响应不写入；损坏或键不匹配条目按 miss 删除并重新请求；读写失败静默降级，不影响已提交译文。缓存不含 API key、Authorization 或代理凭据；删除整个缓存目录不改变任何已提交译文。
 
 ## PDF 阅读与来源信息
 
