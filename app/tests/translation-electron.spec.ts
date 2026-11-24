@@ -704,6 +704,104 @@ test("translation 跨旧译文与最新原文对照区的选区不产出译文�
   }
 });
 
+test("translation stale 对照区展开态跨阅读器重载保留", async () => {
+  const { created, ids, tree } = await englishProject("对照区持久工程");
+  const { server } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await waitTranslationIdle(
+      created.root,
+      (await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root: created.root })).currentRevision!.revisionId,
+    );
+
+    // 修正 abstract 发布新 current：仅 abstract 句 stale。
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    const unit = reader.locator(`[data-unit-id="${ids.abstract}"]`);
+    await unit.getByRole("button", { name: /修正单元/ }).click();
+    const host = reader.locator(".correction-host");
+    const original = unitEditText(tree, ids.abstract);
+    await host.locator(".correction-text").fill(original.replace("progressive reading", "progressive close reading"));
+    await host.getByRole("button", { name: "预览 changeset" }).click();
+    await expect(host.locator(".correction-preview")).toBeVisible();
+    await host.getByRole("button", { name: "确认发布新 revision" }).click();
+    await expect(host).toHaveCount(0);
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
+
+    // 展开对照区后强制真实重载链路（project:changed → epoch → 全量重读）。
+    await abstractSentence.getByRole("button", { name: "查看最新原文" }).click();
+    const comparison = abstractSentence.locator(".reader-stale-source");
+    await expect(comparison).toContainText("progressive close reading");
+    await page.getByRole("button", { name: "刷新工程", exact: true }).click();
+    await expect(page.locator(".full-reader")).toBeVisible({ timeout: 15000 });
+    const reloaded = page.locator(".full-reader");
+    const reloadedSentence = reloaded.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    await expect(reloadedSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
+    // 展开态是用户视图状态：重载后对照区仍展开，可正常收起。
+    await expect(reloadedSentence.locator(".reader-stale-source")).toContainText("progressive close reading");
+    await reloadedSentence.getByRole("button", { name: "收起原文" }).click();
+    await expect(reloadedSentence.locator(".reader-stale-source")).toHaveCount(0);
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
+test("translation 纯 stale 无 gap：切回语言不空转重发，零新增模型请求", async () => {
+  const { created, ids, tree } = await englishProject("纯stale工程");
+  const { server, calls, metaCalls } = controlledServer({});
+  const endpoint = await startServer(server);
+  try {
+    await configureModel(endpoint);
+    await openFolder(created.root);
+    const reader = page.locator(".full-reader");
+    await expect(reader).toBeVisible();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    const abstractSentence = reader.locator(`[data-sentence-id="${ids.abstractSentence}"]`);
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "ready", { timeout: 30000 });
+    await expect(reader.locator(`[data-sentence-id="${ids.bodySentence}"]`)).toHaveAttribute(
+      "data-translation-status",
+      "ready",
+    );
+    await waitTranslationIdle(
+      created.root,
+      (await invoke<ProjectCoreSnapshot>({ type: "coreOpen", root: created.root })).currentRevision!.revisionId,
+    );
+
+    // 修正 abstract 发布新 current：仅 abstract 句 stale，无 gap。
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    const unit = reader.locator(`[data-unit-id="${ids.abstract}"]`);
+    await unit.getByRole("button", { name: /修正单元/ }).click();
+    const host = reader.locator(".correction-host");
+    const original = unitEditText(tree, ids.abstract);
+    await host.locator(".correction-text").fill(original.replace("progressive reading", "progressive close reading"));
+    await host.getByRole("button", { name: "预览 changeset" }).click();
+    await expect(host.locator(".correction-preview")).toBeVisible();
+    await host.getByRole("button", { name: "确认发布新 revision" }).click();
+    await expect(host).toHaveCount(0);
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
+    const callsBefore = calls.length;
+    const metaCallsBefore = metaCalls.length;
+
+    // 语言往返：stale 不是 gap，不触发自动重译，也不空转重发 start。
+    await reader.getByRole("button", { name: "原文", exact: true }).click();
+    await reader.getByRole("button", { name: "中文", exact: true }).click();
+    await expect(abstractSentence).toHaveAttribute("data-translation-status", "stale", { timeout: 15000 });
+    expect((await reader.locator(".reader-translation-status").allTextContents()).join(" ")).not.toContain("正在生成");
+    expect(calls.length).toBe(callsBefore);
+    expect(metaCalls.length).toBe(metaCallsBefore);
+  } finally {
+    await stopServer(server).catch(() => undefined);
+  }
+});
+
 test("translation 离线重开 ready＋stale＋gap 混合投影：各状态可读，gap 不触发恢复请求", async () => {
   const { created, ids, tree, revision } = await englishProject("混合离线工程");
   const { server } = controlledServer({ failUnit: ids.body });

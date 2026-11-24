@@ -24,7 +24,7 @@ import { SourcePanel, sourcePanelFacts } from "./SourcePanel";
 import { CorrectionHost } from "./CorrectionHost";
 import { ConflictHost } from "./ConflictHost";
 import { TranslationControls } from "./TranslationControls";
-import { UnitBody } from "./ReaderSentence";
+import { StaleExpansionProvider, UnitBody, type StaleExpansionStore } from "./ReaderSentence";
 import { Button } from "../ui/Button";
 import { EmptyState, InlineMessage } from "../ui/Feedback";
 import type { ArxivUpdateCandidateCommandResult, ArxivUpdateCheckCommandResult } from "../../shared/contracts";
@@ -418,6 +418,22 @@ export function FullReader({
   // 全文重译单独确认（SPEC §8.4）：确认前不发起命令；取消不产生请求。
   const [confirmRetranslateFull, setConfirmRetranslateFull] = useState(false);
   const translationRootRef = useRef<string | null>(null);
+  // stale 对照区展开态（paper-30min-70v）：按 sentenceId 存续，工程切换清空；
+  // project:changed 引发的全量重挂载不收起用户展开的对照区。toggle 触发重渲染。
+  const staleExpandedRef = useRef<Set<string>>(new Set());
+  const [, bumpStaleExpansion] = useState(0);
+  const staleExpansion = useMemo<StaleExpansionStore>(
+    () => ({
+      has: (sentenceId) => staleExpandedRef.current.has(sentenceId),
+      toggle: (sentenceId) => {
+        const expanded = staleExpandedRef.current;
+        if (expanded.has(sentenceId)) expanded.delete(sentenceId);
+        else expanded.add(sentenceId);
+        bumpStaleExpansion((value) => value + 1);
+      },
+    }),
+    [],
+  );
   const requestRef = useRef(0);
   const articleRef = useRef<HTMLElement | null>(null);
   // 恢复请求代际：用户滚动即失效，迟到布局结果不得覆盖新位置。
@@ -460,6 +476,7 @@ export function FullReader({
       setTranslation(null);
       setLanguage(null);
       setTranslationStatus("");
+      staleExpandedRef.current.clear();
     }
     (async () => {
       let core: ProjectCoreSnapshot;
@@ -1170,6 +1187,26 @@ export function FullReader({
         setTranslationStatus("");
         return;
       }
+      // 纯 stale（无 gap）：start 只处理 gap，重发只会 already-generated 空转并
+      // 引发读盘/布局抖动（paper-30min-70v）。stale 更新走显式「更新过期译文」。
+      // gap 判定与 translationCounts 同口径：未提交句即 gap（含不在 index 的单元）。
+      const statusByUnit = new Map(
+        existing.units.map((unit) => [
+          unit.unitId,
+          new Map(unit.sentences.map((sentence) => [sentence.sentenceId, sentence.status])),
+        ]),
+      );
+      const hasGap =
+        metaStatuses.some((status) => status === "gap") ||
+        sourceUnits.some((unit) =>
+          unit.sentences.some(
+            (sentence) => (statusByUnit.get(unit.unitId)?.get(sentence.sentenceId) ?? "gap") === "gap",
+          ),
+        );
+      if (!hasGap) {
+        setTranslationStatus("");
+        return;
+      }
       setTranslationStatus(`正在生成${target === "zh" ? "中文" : "英文"}译文（可能产生模型费用）…`);
       const started = await desktop.invoke<TranslationStartCommandResult>({
         type: "coreTranslationStart",
@@ -1409,208 +1446,212 @@ export function FullReader({
     return counts;
   })();
   return (
-    <article
-      className="full-reader"
-      data-revision-id={state.revisionId}
-      data-language-view={language ?? "source"}
-      ref={articleRef}
-      onMouseUp={refreshSelection}
-      onKeyUp={refreshSelection}
-    >
-      <header className="reader-header">
-        <h1 data-paper-title>
-          {activeTranslation?.paperTitle && activeTranslation.paperTitle.status !== "gap"
-            ? activeTranslation.paperTitle.content
-            : (facts.title ?? "未命名论文")}
+    <StaleExpansionProvider value={staleExpansion}>
+      <article
+        className="full-reader"
+        data-revision-id={state.revisionId}
+        data-language-view={language ?? "source"}
+        ref={articleRef}
+        onMouseUp={refreshSelection}
+        onKeyUp={refreshSelection}
+      >
+        <header className="reader-header">
+          <h1 data-paper-title>
+            {activeTranslation?.paperTitle && activeTranslation.paperTitle.status !== "gap"
+              ? activeTranslation.paperTitle.content
+              : (facts.title ?? "未命名论文")}
+            {activeTranslation?.paperTitle?.status === "stale" && (
+              <span className="reader-translation-note stale">已过期</span>
+            )}
+          </h1>
           {activeTranslation?.paperTitle?.status === "stale" && (
-            <span className="reader-translation-note stale">已过期</span>
+            <p className="reader-stale-source" data-paper-title-source>
+              最新原文：{activeTranslation.paperTitle.source}
+            </p>
           )}
-        </h1>
-        {activeTranslation?.paperTitle?.status === "stale" && (
-          <p className="reader-stale-source" data-paper-title-source>
-            最新原文：{activeTranslation.paperTitle.source}
-          </p>
-        )}
-        {facts.authors.length > 0 && <p className="reader-authors">{facts.authors.join("、")}</p>}
-        {facts.canonicalId && <p className="reader-source muted">arXiv {facts.canonicalId}</p>}
-        <Button className="reader-source-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen(!panelOpen)}>
-          来源与诊断{diagnostics.length > 0 ? `（${diagnostics.length} 条正文诊断）` : ""}
-        </Button>
-        {facts.canonicalId && (
-          <Button className="reader-source-toggle" disabled={updateBusy} onClick={() => void checkSourceUpdate()}>
-            检查来源更新
+          {facts.authors.length > 0 && <p className="reader-authors">{facts.authors.join("、")}</p>}
+          {facts.canonicalId && <p className="reader-source muted">arXiv {facts.canonicalId}</p>}
+          <Button className="reader-source-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen(!panelOpen)}>
+            来源与诊断{diagnostics.length > 0 ? `（${diagnostics.length} 条正文诊断）` : ""}
           </Button>
-        )}
-        {updateStatus && <InlineMessage className="reader-update-status">{updateStatus}</InlineMessage>}
-        <TranslationControls
-          language={language}
-          busy={translationBusy}
-          status={translationStatus}
-          gaps={translationCounts.gaps}
-          stale={translationCounts.stale}
-          hasProjection={translation !== null}
-          confirmingFullRetranslate={
-            confirmRetranslateFull && state !== null && translation?.baseRevision === state.revisionId
-          }
-          onSwitch={(target) => void switchLanguage(target)}
-          onAction={(action) => void runTranslationAction({ kind: action })}
-          onRetranslateFull={() => setConfirmRetranslateFull(true)}
-          onConfirmFullRetranslate={() => {
-            setConfirmRetranslateFull(false);
-            void runTranslationAction({ kind: "retranslate", scope: { kind: "full" } });
-          }}
-          onCancelFullRetranslate={() => setConfirmRetranslateFull(false)}
-          onStop={() => void stopTranslation()}
-        />
-      </header>
-      {panelOpen && (
-        <SourcePanel
-          facts={sourcePanelFacts(state.snapshot, state.context.revision)}
-          snapshotWarnings={state.snapshotWarnings}
-          revisionWarnings={(() => {
-            const meta = state.context.revision.arxiv ?? state.context.revision.pdfParse;
-            return meta !== null && typeof meta === "object"
-              ? readDiagnosticArray((meta as Record<string, unknown>).warnings)
-              : [];
-          })()}
-          diagnostics={diagnostics}
-          verification={
-            verificationSummary && {
-              counts: verificationSummary.counts,
-              records: state.verification,
-            }
-          }
-          verificationError={state.verificationError}
-          onLocate={locateBlock}
-        />
-      )}
-      {candidate && (
-        <ConflictHost
-          root={root}
-          candidate={candidate}
-          currentTree={state.tree}
-          onCandidateChange={setCandidate}
-          onClose={() => setCandidate(null)}
-          onPublished={() => {
-            setCandidate(null);
-            setLocalEpoch((value) => value + 1);
-          }}
-        />
-      )}
-      {correctingUnit && (
-        <CorrectionHost
-          key={`${state.revisionId}:${correctingUnit}`}
-          root={root}
-          tab="paper"
-          tree={state.tree}
-          baseRevision={state.revisionId}
-          unitId={correctingUnit}
-          onClose={() => setCorrectingUnit(null)}
-          onPublished={() => {
-            setCorrectingUnit(null);
-            setLocalEpoch((value) => value + 1);
-          }}
-        />
-      )}
-      {notice && (
-        <InlineMessage variant="warning" className="reader-position-notice">
-          <p>{notice.text}</p>
-          {notice.excerpt && <blockquote className="reader-position-excerpt">{notice.excerpt}</blockquote>}
-          <Button onClick={() => setNotice(null)}>知道了</Button>
-        </InlineMessage>
-      )}
-      {projection.items.map((item, index) => {
-        switch (item.kind) {
-          case "section": {
-            if (!item.title) return null;
-            const Level = (item.depth <= 5 ? `h${item.depth + 1}` : "h6") as "h2" | "h3" | "h4" | "h5" | "h6";
-            const sectionTranslation = activeTranslation?.sections?.find((entry) => entry.sectionId === item.sectionId);
-            return (
-              <Level key={`section-${item.sectionId}`} data-section-id={item.sectionId}>
-                {sectionTranslation && sectionTranslation.status !== "gap" ? sectionTranslation.content : item.title}
-                {sectionTranslation?.status === "stale" && (
-                  <span className="reader-translation-note stale">已过期</span>
-                )}
-                {sectionTranslation?.status === "stale" && (
-                  <span className="reader-stale-source">最新原文：{sectionTranslation.source}</span>
-                )}
-              </Level>
-            );
-          }
-          case "unit":
-            return (
-              <UnitView
-                key={item.blockId}
-                item={item}
-                onCorrect={language === null ? (unitId) => setCorrectingUnit(unitId) : undefined}
-                onNavigate={navigateUnit}
-                translation={translatedUnit?.(item.unitId)}
-                onRetranslate={
-                  language !== null
-                    ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
-                    : undefined
-                }
-              />
-            );
-          case "formula":
-            return <FormulaView key={item.blockId} item={item} />;
-          case "figure":
-            return (
-              <FigureView
-                key={`${state.revisionId}-${item.blockId}-${index}`}
-                item={item}
-                root={root}
-                revisionPath={revisionPath}
-                onNavigate={navigateUnit}
-                translatedUnit={translatedUnit}
-                onRetranslate={
-                  language !== null
-                    ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
-                    : undefined
-                }
-              />
-            );
-          case "table":
-            return (
-              <TableView
-                key={item.blockId}
-                item={item}
-                onNavigate={navigateUnit}
-                translatedUnit={translatedUnit}
-                onRetranslate={
-                  language !== null
-                    ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
-                    : undefined
-                }
-              />
-            );
-          case "raw":
-            return (
-              <RawView
-                key={item.blockId}
-                item={item}
-                translation={activeTranslation?.rawBlocks?.find((entry) => entry.blockId === item.blockId)}
-              />
-            );
-        }
-      })}
-      {toolbar && (
-        <div
-          className="reader-selection-toolbar"
-          role="toolbar"
-          aria-label="选区操作"
-          style={{ left: toolbar.x, top: toolbar.y }}
-          onMouseDown={(event) => event.preventDefault()}
-        >
-          {toolbar.degraded && (
-            <span className="reader-selection-degraded" role="note">
-              含不可精确映射内容
-            </span>
+          {facts.canonicalId && (
+            <Button className="reader-source-toggle" disabled={updateBusy} onClick={() => void checkSourceUpdate()}>
+              检查来源更新
+            </Button>
           )}
-          <Button onClick={() => ask("解释")}>解释</Button>
-          <Button onClick={() => ask("提问")}>提问</Button>
-        </div>
-      )}
-    </article>
+          {updateStatus && <InlineMessage className="reader-update-status">{updateStatus}</InlineMessage>}
+          <TranslationControls
+            language={language}
+            busy={translationBusy}
+            status={translationStatus}
+            gaps={translationCounts.gaps}
+            stale={translationCounts.stale}
+            hasProjection={translation !== null}
+            confirmingFullRetranslate={
+              confirmRetranslateFull && state !== null && translation?.baseRevision === state.revisionId
+            }
+            onSwitch={(target) => void switchLanguage(target)}
+            onAction={(action) => void runTranslationAction({ kind: action })}
+            onRetranslateFull={() => setConfirmRetranslateFull(true)}
+            onConfirmFullRetranslate={() => {
+              setConfirmRetranslateFull(false);
+              void runTranslationAction({ kind: "retranslate", scope: { kind: "full" } });
+            }}
+            onCancelFullRetranslate={() => setConfirmRetranslateFull(false)}
+            onStop={() => void stopTranslation()}
+          />
+        </header>
+        {panelOpen && (
+          <SourcePanel
+            facts={sourcePanelFacts(state.snapshot, state.context.revision)}
+            snapshotWarnings={state.snapshotWarnings}
+            revisionWarnings={(() => {
+              const meta = state.context.revision.arxiv ?? state.context.revision.pdfParse;
+              return meta !== null && typeof meta === "object"
+                ? readDiagnosticArray((meta as Record<string, unknown>).warnings)
+                : [];
+            })()}
+            diagnostics={diagnostics}
+            verification={
+              verificationSummary && {
+                counts: verificationSummary.counts,
+                records: state.verification,
+              }
+            }
+            verificationError={state.verificationError}
+            onLocate={locateBlock}
+          />
+        )}
+        {candidate && (
+          <ConflictHost
+            root={root}
+            candidate={candidate}
+            currentTree={state.tree}
+            onCandidateChange={setCandidate}
+            onClose={() => setCandidate(null)}
+            onPublished={() => {
+              setCandidate(null);
+              setLocalEpoch((value) => value + 1);
+            }}
+          />
+        )}
+        {correctingUnit && (
+          <CorrectionHost
+            key={`${state.revisionId}:${correctingUnit}`}
+            root={root}
+            tab="paper"
+            tree={state.tree}
+            baseRevision={state.revisionId}
+            unitId={correctingUnit}
+            onClose={() => setCorrectingUnit(null)}
+            onPublished={() => {
+              setCorrectingUnit(null);
+              setLocalEpoch((value) => value + 1);
+            }}
+          />
+        )}
+        {notice && (
+          <InlineMessage variant="warning" className="reader-position-notice">
+            <p>{notice.text}</p>
+            {notice.excerpt && <blockquote className="reader-position-excerpt">{notice.excerpt}</blockquote>}
+            <Button onClick={() => setNotice(null)}>知道了</Button>
+          </InlineMessage>
+        )}
+        {projection.items.map((item, index) => {
+          switch (item.kind) {
+            case "section": {
+              if (!item.title) return null;
+              const Level = (item.depth <= 5 ? `h${item.depth + 1}` : "h6") as "h2" | "h3" | "h4" | "h5" | "h6";
+              const sectionTranslation = activeTranslation?.sections?.find(
+                (entry) => entry.sectionId === item.sectionId,
+              );
+              return (
+                <Level key={`section-${item.sectionId}`} data-section-id={item.sectionId}>
+                  {sectionTranslation && sectionTranslation.status !== "gap" ? sectionTranslation.content : item.title}
+                  {sectionTranslation?.status === "stale" && (
+                    <span className="reader-translation-note stale">已过期</span>
+                  )}
+                  {sectionTranslation?.status === "stale" && (
+                    <span className="reader-stale-source">最新原文：{sectionTranslation.source}</span>
+                  )}
+                </Level>
+              );
+            }
+            case "unit":
+              return (
+                <UnitView
+                  key={item.blockId}
+                  item={item}
+                  onCorrect={language === null ? (unitId) => setCorrectingUnit(unitId) : undefined}
+                  onNavigate={navigateUnit}
+                  translation={translatedUnit?.(item.unitId)}
+                  onRetranslate={
+                    language !== null
+                      ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
+                      : undefined
+                  }
+                />
+              );
+            case "formula":
+              return <FormulaView key={item.blockId} item={item} />;
+            case "figure":
+              return (
+                <FigureView
+                  key={`${state.revisionId}-${item.blockId}-${index}`}
+                  item={item}
+                  root={root}
+                  revisionPath={revisionPath}
+                  onNavigate={navigateUnit}
+                  translatedUnit={translatedUnit}
+                  onRetranslate={
+                    language !== null
+                      ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
+                      : undefined
+                  }
+                />
+              );
+            case "table":
+              return (
+                <TableView
+                  key={item.blockId}
+                  item={item}
+                  onNavigate={navigateUnit}
+                  translatedUnit={translatedUnit}
+                  onRetranslate={
+                    language !== null
+                      ? (unitId) => void runTranslationAction({ kind: "retranslate", scope: { kind: "unit", unitId } })
+                      : undefined
+                  }
+                />
+              );
+            case "raw":
+              return (
+                <RawView
+                  key={item.blockId}
+                  item={item}
+                  translation={activeTranslation?.rawBlocks?.find((entry) => entry.blockId === item.blockId)}
+                />
+              );
+          }
+        })}
+        {toolbar && (
+          <div
+            className="reader-selection-toolbar"
+            role="toolbar"
+            aria-label="选区操作"
+            style={{ left: toolbar.x, top: toolbar.y }}
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            {toolbar.degraded && (
+              <span className="reader-selection-degraded" role="note">
+                含不可精确映射内容
+              </span>
+            )}
+            <Button onClick={() => ask("解释")}>解释</Button>
+            <Button onClick={() => ask("提问")}>提问</Button>
+          </div>
+        )}
+      </article>
+    </StaleExpansionProvider>
   );
 }
