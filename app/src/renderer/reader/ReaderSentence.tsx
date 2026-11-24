@@ -97,7 +97,7 @@ function SentenceBody({
               type="button"
               className="reader-stale-source-toggle"
               aria-expanded={showSource}
-              onClick={() => setShowSource((value) => !value)}
+              onClick={() => (expansion ? expansion.toggle(sentence.sentenceId) : setLocalExpanded((value) => !value))}
             >
               {showSource ? "收起原文" : "查看最新原文"}
             </button>
