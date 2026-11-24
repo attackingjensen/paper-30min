@@ -134,16 +134,7 @@ test("page-crop 像素预算超限的单个请求降级为 warning，不拖垮�
   expect(huge.warnings[0].sourceAlias).toBe("page-1/big");
 });
 
-test("page-crop 相同区域去重：同页同 bbox 只登记一份内容寻址资产", async () => {
-  const result = await cropPdfPageRegions({
-    pdf: inkPdf(),
-    requests: [request(), request({ key: "page-1/b2" })],
-  });
-  expect(result.assets).toHaveLength(1);
-  expect(result.warnings).toEqual([]);
-});
-
-test("page-crop 同区域别名共享资产：assetByKey 覆盖每个块别名", async () => {
+test("page-crop 同区域去重且别名共享资产：同页同 bbox 只登记一份，assetByKey 覆盖每个块别名", async () => {
   const result = await cropPdfPageRegions({
     pdf: inkPdf(),
     requests: [request(), request({ key: "page-1/b2" })],

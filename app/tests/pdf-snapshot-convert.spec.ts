@@ -1500,7 +1500,7 @@ test("pdf-import 同页两视觉块同 bbox：二者引用同一 revision 裁剪
   expect(warningCodes(fixture.result.warnings)).not.toContain("pdf-convert-figure-missing");
 });
 
-test("pdf-import 预处理页视觉块只保留一条 warning，不产生无谓裁切", async () => {
+test("pdf-import 预处理页视觉块每个别名各留一条 warning，不产生无谓裁切", async () => {
   await useInkPdf();
   const raw = cropVisualResponse();
   const rows = raw

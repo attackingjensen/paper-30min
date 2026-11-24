@@ -33,3 +33,6 @@ Thumbs.db
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+# bv（beads TUI）本地产物：UI 展开状态与只读导出，不入库
+.beads/tree-state.json
+.beads/issues.jsonl
