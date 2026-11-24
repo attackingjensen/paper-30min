@@ -1,11 +1,20 @@
 // 句级正文渲染（SPEC-reader §2 / SPEC-translation §5）：原文、译文 ready/gap/stale
 // 与 atom 的展示组件。纯展示：投影与选区权威在 FullReader／shared 投影层。
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import katex from "katex";
 import type { ReaderAtom, ReaderInlinePart, ReaderSentence, ReaderUnitContent } from "../../shared/reader/projection";
 import type { TranslationSentenceView, TranslationUnitView } from "../../shared/reader/translation-view";
 
 const desktop = window.desktop;
+
+/** stale 对照区展开态：按 sentenceId 存续于 FullReader 的 ref，跨阅读器重挂载保留。
+ * 未提供（独立渲染）时退化为句内本地状态。 */
+export interface StaleExpansionStore {
+  has: (sentenceId: string) => boolean;
+  toggle: (sentenceId: string) => void;
+}
+
+const StaleExpansionContext = createContext<StaleExpansionStore | null>(null);
 
 /** 单元正文：句子携带稳定 ID；文本片段按逻辑顺序渲染，atom 独立锚定。
  * 语言视图按句替换为译文片段；gap 句保留原文锚点，stale 句显著标识。 */
@@ -33,6 +42,8 @@ export function UnitBody({
   );
 }
 
+export const StaleExpansionProvider = StaleExpansionContext.Provider;
+
 function SentenceBody({
   sentence,
   onNavigate,
@@ -45,7 +56,11 @@ function SentenceBody({
   const status = translation?.status ?? "ready";
   const parts = translation && translation.status !== "gap" ? translation.parts : sentence.parts;
   // stale 对照：旧译文显著标识，最新原文可展开查看（原文锚点，不冒充译文）。
-  const [showSource, setShowSource] = useState(false);
+  // 展开态优先走 FullReader 提供的持久 store：project:changed 引发的全量重挂载
+  // 不得静默收起用户展开的对照区（paper-30min-70v）。
+  const expansion = useContext(StaleExpansionContext);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const showSource = expansion ? expansion.has(sentence.sentenceId) : localExpanded;
   const renderParts = (value: ReaderInlinePart[]) =>
     value.map((part, index) =>
       part.kind === "text" ? (
